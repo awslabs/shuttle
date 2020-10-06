@@ -56,8 +56,58 @@ fn deadlock_random() {
 #[test]
 #[should_panic(expected = "deadlock")]
 fn deadlock_pct() {
-    // 200 tries should be enough to find a deadlocking execution
+    // 100 tries should be enough to find a deadlocking execution
     let scheduler = PCTScheduler::new(2, 100);
     let runner = Runner::new(scheduler);
     runner.run(deadlock);
+}
+
+#[test]
+#[should_panic]
+fn concurrent_increment_buggy() {
+    let scheduler = PCTScheduler::new(2, 100);
+    let runner = Runner::new(scheduler);
+    runner.run(|| {
+        let lock = Arc::new(Mutex::new(0usize));
+
+        let threads = (0..2)
+            .map(|_| {
+                let lock = Arc::clone(&lock);
+                thread::spawn(move || {
+                    let curr = *lock.lock().unwrap();
+                    *lock.lock().unwrap() = curr + 1;
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for thd in threads {
+            thd.join().unwrap();
+        }
+
+        assert_eq!(*lock.lock().unwrap(), 2);
+    });
+}
+
+#[test]
+fn concurrent_increment() {
+    let scheduler = PCTScheduler::new(2, 100);
+    let runner = Runner::new(scheduler);
+    runner.run(|| {
+        let lock = Arc::new(Mutex::new(0usize));
+
+        let threads = (0..2)
+            .map(|_| {
+                let lock = Arc::clone(&lock);
+                thread::spawn(move || {
+                    *lock.lock().unwrap() += 1;
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for thd in threads {
+            thd.join().unwrap();
+        }
+
+        assert_eq!(*lock.lock().unwrap(), 2);
+    });
 }
