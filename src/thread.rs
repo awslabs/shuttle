@@ -1,7 +1,8 @@
 //! Shuttle's implementation of `std::thread`.
 
 use crate::runtime::execution::Execution;
-use crate::runtime::task_id::TaskId;
+use crate::runtime::task::sync_task;
+use crate::runtime::task::TaskId;
 
 /// Spawn a new thread, returning a JoinHandle for it.
 ///
@@ -35,7 +36,7 @@ where
     // TODO is this the right place to do a context switch? we want to simulate the new thread
     // TODO beginning execution immediately, but is that valid to do before the caller even has
     // TODO its JoinHandle?
-    Execution::switch();
+    sync_task::switch();
 
     JoinHandle { task_id, result }
 }
@@ -59,13 +60,14 @@ impl<T> JoinHandle<T> {
         });
 
         // TODO can we soundly skip the yield if the target thread has already finished?
-        Execution::switch();
+        sync_task::switch();
 
         self.result.lock().unwrap().take().expect("target should have finished")
     }
 }
 
+// TODO: don't need this? Just call switch directly?
 /// Cooperatively gives up a timeslice to the Shuttle scheduler.
 pub fn yield_now() {
-    Execution::switch();
+    sync_task::switch();
 }

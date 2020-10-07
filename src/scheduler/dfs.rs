@@ -1,4 +1,4 @@
-use crate::runtime::task_id::TaskId;
+use crate::runtime::task::TaskId;
 use crate::scheduler::Scheduler;
 
 /// A scheduler that performs an exhaustive, depth-first enumeration of all possible schedules.
