@@ -38,3 +38,12 @@ fn figure5_pct() {
     let runner = Runner::new(scheduler);
     runner.run(figure5);
 }
+
+#[test]
+fn one_step() {
+    let scheduler = PCTScheduler::new(2, 100);
+    let runner = Runner::new(scheduler);
+    runner.run(|| {
+        thread::spawn(|| {});
+    })
+}

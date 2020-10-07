@@ -76,7 +76,7 @@ impl Scheduler for PCTScheduler {
             }
             let rng = &mut self.rng;
             let max_steps = self.max_steps;
-            if max_steps > 0 {
+            if max_steps > 1 {
                 for point in self.change_points.iter_mut() {
                     *point = rng.gen_range(1, max_steps);
                 }
