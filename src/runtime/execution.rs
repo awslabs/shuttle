@@ -3,9 +3,11 @@
 // aware of `generator` threads. Instead we just fall back to using the unscoped API.
 #![allow(deprecated)]
 
+use crate::runtime::task_id::{TaskId, MAX_TASKS};
 use crate::scheduler::Scheduler;
 use generator::{Generator, Gn};
 use scoped_tls::scoped_thread_local;
+use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut};
@@ -23,9 +25,6 @@ use std::ops::{Deref, DerefMut};
 //   continuation. When a scheduler decides to execute a task, we resume its continuation and run
 //   until that continuation yields, which happens when its task decides it might want to context
 //   switch.
-
-// TODO make this a parameter
-const MAX_TASKS: usize = 4;
 
 // We use this scoped TLS to smuggle the ExecutionState, which is not 'static, across continuations.
 // The scoping handles the lifetime issue. Note that TLS is not aware of our generator threads; this
@@ -144,10 +143,14 @@ impl Execution<'_> {
                 .iter()
                 .filter(|t| t.state == TaskState::Runnable)
                 .map(|t| t.id)
-                .collect::<Vec<_>>();
+                .collect::<SmallVec<[_; MAX_TASKS]>>();
 
             if runnable.is_empty() {
-                let task_states = state.tasks.iter().map(|t| (t.id, t.state)).collect::<Vec<_>>();
+                let task_states = state
+                    .tasks
+                    .iter()
+                    .map(|t| (t.id, t.state))
+                    .collect::<SmallVec<[_; MAX_TASKS]>>();
                 if task_states.iter().any(|(_, s)| *s == TaskState::Blocked) {
                     panic!("deadlock: {:?}", task_states);
                 }
@@ -341,15 +344,6 @@ impl Task {
             self.waiter = Some(waiter);
             true
         }
-    }
-}
-
-#[derive(PartialEq, Eq, Hash, Clone, Copy, PartialOrd, Ord, Debug)]
-pub struct TaskId(usize);
-
-impl From<usize> for TaskId {
-    fn from(id: usize) -> Self {
-        TaskId(id)
     }
 }
 

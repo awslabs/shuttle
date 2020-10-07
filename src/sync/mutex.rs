@@ -1,6 +1,6 @@
-use crate::runtime::execution::{Execution, TaskId};
+use crate::runtime::execution::Execution;
+use crate::runtime::task_id::{TaskId, TaskSet};
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::{LockResult, TryLockResult};
@@ -22,7 +22,7 @@ pub struct MutexGuard<'a, T> {
 #[derive(Debug)]
 struct MutexState {
     holder: Option<TaskId>,
-    waiters: HashSet<TaskId>,
+    waiters: TaskSet,
 }
 
 impl<T> Mutex<T> {
@@ -30,7 +30,7 @@ impl<T> Mutex<T> {
     pub fn new(value: T) -> Self {
         let state = MutexState {
             holder: None,
-            waiters: HashSet::new(),
+            waiters: TaskSet::new(),
         };
 
         Self {
@@ -61,12 +61,12 @@ impl<T> Mutex<T> {
         // TODO i think now we are guaranteed to be in the waiters?
         assert!(state.holder.is_none());
         state.holder = Some(me);
-        state.waiters.remove(&me);
+        state.waiters.remove(me);
         // Block all other threads, since we won the race to take this lock
         // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
         // TODO never become unblocked), but might need to track more state to avoid this.
         for tid in state.waiters.iter() {
-            Execution::with_state(|s| s.get_mut(*tid).block());
+            Execution::with_state(|s| s.get_mut(tid).block());
         }
         drop(state);
 
@@ -104,8 +104,8 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         let mut state = self.state.borrow_mut();
         state.holder = None;
         for tid in state.waiters.iter() {
-            assert_ne!(*tid, me);
-            Execution::with_state(|s| s.get_mut(*tid).unblock());
+            assert_ne!(tid, me);
+            Execution::with_state(|s| s.get_mut(tid).unblock());
         }
         drop(state);
 

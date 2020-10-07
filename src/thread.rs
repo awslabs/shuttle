@@ -1,6 +1,7 @@
 //! Shuttle's implementation of `std::thread`.
 
-use crate::runtime::execution::{Execution, TaskId};
+use crate::runtime::execution::Execution;
+use crate::runtime::task_id::TaskId;
 
 /// Spawn a new thread, returning a JoinHandle for it.
 ///

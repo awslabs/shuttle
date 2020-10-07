@@ -1,6 +1,6 @@
 //! Implementations of different scheduling strategies for concurrency testing.
 
-use crate::runtime::execution::TaskId;
+use crate::runtime::task_id::TaskId;
 
 mod pct;
 mod random;

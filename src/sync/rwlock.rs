@@ -1,6 +1,6 @@
-use crate::runtime::execution::{Execution, TaskId};
+use crate::runtime::execution::Execution;
+use crate::runtime::task_id::{TaskId, TaskSet};
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
@@ -16,13 +16,13 @@ pub struct RwLock<T> {
 #[derive(Debug)]
 struct RwLockState {
     holder: RwLockHolder,
-    waiting_readers: HashSet<TaskId>,
-    waiting_writers: HashSet<TaskId>,
+    waiting_readers: TaskSet,
+    waiting_writers: TaskSet,
 }
 
 #[derive(PartialEq, Eq, Debug)]
 enum RwLockHolder {
-    Read(HashSet<TaskId>),
+    Read(TaskSet),
     Write(TaskId),
     None,
 }
@@ -32,8 +32,8 @@ impl<T> RwLock<T> {
     pub fn new(value: T) -> Self {
         let state = RwLockState {
             holder: RwLockHolder::None,
-            waiting_readers: HashSet::new(),
-            waiting_writers: HashSet::new(),
+            waiting_readers: TaskSet::new(),
+            waiting_writers: TaskSet::new(),
         };
 
         Self {
@@ -107,7 +107,7 @@ impl<T> RwLock<T> {
                 Execution::with_state(|s| s.current_mut().block());
             }
             RwLockHolder::Read(readers) => {
-                assert!(!readers.contains(&me));
+                assert!(!readers.contains(me));
                 if write {
                     Execution::with_state(|s| s.current_mut().block());
                 }
@@ -128,7 +128,7 @@ impl<T> RwLock<T> {
                 state.holder = RwLockHolder::Write(me);
             }
             (false, RwLockHolder::None) => {
-                let mut readers = HashSet::new();
+                let mut readers = TaskSet::new();
                 readers.insert(me);
                 state.holder = RwLockHolder::Read(readers);
             }
@@ -143,11 +143,11 @@ impl<T> RwLock<T> {
             }
         }
         if write {
-            state.waiting_writers.remove(&me);
+            state.waiting_writers.remove(me);
         } else {
-            state.waiting_readers.remove(&me);
+            state.waiting_readers.remove(me);
         }
-        state.waiting_readers.remove(&me);
+        state.waiting_readers.remove(me);
         // Block all other waiters, since we won the race to take this lock
         // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
         // TODO never become unblocked), but might need to track more state to avoid this.
@@ -157,19 +157,19 @@ impl<T> RwLock<T> {
 
     fn block_waiters(state: &RwLockState, me: TaskId) {
         for tid in state.waiting_readers.iter().chain(state.waiting_writers.iter()) {
-            assert_ne!(*tid, me);
-            Execution::with_state(|s| s.get_mut(*tid).block());
+            assert_ne!(tid, me);
+            Execution::with_state(|s| s.get_mut(tid).block());
         }
     }
 
     fn unblock_waiters(state: &RwLockState, me: TaskId, should_be_blocked: bool) {
         for tid in state.waiting_readers.iter().chain(state.waiting_writers.iter()) {
-            assert_ne!(*tid, me);
+            assert_ne!(tid, me);
             Execution::with_state(|s| {
                 if should_be_blocked {
-                    s.get_mut(*tid).unblock();
+                    s.get_mut(tid).unblock();
                 } else {
-                    s.get_mut(*tid).maybe_unblock();
+                    s.get_mut(tid).maybe_unblock();
                 }
             });
         }
@@ -212,7 +212,7 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
         let mut state = self.state.borrow_mut();
         match &mut state.holder {
             RwLockHolder::Read(readers) => {
-                readers.remove(&me);
+                readers.remove(me);
                 if readers.is_empty() {
                     state.holder = RwLockHolder::None;
                 }
