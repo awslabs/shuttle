@@ -10,6 +10,7 @@
 //!
 //! [Loom]: https://github.com/tokio-rs/loom
 
+pub mod asynch;
 pub mod sync;
 pub mod thread;
 
@@ -39,6 +40,19 @@ where
     use crate::scheduler::RandomScheduler;
 
     let scheduler = RandomScheduler::new(iterations);
+    let runner = Runner::new(scheduler);
+    runner.run(f);
+}
+
+/// Run the given function under a depth-first-search scheduler until all interleavings have been
+/// explored (but if the max_iterations bound is provided, stop after that many iterations).
+pub fn check_dfs<F>(f: F, max_iterations: Option<usize>)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    use crate::scheduler::DFSScheduler;
+
+    let scheduler = DFSScheduler::new(max_iterations);
     let runner = Runner::new(scheduler);
     runner.run(f);
 }

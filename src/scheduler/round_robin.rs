@@ -1,4 +1,4 @@
-use crate::runtime::task_id::TaskId;
+use crate::runtime::task::TaskId;
 use crate::scheduler::Scheduler;
 
 /// A round robin scheduler that chooses the next available runnable task at each context switch.

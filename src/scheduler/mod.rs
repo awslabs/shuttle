@@ -1,6 +1,6 @@
 //! Implementations of different scheduling strategies for concurrency testing.
 
-use crate::runtime::task_id::TaskId;
+use crate::runtime::task::TaskId;
 use std::fmt::Debug;
 
 mod dfs;
