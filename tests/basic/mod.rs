@@ -1,3 +1,4 @@
+mod dfs;
 mod execution;
 mod mutex;
 mod pct;

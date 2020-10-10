@@ -1,15 +1,17 @@
 //! Implementations of different scheduling strategies for concurrency testing.
 
 use crate::runtime::task_id::TaskId;
+use std::fmt::Debug;
 
+mod dfs;
 mod pct;
 mod random;
 mod round_robin;
 
+pub use dfs::DFSScheduler;
 pub use pct::PCTScheduler;
 pub use random::RandomScheduler;
 pub use round_robin::RoundRobinScheduler;
-use std::fmt::Debug;
 
 /// A `Scheduler` is an oracle that decides the order in which to execute concurrent tasks.
 ///
