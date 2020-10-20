@@ -61,7 +61,7 @@ fn timer_simple() {
                 assert_eq!(sum, 10 + 20 + 40);
             });
         },
-        None,
+        Some(500), // TODO Remove this limit when async tasks are blocked when Pending
     );
 }
 
