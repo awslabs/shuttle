@@ -17,14 +17,15 @@ scoped_thread_local! {
     static EXECUTION_STATE: RefCell<ExecutionState>
 }
 
-/// An execution is the top-level data structure for a single run of a function under test. It holds
-/// the "state" of the execution (which tasks are blocked, finished, etc).
+/// An `Execution` encapsulates a single run of a function under test against a chosen scheduler.
+/// Its only useful method is `Execution::run`, which executes the function to completion. It also
+/// has some static methods useful from library code.
 ///
-/// The "state" needs to be mutably accessible from each of the continuations. The Execution
-/// arranges that whenever it resumes a continuation, the `EXECUTION_STATE` static holds a reference
-/// to the current execution state.
+/// The key thing that an `Execution` manages is the `ExecutionState`, which contains all the
+/// mutable state a test's tasks might need access to during execution (to block/unblock tasks,
+/// spawn new tasks, etc). The `Execution` makes this state available through the `EXECUTION_STATE`
+/// static variable, but clients get access to it by calling `Execution::with_state`.
 pub(crate) struct Execution<'a> {
-    state: RefCell<ExecutionState>,
     // can't make this a type parameter because we have static methods we want to call
     scheduler: MetricsScheduler<'a>,
 }
@@ -34,9 +35,8 @@ impl<'a> Execution<'a> {
     /// invoked via its `run` method, which takes as input the closure for task 0.
     // TODO this is where we'd pass in config for max_tasks etc
     pub(crate) fn new(scheduler: &'a mut Box<dyn Scheduler>) -> Self {
-        let state = RefCell::new(ExecutionState::new());
         let scheduler = MetricsScheduler::new(scheduler);
-        Self { state, scheduler }
+        Self { scheduler }
     }
 }
 
@@ -47,13 +47,38 @@ impl Execution<'_> {
     where
         F: FnOnce() + Send + 'static,
     {
-        // Install `f` as the first task to be spawned
-        self.state.borrow_mut().enqueue_sync(f);
+        let state = RefCell::new(ExecutionState::new());
 
-        loop {
-            let mut state = self.state.borrow_mut();
+        EXECUTION_STATE.set(&state, || {
+            // Install `f` as the first task to be spawned
+            Self::with_state(|state| {
+                state.enqueue_sync(f);
+            });
 
-            // Actually spawn any tasks that are ready to spawn. This leaves them in the Runnable state, but they have not been started.
+            // Run the test to completion
+            while self.step() {}
+        });
+
+        // The program is now finished. These are just sanity checks for cleanup: every task should
+        // have reached Finished state, and should be cleaned up (which does additional checks).
+        let state = state.into_inner();
+        for thd in state.tasks.into_iter() {
+            assert_eq!(thd.state, TaskState::Finished);
+            let task = Rc::try_unwrap(thd.inner);
+            if let Ok(task) = task {
+                let task = task.into_inner();
+                task.cleanup();
+            }
+        }
+    }
+
+    /// Execute a single step of the scheduler. Returns true if a step was taken or false if all
+    /// tasks were finished.
+    #[inline]
+    fn step(&mut self) -> bool {
+        let atomic_task = Self::with_state(|state| {
+            // Actually spawn any tasks that are ready to spawn. This leaves them in the Runnable
+            // state, but they have not been started.
             while let Some(pending_task) = state.pending.pop_front() {
                 let task_id = TaskId(state.tasks.len());
                 let task = Task::from_pending(task_id, pending_task);
@@ -81,24 +106,26 @@ impl Execution<'_> {
                     );
                 }
                 assert!(state.tasks.iter().all(|t| t.finished()));
-                break;
+                return None;
             }
 
             let to_run = self.scheduler.next_task(&runnable, state.current_task);
             let task = state.tasks.get(to_run.0).unwrap();
 
+            state.current_task = Some(to_run);
+
             // TODO Not sure if we should expose atomic tasks here; maybe wrap this all behind the
             // TODO Task abstraction?
             let atomic_task = Rc::clone(&task.inner);
+            Some(atomic_task)
+        });
 
-            state.current_task = Some(to_run);
-            drop(state);
+        let ret = match atomic_task {
+            Some(task) => panic::catch_unwind(panic::AssertUnwindSafe(|| task.borrow_mut().step())),
+            None => return false,
+        };
 
-            let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                EXECUTION_STATE.set(&self.state, || atomic_task.borrow_mut().step())
-            }));
-
-            let mut state = self.state.borrow_mut();
+        Self::with_state(|state| {
             match ret {
                 Ok(TaskResult::Finished) => {
                     state.current_mut().state = TaskState::Finished;
@@ -120,24 +147,15 @@ impl Execution<'_> {
                 }
                 _ => panic!("unexpected continuation output"),
             }
-        }
+        });
 
-        // The program is now finished. These are just sanity checks for cleanup: every task should
-        // have reached Finished state, and should be cleaned up (which does additional checks).
-        let state = self.state.into_inner();
-        for thd in state.tasks.into_iter() {
-            assert_eq!(thd.state, TaskState::Finished);
-            let task = Rc::try_unwrap(thd.inner);
-            if let Ok(task) = task {
-                let task = task.into_inner();
-                task.cleanup();
-            }
-        }
+        true
     }
 
     /// Invoke a closure with access to the current execution state. Library code uses this to gain
     /// access to the state of the execution to influence scheduling (e.g. to register a task as
     /// blocked).
+    #[inline]
     pub(crate) fn with_state<F, T>(f: F) -> T
     where
         F: FnOnce(&mut ExecutionState) -> T,
