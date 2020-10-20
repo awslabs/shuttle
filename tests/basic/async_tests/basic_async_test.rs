@@ -50,7 +50,7 @@ fn async_with_join() {
                 });
             });
         },
-        None,
+        Some(1_000), // TODO Remove this limit when async tasks are blocked when Pending
     );
 }
 
