@@ -1,6 +1,7 @@
 //! Shuttle's implementation of `async_runtime::spawn`.
 
 use crate::runtime::execution::Execution;
+use crate::runtime::task::sync_task;
 use crate::runtime::task::TaskId;
 use futures::future::Future;
 use std::pin::Pin;
@@ -86,9 +87,42 @@ where
         match self.future.as_mut().poll(cx) {
             Poll::Ready(result) => {
                 *self.result.lock().unwrap() = Some(Ok(result));
+
+                Execution::with_state(|state| {
+                    if let Some(waiter) = state.current().waiter() {
+                        let waiter = state.get_mut(waiter);
+                        assert!(waiter.blocked());
+                        waiter.unblock();
+                    }
+                });
+
                 Poll::Ready(())
             }
             Poll::Pending => Poll::Pending,
         }
     }
+}
+
+/// Block a thread on a future
+pub fn block_on<T, F>(future: F) -> T
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let handle = spawn(future);
+
+    sync_task::switch(); // Required to allow Execution to spawn the future
+
+    Execution::with_state(|state| {
+        let me = state.current().id();
+        let target = state.get_mut(handle.task_id);
+        if target.wait_for(me) {
+            state.current_mut().block();
+        }
+    });
+
+    sync_task::switch(); // Required in case the thread blocked
+
+    let result = handle.result.lock().unwrap().take();
+    result.unwrap().expect("result should be available to waiter")
 }
