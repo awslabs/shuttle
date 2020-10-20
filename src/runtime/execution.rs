@@ -1,10 +1,13 @@
+use crate::runtime::metrics::MetricsScheduler;
 use crate::runtime::task::{PendingTask, Task, TaskId, TaskResult, TaskState, MAX_TASKS};
 use crate::scheduler::Scheduler;
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
+use std::panic;
 use std::rc::Rc;
 
 // We use this scoped TLS to smuggle the ExecutionState, which is not 'static, across continuations.
@@ -23,7 +26,7 @@ scoped_thread_local! {
 pub(crate) struct Execution<'a> {
     state: RefCell<ExecutionState>,
     // can't make this a type parameter because we have static methods we want to call
-    scheduler: &'a mut Box<dyn Scheduler>,
+    scheduler: MetricsScheduler<'a>,
 }
 
 impl<'a> Execution<'a> {
@@ -32,6 +35,7 @@ impl<'a> Execution<'a> {
     // TODO this is where we'd pass in config for max_tasks etc
     pub(crate) fn new(scheduler: &'a mut Box<dyn Scheduler>) -> Self {
         let state = RefCell::new(ExecutionState::new());
+        let scheduler = MetricsScheduler::new(scheduler);
         Self { state, scheduler }
     }
 }
@@ -39,7 +43,7 @@ impl<'a> Execution<'a> {
 impl Execution<'_> {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated.
-    pub(crate) fn run<F>(self, f: F)
+    pub(crate) fn run<F>(mut self, f: F)
     where
         F: FnOnce() + Send + 'static,
     {
@@ -70,7 +74,11 @@ impl Execution<'_> {
                     .map(|t| (t.id, t.state))
                     .collect::<SmallVec<[_; MAX_TASKS]>>();
                 if task_states.iter().any(|(_, s)| *s == TaskState::Blocked) {
-                    panic!("deadlock: {:?}", task_states);
+                    panic!(
+                        "deadlock with schedule: {:?}\nrunnable tasks: {:?}",
+                        self.scheduler.serialized_schedule(),
+                        task_states,
+                    );
                 }
                 assert!(state.tasks.iter().all(|t| t.finished()));
                 break;
@@ -86,14 +94,30 @@ impl Execution<'_> {
             state.current_task = Some(to_run);
             drop(state);
 
-            let ret = EXECUTION_STATE.set(&self.state, || atomic_task.borrow_mut().step());
+            let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                EXECUTION_STATE.set(&self.state, || atomic_task.borrow_mut().step())
+            }));
 
             let mut state = self.state.borrow_mut();
             match ret {
-                TaskResult::Finished => {
+                Ok(TaskResult::Finished) => {
                     state.current_mut().state = TaskState::Finished;
                 }
-                TaskResult::Yielded => (),
+                Ok(TaskResult::Yielded) => (),
+                Err(e) => {
+                    let msg = format!(
+                        "test panicked with schedule: {:?}",
+                        self.scheduler.serialized_schedule()
+                    );
+                    eprintln!("{}", msg);
+                    eprintln!("pass that schedule string into `shuttle::replay` to reproduce the failure");
+                    // Try to inject the schedule into the panic payload if we can
+                    let payload: Box<dyn Any + Send> = match e.downcast::<String>() {
+                        Ok(panic_msg) => Box::new(format!("{}\noriginal panic: {}", msg, panic_msg)),
+                        Err(panic) => panic,
+                    };
+                    panic::resume_unwind(payload);
+                }
                 _ => panic!("unexpected continuation output"),
             }
         }

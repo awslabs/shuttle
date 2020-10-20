@@ -2,6 +2,7 @@ mod dfs;
 mod execution;
 mod mutex;
 mod pct;
+mod replay;
 mod rwlock;
 mod thread;
 

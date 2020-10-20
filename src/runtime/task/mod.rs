@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 mod async_task;
+pub(crate) mod serialization;
 pub(crate) mod sync_task; // to expose the 'switch' method
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
