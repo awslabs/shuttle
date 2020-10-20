@@ -56,3 +56,19 @@ where
     let runner = Runner::new(scheduler);
     runner.run(f);
 }
+
+/// Run the given function according to a given encoded schedule, usually produced as the output
+/// of a failing Shuttle test case.
+///
+/// This function allows deterministic replay of a failing schedule, as long as `f` contains no
+/// non-determinism other than that introduced by scheduling.
+pub fn replay<F>(f: F, encoded_schedule: &str)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    use crate::scheduler::ReplayScheduler;
+
+    let scheduler = ReplayScheduler::new(encoded_schedule);
+    let runner = Runner::new(scheduler);
+    runner.run(f);
+}

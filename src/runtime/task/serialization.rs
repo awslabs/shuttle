@@ -1,0 +1,79 @@
+//! This module implements a simple serialization scheme for schedules (`Vec<TaskId>`) that tries to
+//! produce small printable strings. This is useful for roundtripping schedules in test outputs.
+
+use crate::runtime::task::TaskId;
+use bitvec::prelude::*;
+use integer_encoding::VarInt;
+
+// The serialization format is this:
+//   [task id bitwidth] [number of schedule steps] [task id]*
+// The bitwidth and number of steps are encoded as VarInts, so are at least one byte.
+// The task IDs are densely packed bitstrings, where each task ID is encoded as exactly `bitwidth`
+// bits. Since our schedules will often have very few distinct tasks, this encoding lets us create
+// short schedule strings.
+//
+// We encode the binary serialization as a hex string for easy copy/pasting.
+
+pub(crate) fn serialize_schedule(schedule: &[TaskId]) -> String {
+    let max_task_id = schedule.iter().max().unwrap_or(&TaskId(0)).0;
+    let task_id_bits = std::mem::size_of_val(&max_task_id) * 8 - max_task_id.leading_zeros() as usize;
+
+    let mut encoded = bitvec![Lsb0, u8; 0; schedule.len() * task_id_bits];
+    if task_id_bits > 0 {
+        for (tid, target_bits) in schedule.iter().zip(encoded[..].chunks_exact_mut(task_id_bits)) {
+            target_bits.store(tid.0);
+        }
+    }
+
+    let mut buf = task_id_bits.encode_var_vec();
+    buf.extend(schedule.len().encode_var_vec());
+    buf.extend(encoded.as_slice());
+    hex::encode(buf)
+}
+
+pub(crate) fn deserialize_schedule(str: &str) -> Option<Vec<TaskId>> {
+    let bytes = hex::decode(str).ok()?;
+    let (task_id_bits, consumed) = usize::decode_var(&bytes[..]);
+    let bytes = &bytes[consumed..];
+    let (schedule_len, consumed) = usize::decode_var(bytes);
+    let bytes = &bytes[consumed..];
+
+    if schedule_len == 0 {
+        return Some(vec![]);
+    } else if task_id_bits == 0 {
+        return Some(vec![TaskId(0); schedule_len]);
+    }
+
+    let encoded = BitSlice::<Lsb0, _>::from_slice(bytes).unwrap();
+
+    let mut schedule = Vec::with_capacity(bytes.len() * 8 / task_id_bits);
+    for tid_bits in encoded.chunks_exact(task_id_bits).take(schedule_len) {
+        let tid = tid_bits.load::<usize>();
+        schedule.push(TaskId(tid));
+    }
+    Some(schedule)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use rand::{Rng, SeedableRng};
+    use rand_pcg::Pcg64Mcg;
+
+    #[test]
+    fn roundtrip() {
+        let mut rng = Pcg64Mcg::seed_from_u64(0x12345678);
+        for _ in 0..1000 {
+            let max_task_id = 1 + rng.gen::<usize>() % 200;
+            let len = rng.gen::<usize>() % 2000;
+            let mut schedule = Vec::with_capacity(len);
+            for _ in 0..len {
+                schedule.push(TaskId(rng.gen::<usize>() % max_task_id));
+            }
+
+            let encoded = serialize_schedule(&schedule);
+            let decoded = deserialize_schedule(encoded.as_str()).unwrap();
+            assert_eq!(schedule, decoded);
+        }
+    }
+}

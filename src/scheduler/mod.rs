@@ -6,11 +6,13 @@ use std::fmt::Debug;
 mod dfs;
 mod pct;
 mod random;
+mod replay;
 mod round_robin;
 
 pub use dfs::DFSScheduler;
 pub use pct::PCTScheduler;
 pub use random::RandomScheduler;
+pub use replay::ReplayScheduler;
 pub use round_robin::RoundRobinScheduler;
 
 /// A `Scheduler` is an oracle that decides the order in which to execute concurrent tasks.
