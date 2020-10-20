@@ -26,26 +26,32 @@ async fn add(a: u32, b: u32) -> u32 {
 
 #[test]
 fn async_fncall() {
-    check(move || {
-        let sum = add(3, 5);
-        asynch::spawn(async move {
-            let r = sum.await;
-            assert_eq!(r, 8u32);
-        });
-    });
+    check_dfs(
+        move || {
+            let sum = add(3, 5);
+            asynch::spawn(async move {
+                let r = sum.await;
+                assert_eq!(r, 8u32);
+            });
+        },
+        None,
+    );
 }
 
 #[test]
 fn async_with_join() {
-    check(move || {
-        thread::spawn(|| {
-            let join = asynch::spawn(async move { add(10, 32).await });
+    check_dfs(
+        move || {
+            thread::spawn(|| {
+                let join = asynch::spawn(async move { add(10, 32).await });
 
-            asynch::spawn(async move {
-                assert_eq!(join.await.unwrap(), 42u32);
+                asynch::spawn(async move {
+                    assert_eq!(join.await.unwrap(), 42u32);
+                });
             });
-        });
-    });
+        },
+        None,
+    );
 }
 
 #[test]
@@ -66,6 +72,17 @@ fn async_with_threads() {
                     assert_eq!(11u32, v1.await + v2.await);
                 });
             });
+        },
+        None,
+    );
+}
+
+#[test]
+fn async_block_on() {
+    check_dfs(
+        || {
+            let v = asynch::block_on(async { 42u32 });
+            assert_eq!(v, 42u32);
         },
         None,
     );
