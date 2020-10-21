@@ -21,7 +21,7 @@ integer-encoding = "=1.1.5" # there's a bug in VarInt in >= 1.2
 rand = { version = "~0.7.3", default-features = false, features = ["getrandom"] }
 rand_pcg = "~0.2.1"
 scoped-tls = "~1.0.0"
-smallvec = "~1.4.2"
+smallvec = "~1.2.0"
 
 [dev-dependencies]
 criterion = "~0.3.3"
