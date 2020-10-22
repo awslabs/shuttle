@@ -26,9 +26,9 @@ fn concurrent_increment_buggy() {
 }
 
 #[test]
-#[should_panic(expected = "34021114aa560000")]
+#[should_panic(expected = "34021014aa5600")]
 fn replay_failing() {
-    let schedule = "34021114aa560000";
+    let schedule = "34021014aa5600";
     let scheduler = ReplayScheduler::new(schedule);
     let runner = Runner::new(scheduler);
     runner.run(concurrent_increment_buggy);
