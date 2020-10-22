@@ -14,6 +14,8 @@ use integer_encoding::VarInt;
 //
 // We encode the binary serialization as a hex string for easy copy/pasting.
 
+const SCHEDULE_MAGIC_V1: u8 = 0x34;
+
 pub(crate) fn serialize_schedule(schedule: &[TaskId]) -> String {
     let max_task_id = schedule.iter().max().unwrap_or(&TaskId(0)).0;
     let task_id_bits = std::mem::size_of_val(&max_task_id) * 8 - max_task_id.leading_zeros() as usize;
@@ -25,7 +27,10 @@ pub(crate) fn serialize_schedule(schedule: &[TaskId]) -> String {
         }
     }
 
-    let mut buf = task_id_bits.encode_var_vec();
+    let mut buf =
+        Vec::with_capacity(1 + task_id_bits.required_space() + schedule.len().required_space() + encoded.len());
+    buf.push(SCHEDULE_MAGIC_V1);
+    buf.extend(task_id_bits.encode_var_vec());
     buf.extend(schedule.len().encode_var_vec());
     buf.extend(encoded.as_slice());
     hex::encode(buf)
@@ -33,8 +38,16 @@ pub(crate) fn serialize_schedule(schedule: &[TaskId]) -> String {
 
 pub(crate) fn deserialize_schedule(str: &str) -> Option<Vec<TaskId>> {
     let bytes = hex::decode(str).ok()?;
+
+    let version = bytes[0];
+    if version != SCHEDULE_MAGIC_V1 {
+        return None;
+    }
+    let bytes = &bytes[1..];
+
     let (task_id_bits, consumed) = usize::decode_var(&bytes[..]);
     let bytes = &bytes[consumed..];
+
     let (schedule_len, consumed) = usize::decode_var(bytes);
     let bytes = &bytes[consumed..];
 
