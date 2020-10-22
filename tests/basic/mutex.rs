@@ -111,3 +111,14 @@ fn concurrent_increment() {
         assert_eq!(*lock.lock().unwrap(), 2);
     });
 }
+
+// Check that we can safely execute the Drop handler of a Mutex without double-panicking
+#[test]
+#[should_panic(expected = "expected panic")]
+fn panic_drop() {
+    check(|| {
+        let lock = Mutex::new(0);
+        let _l = lock.lock().unwrap();
+        panic!("expected panic");
+    })
+}
