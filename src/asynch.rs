@@ -1,8 +1,8 @@
 //! Shuttle's implementation of `async_runtime::spawn`.
 
 use crate::runtime::execution::Execution;
-use crate::runtime::task::sync_task;
 use crate::runtime::task::TaskId;
+use crate::runtime::thread_future;
 use futures::future::Future;
 use std::pin::Pin;
 use std::result::Result;
@@ -15,7 +15,7 @@ where
     T: Send + 'static,
 {
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let task_id = Execution::spawn_async(Wrapper::new(fut, std::sync::Arc::clone(&result)));
+    let task_id = Execution::spawn(Wrapper::new(fut, std::sync::Arc::clone(&result)));
     JoinHandle { task_id, result }
 }
 
@@ -111,7 +111,7 @@ where
 {
     let handle = spawn(future);
 
-    sync_task::switch(); // Required to allow Execution to spawn the future
+    thread_future::switch(); // Required to allow Execution to spawn the future
 
     Execution::with_state(|state| {
         let me = state.current().id();
@@ -121,7 +121,7 @@ where
         }
     });
 
-    sync_task::switch(); // Required in case the thread blocked
+    thread_future::switch(); // Required in case the thread blocked
 
     let result = handle.result.lock().unwrap().take();
     result.unwrap().expect("result should be available to waiter")

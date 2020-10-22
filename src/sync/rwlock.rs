@@ -1,6 +1,6 @@
 use crate::runtime::execution::Execution;
-use crate::runtime::task::sync_task;
 use crate::runtime::task::{TaskId, TaskSet};
+use crate::runtime::thread_future;
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::panic::{RefUnwindSafe, UnwindSafe};
@@ -118,7 +118,7 @@ impl<T> RwLock<T> {
         drop(state);
 
         // Acquiring a lock is a yield point
-        sync_task::switch();
+        thread_future::switch();
 
         let mut state = self.state.borrow_mut();
         // Once the scheduler has resumed this thread, we are clear to take the lock. We might
@@ -224,7 +224,7 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
         drop(state);
 
         // Releasing a lock is a yield point
-        sync_task::switch();
+        thread_future::switch();
     }
 }
 
@@ -249,7 +249,7 @@ impl<T> Drop for RwLockWriteGuard<'_, T> {
         drop(state);
 
         // Releasing a lock is a yield point
-        sync_task::switch();
+        thread_future::switch();
     }
 }
 

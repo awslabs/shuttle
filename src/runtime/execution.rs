@@ -1,6 +1,8 @@
 use crate::runtime::metrics::MetricsScheduler;
-use crate::runtime::task::{PendingTask, Task, TaskId, TaskResult, TaskState, MAX_TASKS};
+use crate::runtime::task::{Task, TaskId, TaskState, MAX_TASKS};
+use crate::runtime::thread_future::ThreadFuture;
 use crate::scheduler::Scheduler;
+use futures::future::BoxFuture;
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -9,10 +11,10 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::panic;
 use std::rc::Rc;
+use std::task::{Context, Poll};
 
-// We use this scoped TLS to smuggle the ExecutionState, which is not 'static, across continuations.
-// The scoping handles the lifetime issue. Note that TLS is not aware of our generator threads; this
-// is one shared cell across all threads in the execution.
+// We use this scoped TLS to smuggle the ExecutionState, which is not 'static, across tasks that
+// need access to it (to spawn new tasks, interrogate task status, etc).
 scoped_thread_local! {
     static EXECUTION_STATE: RefCell<ExecutionState>
 }
@@ -51,8 +53,9 @@ impl Execution<'_> {
 
         EXECUTION_STATE.set(&state, || {
             // Install `f` as the first task to be spawned
+            let first_task = ThreadFuture::new(f);
             Self::with_state(|state| {
-                state.enqueue_sync(f);
+                state.enqueue(first_task);
             });
 
             // Run the test to completion
@@ -60,15 +63,13 @@ impl Execution<'_> {
         });
 
         // The program is now finished. These are just sanity checks for cleanup: every task should
-        // have reached Finished state, and should be cleaned up (which does additional checks).
+        // have reached Finished state, and should have no outstanding references to its Future.
         let state = state.into_inner();
         for thd in state.tasks.into_iter() {
             assert_eq!(thd.state, TaskState::Finished);
-            let task = Rc::try_unwrap(thd.inner);
-            if let Ok(task) = task {
-                let task = task.into_inner();
-                task.cleanup();
-            }
+            Rc::try_unwrap(thd.future)
+                .map_err(|_| ())
+                .expect("couldn't cleanup a future");
         }
     }
 
@@ -76,12 +77,12 @@ impl Execution<'_> {
     /// tasks were finished.
     #[inline]
     fn step(&mut self) -> bool {
-        let atomic_task = Self::with_state(|state| {
+        let future = Self::with_state(|state| {
             // Actually spawn any tasks that are ready to spawn. This leaves them in the Runnable
             // state, but they have not been started.
-            while let Some(pending_task) = state.pending.pop_front() {
+            while let Some(future) = state.pending.pop_front() {
                 let task_id = TaskId(state.tasks.len());
-                let task = Task::from_pending(task_id, pending_task);
+                let task = Task::new(future, task_id);
                 state.tasks.push(task);
             }
 
@@ -111,26 +112,30 @@ impl Execution<'_> {
 
             let to_run = self.scheduler.next_task(&runnable, state.current_task);
             let task = state.tasks.get(to_run.0).unwrap();
-
             state.current_task = Some(to_run);
 
-            // TODO Not sure if we should expose atomic tasks here; maybe wrap this all behind the
-            // TODO Task abstraction?
-            let atomic_task = Rc::clone(&task.inner);
-            Some(atomic_task)
+            Some(Rc::clone(&task.future))
         });
 
-        let ret = match atomic_task {
-            Some(task) => panic::catch_unwind(panic::AssertUnwindSafe(|| task.borrow_mut().step())),
+        // Run a single step of the chosen future
+        let ret = match future {
+            Some(future) => panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                // TODO implement real waker support
+                let waker = futures::task::noop_waker_ref();
+                let mut cx = &mut Context::from_waker(waker);
+                future.borrow_mut().as_mut().poll(&mut cx)
+            })),
             None => return false,
         };
 
         Self::with_state(|state| {
             match ret {
-                Ok(TaskResult::Finished) => {
+                Ok(Poll::Ready(_)) => {
                     state.current_mut().state = TaskState::Finished;
                 }
-                Ok(TaskResult::Yielded) => (),
+                // TODO if it's a real future, we should mark it blocked here rather than polling it
+                // TODO indefinitely, once we have waker support
+                Ok(Poll::Pending) => (),
                 Err(e) => {
                     let msg = format!(
                         "test panicked with schedule: {:?}",
@@ -145,7 +150,6 @@ impl Execution<'_> {
                     };
                     panic::resume_unwind(payload);
                 }
-                _ => panic!("unexpected continuation output"),
             }
         });
 
@@ -163,19 +167,10 @@ impl Execution<'_> {
         EXECUTION_STATE.with(|cell| f(&mut *cell.borrow_mut()))
     }
 
-    /// Spawn a new task. This doesn't create a yield point -- the caller should do that if
+    /// Spawn a new future. This doesn't create a yield point -- the caller should do that if
     /// appropriate.
-    pub(crate) fn spawn<F>(f: F) -> TaskId
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        Self::with_state(|state| state.enqueue_sync(f))
-    }
-
-    /// Spawn a new task. This doesn't create a yield point -- the caller should do that if
-    /// appropriate.
-    pub(crate) fn spawn_async(fut: impl Future<Output = ()> + 'static + Send) -> TaskId {
-        Self::with_state(|state| state.enqueue_async(fut))
+    pub(crate) fn spawn(fut: impl Future<Output = ()> + 'static + Send) -> TaskId {
+        Self::with_state(|state| state.enqueue(fut))
     }
 
     /// A shortcut to get the current task ID
@@ -185,14 +180,14 @@ impl Execution<'_> {
 }
 
 /// `ExecutionState` contains the portion of a single execution's state that needs to be reachable
-/// from within a continuation. It tracks which tasks exist and their states, as well as which
+/// from within a task's execution. It tracks which tasks exist and their states, as well as which
 /// tasks are pending spawn.
 pub(crate) struct ExecutionState {
-    // invariant: tasks are never removed from this list, except during teardown of an `Execution`
+    // invariant: tasks are never removed from this list
     tasks: Vec<Task>,
     // invariant: if this transitions from Some -> None, it can never change again
     current_task: Option<TaskId>,
-    pending: VecDeque<PendingTask>,
+    pending: VecDeque<BoxFuture<'static, ()>>,
 }
 
 impl ExecutionState {
@@ -208,19 +203,9 @@ impl ExecutionState {
         self.tasks.len() + self.pending.len()
     }
 
-    fn enqueue_async(&mut self, fut: impl Future<Output = ()> + 'static + Send) -> TaskId {
+    fn enqueue(&mut self, fut: impl Future<Output = ()> + 'static + Send) -> TaskId {
         let next_task_id = self.next_task_id();
-        self.pending.push_back(PendingTask::AsyncTask(Box::pin(fut)));
-        TaskId(next_task_id)
-    }
-
-    /// Spawn a new task.
-    fn enqueue_sync<F>(&mut self, f: F) -> TaskId
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        let next_task_id = self.next_task_id();
-        self.pending.push_back(PendingTask::SyncTask(Box::new(f)));
+        self.pending.push_back(Box::pin(fut));
         TaskId(next_task_id)
     }
 

@@ -1,6 +1,6 @@
 use crate::runtime::execution::Execution;
-use crate::runtime::task::sync_task;
 use crate::runtime::task::{TaskId, TaskSet};
+use crate::runtime::thread_future;
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
@@ -54,7 +54,7 @@ impl<T> Mutex<T> {
         drop(state);
 
         // Acquiring a lock is a yield point
-        sync_task::switch();
+        thread_future::switch();
 
         let mut state = self.state.borrow_mut();
         // Once the scheduler has resumed this thread, we are clear to become its holder. We might
@@ -111,7 +111,7 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         drop(state);
 
         // Releasing a lock is a yield point
-        sync_task::switch();
+        thread_future::switch();
     }
 }
 
