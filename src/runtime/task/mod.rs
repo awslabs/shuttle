@@ -2,27 +2,27 @@ use futures::future::BoxFuture;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-mod async_task;
 pub(crate) mod serialization;
-pub(crate) mod sync_task; // to expose the 'switch' method
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
-// * A "thread" is the user-level unit of concurrency. User code creates threads, passes data
-//   between them, etc. There is no notion of "thread" inside this runtime. There are other possible
-//   user-level units of concurrency, like Futures, but we currently only support threads.
-// * A "task" is this runtime's reflection of a user-level unit of concurrency.  A task may be
-//   synchronous (spawned thread) or asynchronous (a future).  Each task has a state like
+// * A "thread" is a user-level unit of concurrency. User code creates threads, passes data
+//   between them, etc. There is no notion of "thread" inside the Shuttle executor, which only
+//   understands Futures. We implement threads via `ThreadFuture`, which emulates a thread inside
+//   a Future using a continuation.
+// * A "future" is another user-level unit of concurrency, corresponding directly to Rust's notion
+//   in std::future::Future. A future has a single method `poll` that can be used to resume
+//   executing its computation.
+// * A "task" is the Shuttle executor's reflection of a user-level unit of concurrency. Each task
+//   has a corresponding Future, which is the user-level code it runs, as well as a state like
 //   "blocked", "runnable", etc. Scheduling algorithms take as input the state of all tasks
 //   and decide which task should execute next. A context switch is when one task stops executing
 //   and another begins.
-// * The low-level implementation of concurrency is either a "Continuation" (for a synchronous task) or
-//   a future (for an asynchronous task).
-//   When the scheduler decides to execute a synchronous task, we resume its continuation and run
-//   until that continuation yields, which happens when its task decides it might want to context
-//   switch.
-//   When the scheduler decides to execute an asynchronous task, we invoke the poll method on its
-//   future.  If the poll method returns Pending, the task is not finished, and we'll poll it again.
+// * A "continuation" is a low-level implementation of green threading for concurrency. Each
+//   ThreadFuture contains a corresponding continuation. When the Shuttle executor polls a
+//   ThreadFuture, which corresponds to a user-level thread, the ThreadFuture resumes its
+//   continuation and runs it until that continuation yields, which happens when its thread decides
+//   it might want to context switch (e.g., because it's blocked on a lock).
 
 // TODO make bigger and configurable
 pub(crate) const MAX_TASKS: usize = 4;
@@ -84,27 +84,26 @@ pub(crate) enum TaskResult {
     Finished,
 }
 
-pub(crate) enum PendingTask {
-    SyncTask(Box<dyn FnOnce() + Send + 'static>),
-    AsyncTask(BoxFuture<'static, ()>),
-}
-
-pub(crate) trait AtomicTask {
-    fn step(&mut self) -> TaskResult;
-    fn cleanup(self: Box<Self>);
-}
-
 /// A `Task` represents a user-level unit of concurrency (currently, that's just a thread). Each
 /// task has an `id` that is unique within the execution, and a `state` reflecting whether the task
 /// is runnable (enabled) or not.
 pub(crate) struct Task {
-    pub(crate) id: TaskId,
-    pub(crate) state: TaskState,
-    pub(crate) waiter: Option<TaskId>,
-    pub(crate) inner: Rc<RefCell<Box<dyn AtomicTask>>>,
+    pub(super) id: TaskId,
+    pub(super) state: TaskState,
+    waiter: Option<TaskId>,
+    pub(super) future: Rc<RefCell<BoxFuture<'static, ()>>>,
 }
 
 impl Task {
+    pub(crate) fn new(future: BoxFuture<'static, ()>, id: TaskId) -> Self {
+        Self {
+            id,
+            state: TaskState::Runnable,
+            waiter: None,
+            future: Rc::new(RefCell::new(future)),
+        }
+    }
+
     pub(crate) fn id(&self) -> TaskId {
         self.id
     }
@@ -146,20 +145,6 @@ impl Task {
         } else {
             self.waiter = Some(waiter);
             true
-        }
-    }
-
-    /// Create a task from a pending task
-    pub(crate) fn from_pending(task_id: TaskId, pending_task: PendingTask) -> Self {
-        let inner: Box<dyn AtomicTask> = match pending_task {
-            PendingTask::SyncTask(f) => Box::new(sync_task::new(f)),
-            PendingTask::AsyncTask(f) => Box::new(async_task::new(f)),
-        };
-        Self {
-            id: task_id,
-            state: TaskState::Runnable,
-            waiter: None,
-            inner: Rc::new(RefCell::new(inner)),
         }
     }
 }
