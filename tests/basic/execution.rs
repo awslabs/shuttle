@@ -1,6 +1,7 @@
 use shuttle::{check, thread};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use test_env_log::test;
 
 #[test]
 fn basic_scheduler_test() {

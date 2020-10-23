@@ -1,6 +1,7 @@
 use crate::runtime::execution::Execution;
 use crate::scheduler::Scheduler;
 use std::sync::Arc;
+use tracing::{span, Level};
 
 /// A `Runner` is the entry-point for testing concurrent code.
 ///
@@ -27,10 +28,12 @@ impl Runner {
     {
         let f = Arc::new(f);
 
+        let mut i = 0;
         while self.scheduler.new_execution() {
             let execution = Execution::new(&mut self.scheduler);
             let f = Arc::clone(&f);
-            execution.run(move || f());
+            span!(Level::DEBUG, "execution", i).in_scope(|| execution.run(move || f()));
+            i += 1;
         }
     }
 }

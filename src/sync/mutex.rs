@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::{LockResult, TryLockResult};
+use tracing::trace;
 
 /// A mutex, the same as `std::sync::Mutex`.
 #[derive(Debug)]
@@ -43,7 +44,10 @@ impl<T> Mutex<T> {
     /// Acquires a mutex, blocking the current thread until it is able to do so.
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
         let me = Execution::me();
+
         let mut state = self.state.borrow_mut();
+        trace!(holder=?state.holder, waiters=?state.waiters, "waiting to acquire mutex {:p}", self.state);
+
         // We are waiting for the lock
         state.waiters.insert(me);
         // If the lock is already held, then we are blocked
@@ -63,6 +67,7 @@ impl<T> Mutex<T> {
         assert!(state.holder.is_none());
         state.holder = Some(me);
         state.waiters.remove(me);
+        trace!(waiters=?state.waiters, "acquired mutex {:p}", self.state);
         // Block all other threads, since we won the race to take this lock
         // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
         // TODO never become unblocked), but might need to track more state to avoid this.
@@ -108,6 +113,7 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
             assert_ne!(tid, me);
             Execution::with_state(|s| s.get_mut(tid).unblock());
         }
+        trace!(waiters=?state.waiters, "released mutex {:p}", self.state);
         drop(state);
 
         // Releasing a lock is a yield point

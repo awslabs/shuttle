@@ -6,6 +6,7 @@ use std::ops::{Deref, DerefMut};
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
 use std::sync::{LockResult, TryLockResult};
+use tracing::trace;
 
 /// A reader-writer lock
 #[derive(Debug)]
@@ -28,6 +29,12 @@ enum RwLockHolder {
     None,
 }
 
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+enum RwLockType {
+    Read,
+    Write,
+}
+
 impl<T> RwLock<T> {
     /// Create a new instance of an `RwLock<T>` which us unlocked.
     pub fn new(value: T) -> Self {
@@ -46,7 +53,7 @@ impl<T> RwLock<T> {
     /// Locks this rwlock with shared read access, blocking the current thread until it can be
     /// acquired.
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
-        self.lock(false);
+        self.lock(RwLockType::Read);
 
         let inner = self.inner.try_read().expect("rwlock state out of sync");
 
@@ -59,7 +66,7 @@ impl<T> RwLock<T> {
     /// Locks this rwlock with exclusive write access, blocking the current thread until it can
     /// be acquired.
     pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, T>> {
-        self.lock(true);
+        self.lock(RwLockType::Write);
 
         let inner = self.inner.try_write().expect("rwlock state out of sync");
 
@@ -91,12 +98,21 @@ impl<T> RwLock<T> {
         self.inner.into_inner()
     }
 
-    fn lock(&self, write: bool) {
+    fn lock(&self, typ: RwLockType) {
         let me = Execution::me();
 
         let mut state = self.state.borrow_mut();
+        trace!(
+            holder = ?state.holder,
+            waiting_readers = ?state.waiting_readers,
+            waiting_writers = ?state.waiting_writers,
+            "waiting to acquire {:?} lock on rwlock {:p}",
+            typ,
+            self.state,
+        );
+
         // We are waiting for the lock
-        if write {
+        if typ == RwLockType::Write {
             state.waiting_writers.insert(me);
         } else {
             state.waiting_readers.insert(me);
@@ -109,7 +125,7 @@ impl<T> RwLock<T> {
             }
             RwLockHolder::Read(readers) => {
                 assert!(!readers.contains(me));
-                if write {
+                if typ == RwLockType::Write {
                     Execution::with_state(|s| s.current_mut().block());
                 }
             }
@@ -124,31 +140,38 @@ impl<T> RwLock<T> {
         // Once the scheduler has resumed this thread, we are clear to take the lock. We might
         // not actually be in the waiters, though (if the lock was uncontended).
         // TODO should always be in the waiters?
-        match (write, &mut state.holder) {
-            (true, RwLockHolder::None) => {
+        match (typ, &mut state.holder) {
+            (RwLockType::Write, RwLockHolder::None) => {
                 state.holder = RwLockHolder::Write(me);
             }
-            (false, RwLockHolder::None) => {
+            (RwLockType::Read, RwLockHolder::None) => {
                 let mut readers = TaskSet::new();
                 readers.insert(me);
                 state.holder = RwLockHolder::Read(readers);
             }
-            (false, RwLockHolder::Read(readers)) => {
+            (RwLockType::Read, RwLockHolder::Read(readers)) => {
                 readers.insert(me);
             }
             _ => {
                 panic!(
-                    "resumed a waiting thread (writer={}) while the lock was in state {:?}",
-                    write, state.holder
+                    "resumed a waiting {:?} thread while the lock was in state {:?}",
+                    typ, state.holder
                 );
             }
         }
-        if write {
+        if typ == RwLockType::Write {
             state.waiting_writers.remove(me);
         } else {
             state.waiting_readers.remove(me);
         }
-        state.waiting_readers.remove(me);
+        trace!(
+            holder = ?state.holder,
+            waiting_readers = ?state.waiting_readers,
+            waiting_writers = ?state.waiting_writers,
+            "acquired {:?} lock on rwlock {:p}",
+            typ,
+            self.state
+        );
         // Block all other waiters, since we won the race to take this lock
         // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
         // TODO never become unblocked), but might need to track more state to avoid this.
@@ -221,6 +244,13 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
             _ => panic!("exiting a reader but rwlock is in the wrong state"),
         }
         RwLock::<T>::unblock_waiters(&*state, me, false);
+        trace!(
+            holder = ?state.holder,
+            waiting_readers = ?state.waiting_readers,
+            waiting_writers = ?state.waiting_writers,
+            "released Read lock on rwlock {:p}",
+            self.state
+        );
         drop(state);
 
         // Releasing a lock is a yield point
@@ -246,6 +276,13 @@ impl<T> Drop for RwLockWriteGuard<'_, T> {
         assert_eq!(state.holder, RwLockHolder::Write(me));
         state.holder = RwLockHolder::None;
         RwLock::<T>::unblock_waiters(&*state, me, true);
+        trace!(
+            holder = ?state.holder,
+            waiting_readers = ?state.waiting_readers,
+            waiting_writers = ?state.waiting_writers,
+            "released Write lock on rwlock {:p}",
+            self.state
+        );
         drop(state);
 
         // Releasing a lock is a yield point

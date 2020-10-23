@@ -2,6 +2,8 @@ use shuttle::scheduler::PCTScheduler;
 use shuttle::sync::Mutex;
 use shuttle::{check, check_random, thread, Runner};
 use std::sync::Arc;
+use test_env_log::test;
+use tracing::info;
 
 #[test]
 fn basic_lock_test() {
@@ -84,7 +86,9 @@ fn concurrent_increment_buggy() {
             thd.join().unwrap();
         }
 
-        assert_eq!(*lock.lock().unwrap(), 2);
+        let counter = *lock.lock().unwrap();
+        info!(counter);
+        assert_eq!(counter, 2);
     });
 }
 

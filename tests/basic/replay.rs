@@ -4,6 +4,7 @@ use shuttle::sync::Mutex;
 use shuttle::{thread, Runner};
 use std::panic;
 use std::sync::Arc;
+use test_env_log::test;
 
 fn concurrent_increment_buggy() {
     let lock = Arc::new(Mutex::new(0usize));

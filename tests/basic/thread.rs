@@ -2,6 +2,7 @@ use shuttle::sync::Mutex;
 use shuttle::{check_random, thread};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use test_env_log::test;
 
 #[test]
 fn thread_yield_point() {
