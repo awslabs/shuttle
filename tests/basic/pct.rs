@@ -2,6 +2,7 @@ use shuttle::scheduler::PCTScheduler;
 use shuttle::sync::Mutex;
 use shuttle::{check_random, thread, Runner};
 use std::sync::Arc;
+use test_env_log::test;
 
 const TEST_LENGTH: usize = 20;
 

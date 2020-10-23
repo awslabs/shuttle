@@ -12,6 +12,7 @@ use std::future::Future;
 use std::panic;
 use std::rc::Rc;
 use std::task::{Context, Poll};
+use tracing::{debug, span, Level};
 
 // We use this scoped TLS to smuggle the ExecutionState, which is not 'static, across tasks that
 // need access to it (to spawn new tasks, interrogate task status, etc).
@@ -59,7 +60,13 @@ impl Execution<'_> {
             });
 
             // Run the test to completion
-            while self.step() {}
+            for i in 0.. {
+                let span = span!(Level::DEBUG, "step", step = i);
+                let _enter = span.enter();
+                if !self.step() {
+                    break;
+                }
+            }
         });
 
         // The program is now finished. These are just sanity checks for cleanup: every task should
@@ -77,7 +84,7 @@ impl Execution<'_> {
     /// tasks were finished.
     #[inline]
     fn step(&mut self) -> bool {
-        let future = Self::with_state(|state| {
+        let next = Self::with_state(|state| {
             // Actually spawn any tasks that are ready to spawn. This leaves them in the Runnable
             // state, but they have not been started.
             while let Some(future) = state.pending.pop_front() {
@@ -114,17 +121,21 @@ impl Execution<'_> {
             let task = state.tasks.get(to_run.0).unwrap();
             state.current_task = Some(to_run);
 
-            Some(Rc::clone(&task.future))
+            debug!(?runnable, ?to_run);
+
+            Some((to_run, Rc::clone(&task.future)))
         });
 
         // Run a single step of the chosen future
-        let ret = match future {
-            Some(future) => panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                // TODO implement real waker support
-                let waker = futures::task::noop_waker_ref();
-                let mut cx = &mut Context::from_waker(waker);
-                future.borrow_mut().as_mut().poll(&mut cx)
-            })),
+        let ret = match next {
+            Some((task_id, future)) => span!(Level::DEBUG, "task", task_id = task_id.0).in_scope(|| {
+                panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                    // TODO implement real waker support
+                    let waker = futures::task::noop_waker_ref();
+                    let mut cx = &mut Context::from_waker(waker);
+                    future.borrow_mut().as_mut().poll(&mut cx)
+                }))
+            }),
             None => return false,
         };
 

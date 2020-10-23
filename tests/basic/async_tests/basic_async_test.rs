@@ -1,5 +1,6 @@
 use shuttle::{asynch, check, check_dfs, thread};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use test_env_log::test;
 
 #[test]
 fn async_counting() {

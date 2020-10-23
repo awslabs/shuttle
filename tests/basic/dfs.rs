@@ -3,6 +3,7 @@ use shuttle::sync::Mutex;
 use shuttle::{thread, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use test_env_log::test;
 
 // TODO all these tests would be a lot simpler if we had some way for the scheduler to return us
 // TODO some statistics about coverage

@@ -1,5 +1,6 @@
 use futures::future::BoxFuture;
 use std::cell::RefCell;
+use std::fmt::Debug;
 use std::rc::Rc;
 
 pub(crate) mod serialization;
@@ -38,7 +39,7 @@ impl From<usize> for TaskId {
 
 /// A `TaskSet` is a set of `TaskId`s but implemented efficiently as an array of bools.
 // TODO this probably won't work well with large numbers of tasks -- maybe a BitVec?
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq)]
 pub(crate) struct TaskSet {
     tasks: [bool; MAX_TASKS],
 }
@@ -72,6 +73,16 @@ impl TaskSet {
             .enumerate()
             .filter(|(_, b)| **b)
             .map(|(i, _)| TaskId(i))
+    }
+}
+
+impl Debug for TaskSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TaskSet {{ ")?;
+        for t in self.iter() {
+            write!(f, "{} ", t.0)?;
+        }
+        write!(f, "}}")
     }
 }
 
