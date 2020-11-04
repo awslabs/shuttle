@@ -1,12 +1,9 @@
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{TaskId, MAX_TASKS};
 use crate::scheduler::Scheduler;
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, RngCore, SeedableRng};
 use rand_pcg::Pcg64Mcg;
-
-// TODO parameterize to match Execution
-const MAX_THREADS: usize = 4;
 
 /// A scheduler that implements the Probabilistic Concurrency Testing (PCT) algorithm.
 ///
@@ -45,7 +42,7 @@ impl PCTScheduler {
             max_iterations,
             max_depth,
             iterations: 0,
-            priority_queue: (0..MAX_THREADS).map(TaskId::from).collect::<Vec<_>>(),
+            priority_queue: (0..MAX_TASKS).map(TaskId::from).collect::<Vec<_>>(),
             change_points: vec![],
             max_steps: 0,
             steps: 0,

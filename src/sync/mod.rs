@@ -1,7 +1,10 @@
 //! Shuttle's implementation of `std::sync`.
 
+mod condvar;
 mod mutex;
 mod rwlock;
+
+pub use condvar::Condvar;
 
 pub use mutex::Mutex;
 pub use mutex::MutexGuard;
