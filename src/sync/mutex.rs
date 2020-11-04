@@ -18,7 +18,7 @@ pub struct Mutex<T> {
 #[derive(Debug)]
 pub struct MutexGuard<'a, T> {
     inner: Option<std::sync::MutexGuard<'a, T>>,
-    state: Rc<RefCell<MutexState>>,
+    mutex: &'a Mutex<T>,
 }
 
 #[derive(Debug)]
@@ -46,7 +46,7 @@ impl<T> Mutex<T> {
         let me = Execution::me();
 
         let mut state = self.state.borrow_mut();
-        trace!(holder=?state.holder, waiters=?state.waiters, "waiting to acquire mutex {:p}", self.state);
+        trace!(holder=?state.holder, waiters=?state.waiters, "waiting to acquire mutex {:p}", self);
 
         // We are waiting for the lock
         state.waiters.insert(me);
@@ -67,7 +67,7 @@ impl<T> Mutex<T> {
         assert!(state.holder.is_none());
         state.holder = Some(me);
         state.waiters.remove(me);
-        trace!(waiters=?state.waiters, "acquired mutex {:p}", self.state);
+        trace!(waiters=?state.waiters, "acquired mutex {:p}", self);
         // Block all other threads, since we won the race to take this lock
         // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
         // TODO never become unblocked), but might need to track more state to avoid this.
@@ -80,7 +80,7 @@ impl<T> Mutex<T> {
 
         Ok(MutexGuard {
             inner: Some(inner),
-            state: Rc::clone(&self.state),
+            mutex: self,
         })
     }
 
@@ -100,6 +100,19 @@ impl<T> Mutex<T> {
 unsafe impl<T> Send for Mutex<T> {}
 unsafe impl<T> Sync for Mutex<T> {}
 
+impl<T: Default> Default for Mutex<T> {
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
+}
+
+impl<'a, T> MutexGuard<'a, T> {
+    /// Release the lock, but return a reference to it so it can be re-acquired later
+    pub(super) fn unlock(self) -> &'a Mutex<T> {
+        self.mutex
+    }
+}
+
 impl<'a, T> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
         self.inner = None;
@@ -107,13 +120,13 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
         let me = Execution::me();
-        let mut state = self.state.borrow_mut();
+        let mut state = self.mutex.state.borrow_mut();
         state.holder = None;
         for tid in state.waiters.iter() {
             assert_ne!(tid, me);
             Execution::with_state(|s| s.get_mut(tid).unblock());
         }
-        trace!(waiters=?state.waiters, "released mutex {:p}", self.state);
+        trace!(waiters=?state.waiters, "releasing mutex {:p}", self.mutex);
         drop(state);
 
         // Releasing a lock is a yield point

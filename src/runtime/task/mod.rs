@@ -26,7 +26,7 @@ pub(crate) mod serialization;
 //   it might want to context switch (e.g., because it's blocked on a lock).
 
 // TODO make bigger and configurable
-pub(crate) const MAX_TASKS: usize = 4;
+pub(crate) const MAX_TASKS: usize = 16;
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, PartialOrd, Ord, Debug)]
 pub struct TaskId(pub(super) usize);

@@ -1,3 +1,4 @@
+mod condvar;
 mod dfs;
 mod execution;
 mod mutex;
