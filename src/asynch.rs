@@ -1,6 +1,6 @@
 //! Shuttle's implementation of `async_runtime::spawn`.
 
-use crate::runtime::execution::Execution;
+use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread_future;
 use futures::future::Future;
@@ -15,7 +15,7 @@ where
     T: Send + 'static,
 {
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let task_id = Execution::spawn(Wrapper::new(fut, std::sync::Arc::clone(&result)));
+    let task_id = ExecutionState::spawn(Wrapper::new(fut, std::sync::Arc::clone(&result)));
     JoinHandle { task_id, result }
 }
 
@@ -88,7 +88,7 @@ where
             Poll::Ready(result) => {
                 *self.result.lock().unwrap() = Some(Ok(result));
 
-                Execution::with_state(|state| {
+                ExecutionState::with(|state| {
                     if let Some(waiter) = state.current().waiter() {
                         let waiter = state.get_mut(waiter);
                         assert!(waiter.blocked());
@@ -113,7 +113,7 @@ where
 
     thread_future::switch(); // Required to allow Execution to spawn the future
 
-    Execution::with_state(|state| {
+    ExecutionState::with(|state| {
         let me = state.current().id();
         let target = state.get_mut(handle.task_id);
         if target.wait_for(me) {

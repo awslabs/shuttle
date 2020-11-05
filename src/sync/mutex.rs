@@ -1,4 +1,4 @@
-use crate::runtime::execution::Execution;
+use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{TaskId, TaskSet};
 use crate::runtime::thread_future;
 use std::cell::RefCell;
@@ -43,7 +43,7 @@ impl<T> Mutex<T> {
 
     /// Acquires a mutex, blocking the current thread until it is able to do so.
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
-        let me = Execution::me();
+        let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
         trace!(holder=?state.holder, waiters=?state.waiters, "waiting to acquire mutex {:p}", self);
@@ -53,7 +53,7 @@ impl<T> Mutex<T> {
         // If the lock is already held, then we are blocked
         if state.holder.is_some() {
             assert_ne!(state.holder.unwrap(), me);
-            Execution::with_state(|s| s.current_mut().block());
+            ExecutionState::with(|s| s.current_mut().block());
         }
         drop(state);
 
@@ -72,7 +72,7 @@ impl<T> Mutex<T> {
         // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
         // TODO never become unblocked), but might need to track more state to avoid this.
         for tid in state.waiters.iter() {
-            Execution::with_state(|s| s.get_mut(tid).block());
+            ExecutionState::with(|s| s.get_mut(tid).block());
         }
         drop(state);
 
@@ -119,12 +119,12 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
 
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
-        let me = Execution::me();
+        let me = ExecutionState::me();
         let mut state = self.mutex.state.borrow_mut();
         state.holder = None;
         for tid in state.waiters.iter() {
             assert_ne!(tid, me);
-            Execution::with_state(|s| s.get_mut(tid).unblock());
+            ExecutionState::with(|s| s.get_mut(tid).unblock());
         }
         trace!(waiters=?state.waiters, "releasing mutex {:p}", self.mutex);
         drop(state);
