@@ -1,4 +1,4 @@
-use crate::runtime::execution::Execution;
+use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{TaskId, TaskSet};
 use crate::runtime::thread_future;
 use std::cell::RefCell;
@@ -99,7 +99,7 @@ impl<T> RwLock<T> {
     }
 
     fn lock(&self, typ: RwLockType) {
-        let me = Execution::me();
+        let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
         trace!(
@@ -121,12 +121,12 @@ impl<T> RwLock<T> {
         match &state.holder {
             RwLockHolder::Write(writer) => {
                 assert_ne!(*writer, me);
-                Execution::with_state(|s| s.current_mut().block());
+                ExecutionState::with(|s| s.current_mut().block());
             }
             RwLockHolder::Read(readers) => {
                 assert!(!readers.contains(me));
                 if typ == RwLockType::Write {
-                    Execution::with_state(|s| s.current_mut().block());
+                    ExecutionState::with(|s| s.current_mut().block());
                 }
             }
             _ => {}
@@ -182,14 +182,14 @@ impl<T> RwLock<T> {
     fn block_waiters(state: &RwLockState, me: TaskId) {
         for tid in state.waiting_readers.iter().chain(state.waiting_writers.iter()) {
             assert_ne!(tid, me);
-            Execution::with_state(|s| s.get_mut(tid).block());
+            ExecutionState::with(|s| s.get_mut(tid).block());
         }
     }
 
     fn unblock_waiters(state: &RwLockState, me: TaskId, should_be_blocked: bool) {
         for tid in state.waiting_readers.iter().chain(state.waiting_writers.iter()) {
             assert_ne!(tid, me);
-            Execution::with_state(|s| {
+            ExecutionState::with(|s| {
                 if should_be_blocked {
                     s.get_mut(tid).unblock();
                 } else {
@@ -232,7 +232,7 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
 
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
-        let me = Execution::me();
+        let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
         match &mut state.holder {
             RwLockHolder::Read(readers) => {
@@ -271,7 +271,7 @@ impl<T> Drop for RwLockWriteGuard<'_, T> {
 
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
-        let me = Execution::me();
+        let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
         assert_eq!(state.holder, RwLockHolder::Write(me));
         state.holder = RwLockHolder::None;

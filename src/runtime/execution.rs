@@ -25,7 +25,7 @@ scoped_thread_local! {
 /// The key thing that an `Execution` manages is the `ExecutionState`, which contains all the
 /// mutable state a test's tasks might need access to during execution (to block/unblock tasks,
 /// spawn new tasks, etc). The `Execution` makes this state available through the `EXECUTION_STATE`
-/// static variable, but clients get access to it by calling `Execution::with_state`.
+/// static variable, but clients get access to it by calling `ExecutionState::with`.
 pub(crate) struct Execution<'a> {
     // can't make this a type parameter because we have static methods we want to call
     scheduler: MetricsScheduler<'a>,
@@ -62,7 +62,7 @@ impl Execution<'_> {
         EXECUTION_STATE.set(&state, || {
             // Spawn `f` as the first task
             let first_task = ThreadFuture::new(f);
-            Self::spawn(first_task);
+            ExecutionState::spawn(first_task);
 
             // Run the test to completion
             for i in 0.. {
@@ -92,7 +92,7 @@ impl Execution<'_> {
     /// tasks were finished.
     #[inline]
     fn step(&mut self) -> StepResult {
-        let result = Self::with_state(|state| {
+        let result = ExecutionState::with(|state| {
             let runnable = state
                 .tasks
                 .iter()
@@ -143,7 +143,7 @@ impl Execution<'_> {
             (step_result, _) => return step_result,
         };
 
-        Self::with_state(|state| {
+        ExecutionState::with(|state| {
             match ret {
                 Ok(Poll::Ready(_)) => {
                     state.current_mut().state = TaskState::Finished;
@@ -170,28 +170,6 @@ impl Execution<'_> {
 
         StepResult::Continue
     }
-
-    /// Invoke a closure with access to the current execution state. Library code uses this to gain
-    /// access to the state of the execution to influence scheduling (e.g. to register a task as
-    /// blocked).
-    #[inline]
-    pub(crate) fn with_state<F, T>(f: F) -> T
-    where
-        F: FnOnce(&mut ExecutionState) -> T,
-    {
-        EXECUTION_STATE.with(|cell| f(&mut *cell.borrow_mut()))
-    }
-
-    /// Spawn a new future. This doesn't create a yield point -- the caller should do that if
-    /// appropriate.
-    pub(crate) fn spawn(fut: impl Future<Output = ()> + 'static + Send) -> TaskId {
-        Self::with_state(|state| state.spawn(fut))
-    }
-
-    /// A shortcut to get the current task ID
-    pub(crate) fn me() -> TaskId {
-        Self::with_state(|s| s.current().id())
-    }
 }
 
 /// `ExecutionState` contains the portion of a single execution's state that needs to be reachable
@@ -212,11 +190,31 @@ impl ExecutionState {
         }
     }
 
-    fn spawn(&mut self, future: impl Future<Output = ()> + 'static + Send) -> TaskId {
-        let task_id = TaskId(self.tasks.len());
-        let task = Task::new(Box::pin(future), task_id);
-        self.tasks.push(task);
-        task_id
+    /// Invoke a closure with access to the current execution state. Library code uses this to gain
+    /// access to the state of the execution to influence scheduling (e.g. to register a task as
+    /// blocked).
+    #[inline]
+    pub(crate) fn with<F, T>(f: F) -> T
+    where
+        F: FnOnce(&mut ExecutionState) -> T,
+    {
+        EXECUTION_STATE.with(|cell| f(&mut *cell.borrow_mut()))
+    }
+
+    /// A shortcut to get the current task ID
+    pub(crate) fn me() -> TaskId {
+        Self::with(|s| s.current().id())
+    }
+
+    /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
+    /// if it wants to give the new task a chance to run immediately.
+    pub(crate) fn spawn(future: impl Future<Output = ()> + 'static + Send) -> TaskId {
+        Self::with(|state| {
+            let task_id = TaskId(state.tasks.len());
+            let task = Task::new(Box::pin(future), task_id);
+            state.tasks.push(task);
+            task_id
+        })
     }
 
     pub(crate) fn current(&self) -> &Task {

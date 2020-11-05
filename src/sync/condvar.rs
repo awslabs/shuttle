@@ -1,4 +1,4 @@
-use crate::runtime::execution::Execution;
+use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread_future;
 use crate::sync::MutexGuard;
@@ -119,14 +119,14 @@ impl Condvar {
 
     /// Blocks the current thread until this condition variable receives a notification.
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
-        let me = Execution::me();
+        let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
 
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "waiting on condvar {:p}", self);
 
         assert!(state.waiters.insert(me, CondvarWaitStatus::Waiting).is_none());
-        Execution::with_state(|s| s.current_mut().block());
+        ExecutionState::with(|s| s.current_mut().block());
         drop(state);
 
         // Release the lock, which triggers a context switch now that we are blocked
@@ -151,7 +151,7 @@ impl Condvar {
                                 *status = CondvarWaitStatus::Waiting;
                                 // Make the task unrunnable if there are no pending signals that
                                 // could unblock it
-                                Execution::with_state(|s| s.get_mut(*tid).block());
+                                ExecutionState::with(|s| s.get_mut(*tid).block());
                             }
                         }
                     }
@@ -172,7 +172,7 @@ impl Condvar {
     /// If there is a blocked thread on this condition variable, then it will be woken up from its
     /// call to wait or wait_timeout. Calls to notify_one are not buffered in any way.
     pub fn notify_one(&self) {
-        let me = Execution::me();
+        let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
 
@@ -197,7 +197,7 @@ impl Condvar {
             }
 
             // The task might have been unblocked by a previous signal, so maybe_unblock
-            Execution::with_state(|s| s.get_mut(*tid).maybe_unblock());
+            ExecutionState::with(|s| s.get_mut(*tid).maybe_unblock());
         }
         state.next_epoch += 1;
 
@@ -208,7 +208,7 @@ impl Condvar {
 
     /// Wakes up all blocked threads on this condvar.
     pub fn notify_all(&self) {
-        let me = Execution::me();
+        let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
 
@@ -218,7 +218,7 @@ impl Condvar {
             assert_ne!(*tid, me);
             *status = CondvarWaitStatus::Broadcast;
             // The task might have been unblocked by a previous signal, so maybe_unblock
-            Execution::with_state(|s| s.get_mut(*tid).maybe_unblock());
+            ExecutionState::with(|s| s.get_mut(*tid).maybe_unblock());
         }
 
         drop(state);

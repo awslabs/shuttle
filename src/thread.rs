@@ -1,6 +1,6 @@
 //! Shuttle's implementation of `std::thread`.
 
-use crate::runtime::execution::Execution;
+use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread_future;
 use crate::runtime::thread_future::ThreadFuture;
@@ -25,7 +25,7 @@ where
             // closure completes, the Execution will consider this task Finished and invoke the
             // scheduler.
             *result.lock().unwrap() = Some(Ok(ret));
-            Execution::with_state(|state| {
+            ExecutionState::with(|state| {
                 if let Some(waiter) = state.current().waiter() {
                     let waiter = state.get_mut(waiter);
                     assert!(waiter.blocked());
@@ -33,7 +33,7 @@ where
                 }
             });
         });
-        Execution::spawn(task)
+        ExecutionState::spawn(task)
     };
 
     thread_future::switch();
@@ -51,7 +51,7 @@ pub struct JoinHandle<T> {
 impl<T> JoinHandle<T> {
     /// Waits for the associated thread to finish.
     pub fn join(self) -> std::thread::Result<T> {
-        Execution::with_state(|state| {
+        ExecutionState::with(|state| {
             let me = state.current().id();
             let target = state.get_mut(self.task_id);
             if target.wait_for(me) {
