@@ -2,12 +2,10 @@ use crate::runtime::task::{Task, TaskId, TaskState, MAX_TASKS};
 use crate::runtime::thread_future::ThreadFuture;
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::Scheduler;
-use futures::future::BoxFuture;
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::future::Future;
 use std::panic;
 use std::rc::Rc;
@@ -62,11 +60,9 @@ impl Execution<'_> {
         let mut result = StepResult::Finish;
 
         EXECUTION_STATE.set(&state, || {
-            // Install `f` as the first task to be spawned
+            // Spawn `f` as the first task
             let first_task = ThreadFuture::new(f);
-            Self::with_state(|state| {
-                state.enqueue(first_task);
-            });
+            Self::spawn(first_task);
 
             // Run the test to completion
             for i in 0.. {
@@ -97,14 +93,6 @@ impl Execution<'_> {
     #[inline]
     fn step(&mut self) -> StepResult {
         let result = Self::with_state(|state| {
-            // Actually spawn any tasks that are ready to spawn. This leaves them in the Runnable
-            // state, but they have not been started.
-            while let Some(future) = state.pending.pop_front() {
-                let task_id = TaskId(state.tasks.len());
-                let task = Task::new(future, task_id);
-                state.tasks.push(task);
-            }
-
             let runnable = state
                 .tasks
                 .iter()
@@ -197,7 +185,7 @@ impl Execution<'_> {
     /// Spawn a new future. This doesn't create a yield point -- the caller should do that if
     /// appropriate.
     pub(crate) fn spawn(fut: impl Future<Output = ()> + 'static + Send) -> TaskId {
-        Self::with_state(|state| state.enqueue(fut))
+        Self::with_state(|state| state.spawn(fut))
     }
 
     /// A shortcut to get the current task ID
@@ -214,7 +202,6 @@ pub(crate) struct ExecutionState {
     tasks: Vec<Task>,
     // invariant: if this transitions from Some -> None, it can never change again
     current_task: Option<TaskId>,
-    pending: VecDeque<BoxFuture<'static, ()>>,
 }
 
 impl ExecutionState {
@@ -222,18 +209,14 @@ impl ExecutionState {
         Self {
             tasks: vec![],
             current_task: None,
-            pending: VecDeque::new(),
         }
     }
 
-    fn next_task_id(&self) -> usize {
-        self.tasks.len() + self.pending.len()
-    }
-
-    fn enqueue(&mut self, fut: impl Future<Output = ()> + 'static + Send) -> TaskId {
-        let next_task_id = self.next_task_id();
-        self.pending.push_back(Box::pin(fut));
-        TaskId(next_task_id)
+    fn spawn(&mut self, future: impl Future<Output = ()> + 'static + Send) -> TaskId {
+        let task_id = TaskId(self.tasks.len());
+        let task = Task::new(Box::pin(future), task_id);
+        self.tasks.push(task);
+        task_id
     }
 
     pub(crate) fn current(&self) -> &Task {
