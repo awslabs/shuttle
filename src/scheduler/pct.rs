@@ -85,7 +85,7 @@ impl Scheduler for PCTScheduler {
         true
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> TaskId {
+    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> Option<TaskId> {
         // No point doing priority changes when there's only one runnable task. This also means that
         // our step counter is counting actual scheduling decisions, not no-ops where there was no
         // choice about which task to run. From the paper (4.1, "Identifying Sequential Execution"):
@@ -111,6 +111,6 @@ impl Scheduler for PCTScheduler {
         }
 
         // Choose the highest-priority (== earliest in the queue) runnable task
-        *self.priority_queue.iter().find(|tid| runnable.contains(tid)).unwrap()
+        Some(*self.priority_queue.iter().find(|tid| runnable.contains(tid)).unwrap())
     }
 }

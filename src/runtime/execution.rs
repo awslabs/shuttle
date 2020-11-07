@@ -1,6 +1,6 @@
-use crate::runtime::metrics::MetricsScheduler;
 use crate::runtime::task::{Task, TaskId, TaskState, MAX_TASKS};
 use crate::runtime::thread_future::ThreadFuture;
+use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::Scheduler;
 use futures::future::BoxFuture;
 use scoped_tls::scoped_thread_local;
@@ -43,14 +43,23 @@ impl<'a> Execution<'a> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StepResult {
+    Continue, // execution is not done, keep exploring
+    Finish,   // execution is done, all tasks should be finished
+    Stop,     // execution is not done, but stop exploring
+}
+
 impl Execution<'_> {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
-    /// This function runs until `f` and all tasks spawned by `f` have terminated.
+    /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
+    /// scheduler returns `None`, indicating the execution should not be explored any further.
     pub(crate) fn run<F>(mut self, f: F)
     where
         F: FnOnce() + Send + 'static,
     {
         let state = RefCell::new(ExecutionState::new());
+        let mut result = StepResult::Finish;
 
         EXECUTION_STATE.set(&state, || {
             // Install `f` as the first task to be spawned
@@ -63,28 +72,31 @@ impl Execution<'_> {
             for i in 0.. {
                 let span = span!(Level::DEBUG, "step", step = i);
                 let _enter = span.enter();
-                if !self.step() {
+                result = self.step();
+                if result != StepResult::Continue {
                     break;
                 }
             }
         });
 
-        // The program is now finished. These are just sanity checks for cleanup: every task should
-        // have reached Finished state, and should have no outstanding references to its Future.
-        let state = state.into_inner();
-        for thd in state.tasks.into_iter() {
-            assert_eq!(thd.state, TaskState::Finished);
-            Rc::try_unwrap(thd.future)
-                .map_err(|_| ())
-                .expect("couldn't cleanup a future");
+        if result == StepResult::Finish {
+            // The program is now finished. These are just sanity checks for cleanup: every task should
+            // have reached Finished state, and should have no outstanding references to its Future.
+            let state = state.into_inner();
+            for thd in state.tasks.into_iter() {
+                assert_eq!(thd.state, TaskState::Finished);
+                Rc::try_unwrap(thd.future)
+                    .map_err(|_| ())
+                    .expect("couldn't cleanup a future");
+            }
         }
     }
 
     /// Execute a single step of the scheduler. Returns true if a step was taken or false if all
     /// tasks were finished.
     #[inline]
-    fn step(&mut self) -> bool {
-        let next = Self::with_state(|state| {
+    fn step(&mut self) -> StepResult {
+        let result = Self::with_state(|state| {
             // Actually spawn any tasks that are ready to spawn. This leaves them in the Runnable
             // state, but they have not been started.
             while let Some(future) = state.pending.pop_front() {
@@ -114,29 +126,33 @@ impl Execution<'_> {
                     );
                 }
                 assert!(state.tasks.iter().all(|t| t.finished()));
-                return None;
+                return (StepResult::Finish, None);
             }
 
-            let to_run = self.scheduler.next_task(&runnable, state.current_task);
+            let to_run = match self.scheduler.next_task(&runnable, state.current_task) {
+                Some(task_id) => task_id,
+                None => return (StepResult::Stop, None), // Scheduler has indicated we should stop exploring this execution
+            };
             let task = state.tasks.get(to_run.0).unwrap();
             state.current_task = Some(to_run);
 
             debug!(?runnable, ?to_run);
 
-            Some((to_run, Rc::clone(&task.future)))
+            (StepResult::Continue, Some((to_run, Rc::clone(&task.future))))
         });
 
         // Run a single step of the chosen future
-        let ret = match next {
-            Some((task_id, future)) => span!(Level::DEBUG, "task", task_id = task_id.0).in_scope(|| {
-                panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                    // TODO implement real waker support
-                    let waker = futures::task::noop_waker_ref();
-                    let mut cx = &mut Context::from_waker(waker);
-                    future.borrow_mut().as_mut().poll(&mut cx)
-                }))
-            }),
-            None => return false,
+        let ret = match result {
+            (StepResult::Continue, Some((task_id, future))) => span!(Level::DEBUG, "task", task_id = task_id.0)
+                .in_scope(|| {
+                    panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                        // TODO implement real waker support
+                        let waker = futures::task::noop_waker_ref();
+                        let mut cx = &mut Context::from_waker(waker);
+                        future.borrow_mut().as_mut().poll(&mut cx)
+                    }))
+                }),
+            (step_result, _) => return step_result,
         };
 
         Self::with_state(|state| {
@@ -164,7 +180,7 @@ impl Execution<'_> {
             }
         });
 
-        true
+        StepResult::Continue
     }
 
     /// Invoke a closure with access to the current execution state. Library code uses this to gain

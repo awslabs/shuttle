@@ -14,7 +14,7 @@ fn trivial_one_thread() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None);
+        let scheduler = DFSScheduler::new(None, None);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -30,7 +30,7 @@ fn trivial_two_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None);
+        let scheduler = DFSScheduler::new(None, None);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -42,30 +42,32 @@ fn trivial_two_threads() {
     assert_eq!(iterations.load(Ordering::SeqCst), 2);
 }
 
+fn two_threads_work(counter: &Arc<AtomicUsize>) {
+    counter.fetch_add(1, Ordering::SeqCst);
+
+    let lock = Arc::new(Mutex::new(0));
+
+    {
+        let lock = Arc::clone(&lock);
+        thread::spawn(move || {
+            let mut l = lock.lock().unwrap();
+            *l += 1;
+        });
+    }
+
+    let mut l = lock.lock().unwrap();
+    *l += 1;
+}
+
 #[test]
 fn two_threads() {
     let iterations = Arc::new(AtomicUsize::new(0));
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None);
+        let scheduler = DFSScheduler::new(None, None);
         let runner = Runner::new(scheduler);
-        runner.run(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-
-            let lock = Arc::new(Mutex::new(0));
-
-            {
-                let lock = Arc::clone(&lock);
-                thread::spawn(move || {
-                    let mut l = lock.lock().unwrap();
-                    *l += 1;
-                });
-            }
-
-            let mut l = lock.lock().unwrap();
-            *l += 1;
-        });
+        runner.run(move || two_threads_work(&counter));
     }
 
     // 2 threads, 3 operations each (thread start, lock acq, lock rel)
@@ -74,12 +76,64 @@ fn two_threads() {
 }
 
 #[test]
+fn two_threads_depth_4() {
+    let iterations = Arc::new(AtomicUsize::new(0));
+
+    {
+        let counter = Arc::clone(&iterations);
+        let scheduler = DFSScheduler::new(None, Some(4));
+        let runner = Runner::new(scheduler);
+        runner.run(move || two_threads_work(&counter));
+    }
+
+    // We have two threads T0 and T1 with the following lifecycle (with letter denoting each step):
+    //    T0: spawns T1 (S), waits for lock (W), acquires + releases lock (L), finishes (F)
+    //    T1: waits for lock (w), acquires + releases lock (l), finishes (f)
+    //
+    // We have the following constraints:
+    //    operations in each thread are done in order
+    //    S happens before w
+    //
+    // The set of valid interleavings of depth 4 is therefore:
+    //    { SWLF, SWLw, SWwL, SWwl, SwWL, SwWl, SwlW, Swlf }
+    // for a total of 8 interleavings
+    assert_eq!(iterations.load(Ordering::SeqCst), 8);
+}
+
+#[test]
+fn two_threads_depth_5() {
+    let iterations = Arc::new(AtomicUsize::new(0));
+
+    {
+        let counter = Arc::clone(&iterations);
+        let scheduler = DFSScheduler::new(None, Some(5));
+        let runner = Runner::new(scheduler);
+        runner.run(move || two_threads_work(&counter));
+    }
+
+    // We have two threads T0 and T1 with the following lifecycle (with letter denoting each step):
+    //    T0: spawns T1 (S), waits for lock (W), acquires + releases lock (L), finishes (F)
+    //    T1: waits for lock (w), acquires + releases lock (l), finishes (f)
+    //
+    // We have the following constraints:
+    //    operations in each thread are done in order
+    //    S happens before w
+    //
+    // The set of valid interleavings of depth 5 is therefore:
+    //    { SWLFw, SWLwF, SWwLF, SwWLF,                // 4 ops by T0, 1 op  by T1
+    //      SWLwl, SWwLl, SWwlL, SwWLl, SwWlL, SwlWL,  // 3 ops by T0, 2 ops by T1
+    //      SWwlf, SwWlf, SwlWf, SwlfW }               // 2 ops by T0, 3 ops by T1
+    // for a total of 14 interleavings
+    assert_eq!(iterations.load(Ordering::SeqCst), 14);
+}
+
+#[test]
 fn yield_loop_one_thread() {
     let iterations = Arc::new(AtomicUsize::new(0));
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None);
+        let scheduler = DFSScheduler::new(None, None);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -104,7 +158,7 @@ fn yield_loop_two_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None);
+        let scheduler = DFSScheduler::new(None, None);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -132,7 +186,7 @@ fn yield_loop_two_threads_bounded() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(Some(100));
+        let scheduler = DFSScheduler::new(Some(100), None);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -158,7 +212,7 @@ fn yield_loop_three_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None);
+        let scheduler = DFSScheduler::new(None, None);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -182,4 +236,23 @@ fn yield_loop_three_threads() {
     }
 
     assert_eq!(iterations.load(Ordering::SeqCst), 50050);
+}
+
+#[test]
+fn yield_loop_max_depth() {
+    let iterations = Arc::new(AtomicUsize::new(0));
+
+    {
+        let counter = Arc::clone(&iterations);
+        let scheduler = DFSScheduler::new(None, Some(20));
+        let runner = Runner::new(scheduler);
+        runner.run(move || {
+            for _ in 0..100 {
+                counter.fetch_add(1, Ordering::SeqCst);
+                thread::yield_now();
+            }
+        });
+    }
+
+    assert_eq!(iterations.load(Ordering::SeqCst), 20);
 }

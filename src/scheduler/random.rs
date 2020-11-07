@@ -59,12 +59,12 @@ impl Scheduler for RandomScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> TaskId {
+    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> Option<TaskId> {
         if let Some(current) = current {
             if runnable.contains(&current) && self.rng.gen::<f64>() < self.bias {
-                return current;
+                return Some(current);
             }
         }
-        *runnable.choose(&mut self.rng).unwrap()
+        Some(*runnable.choose(&mut self.rng).unwrap())
     }
 }

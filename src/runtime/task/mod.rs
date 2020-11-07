@@ -3,8 +3,6 @@ use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
 
-pub(crate) mod serialization;
-
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
 // * A "thread" is a user-level unit of concurrency. User code creates threads, passes data
@@ -34,6 +32,12 @@ pub struct TaskId(pub(super) usize);
 impl From<usize> for TaskId {
     fn from(id: usize) -> Self {
         TaskId(id)
+    }
+}
+
+impl From<TaskId> for usize {
+    fn from(tid: TaskId) -> usize {
+        tid.0
     }
 }
 

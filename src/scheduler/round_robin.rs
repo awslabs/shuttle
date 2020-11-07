@@ -25,15 +25,17 @@ impl Scheduler for RoundRobinScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> TaskId {
+    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> Option<TaskId> {
         if current.is_none() {
-            return *runnable.first().unwrap();
+            return Some(*runnable.first().unwrap());
         }
         let current = current.unwrap();
 
-        *runnable
-            .iter()
-            .find(|t| **t > current)
-            .unwrap_or_else(|| runnable.first().unwrap())
+        Some(
+            *runnable
+                .iter()
+                .find(|t| **t > current)
+                .unwrap_or_else(|| runnable.first().unwrap()),
+        )
     }
 }

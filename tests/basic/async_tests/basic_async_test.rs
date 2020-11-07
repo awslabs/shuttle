@@ -36,6 +36,7 @@ fn async_fncall() {
             });
         },
         None,
+        None,
     );
 }
 
@@ -52,6 +53,7 @@ fn async_with_join() {
             });
         },
         Some(1_000), // TODO Remove this limit when async tasks are blocked when Pending
+        None,
     );
 }
 
@@ -75,6 +77,7 @@ fn async_with_threads() {
             });
         },
         None,
+        None,
     );
 }
 
@@ -85,6 +88,7 @@ fn async_block_on() {
             let v = asynch::block_on(async { 42u32 });
             assert_eq!(v, 42u32);
         },
+        None,
         None,
     );
 }

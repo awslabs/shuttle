@@ -45,14 +45,15 @@ where
 }
 
 /// Run the given function under a depth-first-search scheduler until all interleavings have been
-/// explored (but if the max_iterations bound is provided, stop after that many iterations).
-pub fn check_dfs<F>(f: F, max_iterations: Option<usize>)
+/// explored (but if the max_iterations bound is provided, stop after that many iterations;
+/// and if the max_depth bound is provided, stop exploring any execution when the depth is reached).
+pub fn check_dfs<F>(f: F, max_iterations: Option<usize>, max_depth: Option<usize>)
 where
     F: Fn() + Send + Sync + 'static,
 {
     use crate::scheduler::DFSScheduler;
 
-    let scheduler = DFSScheduler::new(max_iterations);
+    let scheduler = DFSScheduler::new(max_iterations, max_depth);
     let runner = Runner::new(scheduler);
     runner.run(f);
 }
@@ -68,7 +69,7 @@ where
 {
     use crate::scheduler::ReplayScheduler;
 
-    let scheduler = ReplayScheduler::new(encoded_schedule);
+    let scheduler = ReplayScheduler::new_from_encoded(encoded_schedule);
     let runner = Runner::new(scheduler);
     runner.run(f);
 }

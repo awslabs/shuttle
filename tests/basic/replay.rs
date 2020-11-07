@@ -30,7 +30,7 @@ fn concurrent_increment_buggy() {
 #[should_panic(expected = "34021014aa5600")]
 fn replay_failing() {
     let schedule = "34021014aa5600";
-    let scheduler = ReplayScheduler::new(schedule);
+    let scheduler = ReplayScheduler::new_from_encoded(schedule);
     let runner = Runner::new(scheduler);
     runner.run(concurrent_increment_buggy);
 }
@@ -38,7 +38,7 @@ fn replay_failing() {
 #[test]
 fn replay_passing() {
     let schedule = "34021114658a0200";
-    let scheduler = ReplayScheduler::new(schedule);
+    let scheduler = ReplayScheduler::new_from_encoded(schedule);
     let runner = Runner::new(scheduler);
     runner.run(concurrent_increment_buggy);
 }
@@ -59,7 +59,7 @@ fn replay_roundtrip() {
 
     // Now replay that schedule and make sure it still fails and outputs the same schedule
     let result = panic::catch_unwind(|| {
-        let scheduler = ReplayScheduler::new(schedule);
+        let scheduler = ReplayScheduler::new_from_encoded(schedule);
         let runner = Runner::new(scheduler);
         runner.run(concurrent_increment_buggy);
     })
@@ -101,7 +101,7 @@ fn replay_deadlock_roundtrip() {
 
     // Now replay that schedule and make sure it still fails and outputs the same schedule
     let result = panic::catch_unwind(|| {
-        let scheduler = ReplayScheduler::new(schedule);
+        let scheduler = ReplayScheduler::new_from_encoded(schedule);
         let runner = Runner::new(scheduler);
         runner.run(deadlock);
     })

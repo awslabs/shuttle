@@ -5,6 +5,7 @@ use crate::scheduler::Scheduler;
 #[derive(Debug)]
 pub struct DFSScheduler {
     max_iterations: Option<usize>,
+    max_depth: Option<usize>,
     iterations: usize,
     // Vec<(previous choice, was that the last choice at that level)>
     levels: Vec<(TaskId, bool)>,
@@ -12,10 +13,12 @@ pub struct DFSScheduler {
 }
 
 impl DFSScheduler {
-    /// Construct a new DFSScheduler with an optional bound on how many iterations to run.
-    pub fn new(max_iterations: Option<usize>) -> Self {
+    /// Construct a new DFSScheduler with an optional bound on how many iterations to run
+    /// and an optional bound on the maximum depth to explore.
+    pub fn new(max_iterations: Option<usize>, max_depth: Option<usize>) -> Self {
         Self {
             max_iterations,
+            max_depth,
             iterations: 0,
             levels: vec![],
             steps: 0,
@@ -47,9 +50,12 @@ impl Scheduler for DFSScheduler {
         true
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>) -> TaskId {
+    fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>) -> Option<TaskId> {
         // TODO for this to work, the order of runnable needs to be deterministic. do we ensure that?
         // TODO should we remember more state so we can check if the test program is deterministic?
+        if self.max_depth.map(|md| self.steps >= md).unwrap_or(false) {
+            return None;
+        }
 
         let next = if self.steps >= self.levels.len() {
             // First time we've reached this level
@@ -78,6 +84,6 @@ impl Scheduler for DFSScheduler {
 
         self.steps += 1;
 
-        next
+        Some(next)
     }
 }
