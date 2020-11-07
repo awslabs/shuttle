@@ -63,6 +63,7 @@ fn timer_simple() {
             });
         },
         Some(500), // TODO Remove this limit when async tasks are blocked when Pending
+        None,
     );
 }
 
@@ -76,6 +77,7 @@ fn timer_block_on() {
             let v2 = asynch::block_on(timer_2);
             assert_eq!(v1 + v2, 10 + 20);
         },
+        None,
         None,
     );
 }
@@ -98,6 +100,7 @@ fn timer_select() {
             assert_eq!(r, 10);
         },
         None,
+        None,
     );
 }
 
@@ -111,6 +114,7 @@ fn timer_join() {
             let (v1, v2, v3) = asynch::block_on(async { join!(timer1, timer2, timer3) });
             assert_eq!(v1 + v2 + v3, 60);
         },
+        None,
         None,
     );
 }

@@ -1,5 +1,5 @@
-use crate::runtime::task::serialization::serialize_schedule;
 use crate::runtime::task::TaskId;
+use crate::scheduler::serialization::serialize_schedule;
 use crate::scheduler::Scheduler;
 
 /// A `MetricsScheduler` wraps an inner `Scheduler` and collects metrics about the schedules it's
@@ -41,9 +41,9 @@ impl Scheduler for MetricsScheduler<'_> {
         self.inner.new_execution()
     }
 
-    fn next_task(&mut self, runnable_tasks: &[TaskId], current_task: Option<TaskId>) -> TaskId {
-        let choice = self.inner.next_task(runnable_tasks, current_task);
+    fn next_task(&mut self, runnable_tasks: &[TaskId], current_task: Option<TaskId>) -> Option<TaskId> {
+        let choice = self.inner.next_task(runnable_tasks, current_task)?;
         self.current_schedule.push(choice);
-        choice
+        Some(choice)
     }
 }

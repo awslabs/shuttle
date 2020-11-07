@@ -17,13 +17,13 @@ use integer_encoding::VarInt;
 const SCHEDULE_MAGIC_V1: u8 = 0x34;
 
 pub(crate) fn serialize_schedule(schedule: &[TaskId]) -> String {
-    let max_task_id = schedule.iter().max().unwrap_or(&TaskId(0)).0;
-    let task_id_bits = std::mem::size_of_val(&max_task_id) * 8 - max_task_id.leading_zeros() as usize;
+    let &max_task_id = schedule.iter().max().unwrap_or(&TaskId::from(0));
+    let task_id_bits = std::mem::size_of_val(&max_task_id) * 8 - usize::from(max_task_id).leading_zeros() as usize;
 
     let mut encoded = bitvec![Lsb0, u8; 0; schedule.len() * task_id_bits];
     if task_id_bits > 0 {
-        for (tid, target_bits) in schedule.iter().zip(encoded[..].chunks_exact_mut(task_id_bits)) {
-            target_bits.store(tid.0);
+        for (&tid, target_bits) in schedule.iter().zip(encoded[..].chunks_exact_mut(task_id_bits)) {
+            target_bits.store(usize::from(tid));
         }
     }
 
@@ -54,7 +54,7 @@ pub(crate) fn deserialize_schedule(str: &str) -> Option<Vec<TaskId>> {
     if schedule_len == 0 {
         return Some(vec![]);
     } else if task_id_bits == 0 {
-        return Some(vec![TaskId(0); schedule_len]);
+        return Some(vec![TaskId::from(0); schedule_len]);
     }
 
     let encoded = BitSlice::<Lsb0, _>::from_slice(bytes).unwrap();
@@ -62,7 +62,7 @@ pub(crate) fn deserialize_schedule(str: &str) -> Option<Vec<TaskId>> {
     let mut schedule = Vec::with_capacity(bytes.len() * 8 / task_id_bits);
     for tid_bits in encoded.chunks_exact(task_id_bits).take(schedule_len) {
         let tid = tid_bits.load::<usize>();
-        schedule.push(TaskId(tid));
+        schedule.push(TaskId::from(tid));
     }
     Some(schedule)
 }
@@ -81,7 +81,7 @@ mod test {
             let len = rng.gen::<usize>() % 2000;
             let mut schedule = Vec::with_capacity(len);
             for _ in 0..len {
-                schedule.push(TaskId(rng.gen::<usize>() % max_task_id));
+                schedule.push(TaskId::from(rng.gen::<usize>() % max_task_id));
             }
 
             let encoded = serialize_schedule(&schedule);
