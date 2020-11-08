@@ -1,6 +1,7 @@
 mod condvar;
 mod dfs;
 mod execution;
+mod mpsc;
 mod mutex;
 mod pct;
 mod replay;
