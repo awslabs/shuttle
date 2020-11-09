@@ -31,5 +31,9 @@ criterion = "~0.3.3"
 regex = "~1.3.9"
 
 [[bench]]
-name = "pct"
+name = "lock"
+harness = false
+
+[[bench]]
+name = "buffer"
 harness = false
