@@ -46,7 +46,12 @@ impl Scheduler for ReplayScheduler {
     fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>) -> Option<TaskId> {
         assert!(self.steps < self.schedule.len(), "schedule ended early");
         let next = self.schedule[self.steps];
-        assert!(runnable.contains(&next), "scheduled task is not runnable");
+        assert!(
+            runnable.contains(&next),
+            "scheduled task is not runnable, expected to run {:?}, but choices were {:?}",
+            next,
+            runnable
+        );
         self.steps += 1;
         Some(next)
     }

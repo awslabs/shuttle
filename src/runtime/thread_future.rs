@@ -4,7 +4,7 @@
 // TODO: upgrade to the new scoped generator API
 #![allow(deprecated)]
 
-use crate::runtime::task::*;
+use crate::runtime::execution::ExecutionState;
 use generator::{Generator, Gn};
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
@@ -40,8 +40,8 @@ impl Future for ThreadFuture {
         self.continuation.set_para(ContinuationInput::Resume);
         let r = self.continuation.resume().unwrap();
         match r {
-            TaskResult::Yielded => Poll::Pending,
-            TaskResult::Finished => Poll::Ready(()),
+            ContinuationOutput::Yielded => Poll::Pending,
+            ContinuationOutput::Finished => Poll::Ready(()),
             _ => panic!("unexpected output from continuation"),
         }
     }
@@ -60,20 +60,20 @@ impl Future for ThreadFuture {
 //    a possible context switch.
 // 4. when the function for this continuation finishes, the continuation yields a final
 //    Finished message. Resuming the continuation after that point is an error.
-pub(crate) struct Continuation(Generator<'static, ContinuationInput, TaskResult>);
+pub(crate) struct Continuation(Generator<'static, ContinuationInput, ContinuationOutput>);
 
 impl Continuation {
     fn new(fun: Box<dyn FnOnce()>) -> Self {
         let mut gen = Gn::new_opt(0x8000, move || {
-            let f = generator::yield_(TaskResult::WaitingForFunction).unwrap();
+            let f = generator::yield_(ContinuationOutput::WaitingForFunction).unwrap();
 
             match f {
                 ContinuationInput::Function(f) => {
-                    generator::yield_with(TaskResult::Ready);
+                    generator::yield_with(ContinuationOutput::Ready);
 
                     f();
 
-                    TaskResult::Finished
+                    ContinuationOutput::Finished
                 }
                 _ => panic!("unexpected continuation input"),
             }
@@ -82,20 +82,20 @@ impl Continuation {
         // Resume once to prime the continuation to accept input. It will yield waiting to receive a
         // function to run.
         let r = gen.resume();
-        assert!(matches!(r, Some(TaskResult::WaitingForFunction)));
+        assert!(matches!(r, Some(ContinuationOutput::WaitingForFunction)));
 
         // Send the function into the continuation, which prepares the function to be run, but
         // doesn't actually run it yet.
         gen.set_para(ContinuationInput::Function(fun));
         let r = gen.resume();
-        assert!(matches!(r, Some(TaskResult::Ready)));
+        assert!(matches!(r, Some(ContinuationOutput::Ready)));
 
         Self(gen)
     }
 }
 
 impl Deref for Continuation {
-    type Target = Generator<'static, ContinuationInput, TaskResult>;
+    type Target = Generator<'static, ContinuationInput, ContinuationOutput>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -108,15 +108,26 @@ impl DerefMut for Continuation {
     }
 }
 
-/// Inputs that the executor can pass to a continuation.
+/// Inputs that the ThreadFuture can pass to a continuation.
 pub(crate) enum ContinuationInput {
     Function(Box<dyn FnOnce()>),
     Resume,
 }
 
-/// Yield back to the scheduler to perform a (possible) context switch.
+/// Outputs that a continuation can pass back to the ThreadFuture
+#[derive(Debug)]
+pub(crate) enum ContinuationOutput {
+    WaitingForFunction,
+    Ready,
+    Yielded,
+    Finished,
+}
+
+/// Possibly yield back to the executor to perform a context switch.
 pub(crate) fn switch() {
-    // Don't execute a context switch if we are currently panicking (e.g., perhaps we're unwinding
+    // Schedule the next task, and if it requires a context switch, yield back to the executor.
+    //
+    // We don't execute a context switch if we are currently panicking (e.g., perhaps we're unwinding
     // the stack for a panic triggered while someone held a Mutex, and so are executing the Drop
     // handler for MutexGuard, which calls switch()).
     //
@@ -125,9 +136,9 @@ pub(crate) fn switch() {
     // counter-intuitive, because it might allow other threads to execute during the panic of this
     // thread and so create more complex schedules than necessary to reach this panic. Avoiding the
     // context switch allows the panic to unwind the stack back to the top of the continuation,
-    // which will propagate it to the scheduler.
-    if !std::thread::panicking() {
-        let r = generator::yield_(TaskResult::Yielded).unwrap();
+    // which will propagate it to the executor.
+    if !std::thread::panicking() && ExecutionState::maybe_yield() {
+        let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
         assert!(matches!(r, ContinuationInput::Resume));
     }
 }

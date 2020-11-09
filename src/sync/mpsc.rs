@@ -243,7 +243,7 @@ impl<T> Channel<T> {
         // Check and unblock the next the waiting receiver, if eligible
         // Note: this is a no-op for mpsc channels, since there can only be one receiver
         if let Some(&tid) = state.waiting_receivers.first() {
-            if state.messages.len() > 0 {
+            if !state.messages.is_empty() {
                 ExecutionState::with(|s| s.get_mut(tid).maybe_unblock());
             }
         }

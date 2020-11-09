@@ -90,15 +90,6 @@ impl Debug for TaskSet {
     }
 }
 
-/// Results from an atomic step taken by a task
-#[derive(Debug)]
-pub(crate) enum TaskResult {
-    WaitingForFunction, // only used for sync tasks
-    Ready,
-    Yielded,
-    Finished,
-}
-
 /// A `Task` represents a user-level unit of concurrency (currently, that's just a thread). Each
 /// task has an `id` that is unique within the execution, and a `state` reflecting whether the task
 /// is runnable (enabled) or not.

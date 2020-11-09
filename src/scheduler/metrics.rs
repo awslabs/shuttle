@@ -1,20 +1,22 @@
 use crate::runtime::task::TaskId;
 use crate::scheduler::serialization::serialize_schedule;
 use crate::scheduler::Scheduler;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// A `MetricsScheduler` wraps an inner `Scheduler` and collects metrics about the schedules it's
 /// generating. We use it mostly to remember the current schedule so that we can output it if a test
 /// fails; that schedule can be used to replay the failure.
 #[derive(Debug)]
-pub(crate) struct MetricsScheduler<'a> {
-    inner: &'a mut Box<dyn Scheduler>,
+pub(crate) struct MetricsScheduler {
+    inner: Rc<RefCell<Box<dyn Scheduler>>>,
     num_iterations: usize,
     current_schedule: Vec<TaskId>,
 }
 
-impl<'a> MetricsScheduler<'a> {
+impl MetricsScheduler {
     /// Create a new `MetricsScheduler` by wrapping the given `Scheduler` implementation.
-    pub(crate) fn new(inner: &'a mut Box<dyn Scheduler>) -> Self {
+    pub(crate) fn new(inner: Rc<RefCell<Box<dyn Scheduler>>>) -> Self {
         Self {
             inner,
             num_iterations: 0,
@@ -34,15 +36,15 @@ impl<'a> MetricsScheduler<'a> {
     }
 }
 
-impl Scheduler for MetricsScheduler<'_> {
+impl Scheduler for MetricsScheduler {
     fn new_execution(&mut self) -> bool {
         self.num_iterations += 1;
         self.current_schedule.clear();
-        self.inner.new_execution()
+        self.inner.borrow_mut().new_execution()
     }
 
     fn next_task(&mut self, runnable_tasks: &[TaskId], current_task: Option<TaskId>) -> Option<TaskId> {
-        let choice = self.inner.next_task(runnable_tasks, current_task)?;
+        let choice = self.inner.borrow_mut().next_task(runnable_tasks, current_task)?;
         self.current_schedule.push(choice);
         Some(choice)
     }
