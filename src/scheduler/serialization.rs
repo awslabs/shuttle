@@ -1,7 +1,8 @@
-//! This module implements a simple serialization scheme for schedules (`Vec<TaskId>`) that tries to
+//! This module implements a simple serialization scheme for schedules (`Schedule`) that tries to
 //! produce small printable strings. This is useful for roundtripping schedules in test outputs.
 
 use crate::runtime::task::TaskId;
+use crate::scheduler::Schedule;
 use bitvec::prelude::*;
 use integer_encoding::VarInt;
 
@@ -16,7 +17,7 @@ use integer_encoding::VarInt;
 
 const SCHEDULE_MAGIC_V1: u8 = 0x34;
 
-pub(crate) fn serialize_schedule(schedule: &[TaskId]) -> String {
+pub(crate) fn serialize_schedule(schedule: &Schedule) -> String {
     let &max_task_id = schedule.iter().max().unwrap_or(&TaskId::from(0));
     let task_id_bits = std::mem::size_of_val(&max_task_id) * 8 - usize::from(max_task_id).leading_zeros() as usize;
 
@@ -36,7 +37,7 @@ pub(crate) fn serialize_schedule(schedule: &[TaskId]) -> String {
     hex::encode(buf)
 }
 
-pub(crate) fn deserialize_schedule(str: &str) -> Option<Vec<TaskId>> {
+pub(crate) fn deserialize_schedule(str: &str) -> Option<Schedule> {
     let bytes = hex::decode(str).ok()?;
 
     let version = bytes[0];
@@ -52,9 +53,9 @@ pub(crate) fn deserialize_schedule(str: &str) -> Option<Vec<TaskId>> {
     let bytes = &bytes[consumed..];
 
     if schedule_len == 0 {
-        return Some(vec![]);
+        return Some(vec![].into());
     } else if task_id_bits == 0 {
-        return Some(vec![TaskId::from(0); schedule_len]);
+        return Some(vec![0; schedule_len].into());
     }
 
     let encoded = BitSlice::<Lsb0, _>::from_slice(bytes).unwrap();
@@ -62,9 +63,9 @@ pub(crate) fn deserialize_schedule(str: &str) -> Option<Vec<TaskId>> {
     let mut schedule = Vec::with_capacity(bytes.len() * 8 / task_id_bits);
     for tid_bits in encoded.chunks_exact(task_id_bits).take(schedule_len) {
         let tid = tid_bits.load::<usize>();
-        schedule.push(TaskId::from(tid));
+        schedule.push(tid);
     }
-    Some(schedule)
+    Some(schedule.into())
 }
 
 #[cfg(test)]
@@ -83,10 +84,11 @@ mod test {
             for _ in 0..len {
                 schedule.push(TaskId::from(rng.gen::<usize>() % max_task_id));
             }
+            let schedule = Schedule(schedule);
 
             let encoded = serialize_schedule(&schedule);
             let decoded = deserialize_schedule(encoded.as_str()).unwrap();
-            assert_eq!(schedule, decoded);
+            assert_eq!(*schedule, *decoded);
         }
     }
 }
