@@ -1,6 +1,6 @@
 use crate::runtime::task::TaskId;
 use crate::scheduler::serialization::serialize_schedule;
-use crate::scheduler::Scheduler;
+use crate::scheduler::{Schedule, Scheduler};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -11,7 +11,7 @@ use std::rc::Rc;
 pub(crate) struct MetricsScheduler {
     inner: Rc<RefCell<Box<dyn Scheduler>>>,
     num_iterations: usize,
-    current_schedule: Vec<TaskId>,
+    current_schedule: Schedule,
 }
 
 impl MetricsScheduler {
@@ -20,12 +20,12 @@ impl MetricsScheduler {
         Self {
             inner,
             num_iterations: 0,
-            current_schedule: vec![],
+            current_schedule: Schedule::new(),
         }
     }
 
     /// Return the schedule so far for the current iteration.
-    pub(crate) fn current_schedule(&self) -> &Vec<TaskId> {
+    pub(crate) fn current_schedule(&self) -> &Schedule {
         &self.current_schedule
     }
 

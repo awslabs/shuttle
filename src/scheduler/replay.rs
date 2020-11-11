@@ -1,11 +1,11 @@
 use crate::runtime::task::TaskId;
 use crate::scheduler::serialization::deserialize_schedule;
-use crate::scheduler::Scheduler;
+use crate::scheduler::{Schedule, Scheduler};
 
 /// A scheduler that can replay a chosen schedule deserialized from a string.
 #[derive(Debug, Default)]
 pub struct ReplayScheduler {
-    schedule: Vec<TaskId>,
+    schedule: Schedule,
     steps: usize,
     started: bool,
 }
@@ -23,8 +23,7 @@ impl ReplayScheduler {
 
     /// Given an unencoded schedule, construct a new `ReplayScheduler` that will execute threads
     /// in the order specified in the schedule.
-    pub fn new_from_schedule(schedule: Vec<usize>) -> Self {
-        let schedule: Vec<TaskId> = schedule.into_iter().map(TaskId::from).collect();
+    pub fn new_from_schedule(schedule: Schedule) -> Self {
         Self {
             schedule,
             steps: 0,

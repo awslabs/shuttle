@@ -1,6 +1,7 @@
 //! Implementations of different scheduling strategies for concurrency testing.
 use crate::runtime::task::TaskId;
 use std::fmt::Debug;
+use std::ops::{Deref, DerefMut};
 
 mod dfs;
 mod pct;
@@ -16,6 +17,48 @@ pub use pct::PCTScheduler;
 pub use random::RandomScheduler;
 pub use replay::ReplayScheduler;
 pub use round_robin::RoundRobinScheduler;
+
+/// A `Schedule` determines the order in which tasks are to be executed
+#[derive(Clone, Debug, Default)]
+pub struct Schedule(Vec<TaskId>);
+
+impl Schedule {
+    fn new() -> Self {
+        Self(vec![])
+    }
+}
+
+impl Deref for Schedule {
+    type Target = Vec<TaskId>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Schedule {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<&[usize]> for Schedule {
+    fn from(tasks: &[usize]) -> Self {
+        Schedule(tasks.iter().map(|&n| TaskId::from(n)).collect())
+    }
+}
+
+impl From<Vec<usize>> for Schedule {
+    fn from(tasks: Vec<usize>) -> Self {
+        Schedule(tasks.iter().map(|&n| TaskId::from(n)).collect())
+    }
+}
+
+impl From<Schedule> for Vec<usize> {
+    fn from(schedule: Schedule) -> Self {
+        schedule.0.iter().map(|&t| usize::from(t)).collect()
+    }
+}
 
 /// A `Scheduler` is an oracle that decides the order in which to execute concurrent tasks.
 ///
