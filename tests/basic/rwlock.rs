@@ -77,14 +77,14 @@ fn deadlock() {
 #[should_panic(expected = "deadlock")]
 fn deadlock_default() {
     // Round-robin should always fail this deadlock test
-    check(|| deadlock());
+    check(deadlock);
 }
 
 #[test]
 #[should_panic(expected = "deadlock")]
 fn deadlock_random() {
     // 200 tries should be enough to find a deadlocking execution
-    check_random(|| deadlock(), 200);
+    check_random(deadlock, 200);
 }
 
 #[test]
@@ -102,17 +102,16 @@ fn rwlock_two_writers() {
     check_random(
         || {
             let lock = Arc::new(RwLock::new(1));
-            let c_lock = lock.clone();
-            let c_lock2 = lock.clone();
+            let lock2 = lock.clone();
 
             thread::spawn(move || {
-                let mut w = c_lock.write().unwrap();
+                let mut w = lock.write().unwrap();
                 *w += 1;
                 thread::yield_now();
             });
 
             thread::spawn(move || {
-                let mut w = c_lock2.write().unwrap();
+                let mut w = lock2.write().unwrap();
                 *w += 1;
                 thread::yield_now();
             });

@@ -45,14 +45,14 @@ fn deadlock() {
 #[should_panic(expected = "deadlock")]
 fn deadlock_default() {
     // Round-robin should always fail this deadlock test
-    check(|| deadlock());
+    check(deadlock);
 }
 
 #[test]
 #[should_panic(expected = "deadlock")]
 fn deadlock_random() {
     // 200 tries should be enough to find a deadlocking execution
-    check_random(|| deadlock(), 200);
+    check_random(deadlock, 200);
 }
 
 #[test]
