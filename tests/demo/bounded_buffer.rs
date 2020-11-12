@@ -1,3 +1,6 @@
+// For symmetry we clone some `Arc`s even though we could just move them
+#![allow(clippy::redundant_clone)]
+
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 use shuttle::sync::{Condvar, Mutex};
@@ -59,7 +62,7 @@ impl<T: Copy + Default> BoundedBuffer<T> {
         }
 
         this.occupied += 1;
-        this.put_at = this.put_at % this.buffer_size;
+        this.put_at %= this.buffer_size;
         let put_at = this.put_at;
         this.buffer[put_at] = x;
         this.put_at += 1;
@@ -74,7 +77,7 @@ impl<T: Copy + Default> BoundedBuffer<T> {
         }
 
         this.occupied -= 1;
-        this.take_at = this.take_at % this.buffer_size;
+        this.take_at %= this.buffer_size;
         let result = this.buffer[this.take_at];
         this.take_at += 1;
 

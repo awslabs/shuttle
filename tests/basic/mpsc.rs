@@ -391,8 +391,8 @@ fn mpsc_send_from_outside_runtime() {
                     tx2.send(1).unwrap();
                 }
             });
-            t1.join().ok().expect("thread panicked");
-            t2.join().ok().expect("thread panicked");
+            t1.join().expect("thread panicked");
+            t2.join().expect("thread panicked");
         },
         None,
         None,
@@ -413,7 +413,7 @@ fn mpsc_recv_from_outside_runtime() {
             for _ in 0..10 {
                 tx.send(1).unwrap();
             }
-            t.join().ok().expect("thread panicked");
+            t.join().expect("thread panicked");
         },
         None,
         None,
