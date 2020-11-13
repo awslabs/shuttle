@@ -111,3 +111,69 @@ fn replay_deadlock_roundtrip() {
 
     assert_eq!(new_schedule, schedule);
 }
+
+fn deadlock_3() {
+    let lock1 = Arc::new(Mutex::new(0usize));
+    let lock2 = Arc::new(Mutex::new(0usize));
+    let lock3 = Arc::new(Mutex::new(0usize));
+
+    let lock1_clone = Arc::clone(&lock1);
+    let lock2_clone = Arc::clone(&lock2);
+    let lock3_clone = Arc::clone(&lock3);
+
+    thread::spawn(move || {
+        let _l1 = lock1_clone.lock().unwrap();
+        let _l2 = lock2_clone.lock().unwrap();
+    });
+
+    thread::spawn(move || {
+        let _l2 = lock2.lock().unwrap();
+        let _l3 = lock3_clone.lock().unwrap();
+    });
+
+    let _l3 = lock3.lock().unwrap();
+    let _l1 = lock1.lock().unwrap();
+}
+
+#[test]
+#[should_panic(expected = "deadlock")]
+fn replay_deadlock3_block() {
+    // Reproduce deadlock
+    let schedule = vec![0, 0, 1, 2, 1, 2, 0, 0];
+    let scheduler = ReplayScheduler::new_from_schedule(schedule.into());
+    let runner = Runner::new(scheduler);
+    runner.run(deadlock_3);
+}
+
+#[test]
+fn replay_deadlock3_end_early() {
+    // Schedule ends without all tasks finishing
+    let schedule = vec![0, 0, 1, 2];
+    let mut scheduler = ReplayScheduler::new_from_schedule(schedule.into());
+    scheduler.set_allow_incomplete();
+    let runner = Runner::new(scheduler);
+    runner.run(deadlock_3);
+}
+
+#[test]
+fn replay_deadlock3_task_disabled() {
+    // Schedule ends when a task is not runnable
+    let schedule = vec![0, 1, 2, 0];
+    let mut scheduler = ReplayScheduler::new_from_schedule(schedule.into());
+    scheduler.set_allow_incomplete();
+    let runner = Runner::new(scheduler);
+    runner.run(deadlock_3);
+}
+
+#[test]
+#[ignore]
+// TODO This test is currently marked `ignore` because a schedule that terminates
+// TODO early while one of the threads is holding a Mutex causes a panic.
+// TODO (Because Mutex::drop tries to access the thread-local state outside a set.)
+fn replay_deadlock3_drop_mutex() {
+    let schedule = vec![0, 0, 1, 1, 2];
+    let mut scheduler = ReplayScheduler::new_from_schedule(schedule.into());
+    scheduler.set_allow_incomplete();
+    let runner = Runner::new(scheduler);
+    runner.run(deadlock_3);
+}

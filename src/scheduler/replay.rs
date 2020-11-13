@@ -8,6 +8,7 @@ pub struct ReplayScheduler {
     schedule: Schedule,
     steps: usize,
     started: bool,
+    allow_incomplete: bool,
 }
 
 impl ReplayScheduler {
@@ -18,6 +19,7 @@ impl ReplayScheduler {
             schedule: deserialize_schedule(encoded_schedule).expect("invalid schedule"),
             steps: 0,
             started: false,
+            allow_incomplete: false,
         }
     }
 
@@ -28,7 +30,13 @@ impl ReplayScheduler {
             schedule,
             steps: 0,
             started: false,
+            allow_incomplete: false,
         }
+    }
+
+    /// Set flag to allow early termination of a schedule
+    pub fn set_allow_incomplete(&mut self) {
+        self.allow_incomplete = true;
     }
 }
 
@@ -43,15 +51,21 @@ impl Scheduler for ReplayScheduler {
     }
 
     fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>) -> Option<TaskId> {
-        assert!(self.steps < self.schedule.len(), "schedule ended early");
+        if self.steps >= self.schedule.len() {
+            assert!(self.allow_incomplete, "schedule ended early");
+            return None;
+        }
         let next = self.schedule[self.steps];
-        assert!(
-            runnable.contains(&next),
-            "scheduled task is not runnable, expected to run {:?}, but choices were {:?}",
-            next,
-            runnable
-        );
-        self.steps += 1;
-        Some(next)
+        if !runnable.contains(&next) {
+            assert!(
+                self.allow_incomplete,
+                "scheduled task is not runnable, expected to run {:?}, but choices were {:?}",
+                next, runnable
+            );
+            None
+        } else {
+            self.steps += 1;
+            Some(next)
+        }
     }
 }
