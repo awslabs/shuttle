@@ -274,8 +274,8 @@ impl ExecutionState {
     fn schedule_next_task(&mut self) -> bool {
         let current = self.current_task;
 
-        // Don't schedule twice if we've already got a pending task to run
-        if let CurrentTask::ToRun(_) = current {
+        // Don't schedule twice if we've already got a pending task to run, or if it's futile
+        if matches!(current, CurrentTask::ToRun(_) | CurrentTask::Stopped | CurrentTask::Finished) {
             return false;
         }
 
@@ -298,11 +298,12 @@ impl ExecutionState {
             .map(CurrentTask::ToRun)
             .unwrap_or(CurrentTask::Stopped);
 
+        self.current_span_entered.take();
+
         debug!(?runnable, to_run=?self.current_task);
 
         // Scheduler asked us to stop early. Clean up the Span before we leave.
         if self.current_task == CurrentTask::Stopped {
-            self.current_span_entered.take();
             self.current_span = Span::none();
             return true;
         }
@@ -310,16 +311,13 @@ impl ExecutionState {
         // Safety: Unfortunately `ExecutionState` is a static, but `Entered<'a>` is tied to the
         // lifetime 'a of its corresponding Span, so we can't stash the `Entered` into
         // `self.current_span_entered` directly. Instead, we transmute `Entered<'a>` into
-        // `Entered<'static>`. We make sure that it can never outlive 'a by retaining `_old_span`
-        // until after dropping the `Entered`, hence the slightly funky looking `std::mem::replace`.
-        let _old_span = std::mem::replace(
-            &mut self.current_span,
-            span!(
-                Level::DEBUG,
-                "step",
-                i = self.scheduler.current_schedule().len() - 1,
-                task_id = self.current_task.id().unwrap().0
-            ),
+        // `Entered<'static>`. We make sure that it can never outlive 'a by dropping
+        // `self.current_span_entered` above before dropping the `self.current_span` it points to.
+        self.current_span = span!(
+            Level::DEBUG,
+            "step",
+            i = self.scheduler.current_schedule().len() - 1,
+            task_id = self.current_task.id().unwrap().0
         );
         self.current_span_entered = Some(unsafe { extend_span_entered_lt(self.current_span.enter()) });
 
