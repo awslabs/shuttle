@@ -117,6 +117,10 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
         self.inner = None;
 
+        if ExecutionState::should_stop() {
+            return;
+        }
+
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
         let me = ExecutionState::me();

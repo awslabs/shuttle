@@ -125,19 +125,7 @@ pub(crate) enum ContinuationOutput {
 
 /// Possibly yield back to the executor to perform a context switch.
 pub(crate) fn switch() {
-    // Schedule the next task, and if it requires a context switch, yield back to the executor.
-    //
-    // We don't execute a context switch if we are currently panicking (e.g., perhaps we're unwinding
-    // the stack for a panic triggered while someone held a Mutex, and so are executing the Drop
-    // handler for MutexGuard, which calls switch()).
-    //
-    // Invoking `yield` from within a panic is dangerous, because we will continue executing the
-    // scheduler even though some of its state is in the middle of being poisoned. It's also
-    // counter-intuitive, because it might allow other threads to execute during the panic of this
-    // thread and so create more complex schedules than necessary to reach this panic. Avoiding the
-    // context switch allows the panic to unwind the stack back to the top of the continuation,
-    // which will propagate it to the executor.
-    if !std::thread::panicking() && ExecutionState::maybe_yield() {
+    if ExecutionState::maybe_yield() {
         let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
         assert!(matches!(r, ContinuationInput::Resume));
     }
