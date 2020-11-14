@@ -230,6 +230,10 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
         self.inner = None;
 
+        if ExecutionState::should_stop() {
+            return;
+        }
+
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
         let me = ExecutionState::me();
@@ -268,6 +272,10 @@ pub struct RwLockWriteGuard<'a, T> {
 impl<T> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
         self.inner = None;
+
+        if ExecutionState::should_stop() {
+            return;
+        }
 
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.

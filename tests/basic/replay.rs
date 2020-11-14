@@ -166,11 +166,8 @@ fn replay_deadlock3_task_disabled() {
 }
 
 #[test]
-#[ignore]
-// TODO This test is currently marked `ignore` because a schedule that terminates
-// TODO early while one of the threads is holding a Mutex causes a panic.
-// TODO (Because Mutex::drop tries to access the thread-local state outside a set.)
 fn replay_deadlock3_drop_mutex() {
+    // Schedule ends with a task holding a Mutex, whose MutexGuard needs to be correctly cleaned up
     let schedule = vec![0, 0, 1, 1, 2];
     let mut scheduler = ReplayScheduler::new_from_schedule(schedule.into());
     scheduler.set_allow_incomplete();

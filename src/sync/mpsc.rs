@@ -275,6 +275,9 @@ impl<T> Receiver<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
+        if ExecutionState::should_stop() {
+            return;
+        }
         let mut state = self.inner.state.borrow_mut();
         assert!(state.known_receivers > 0);
         state.known_receivers -= 1;
@@ -315,6 +318,9 @@ impl<T> Clone for Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
+        if ExecutionState::should_stop() {
+            return;
+        }
         let mut state = self.inner.state.borrow_mut();
         assert!(state.known_senders > 0);
         state.known_senders -= 1;
@@ -360,6 +366,9 @@ impl<T> Clone for SyncSender<T> {
 
 impl<T> Drop for SyncSender<T> {
     fn drop(&mut self) {
+        if ExecutionState::should_stop() {
+            return;
+        }
         let mut state = self.inner.state.borrow_mut();
         assert!(state.known_senders > 0);
         state.known_senders -= 1;

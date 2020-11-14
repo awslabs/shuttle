@@ -39,13 +39,6 @@ impl Execution {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StepResult {
-    Continue, // execution is not done, keep exploring
-    Finish,   // execution is done, all tasks should be finished
-    Stop,     // execution is not done, but stop exploring
-}
-
 impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
@@ -57,44 +50,29 @@ impl Execution {
         let scheduler = MetricsScheduler::new(Rc::clone(&self.scheduler));
         let state = RefCell::new(ExecutionState::new(scheduler));
 
-        let result = EXECUTION_STATE.set(&state, || {
+        EXECUTION_STATE.set(&state, || {
             // Spawn `f` as the first task
             let first_task = ThreadFuture::new(f);
             ExecutionState::spawn(first_task);
 
             // Run the test to completion
-            loop {
-                let result = self.step();
-                if result != StepResult::Continue {
-                    break result;
-                }
-            }
-        });
+            while self.step() {}
 
-        if result == StepResult::Finish {
-            // The program is now finished. These are just sanity checks for cleanup: every task should
-            // have reached Finished state, and should have no outstanding references to its Future.
-            let state = state.into_inner();
-            for thd in state.tasks.into_iter() {
-                assert_eq!(thd.state, TaskState::Finished);
-                Rc::try_unwrap(thd.future)
-                    .map_err(|_| ())
-                    .expect("couldn't cleanup a future");
-            }
-        }
+            // Cleanup the state before it goes out of `EXECUTION_STATE` scope
+            ExecutionState::cleanup();
+        });
     }
 
-    /// Execute a single step of the scheduler. Returns true if a step was taken or false if all
-    /// tasks were finished.
+    /// Execute a single step of the scheduler. Returns true if the execution should continue.
     #[inline]
-    fn step(&mut self) -> StepResult {
+    fn step(&mut self) -> bool {
         let result = ExecutionState::with(|state| {
             state.schedule_next_task();
 
             match state.current_task {
                 CurrentTask::ToRun(tid) => {
                     state.current_task.mark_run();
-                    (StepResult::Continue, Some(Rc::clone(&state.get(tid).future)))
+                    Some(Rc::clone(&state.get(tid).future))
                 }
                 CurrentTask::Finished => {
                     let task_states = state
@@ -109,10 +87,10 @@ impl Execution {
                             task_states,
                         );
                     }
-                    assert!(state.tasks.iter().all(|t| t.finished()));
-                    (StepResult::Finish, None)
+                    debug_assert!(state.tasks.iter().all(|t| t.finished()));
+                    None
                 }
-                CurrentTask::Stopped => (StepResult::Stop, None),
+                CurrentTask::Stopped => None,
                 _ => panic!("unexpected current_task {:?}", state.current_task),
             }
         });
@@ -120,13 +98,13 @@ impl Execution {
         // Run a single step of the chosen future. The future might be a ThreadFuture, in which case
         // it may run multiple steps of the same future if the scheduler so decides.
         let ret = match result {
-            (StepResult::Continue, Some(future)) => panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            Some(future) => panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 // TODO implement real waker support
                 let waker = futures::task::noop_waker_ref();
                 let mut cx = &mut Context::from_waker(waker);
                 future.borrow_mut().as_mut().poll(&mut cx)
             })),
-            (step_result, _) => return step_result,
+            None => return false,
         };
 
         ExecutionState::with(|state| {
@@ -154,7 +132,7 @@ impl Execution {
             }
         });
 
-        StepResult::Continue
+        true
     }
 }
 
@@ -173,6 +151,9 @@ pub(crate) struct ExecutionState {
     // Drop order is significant here; see the unsafe code in `schedule_next_task` for why.
     current_span_entered: Option<Entered<'static>>,
     current_span: Span,
+
+    #[cfg(debug_assertions)]
+    has_cleaned_up: bool,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -209,6 +190,8 @@ impl ExecutionState {
             scheduler,
             current_span_entered: None,
             current_span: Span::none(),
+            #[cfg(debug_assertions)]
+            has_cleaned_up: false,
         }
     }
 
@@ -239,6 +222,32 @@ impl ExecutionState {
         })
     }
 
+    /// Prepare this ExecutionState to be dropped. Call this before dropping so that the tasks have
+    /// a chance to run their drop handlers while `EXECUTION_STATE` is still in scope.
+    fn cleanup() {
+        // A slightly delicate dance here: we need to drop the tasks from outside of `Self::with`,
+        // because a task's Drop impl might want to call back into `ExecutionState` (to check
+        // `should_stop()`). So we pull the tasks out of the `ExecutionState`, leaving it in an
+        // invalid state, but no one should still be accessing the tasks anyway.
+        let (mut tasks, final_state) = Self::with(|state| {
+            assert!(state.current_task == CurrentTask::Stopped || state.current_task == CurrentTask::Finished);
+            (std::mem::replace(&mut state.tasks, Vec::new()), state.current_task)
+        });
+
+        for task in tasks.drain(..) {
+            assert!(
+                final_state == CurrentTask::Stopped || task.finished(),
+                "execution finished but task is not"
+            );
+            Rc::try_unwrap(task.future)
+                .map_err(|_| ())
+                .expect("couldn't cleanup a future");
+        }
+
+        #[cfg(debug_assertions)]
+        Self::with(|state| state.has_cleaned_up = true);
+    }
+
     /// Invoke the scheduler to decide which task to schedule next. Returns true if the chosen task
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
@@ -251,6 +260,20 @@ impl ExecutionState {
                 s.current_task.mark_run();
                 false
             }
+        })
+    }
+
+    /// Check whether the current execution has stopped. Call from `Drop` handlers to early exit if
+    /// they are being invoked because an execution has stopped.
+    ///
+    /// We also stop if we are currently panicking (e.g., perhaps we're unwinding the stack for a
+    /// panic triggered while someone held a Mutex, and so are executing the Drop handler for
+    /// MutexGuard). This avoids calling back into the scheduler during a panic, because the state
+    /// may be poisoned or otherwise invalid.
+    pub(crate) fn should_stop() -> bool {
+        Self::with(|s| {
+            assert_ne!(s.current_task, CurrentTask::Finished);
+            s.current_task == CurrentTask::Stopped || std::thread::panicking()
         })
     }
 
@@ -329,4 +352,11 @@ impl ExecutionState {
 // give fixed concrete types for the transmute.
 unsafe fn extend_span_entered_lt<'a>(entered: Entered<'a>) -> Entered<'static> {
     std::mem::transmute(entered)
+}
+
+#[cfg(debug_assertions)]
+impl Drop for ExecutionState {
+    fn drop(&mut self) {
+        assert!(self.has_cleaned_up || std::thread::panicking());
+    }
 }
