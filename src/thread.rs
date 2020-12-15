@@ -2,8 +2,8 @@
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
-use crate::runtime::thread_future;
-use crate::runtime::thread_future::ThreadFuture;
+use crate::runtime::thread;
+use crate::runtime::thread::future::ThreadFuture;
 
 /// Spawn a new thread, returning a JoinHandle for it.
 ///
@@ -36,7 +36,7 @@ where
         ExecutionState::spawn(task)
     };
 
-    thread_future::switch();
+    thread::switch();
 
     JoinHandle { task_id, result }
 }
@@ -60,7 +60,7 @@ impl<T> JoinHandle<T> {
         });
 
         // TODO can we soundly skip the yield if the target thread has already finished?
-        thread_future::switch();
+        thread::switch();
 
         self.result.lock().unwrap().take().expect("target should have finished")
     }
@@ -69,5 +69,5 @@ impl<T> JoinHandle<T> {
 // TODO: don't need this? Just call switch directly?
 /// Cooperatively gives up a timeslice to the Shuttle scheduler.
 pub fn yield_now() {
-    thread_future::switch();
+    thread::switch();
 }

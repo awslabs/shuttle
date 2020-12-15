@@ -2,7 +2,7 @@
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
-use crate::runtime::thread_future;
+use crate::runtime::thread;
 use futures::future::Future;
 use std::pin::Pin;
 use std::result::Result;
@@ -111,7 +111,7 @@ where
 {
     let handle = spawn(future);
 
-    thread_future::switch(); // Required to allow Execution to spawn the future
+    thread::switch(); // Required to allow Execution to spawn the future
 
     ExecutionState::with(|state| {
         let me = state.current().id();
@@ -121,7 +121,7 @@ where
         }
     });
 
-    thread_future::switch(); // Required in case the thread blocked
+    thread::switch(); // Required in case the thread blocked
 
     let result = handle.result.lock().unwrap().take();
     result.unwrap().expect("result should be available to waiter")

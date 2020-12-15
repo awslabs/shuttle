@@ -1,6 +1,6 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{TaskId, MAX_TASKS};
-use crate::runtime::thread_future;
+use crate::runtime::thread;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -130,7 +130,7 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block());
             drop(state);
 
-            thread_future::switch();
+            thread::switch();
 
             state = self.state.borrow_mut();
             trace!(
@@ -207,7 +207,7 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block());
             drop(state);
 
-            thread_future::switch();
+            thread::switch();
 
             state = self.state.borrow_mut();
             trace!(

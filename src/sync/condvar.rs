@@ -1,6 +1,6 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
-use crate::runtime::thread_future;
+use crate::runtime::thread;
 use crate::sync::MutexGuard;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -203,7 +203,7 @@ impl Condvar {
 
         drop(state);
 
-        thread_future::switch();
+        thread::switch();
     }
 
     /// Wakes up all blocked threads on this condvar.
@@ -223,7 +223,7 @@ impl Condvar {
 
         drop(state);
 
-        thread_future::switch();
+        thread::switch();
     }
 }
 

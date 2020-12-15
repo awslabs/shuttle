@@ -1,5 +1,5 @@
 use crate::runtime::task::{Task, TaskId, TaskState, MAX_TASKS};
-use crate::runtime::thread_future::ThreadFuture;
+use crate::runtime::thread::future::ThreadFuture;
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::Scheduler;
 use scoped_tls::scoped_thread_local;
@@ -271,10 +271,11 @@ impl ExecutionState {
     /// MutexGuard). This avoids calling back into the scheduler during a panic, because the state
     /// may be poisoned or otherwise invalid.
     pub(crate) fn should_stop() -> bool {
-        Self::with(|s| {
-            assert_ne!(s.current_task, CurrentTask::Finished);
-            s.current_task == CurrentTask::Stopped || std::thread::panicking()
-        })
+        std::thread::panicking()
+            || Self::with(|s| {
+                assert_ne!(s.current_task, CurrentTask::Finished);
+                s.current_task == CurrentTask::Stopped
+            })
     }
 
     pub(crate) fn current(&self) -> &Task {
