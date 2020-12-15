@@ -1,4 +1,5 @@
 use crate::runtime::execution::Execution;
+use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::Scheduler;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,14 +29,19 @@ impl Runner {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        let f = Arc::new(f);
+        // Share continuations across executions to avoid reallocating them
+        // TODO it would be a lot nicer if this were a more generic "context" thing that we passed
+        // TODO around explicitly rather than being a thread local
+        CONTINUATION_POOL.set(&ContinuationPool::new(), || {
+            let f = Arc::new(f);
 
-        let mut i = 0;
-        while self.scheduler.borrow_mut().new_execution() {
-            let execution = Execution::new(Rc::clone(&self.scheduler));
-            let f = Arc::clone(&f);
-            span!(Level::DEBUG, "execution", i).in_scope(|| execution.run(move || f()));
-            i += 1;
-        }
+            let mut i = 0;
+            while self.scheduler.borrow_mut().new_execution() {
+                let execution = Execution::new(Rc::clone(&self.scheduler));
+                let f = Arc::clone(&f);
+                span!(Level::DEBUG, "execution", i).in_scope(|| execution.run(move || f()));
+                i += 1;
+            }
+        })
     }
 }
