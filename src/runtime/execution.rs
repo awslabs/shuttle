@@ -67,14 +67,12 @@ impl Execution {
     #[inline]
     fn step(&mut self) -> bool {
         let result = ExecutionState::with(|state| {
-            state.schedule_next_task();
+            state.schedule();
+            state.advance_to_next_task();
 
             match state.current_task {
-                CurrentTask::ToRun(tid) => {
-                    state.current_task.mark_run();
-                    Some(Rc::clone(&state.get(tid).future))
-                }
-                CurrentTask::Finished => {
+                ScheduledTask::Some(tid) => Some(Rc::clone(&state.get(tid).future)),
+                ScheduledTask::Finished => {
                     let task_states = state
                         .tasks
                         .iter()
@@ -90,8 +88,8 @@ impl Execution {
                     debug_assert!(state.tasks.iter().all(|t| t.finished()));
                     None
                 }
-                CurrentTask::Stopped => None,
-                _ => panic!("unexpected current_task {:?}", state.current_task),
+                ScheduledTask::Stopped => None,
+                ScheduledTask::None => panic!("no task was scheduled"),
             }
         });
 
@@ -143,7 +141,9 @@ pub(crate) struct ExecutionState {
     // invariant: tasks are never removed from this list
     tasks: Vec<Task>,
     // invariant: if this transitions to Stopped or Finished, it can never change again
-    current_task: CurrentTask,
+    current_task: ScheduledTask,
+    // the task the scheduler has chosen to run next
+    next_task: ScheduledTask,
 
     scheduler: MetricsScheduler,
 
@@ -157,28 +157,23 @@ pub(crate) struct ExecutionState {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum CurrentTask {
-    Unscheduled,    // no task has ever been scheduled
-    ToRun(TaskId),  // a task has been scheduled but not yet run
-    HasRun(TaskId), // a task has been scheduled and has been run
-    Stopped,        // the scheduler asked us to stop running
-    Finished,       // all tasks have finished running
+enum ScheduledTask {
+    None,         // no task has ever been scheduled
+    Some(TaskId), // this task is running
+    Stopped,      // the scheduler asked us to stop running
+    Finished,     // all tasks have finished running
 }
 
-impl CurrentTask {
+impl ScheduledTask {
     fn id(&self) -> Option<TaskId> {
         match self {
-            CurrentTask::ToRun(tid) => Some(*tid),
-            CurrentTask::HasRun(tid) => Some(*tid),
+            ScheduledTask::Some(tid) => Some(*tid),
             _ => None,
         }
     }
 
-    fn mark_run(&mut self) {
-        match self {
-            CurrentTask::ToRun(tid) => *self = CurrentTask::HasRun(*tid),
-            _ => panic!("cannot mark current task {:?} as run", self),
-        }
+    fn take(&mut self) -> Self {
+        std::mem::replace(self, ScheduledTask::None)
     }
 }
 
@@ -186,7 +181,8 @@ impl ExecutionState {
     fn new(scheduler: MetricsScheduler) -> Self {
         Self {
             tasks: vec![],
-            current_task: CurrentTask::Unscheduled,
+            current_task: ScheduledTask::None,
+            next_task: ScheduledTask::None,
             scheduler,
             current_span_entered: None,
             current_span: Span::none(),
@@ -230,13 +226,13 @@ impl ExecutionState {
         // `should_stop()`). So we pull the tasks out of the `ExecutionState`, leaving it in an
         // invalid state, but no one should still be accessing the tasks anyway.
         let (mut tasks, final_state) = Self::with(|state| {
-            assert!(state.current_task == CurrentTask::Stopped || state.current_task == CurrentTask::Finished);
+            assert!(state.current_task == ScheduledTask::Stopped || state.current_task == ScheduledTask::Finished);
             (std::mem::replace(&mut state.tasks, Vec::new()), state.current_task)
         });
 
         for task in tasks.drain(..) {
             assert!(
-                final_state == CurrentTask::Stopped || task.finished(),
+                final_state == ScheduledTask::Stopped || task.finished(),
                 "execution finished but task is not"
             );
             Rc::try_unwrap(task.future)
@@ -252,13 +248,21 @@ impl ExecutionState {
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
     pub(crate) fn maybe_yield() -> bool {
-        Self::with(|s| {
-            if s.schedule_next_task() {
-                true
-            } else {
-                // We're running the task again immediately
-                s.current_task.mark_run();
+        Self::with(|state| {
+            debug_assert!(
+                matches!(state.current_task, ScheduledTask::Some(_)) && state.next_task == ScheduledTask::None,
+                "we're inside a task and scheduler should not yet have run"
+            );
+
+            state.schedule();
+
+            // If the next task is the same as the current one, we can skip the context switch
+            // and just advance to the next task immediately.
+            if state.current_task == state.next_task {
+                state.advance_to_next_task();
                 false
+            } else {
+                true
             }
         })
     }
@@ -273,8 +277,8 @@ impl ExecutionState {
     pub(crate) fn should_stop() -> bool {
         std::thread::panicking()
             || Self::with(|s| {
-                assert_ne!(s.current_task, CurrentTask::Finished);
-                s.current_task == CurrentTask::Stopped
+                assert_ne!(s.current_task, ScheduledTask::Finished);
+                s.current_task == ScheduledTask::Stopped
             })
     }
 
@@ -294,13 +298,12 @@ impl ExecutionState {
         self.tasks.get_mut(id.0).unwrap()
     }
 
-    /// Run the scheduler to choose the next task to run. Returns true if the current task changes.
-    fn schedule_next_task(&mut self) -> bool {
-        let current = self.current_task;
-
-        // Don't schedule twice if we've already got a pending task to run, or if it's futile
-        if matches!(current, CurrentTask::ToRun(_) | CurrentTask::Stopped | CurrentTask::Finished) {
-            return false;
+    /// Run the scheduler to choose the next task to run
+    fn schedule(&mut self) {
+        // Don't schedule twice. If `maybe_yield` ran the scheduler, we don't want to run it
+        // again at the top of `step`.
+        if self.next_task != ScheduledTask::None {
+            return;
         }
 
         let runnable = self
@@ -310,46 +313,44 @@ impl ExecutionState {
             .map(|t| t.id)
             .collect::<SmallVec<[_; MAX_TASKS]>>();
 
-        // No more runnable tasks, so we are finished. Don't invoke the scheduler again.
         if runnable.is_empty() {
-            self.current_task = CurrentTask::Finished;
-            return true;
+            self.next_task = ScheduledTask::Finished;
+            return;
         }
 
-        self.current_task = self
+        self.next_task = self
             .scheduler
             .next_task(&runnable, self.current_task.id())
-            .map(CurrentTask::ToRun)
-            .unwrap_or(CurrentTask::Stopped);
+            .map(ScheduledTask::Some)
+            .unwrap_or(ScheduledTask::Stopped);
 
-        self.current_span_entered.take();
+        debug!(?runnable, next_task=?self.next_task);
+    }
 
-        debug!(?runnable, to_run=?self.current_task);
-
-        // Scheduler asked us to stop early. Clean up the Span before we leave.
-        if self.current_task == CurrentTask::Stopped {
-            self.current_span = Span::none();
-            return true;
-        }
+    /// Set the next task as the current task, and update our tracing span
+    fn advance_to_next_task(&mut self) {
+        debug_assert_ne!(self.next_task, ScheduledTask::None);
+        self.current_task = self.next_task.take();
 
         // Safety: Unfortunately `ExecutionState` is a static, but `Entered<'a>` is tied to the
         // lifetime 'a of its corresponding Span, so we can't stash the `Entered` into
         // `self.current_span_entered` directly. Instead, we transmute `Entered<'a>` into
         // `Entered<'static>`. We make sure that it can never outlive 'a by dropping
-        // `self.current_span_entered` above before dropping the `self.current_span` it points to.
-        self.current_span = span!(
-            Level::DEBUG,
-            "step",
-            i = self.scheduler.current_schedule().len() - 1,
-            task_id = self.current_task.id().unwrap().0
-        );
-        self.current_span_entered = Some(unsafe { extend_span_entered_lt(self.current_span.enter()) });
-
-        current != self.current_task
+        // `self.current_span_entered` before dropping the `self.current_span` it points to.
+        self.current_span_entered.take();
+        if let ScheduledTask::Some(tid) = self.current_task {
+            self.current_span = span!(
+                Level::DEBUG,
+                "step",
+                i = self.scheduler.current_schedule().len() - 1,
+                task = tid.0,
+            );
+            self.current_span_entered = Some(unsafe { extend_span_entered_lt(self.current_span.enter()) });
+        }
     }
 }
 
-// Safety: see the use in `schedule_next_task` above. We lift this out of that function so we can
+// Safety: see the use in `advance_to_next_task` above. We lift this out of that function so we can
 // give fixed concrete types for the transmute.
 unsafe fn extend_span_entered_lt<'a>(entered: Entered<'a>) -> Entered<'static> {
     std::mem::transmute(entered)
