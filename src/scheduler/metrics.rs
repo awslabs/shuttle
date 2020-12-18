@@ -1,51 +1,140 @@
 use crate::runtime::task::TaskId;
-use crate::scheduler::serialization::serialize_schedule;
-use crate::scheduler::{Schedule, Scheduler};
-use std::cell::RefCell;
-use std::rc::Rc;
+use crate::scheduler::Scheduler;
+use tracing::info;
 
 /// A `MetricsScheduler` wraps an inner `Scheduler` and collects metrics about the schedules it's
-/// generating. We use it mostly to remember the current schedule so that we can output it if a test
-/// fails; that schedule can be used to replay the failure.
+/// generating.
 #[derive(Debug)]
-pub(crate) struct MetricsScheduler {
-    inner: Rc<RefCell<Box<dyn Scheduler>>>,
-    num_iterations: usize,
-    current_schedule: Schedule,
+pub(crate) struct MetricsScheduler<S> {
+    inner: S,
+
+    iterations: usize,
+    iteration_divisor: usize,
+
+    steps: usize,
+    steps_metric: CountSummaryMetric,
+
+    last_task: TaskId,
+    // Number of times the scheduled task changed
+    context_switches: usize,
+    context_switches_metric: CountSummaryMetric,
+    // Number of times the scheduled task changed when the previous task was still runnable
+    preemptions: usize,
+    preemptions_metric: CountSummaryMetric,
 }
 
-impl MetricsScheduler {
+impl<S: Scheduler> MetricsScheduler<S> {
     /// Create a new `MetricsScheduler` by wrapping the given `Scheduler` implementation.
-    pub(crate) fn new(inner: Rc<RefCell<Box<dyn Scheduler>>>) -> Self {
+    pub(crate) fn new(inner: S) -> Self {
         Self {
             inner,
-            num_iterations: 0,
-            current_schedule: Schedule::new(),
+
+            iterations: 0,
+            iteration_divisor: 10,
+
+            steps: 0,
+            steps_metric: CountSummaryMetric::new(),
+
+            last_task: TaskId::from(0),
+            context_switches: 0,
+            context_switches_metric: CountSummaryMetric::new(),
+            preemptions: 0,
+            preemptions_metric: CountSummaryMetric::new(),
         }
-    }
-
-    /// Return the schedule so far for the current iteration.
-    pub(crate) fn current_schedule(&self) -> &Schedule {
-        &self.current_schedule
-    }
-
-    /// Return the schedule so far for the current iteration, but serialized into a form that can be
-    /// easily printed out and read back in for replay purposes.
-    pub(crate) fn serialized_schedule(&self) -> String {
-        serialize_schedule(self.current_schedule())
     }
 }
 
-impl Scheduler for MetricsScheduler {
+impl<S: Scheduler> Scheduler for MetricsScheduler<S> {
     fn new_execution(&mut self) -> bool {
-        self.num_iterations += 1;
-        self.current_schedule.clear();
-        self.inner.borrow_mut().new_execution()
+        if self.iterations > 0 {
+            self.steps_metric.record(self.steps);
+            self.steps = 0;
+
+            self.context_switches_metric.record(self.context_switches);
+            self.context_switches = 0;
+            self.preemptions_metric.record(self.preemptions);
+            self.preemptions = 0;
+
+            if self.iterations % self.iteration_divisor == 0 {
+                info!(iterations = self.iterations);
+
+                if self.iterations == self.iteration_divisor * 10 {
+                    self.iteration_divisor *= 10;
+                }
+            }
+        }
+        self.iterations += 1;
+
+        self.inner.new_execution()
     }
 
     fn next_task(&mut self, runnable_tasks: &[TaskId], current_task: Option<TaskId>) -> Option<TaskId> {
-        let choice = self.inner.borrow_mut().next_task(runnable_tasks, current_task)?;
-        self.current_schedule.push(choice);
+        let choice = self.inner.next_task(runnable_tasks, current_task)?;
+
+        self.steps += 1;
+        if choice != self.last_task {
+            self.context_switches += 1;
+            if runnable_tasks.contains(&self.last_task) {
+                self.preemptions += 1;
+            }
+        }
+        self.last_task = choice;
+
         Some(choice)
+    }
+}
+
+impl<S> Drop for MetricsScheduler<S> {
+    fn drop(&mut self) {
+        info!(
+            iterations = self.iterations - 1,
+            steps = %self.steps_metric,
+            context_switches = %self.context_switches_metric,
+            preemptions = %self.preemptions,
+            "run finished"
+        );
+    }
+}
+
+/// A simple thing that can record a stream of `usize` values, and then report their min, max,
+/// and average.
+#[derive(Debug)]
+struct CountSummaryMetric {
+    min: usize,
+    sum: usize,
+    max: usize,
+    n: usize,
+}
+
+impl CountSummaryMetric {
+    fn new() -> Self {
+        Self {
+            min: usize::MAX,
+            sum: 0,
+            max: 0,
+            n: 0,
+        }
+    }
+
+    fn record(&mut self, value: usize) {
+        if value < self.min {
+            self.min = value;
+        }
+        if value > self.max {
+            self.max = value;
+        }
+        self.sum += value;
+        self.n += 1;
+    }
+}
+
+impl std::fmt::Display for CountSummaryMetric {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "[min={}, max={},", self.min, self.max)?;
+        if self.n > 0 {
+            let avg = self.sum as f64 / self.n as f64;
+            write!(f, " avg={:.1}", avg)?;
+        }
+        write!(f, "]")
     }
 }
