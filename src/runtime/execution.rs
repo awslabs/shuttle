@@ -1,4 +1,4 @@
-use crate::runtime::task::{Task, TaskId, TaskState, MAX_TASKS};
+use crate::runtime::task::{Task, TaskId, TaskState, TaskType, MAX_TASKS};
 use crate::runtime::thread::future::ThreadFuture;
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::Scheduler;
@@ -53,7 +53,7 @@ impl Execution {
         EXECUTION_STATE.set(&state, || {
             // Spawn `f` as the first task
             let first_task = ThreadFuture::new(f);
-            ExecutionState::spawn(first_task);
+            ExecutionState::spawn(first_task, TaskType::Thread);
 
             // Run the test to completion
             while self.step() {}
@@ -71,7 +71,10 @@ impl Execution {
             state.advance_to_next_task();
 
             match state.current_task {
-                ScheduledTask::Some(tid) => Some(Rc::clone(&state.get(tid).future)),
+                ScheduledTask::Some(tid) => {
+                    let task = state.get(tid);
+                    Some((Rc::clone(&task.future), task.waker()))
+                }
                 ScheduledTask::Finished => {
                     let task_states = state
                         .tasks
@@ -96,10 +99,8 @@ impl Execution {
         // Run a single step of the chosen future. The future might be a ThreadFuture, in which case
         // it may run multiple steps of the same future if the scheduler so decides.
         let ret = match result {
-            Some(future) => panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                // TODO implement real waker support
-                let waker = futures::task::noop_waker_ref();
-                let mut cx = &mut Context::from_waker(waker);
+            Some((future, waker)) => panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                let mut cx = &mut Context::from_waker(&waker);
                 future.borrow_mut().as_mut().poll(&mut cx)
             })),
             None => return false,
@@ -110,9 +111,9 @@ impl Execution {
                 Ok(Poll::Ready(_)) => {
                     state.current_mut().state = TaskState::Finished;
                 }
-                // TODO if it's a real future, we should mark it blocked here rather than polling it
-                // TODO indefinitely, once we have waker support
-                Ok(Poll::Pending) => (),
+                Ok(Poll::Pending) => {
+                    state.current_mut().block_after_running();
+                }
                 Err(e) => {
                     let msg = format!(
                         "test panicked with schedule: {:?}",
@@ -209,10 +210,10 @@ impl ExecutionState {
 
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
     /// if it wants to give the new task a chance to run immediately.
-    pub(crate) fn spawn(future: impl Future<Output = ()> + 'static + Send) -> TaskId {
+    pub(crate) fn spawn(future: impl Future<Output = ()> + 'static + Send, task_type: TaskType) -> TaskId {
         Self::with(|state| {
             let task_id = TaskId(state.tasks.len());
-            let task = Task::new(Box::pin(future), task_id);
+            let task = Task::new(Box::pin(future), task_id, task_type);
             state.tasks.push(task);
             task_id
         })

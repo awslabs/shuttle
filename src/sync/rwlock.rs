@@ -186,15 +186,22 @@ impl<T> RwLock<T> {
         }
     }
 
-    fn unblock_waiters(state: &RwLockState, me: TaskId, should_be_blocked: bool) {
-        for tid in state.waiting_readers.iter().chain(state.waiting_writers.iter()) {
-            assert_ne!(tid, me);
+    fn unblock_waiters(state: &RwLockState, me: TaskId, drop_type: RwLockType) {
+        for tid in state.waiting_readers.iter() {
+            debug_assert_ne!(tid, me);
             ExecutionState::with(|s| {
-                if should_be_blocked {
-                    s.get_mut(tid).unblock();
-                } else {
-                    s.get_mut(tid).maybe_unblock();
-                }
+                let t = s.get_mut(tid);
+                debug_assert!(drop_type == RwLockType::Read || t.blocked());
+                t.unblock();
+            });
+        }
+
+        for tid in state.waiting_writers.iter() {
+            debug_assert_ne!(tid, me);
+            ExecutionState::with(|s| {
+                let t = s.get_mut(tid);
+                debug_assert!(t.blocked());
+                t.unblock();
             });
         }
     }
@@ -247,7 +254,7 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
             }
             _ => panic!("exiting a reader but rwlock is in the wrong state"),
         }
-        RwLock::<T>::unblock_waiters(&*state, me, false);
+        RwLock::<T>::unblock_waiters(&*state, me, RwLockType::Read);
         trace!(
             holder = ?state.holder,
             waiting_readers = ?state.waiting_readers,
@@ -283,7 +290,7 @@ impl<T> Drop for RwLockWriteGuard<'_, T> {
         let mut state = self.state.borrow_mut();
         assert_eq!(state.holder, RwLockHolder::Write(me));
         state.holder = RwLockHolder::None;
-        RwLock::<T>::unblock_waiters(&*state, me, true);
+        RwLock::<T>::unblock_waiters(&*state, me, RwLockType::Write);
         trace!(
             holder = ?state.holder,
             waiting_readers = ?state.waiting_readers,

@@ -1,7 +1,13 @@
 use futures::future::BoxFuture;
+use futures::task::{waker, Waker};
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+pub(crate) mod waker;
+use waker::TaskUnblockingWaker;
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
@@ -26,23 +32,37 @@ use std::rc::Rc;
 // TODO make bigger and configurable
 pub(crate) const MAX_TASKS: usize = 16;
 
-/// A `Task` represents a user-level unit of concurrency (currently, that's just a thread). Each
-/// task has an `id` that is unique within the execution, and a `state` reflecting whether the task
-/// is runnable (enabled) or not.
+/// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
+/// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
 pub(crate) struct Task {
     pub(super) id: TaskId,
     pub(super) state: TaskState,
-    waiter: Option<TaskId>,
+    // We use this to decide whether to block this task if it returns Poll::Pending
+    task_type: TaskType,
+
     pub(super) future: Rc<RefCell<BoxFuture<'static, ()>>>,
+
+    waiter: Option<TaskId>,
+
+    waker: Arc<TaskUnblockingWaker>,
+    // Just memoizes `futures::task::waker(self.waker)` so we don't recompute it all the time
+    raw_waker: Waker,
 }
 
 impl Task {
-    pub(crate) fn new(future: BoxFuture<'static, ()>, id: TaskId) -> Self {
+    pub(crate) fn new(future: BoxFuture<'static, ()>, id: TaskId, task_type: TaskType) -> Self {
+        let arc_waker = Arc::new(TaskUnblockingWaker::new(id));
+
         Self {
             id,
             state: TaskState::Runnable,
-            waiter: None,
+            task_type,
+
             future: Rc::new(RefCell::new(future)),
+
+            waiter: None,
+            waker: arc_waker.clone(),
+            raw_waker: waker(arc_waker),
         }
     }
 
@@ -58,29 +78,38 @@ impl Task {
         self.state == TaskState::Blocked
     }
 
-    pub(crate) fn waiter(&self) -> Option<TaskId> {
-        self.waiter
+    pub(crate) fn waker(&self) -> Waker {
+        self.raw_waker.clone()
     }
 
     pub(crate) fn block(&mut self) {
-        assert_eq!(self.state, TaskState::Runnable);
+        debug_assert_eq!(self.state, TaskState::Runnable);
         self.state = TaskState::Blocked;
     }
 
-    pub(crate) fn unblock(&mut self) {
-        assert_eq!(self.state, TaskState::Blocked);
-        self.state = TaskState::Runnable;
+    /// Potentially block this task after it was polled by the executor.
+    ///
+    /// A task that wraps a `ThreadFuture` won't be blocked here, because we want threads to be
+    /// enabled-by-default to avoid bugs where Shuttle incorrectly omits a potential execution.
+    /// We also need to handle a special case where a task invoked its own waker, in which case
+    /// we should not block the task.
+    pub(crate) fn block_after_running(&mut self) {
+        let was_woken_by_self = self.waker.woken_by_self.swap(false, Ordering::SeqCst);
+        if self.task_type == TaskType::Future && !was_woken_by_self {
+            self.block();
+        }
     }
 
-    /// Like `unblock` but the target doesn't have to be already blocked
-    pub(crate) fn maybe_unblock(&mut self) {
+    pub(crate) fn unblock(&mut self) {
+        // Note we don't assert the task was blocked here. For example, a task invoking its own
+        // waker will not be blocked.
         self.state = TaskState::Runnable;
     }
 
     /// Register a waiter for this thread to terminate. Returns a boolean indicating whether the
     /// waiter should block or not. If false, this task has already finished, and so the waiter need
     /// not block.
-    pub(crate) fn wait_for(&mut self, waiter: TaskId) -> bool {
+    pub(crate) fn set_waiter(&mut self, waiter: TaskId) -> bool {
         assert!(self.waiter.is_none());
         if self.finished() {
             false
@@ -89,6 +118,10 @@ impl Task {
             true
         }
     }
+
+    pub(crate) fn take_waiter(&mut self) -> Option<TaskId> {
+        self.waiter.take()
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -96,6 +129,12 @@ pub(crate) enum TaskState {
     Runnable,
     Blocked,
     Finished,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub(crate) enum TaskType {
+    Thread,
+    Future,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy, PartialOrd, Ord, Debug)]

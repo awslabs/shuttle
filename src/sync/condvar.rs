@@ -197,7 +197,7 @@ impl Condvar {
             }
 
             // The task might have been unblocked by a previous signal, so maybe_unblock
-            ExecutionState::with(|s| s.get_mut(*tid).maybe_unblock());
+            ExecutionState::with(|s| s.get_mut(*tid).unblock());
         }
         state.next_epoch += 1;
 
@@ -218,7 +218,7 @@ impl Condvar {
             assert_ne!(*tid, me);
             *status = CondvarWaitStatus::Broadcast;
             // The task might have been unblocked by a previous signal, so maybe_unblock
-            ExecutionState::with(|s| s.get_mut(*tid).maybe_unblock());
+            ExecutionState::with(|s| s.get_mut(*tid).unblock());
         }
 
         drop(state);

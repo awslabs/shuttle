@@ -1,25 +1,7 @@
-use shuttle::{asynch, check, check_dfs, thread};
+use shuttle::{asynch, check_dfs, check_random, scheduler::PCTScheduler, thread, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use test_env_log::test;
-
-#[test]
-fn async_counting() {
-    let counter = std::sync::Arc::new(AtomicUsize::new(0));
-    let counter_1 = std::sync::Arc::clone(&counter);
-
-    check(move || {
-        let counter_2 = std::sync::Arc::clone(&counter_1);
-        asynch::spawn(async move {
-            counter_2.fetch_add(1, Ordering::SeqCst);
-        });
-        let counter_3 = std::sync::Arc::clone(&counter_1);
-        asynch::spawn(async move {
-            counter_3.fetch_add(1, Ordering::SeqCst);
-        });
-    });
-
-    assert_eq!(counter.load(Ordering::SeqCst), 2);
-}
 
 async fn add(a: u32, b: u32) -> u32 {
     a + b
@@ -52,7 +34,7 @@ fn async_with_join() {
                 });
             });
         },
-        Some(1_000), // TODO Remove this limit when async tasks are blocked when Pending
+        None,
         None,
     );
 }
@@ -91,4 +73,79 @@ fn async_block_on() {
         None,
         None,
     );
+}
+
+#[test]
+fn async_spawn() {
+    check_dfs(
+        || {
+            let t = asynch::spawn(async { 42u32 });
+            let v = asynch::block_on(async { t.await.unwrap() });
+            assert_eq!(v, 42u32);
+        },
+        None,
+        None,
+    );
+}
+
+#[test]
+fn async_spawn_chain() {
+    check_dfs(
+        || {
+            let t1 = asynch::spawn(async { 1u32 });
+            let t2 = asynch::spawn(async move { t1.await.unwrap() });
+            let v = asynch::block_on(async move { t2.await.unwrap() });
+            assert_eq!(v, 1u32);
+        },
+        None,
+        None,
+    );
+}
+
+#[test]
+fn async_yield() {
+    check_dfs(
+        || {
+            let v = asynch::block_on(async {
+                asynch::yield_now().await;
+                42u32
+            });
+            assert_eq!(v, 42u32);
+        },
+        None,
+        None,
+    )
+}
+
+fn async_counter() {
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let tasks: Vec<_> = (0..10)
+        .map(|_| {
+            let counter = Arc::clone(&counter);
+            asynch::spawn(async move {
+                let c = counter.load(Ordering::SeqCst);
+                asynch::yield_now().await;
+                counter.fetch_add(c, Ordering::SeqCst);
+            })
+        })
+        .collect();
+
+    asynch::block_on(async move {
+        for t in tasks {
+            t.await.unwrap();
+        }
+    });
+}
+
+#[test]
+fn async_counter_random() {
+    check_random(async_counter, 5000)
+}
+
+#[test]
+fn async_counter_pct() {
+    let scheduler = PCTScheduler::new(2, 5000);
+    let runner = Runner::new(scheduler);
+    runner.run(async_counter);
 }
