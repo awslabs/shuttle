@@ -1,5 +1,6 @@
 use crate::runtime::execution::Execution;
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
+use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::Scheduler;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,15 +13,17 @@ use tracing::{span, Level};
 /// function as many times as dictated by the scheduler; each execution has its scheduling decisions
 /// resolved by the scheduler, which can make different choices for each execution.
 #[derive(Debug)]
-pub struct Runner {
-    scheduler: Rc<RefCell<Box<dyn Scheduler>>>,
+pub struct Runner<S> {
+    scheduler: Rc<RefCell<MetricsScheduler<S>>>,
 }
 
-impl Runner {
+impl<S: Scheduler + 'static> Runner<S> {
     /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
-    pub fn new(scheduler: impl Scheduler + 'static) -> Self {
+    pub fn new(scheduler: S) -> Self {
+        let metrics_scheduler = MetricsScheduler::new(scheduler);
+
         Self {
-            scheduler: Rc::new(RefCell::new(Box::new(scheduler))),
+            scheduler: Rc::new(RefCell::new(metrics_scheduler)),
         }
     }
 
@@ -37,7 +40,7 @@ impl Runner {
 
             let mut i = 0;
             while self.scheduler.borrow_mut().new_execution() {
-                let execution = Execution::new(Rc::clone(&self.scheduler));
+                let execution = Execution::new(self.scheduler.clone());
                 let f = Arc::clone(&f);
                 span!(Level::DEBUG, "execution", i).in_scope(|| execution.run(move || f()));
                 i += 1;

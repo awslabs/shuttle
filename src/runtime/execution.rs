@@ -1,7 +1,7 @@
 use crate::runtime::task::{Task, TaskId, TaskState, TaskType, MAX_TASKS};
 use crate::runtime::thread::future::ThreadFuture;
-use crate::scheduler::metrics::MetricsScheduler;
-use crate::scheduler::Scheduler;
+use crate::scheduler::serialization::serialize_schedule;
+use crate::scheduler::{Schedule, Scheduler};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -27,14 +27,14 @@ scoped_thread_local! {
 /// spawn new tasks, etc). The `Execution` makes this state available through the `EXECUTION_STATE`
 /// static variable, but clients get access to it by calling `ExecutionState::with`.
 pub(crate) struct Execution {
-    scheduler: Rc<RefCell<Box<dyn Scheduler>>>,
+    scheduler: Rc<RefCell<dyn Scheduler>>,
 }
 
 impl Execution {
     /// Construct a new execution that will use the given scheduler. The execution should then be
     /// invoked via its `run` method, which takes as input the closure for task 0.
     // TODO this is where we'd pass in config for max_tasks etc
-    pub(crate) fn new(scheduler: Rc<RefCell<Box<dyn Scheduler>>>) -> Self {
+    pub(crate) fn new(scheduler: Rc<RefCell<dyn Scheduler>>) -> Self {
         Self { scheduler }
     }
 }
@@ -47,8 +47,7 @@ impl Execution {
     where
         F: FnOnce() + Send + 'static,
     {
-        let scheduler = MetricsScheduler::new(Rc::clone(&self.scheduler));
-        let state = RefCell::new(ExecutionState::new(scheduler));
+        let state = RefCell::new(ExecutionState::new(Rc::clone(&self.scheduler)));
 
         EXECUTION_STATE.set(&state, || {
             // Spawn `f` as the first task
@@ -84,7 +83,7 @@ impl Execution {
                     if task_states.iter().any(|(_, s)| *s == TaskState::Blocked) {
                         panic!(
                             "deadlock with schedule: {:?}\nrunnable tasks: {:?}",
-                            state.scheduler.serialized_schedule(),
+                            serialize_schedule(&state.current_schedule),
                             task_states,
                         );
                     }
@@ -117,7 +116,7 @@ impl Execution {
                 Err(e) => {
                     let msg = format!(
                         "test panicked with schedule: {:?}",
-                        state.scheduler.serialized_schedule()
+                        serialize_schedule(&state.current_schedule),
                     );
                     eprintln!("{}", msg);
                     eprintln!("pass that schedule string into `shuttle::replay` to reproduce the failure");
@@ -146,7 +145,8 @@ pub(crate) struct ExecutionState {
     // the task the scheduler has chosen to run next
     next_task: ScheduledTask,
 
-    scheduler: MetricsScheduler,
+    scheduler: Rc<RefCell<dyn Scheduler>>,
+    current_schedule: Schedule,
 
     // For `tracing`, we track the current task's Span here and manage it in `schedule_next_task`.
     // Drop order is significant here; see the unsafe code in `schedule_next_task` for why.
@@ -179,12 +179,13 @@ impl ScheduledTask {
 }
 
 impl ExecutionState {
-    fn new(scheduler: MetricsScheduler) -> Self {
+    fn new(scheduler: Rc<RefCell<dyn Scheduler>>) -> Self {
         Self {
             tasks: vec![],
             current_task: ScheduledTask::None,
             next_task: ScheduledTask::None,
             scheduler,
+            current_schedule: Schedule::new(),
             current_span_entered: None,
             current_span: Span::none(),
             #[cfg(debug_assertions)]
@@ -321,6 +322,7 @@ impl ExecutionState {
 
         self.next_task = self
             .scheduler
+            .borrow_mut()
             .next_task(&runnable, self.current_task.id())
             .map(ScheduledTask::Some)
             .unwrap_or(ScheduledTask::Stopped);
@@ -332,6 +334,9 @@ impl ExecutionState {
     fn advance_to_next_task(&mut self) {
         debug_assert_ne!(self.next_task, ScheduledTask::None);
         self.current_task = self.next_task.take();
+        if let ScheduledTask::Some(tid) = self.current_task {
+            self.current_schedule.push(tid);
+        }
 
         // Safety: Unfortunately `ExecutionState` is a static, but `Entered<'a>` is tied to the
         // lifetime 'a of its corresponding Span, so we can't stash the `Entered` into
@@ -340,12 +345,7 @@ impl ExecutionState {
         // `self.current_span_entered` before dropping the `self.current_span` it points to.
         self.current_span_entered.take();
         if let ScheduledTask::Some(tid) = self.current_task {
-            self.current_span = span!(
-                Level::DEBUG,
-                "step",
-                i = self.scheduler.current_schedule().len() - 1,
-                task = tid.0,
-            );
+            self.current_span = span!(Level::DEBUG, "step", i = self.current_schedule.len() - 1, task = tid.0);
             self.current_span_entered = Some(unsafe { extend_span_entered_lt(self.current_span.enter()) });
         }
     }

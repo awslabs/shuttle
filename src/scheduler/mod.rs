@@ -23,7 +23,7 @@ pub use round_robin::RoundRobinScheduler;
 pub struct Schedule(Vec<TaskId>);
 
 impl Schedule {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(vec![])
     }
 }
