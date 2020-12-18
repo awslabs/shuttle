@@ -2,4 +2,5 @@
 #![allow(clippy::eval_order_dependence)]
 
 mod basic;
+mod channel;
 mod countdown_timer;

@@ -37,7 +37,7 @@ where
         let mut cell = self.state.borrow_mut();
         if cell.remain > 0 {
             cell.remain -= 1;
-            cx.waker().clone().wake();
+            cx.waker().wake_by_ref();
             Poll::Pending
         } else {
             Poll::Ready(cell.value.take().unwrap())
@@ -62,7 +62,7 @@ fn timer_simple() {
                 assert_eq!(sum, 10 + 20 + 40);
             });
         },
-        Some(500), // TODO Remove this limit when async tasks are blocked when Pending
+        None,
         None,
     );
 }

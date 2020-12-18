@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "buffer"
 harness = false
+
+[[bench]]
+name = "counter"
+harness = false

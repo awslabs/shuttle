@@ -1,7 +1,7 @@
 //! Shuttle's implementation of `std::thread`.
 
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{TaskId, TaskType};
 use crate::runtime::thread;
 use crate::runtime::thread::future::ThreadFuture;
 
@@ -26,14 +26,12 @@ where
             // scheduler.
             *result.lock().unwrap() = Some(Ok(ret));
             ExecutionState::with(|state| {
-                if let Some(waiter) = state.current().waiter() {
-                    let waiter = state.get_mut(waiter);
-                    assert!(waiter.blocked());
-                    waiter.unblock();
+                if let Some(waiter) = state.current_mut().take_waiter() {
+                    state.get_mut(waiter).unblock();
                 }
             });
         });
-        ExecutionState::spawn(task)
+        ExecutionState::spawn(task, TaskType::Thread)
     };
 
     thread::switch();
@@ -54,7 +52,7 @@ impl<T> JoinHandle<T> {
         ExecutionState::with(|state| {
             let me = state.current().id();
             let target = state.get_mut(self.task_id);
-            if target.wait_for(me) {
+            if target.set_waiter(me) {
                 state.current_mut().block();
             }
         });

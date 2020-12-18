@@ -1,7 +1,7 @@
 //! Shuttle's implementation of `async_runtime::spawn`.
 
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{TaskId, TaskType};
 use crate::runtime::thread;
 use futures::future::Future;
 use std::pin::Pin;
@@ -15,7 +15,8 @@ where
     T: Send + 'static,
 {
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let task_id = ExecutionState::spawn(Wrapper::new(fut, std::sync::Arc::clone(&result)));
+    let task_id = ExecutionState::spawn(Wrapper::new(fut, std::sync::Arc::clone(&result)), TaskType::Future);
+    // TODO I think we need to yield here to give the spawned task a chance to execute before the spawner continues
     JoinHandle { task_id, result }
 }
 
@@ -27,8 +28,8 @@ pub struct JoinHandle<T> {
 }
 
 impl<T> JoinHandle<T> {
-    // TODO: providing this because tokio does
     /// Abort the task associated with the handle.
+    // TODO implement (only tokio provides this)
     pub fn abort(&self) {
         unimplemented!();
     }
@@ -46,11 +47,14 @@ impl<T> Future for JoinHandle<T> {
     type Output = Result<T, JoinError>;
 
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Check if result is available
-        let result = self.result.lock().unwrap().take();
-        if let Some(result) = result {
-            Poll::Ready(Ok(result.expect("task should have finished")))
+        if let Some(result) = self.result.lock().unwrap().take() {
+            Poll::Ready(result)
         } else {
+            ExecutionState::with(|state| {
+                let me = state.current().id();
+                let r = state.get_mut(self.task_id).set_waiter(me);
+                assert!(r, "task shouldn't be finished if no result is present");
+            });
             Poll::Pending
         }
     }
@@ -88,11 +92,10 @@ where
             Poll::Ready(result) => {
                 *self.result.lock().unwrap() = Some(Ok(result));
 
+                // Unblock our waiter if we have one
                 ExecutionState::with(|state| {
-                    if let Some(waiter) = state.current().waiter() {
-                        let waiter = state.get_mut(waiter);
-                        assert!(waiter.blocked());
-                        waiter.unblock();
+                    if let Some(waiter) = state.current_mut().take_waiter() {
+                        state.get_mut(waiter).unblock();
                     }
                 });
 
@@ -116,7 +119,7 @@ where
     ExecutionState::with(|state| {
         let me = state.current().id();
         let target = state.get_mut(handle.task_id);
-        if target.wait_for(me) {
+        if target.set_waiter(me) {
             state.current_mut().block();
         }
     });
@@ -124,5 +127,34 @@ where
     thread::switch(); // Required in case the thread blocked
 
     let result = handle.result.lock().unwrap().take();
-    result.unwrap().expect("result should be available to waiter")
+    result
+        .expect("result should be available to waiter")
+        .expect("task should not fail")
+}
+
+/// Yields execution back to the scheduler.
+///
+/// Borrowed from the Tokio implementation.
+#[must_use = "yield_now does nothing unless polled/`await`-ed"]
+pub async fn yield_now() {
+    /// Yield implementation
+    struct YieldNow {
+        yielded: bool,
+    }
+
+    impl Future for YieldNow {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.yielded {
+                return Poll::Ready(());
+            }
+
+            self.yielded = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    YieldNow { yielded: false }.await
 }

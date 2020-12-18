@@ -127,8 +127,12 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         let mut state = self.mutex.state.borrow_mut();
         state.holder = None;
         for tid in state.waiters.iter() {
-            assert_ne!(tid, me);
-            ExecutionState::with(|s| s.get_mut(tid).unblock());
+            debug_assert_ne!(tid, me);
+            ExecutionState::with(|s| {
+                let t = s.get_mut(tid);
+                debug_assert!(t.blocked());
+                t.unblock();
+            });
         }
         trace!(waiters=?state.waiters, "releasing mutex {:p}", self.mutex);
         drop(state);
