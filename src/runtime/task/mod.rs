@@ -1,13 +1,11 @@
 use futures::future::BoxFuture;
-use futures::task::{waker, Waker};
+use futures::task::Waker;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 pub(crate) mod waker;
-use waker::TaskUnblockingWaker;
+use waker::make_waker;
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
@@ -44,14 +42,14 @@ pub(crate) struct Task {
 
     waiter: Option<TaskId>,
 
-    waker: Arc<TaskUnblockingWaker>,
-    // Just memoizes `futures::task::waker(self.waker)` so we don't recompute it all the time
-    raw_waker: Waker,
+    waker: Waker,
+    // Remember whether the waker was invoked while we were running so we don't re-block
+    woken_by_self: bool,
 }
 
 impl Task {
     pub(crate) fn new(future: BoxFuture<'static, ()>, id: TaskId, task_type: TaskType) -> Self {
-        let arc_waker = Arc::new(TaskUnblockingWaker::new(id));
+        let waker = make_waker(id);
 
         Self {
             id,
@@ -61,8 +59,8 @@ impl Task {
             future: Rc::new(RefCell::new(future)),
 
             waiter: None,
-            waker: arc_waker.clone(),
-            raw_waker: waker(arc_waker),
+            waker,
+            woken_by_self: false,
         }
     }
 
@@ -79,7 +77,7 @@ impl Task {
     }
 
     pub(crate) fn waker(&self) -> Waker {
-        self.raw_waker.clone()
+        self.waker.clone()
     }
 
     pub(crate) fn block(&mut self) {
@@ -94,10 +92,16 @@ impl Task {
     /// We also need to handle a special case where a task invoked its own waker, in which case
     /// we should not block the task.
     pub(crate) fn block_after_running(&mut self) {
-        let was_woken_by_self = self.waker.woken_by_self.swap(false, Ordering::SeqCst);
+        let was_woken_by_self = std::mem::replace(&mut self.woken_by_self, false);
         if self.task_type == TaskType::Future && !was_woken_by_self {
             self.block();
         }
+    }
+
+    /// Remember that we have been unblocked while we were currently running, and therefore should
+    /// not be blocked again by `block_after_running`.
+    pub(super) fn set_woken_by_self(&mut self) {
+        self.woken_by_self = true;
     }
 
     pub(crate) fn unblock(&mut self) {
