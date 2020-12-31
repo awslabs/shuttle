@@ -4,7 +4,7 @@
 use crate::runtime::task::TaskId;
 use crate::scheduler::Schedule;
 use bitvec::prelude::*;
-use integer_encoding::VarInt;
+use varmint::*;
 
 // The serialization format is this:
 //   [task id bitwidth] [number of schedule steps] [task id]*
@@ -29,10 +29,10 @@ pub(crate) fn serialize_schedule(schedule: &Schedule) -> String {
     }
 
     let mut buf =
-        Vec::with_capacity(1 + task_id_bits.required_space() + schedule.len().required_space() + encoded.len());
+        Vec::with_capacity(1 + len_usize_varint(task_id_bits) + len_usize_varint(schedule.len()) + encoded.len());
     buf.push(SCHEDULE_MAGIC_V1);
-    buf.extend(task_id_bits.encode_var_vec());
-    buf.extend(schedule.len().encode_var_vec());
+    buf.write_usize_varint(task_id_bits).unwrap();
+    buf.write_usize_varint(schedule.len()).unwrap();
     buf.extend(encoded.as_slice());
     hex::encode(buf)
 }
@@ -44,13 +44,10 @@ pub(crate) fn deserialize_schedule(str: &str) -> Option<Schedule> {
     if version != SCHEDULE_MAGIC_V1 {
         return None;
     }
-    let bytes = &bytes[1..];
+    let mut bytes = &bytes[1..];
 
-    let (task_id_bits, consumed) = usize::decode_var(&bytes[..]);
-    let bytes = &bytes[consumed..];
-
-    let (schedule_len, consumed) = usize::decode_var(bytes);
-    let bytes = &bytes[consumed..];
+    let task_id_bits = bytes.read_usize_varint().ok()?;
+    let schedule_len = bytes.read_usize_varint().ok()?;
 
     if schedule_len == 0 {
         return Some(vec![].into());
