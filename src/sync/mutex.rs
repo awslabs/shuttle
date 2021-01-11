@@ -97,8 +97,8 @@ impl<T> Mutex<T> {
 // Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
 // TODO we shouldn't need to do this, but RefCell is not Send, and anything we put within a Mutex
 // TODO needs to be Send.
-unsafe impl<T> Send for Mutex<T> {}
-unsafe impl<T> Sync for Mutex<T> {}
+unsafe impl<T: Send> Send for Mutex<T> {}
+unsafe impl<T: Send> Sync for Mutex<T> {}
 
 impl<T: Default> Default for Mutex<T> {
     fn default() -> Self {
