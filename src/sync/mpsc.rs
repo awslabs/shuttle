@@ -255,8 +255,8 @@ impl<T> Channel<T> {
 // Safety: A Channel is never actually passed across true threads, only across continuations. The
 // Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
 // TODO We use this workaround in several places in Shuttle.  Maybe there's a cleaner solution.
-unsafe impl<T> Send for Channel<T> {}
-unsafe impl<T> Sync for Channel<T> {}
+unsafe impl<T: Send> Send for Channel<T> {}
+unsafe impl<T: Send> Sync for Channel<T> {}
 
 /// The receiving half of Rust's [`channel`] (or [`sync_channel`]) type.
 /// This half can only be owned by one thread.

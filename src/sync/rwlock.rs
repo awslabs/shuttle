@@ -211,8 +211,8 @@ impl<T> RwLock<T> {
 // Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
 // TODO we shouldn't need to do this, but RefCell is not Send, and anything we put within a RwLock
 // TODO needs to be Send.
-unsafe impl<T> Send for RwLock<T> {}
-unsafe impl<T> Sync for RwLock<T> {}
+unsafe impl<T: Send> Send for RwLock<T> {}
+unsafe impl<T: Send> Sync for RwLock<T> {}
 
 // TODO this is the RefCell biting us again
 impl<T> UnwindSafe for RwLock<T> {}
