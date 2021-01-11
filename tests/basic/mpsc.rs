@@ -58,7 +58,7 @@ fn mpsc_loom_commutative_senders() {
 fn ignore_result<A, B>(_: Result<A, B>) {}
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "expected panic: sends can happen in any order")]
 fn mpsc_loom_non_commutative_senders1() {
     check_dfs(
         || {
@@ -71,7 +71,7 @@ fn mpsc_loom_non_commutative_senders1() {
                 ignore_result(s2.send(6));
             });
             let val = r.recv().unwrap();
-            assert_eq!(val, 5);
+            assert_eq!(val, 5, "expected panic: sends can happen in any order");
             ignore_result(r.recv());
         },
         None,
@@ -80,7 +80,7 @@ fn mpsc_loom_non_commutative_senders1() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "expected panic: sends can happen in any order")]
 fn mpsc_loom_non_commutative_senders2() {
     check_dfs(
         || {
@@ -93,7 +93,7 @@ fn mpsc_loom_non_commutative_senders2() {
                 ignore_result(s2.send(6));
             });
             let val = r.recv().unwrap();
-            assert_eq!(val, 6);
+            assert_eq!(val, 6, "expected panic: sends can happen in any order");
             ignore_result(r.recv());
         },
         None,
@@ -421,22 +421,23 @@ fn mpsc_recv_from_outside_runtime() {
 }
 
 // From libstd test suite
-// TODO This test actually should not panic, because calling join on a child thread that panics
-// TODO should return an Err with the parameter given to the panic
-// TODO See documentation for `join` in https://doc.rust-lang.org/std/thread/struct.JoinHandle.html
+// TODO This test checks that joining on a child thread that panicked returns Err, but Shuttle
+// TODO aborts a test as soon as any thread panics (and propagates the panic), so we never get a
+// TODO chance to check the join result. If this abort behavior ever changes, this test should start
+// TODO failing because it no longer propagates the thread panic.
 #[test]
-#[should_panic]
+#[should_panic(expected = "RecvError")]
 fn mpsc_oneshot_single_thread_recv_chan_close() {
     check_dfs(
         || {
-            // Receiving on a closed chan will panic
+            // Receiving on a closed chan will panic and should propagate to the JoinHandle
             let res = thread::spawn(move || {
                 let (tx, rx) = channel::<i32>();
                 drop(tx);
                 rx.recv().unwrap();
             })
             .join();
-            // What is our res?
+
             assert!(res.is_err());
         },
         None,
