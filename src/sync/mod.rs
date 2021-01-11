@@ -5,7 +5,7 @@ mod mpsc;
 mod mutex;
 mod rwlock;
 
-pub use condvar::Condvar;
+pub use condvar::{Condvar, WaitTimeoutResult};
 
 pub use mpsc::{channel, sync_channel};
 pub use mpsc::{Receiver, RecvError, Sender, SyncSender, TryRecvError};

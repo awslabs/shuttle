@@ -5,7 +5,8 @@ use crate::sync::MutexGuard;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
-use std::sync::LockResult;
+use std::sync::{LockResult, PoisonError};
+use std::time::Duration;
 use tracing::trace;
 
 /// A `Convdvar` represents the ability to block a thread such that it consumes no CPU time while
@@ -167,6 +168,18 @@ impl Condvar {
         mutex.lock()
     }
 
+    /// Waits on this condition variable for a notification, timing out after a specified duration.
+    pub fn wait_timeout<'a, T>(
+        &self,
+        guard: MutexGuard<'a, T>,
+        _dur: Duration,
+    ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
+        // TODO support the timeout case -- this method never times out
+        self.wait(guard)
+            .map(|guard| (guard, WaitTimeoutResult(false)))
+            .map_err(|e| PoisonError::new((e.into_inner(), WaitTimeoutResult(false))))
+    }
+
     /// Wakes up one blocked thread on this condvar.
     ///
     /// If there is a blocked thread on this condition variable, then it will be woken up from its
@@ -236,5 +249,16 @@ unsafe impl Sync for Condvar {}
 impl Default for Condvar {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A type indicating whether a timed wait on a condition variable returned due to a time out or not.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub struct WaitTimeoutResult(bool);
+
+impl WaitTimeoutResult {
+    /// Returns `true` if the wait was known to have timed out.
+    pub fn timed_out(&self) -> bool {
+        self.0
     }
 }

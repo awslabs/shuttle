@@ -4,6 +4,7 @@ use shuttle::sync::{Condvar, Mutex};
 use shuttle::{check_dfs, check_random, replay, thread};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use test_env_log::test;
 use tracing::info;
 
@@ -436,4 +437,33 @@ fn producer_consumer_random() {
             5000,
         )
     }
+}
+
+#[test]
+fn notify_one_timeout() {
+    // TODO we don't currently implement timeouts in `wait_timeout`, so this test is identical
+    // TODO to `notify_one`.
+    check_dfs(
+        || {
+            let lock = Arc::new(Mutex::new(false));
+            let cond = Arc::new(Condvar::new());
+
+            {
+                let lock = Arc::clone(&lock);
+                let cond = Arc::clone(&cond);
+                thread::spawn(move || {
+                    let mut guard = lock.lock().unwrap();
+                    while !*guard {
+                        guard = cond.wait_timeout(guard, Duration::from_secs(10)).unwrap().0;
+                    }
+                });
+            }
+
+            *lock.lock().unwrap() = true;
+            // Note: it's valid to signal a condvar while not holding the corresponding lock
+            cond.notify_one();
+        },
+        None,
+        None,
+    )
 }
