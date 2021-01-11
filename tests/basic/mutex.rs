@@ -65,7 +65,7 @@ fn deadlock_pct() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "racing increments")]
 fn concurrent_increment_buggy() {
     let scheduler = PCTScheduler::new(2, 100);
     let runner = Runner::new(scheduler);
@@ -88,7 +88,7 @@ fn concurrent_increment_buggy() {
 
         let counter = *lock.lock().unwrap();
         info!(counter);
-        assert_eq!(counter, 2);
+        assert_eq!(counter, 2, "racing increments");
     });
 }
 

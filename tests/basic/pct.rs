@@ -22,7 +22,7 @@ fn figure5() {
     });
 
     let l = lock.lock().unwrap();
-    assert_ne!(*l, 1);
+    assert_ne!(*l, 1, "thread 1 ran to completion");
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn figure5_random() {
 }
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "thread 1 ran to completion")]
 fn figure5_pct() {
     // Change of hitting the bug should be 1 - (1 - 1/2)^20 > 99.9999%, so this should trip the assert
     let scheduler = PCTScheduler::new(1, 20);
