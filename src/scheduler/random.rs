@@ -1,8 +1,10 @@
 use crate::runtime::task::TaskId;
-use crate::scheduler::Scheduler;
+use crate::scheduler::data::random::RandomDataSource;
+use crate::scheduler::data::DataSource;
+use crate::scheduler::{Schedule, Scheduler};
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
-use rand::{Rng, RngCore, SeedableRng};
+use rand::{RngCore, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 
 /// A scheduler that randomly chooses a runnable task at each context switch.
@@ -13,10 +15,9 @@ use rand_pcg::Pcg64Mcg;
 #[derive(Debug)]
 pub struct RandomScheduler {
     max_iterations: usize,
-    // Probability in [0, 1]
-    bias: f64,
     rng: Pcg64Mcg,
     iterations: usize,
+    data_source: RandomDataSource,
 }
 
 impl RandomScheduler {
@@ -33,38 +34,28 @@ impl RandomScheduler {
         let rng = Pcg64Mcg::seed_from_u64(seed);
         Self {
             max_iterations,
-            bias: 0.0,
             rng,
             iterations: 0,
+            data_source: RandomDataSource::initialize(seed),
         }
-    }
-
-    /// Set the scheduler's bias towards remaining on the current task at each context switch.
-    ///
-    /// The bias is a percentage between 0 and 100 (inclusive). A 100% bias means the scheduler will
-    /// always choose to remain on the current task as long as it remains runnable.
-    pub fn set_bias(&mut self, bias: f64) {
-        assert!(bias <= 1.0);
-        self.bias = bias;
     }
 }
 
 impl Scheduler for RandomScheduler {
-    fn new_execution(&mut self) -> bool {
+    fn new_execution(&mut self) -> Option<Schedule> {
         if self.iterations >= self.max_iterations {
-            false
+            None
         } else {
             self.iterations += 1;
-            true
+            Some(Schedule::new(self.data_source.reinitialize()))
         }
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> Option<TaskId> {
-        if let Some(current) = current {
-            if runnable.contains(&current) && self.rng.gen::<f64>() < self.bias {
-                return Some(current);
-            }
-        }
+    fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>) -> Option<TaskId> {
         Some(*runnable.choose(&mut self.rng).unwrap())
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.data_source.next_u64()
     }
 }

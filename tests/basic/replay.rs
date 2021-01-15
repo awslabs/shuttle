@@ -1,8 +1,7 @@
-use regex::Regex;
-use shuttle::scheduler::{PCTScheduler, ReplayScheduler};
+use crate::check_replay_roundtrip;
+use shuttle::scheduler::{PCTScheduler, ReplayScheduler, Schedule};
 use shuttle::sync::Mutex;
 use shuttle::{thread, Runner};
-use std::panic;
 use std::sync::Arc;
 use test_env_log::test;
 
@@ -27,9 +26,9 @@ fn concurrent_increment_buggy() {
 }
 
 #[test]
-#[should_panic(expected = "34021014aa5600")]
+#[should_panic(expected = "91021000904092940400")]
 fn replay_failing() {
-    let schedule = "34021014aa5600";
+    let schedule = "91021000904092940400";
     let scheduler = ReplayScheduler::new_from_encoded(schedule);
     let runner = Runner::new(scheduler);
     runner.run(concurrent_increment_buggy);
@@ -37,7 +36,7 @@ fn replay_failing() {
 
 #[test]
 fn replay_passing() {
-    let schedule = "34021114658a0200";
+    let schedule = "9102110090205124480000";
     let scheduler = ReplayScheduler::new_from_encoded(schedule);
     let runner = Runner::new(scheduler);
     runner.run(concurrent_increment_buggy);
@@ -45,29 +44,18 @@ fn replay_passing() {
 
 #[test]
 fn replay_roundtrip() {
-    let re = Regex::new("schedule: \"([0-9a-f]+)\"").unwrap();
-
-    // Run the test that should fail and capture the schedule it prints
-    let result = panic::catch_unwind(|| {
-        let scheduler = PCTScheduler::new(2, 100);
-        let runner = Runner::new(scheduler);
-        runner.run(concurrent_increment_buggy);
-    })
-    .expect_err("test should panic");
-    let output = result.downcast::<String>().unwrap();
-    let schedule = &re.captures(output.as_str()).expect("output should contain a schedule")[1];
-
-    // Now replay that schedule and make sure it still fails and outputs the same schedule
-    let result = panic::catch_unwind(|| {
-        let scheduler = ReplayScheduler::new_from_encoded(schedule);
-        let runner = Runner::new(scheduler);
-        runner.run(concurrent_increment_buggy);
-    })
-    .expect_err("replay should panic");
-    let output = result.downcast::<String>().unwrap();
-    let new_schedule = &re.captures(output.as_str()).expect("output should contain a schedule")[1];
-
-    assert_eq!(new_schedule, schedule);
+    check_replay_roundtrip(
+        || {
+            let scheduler = PCTScheduler::new(2, 100);
+            let runner = Runner::new(scheduler);
+            runner.run(concurrent_increment_buggy);
+        },
+        |schedule| {
+            let scheduler = ReplayScheduler::new_from_encoded(schedule);
+            let runner = Runner::new(scheduler);
+            runner.run(concurrent_increment_buggy);
+        },
+    )
 }
 
 fn deadlock() {
@@ -87,29 +75,18 @@ fn deadlock() {
 
 #[test]
 fn replay_deadlock_roundtrip() {
-    let re = Regex::new("schedule: \"([0-9a-f]+)\"").unwrap();
-
-    // Run the test that should fail and capture the schedule it prints
-    let result = panic::catch_unwind(|| {
-        let scheduler = PCTScheduler::new(2, 100);
-        let runner = Runner::new(scheduler);
-        runner.run(deadlock);
-    })
-    .expect_err("test should panic");
-    let output = result.downcast::<String>().unwrap();
-    let schedule = &re.captures(output.as_str()).expect("output should contain a schedule")[1];
-
-    // Now replay that schedule and make sure it still fails and outputs the same schedule
-    let result = panic::catch_unwind(|| {
-        let scheduler = ReplayScheduler::new_from_encoded(schedule);
-        let runner = Runner::new(scheduler);
-        runner.run(deadlock);
-    })
-    .expect_err("replay should panic");
-    let output = result.downcast::<String>().unwrap();
-    let new_schedule = &re.captures(output.as_str()).expect("output should contain a schedule")[1];
-
-    assert_eq!(new_schedule, schedule);
+    check_replay_roundtrip(
+        || {
+            let scheduler = PCTScheduler::new(2, 100);
+            let runner = Runner::new(scheduler);
+            runner.run(deadlock);
+        },
+        |schedule| {
+            let scheduler = ReplayScheduler::new_from_encoded(schedule);
+            let runner = Runner::new(scheduler);
+            runner.run(deadlock);
+        },
+    )
 }
 
 fn deadlock_3() {
@@ -139,8 +116,8 @@ fn deadlock_3() {
 #[should_panic(expected = "deadlock")]
 fn replay_deadlock3_block() {
     // Reproduce deadlock
-    let schedule = vec![0, 0, 1, 2, 1, 2, 0, 0];
-    let scheduler = ReplayScheduler::new_from_schedule(schedule.into());
+    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 2, 1, 2, 0, 0]);
+    let scheduler = ReplayScheduler::new_from_schedule(schedule);
     let runner = Runner::new(scheduler);
     runner.run(deadlock_3);
 }
@@ -148,8 +125,8 @@ fn replay_deadlock3_block() {
 #[test]
 fn replay_deadlock3_end_early() {
     // Schedule ends without all tasks finishing
-    let schedule = vec![0, 0, 1, 2];
-    let mut scheduler = ReplayScheduler::new_from_schedule(schedule.into());
+    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 2]);
+    let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
     scheduler.set_allow_incomplete();
     let runner = Runner::new(scheduler);
     runner.run(deadlock_3);
@@ -158,8 +135,8 @@ fn replay_deadlock3_end_early() {
 #[test]
 fn replay_deadlock3_task_disabled() {
     // Schedule ends when a task is not runnable
-    let schedule = vec![0, 1, 2, 0];
-    let mut scheduler = ReplayScheduler::new_from_schedule(schedule.into());
+    let schedule = Schedule::new_from_task_ids(0, vec![0, 1, 2, 0]);
+    let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
     scheduler.set_allow_incomplete();
     let runner = Runner::new(scheduler);
     runner.run(deadlock_3);
@@ -168,8 +145,8 @@ fn replay_deadlock3_task_disabled() {
 #[test]
 fn replay_deadlock3_drop_mutex() {
     // Schedule ends with a task holding a Mutex, whose MutexGuard needs to be correctly cleaned up
-    let schedule = vec![0, 0, 1, 1, 2];
-    let mut scheduler = ReplayScheduler::new_from_schedule(schedule.into());
+    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 1, 2]);
+    let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
     scheduler.set_allow_incomplete();
     let runner = Runner::new(scheduler);
     runner.run(deadlock_3);

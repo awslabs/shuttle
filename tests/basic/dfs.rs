@@ -14,7 +14,7 @@ fn trivial_one_thread() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None, None);
+        let scheduler = DFSScheduler::new(None, None, false);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -30,7 +30,7 @@ fn trivial_two_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None, None);
+        let scheduler = DFSScheduler::new(None, None, false);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -65,7 +65,7 @@ fn two_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None, None);
+        let scheduler = DFSScheduler::new(None, None, false);
         let runner = Runner::new(scheduler);
         runner.run(move || two_threads_work(&counter));
     }
@@ -81,7 +81,7 @@ fn two_threads_depth_4() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None, Some(4));
+        let scheduler = DFSScheduler::new(None, Some(4), false);
         let runner = Runner::new(scheduler);
         runner.run(move || two_threads_work(&counter));
     }
@@ -106,7 +106,7 @@ fn two_threads_depth_5() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None, Some(5));
+        let scheduler = DFSScheduler::new(None, Some(5), false);
         let runner = Runner::new(scheduler);
         runner.run(move || two_threads_work(&counter));
     }
@@ -133,7 +133,7 @@ fn yield_loop_one_thread() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None, None);
+        let scheduler = DFSScheduler::new(None, None, false);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -158,7 +158,7 @@ fn yield_loop_two_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None, None);
+        let scheduler = DFSScheduler::new(None, None, false);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -186,7 +186,7 @@ fn yield_loop_two_threads_bounded() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(Some(100), None);
+        let scheduler = DFSScheduler::new(Some(100), None, false);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -212,7 +212,7 @@ fn yield_loop_three_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None, None);
+        let scheduler = DFSScheduler::new(None, None, false);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -244,7 +244,7 @@ fn yield_loop_max_depth() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DFSScheduler::new(None, Some(20));
+        let scheduler = DFSScheduler::new(None, Some(20), false);
         let runner = Runner::new(scheduler);
         runner.run(move || {
             for _ in 0..100 {

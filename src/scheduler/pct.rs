@@ -1,5 +1,7 @@
 use crate::runtime::task::{TaskId, MAX_TASKS};
-use crate::scheduler::Scheduler;
+use crate::scheduler::data::random::RandomDataSource;
+use crate::scheduler::data::DataSource;
+use crate::scheduler::{Schedule, Scheduler};
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, RngCore, SeedableRng};
@@ -24,6 +26,7 @@ pub struct PCTScheduler {
     max_steps: usize,
     steps: usize,
     rng: Pcg64Mcg,
+    data_source: RandomDataSource,
 }
 
 impl PCTScheduler {
@@ -47,14 +50,15 @@ impl PCTScheduler {
             max_steps: 0,
             steps: 0,
             rng,
+            data_source: RandomDataSource::initialize(seed),
         }
     }
 }
 
 impl Scheduler for PCTScheduler {
-    fn new_execution(&mut self) -> bool {
+    fn new_execution(&mut self) -> Option<Schedule> {
         if self.iterations >= self.max_iterations {
-            return false;
+            return None;
         }
 
         self.steps = 0;
@@ -82,7 +86,7 @@ impl Scheduler for PCTScheduler {
 
         self.iterations += 1;
 
-        true
+        Some(Schedule::new(self.data_source.reinitialize()))
     }
 
     fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> Option<TaskId> {
@@ -112,5 +116,9 @@ impl Scheduler for PCTScheduler {
 
         // Choose the highest-priority (== earliest in the queue) runnable task
         Some(*self.priority_queue.iter().find(|tid| runnable.contains(tid)).unwrap())
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.data_source.next_u64()
     }
 }

@@ -1,11 +1,11 @@
 use crate::runtime::task::TaskId;
-use crate::scheduler::Scheduler;
+use crate::scheduler::{Schedule, Scheduler};
 use tracing::info;
 
 /// A `MetricsScheduler` wraps an inner `Scheduler` and collects metrics about the schedules it's
 /// generating.
 #[derive(Debug)]
-pub(crate) struct MetricsScheduler<S> {
+pub(crate) struct MetricsScheduler<S: Scheduler> {
     inner: S,
 
     iterations: usize,
@@ -21,6 +21,9 @@ pub(crate) struct MetricsScheduler<S> {
     // Number of times the scheduled task changed when the previous task was still runnable
     preemptions: usize,
     preemptions_metric: CountSummaryMetric,
+
+    random_choices: usize,
+    random_choices_metric: CountSummaryMetric,
 }
 
 impl<S: Scheduler> MetricsScheduler<S> {
@@ -40,20 +43,30 @@ impl<S: Scheduler> MetricsScheduler<S> {
             context_switches_metric: CountSummaryMetric::new(),
             preemptions: 0,
             preemptions_metric: CountSummaryMetric::new(),
+
+            random_choices: 0,
+            random_choices_metric: CountSummaryMetric::new(),
         }
+    }
+
+    fn record_and_reset_metrics(&mut self) {
+        self.steps_metric.record(self.steps);
+        self.steps = 0;
+
+        self.context_switches_metric.record(self.context_switches);
+        self.context_switches = 0;
+        self.preemptions_metric.record(self.preemptions);
+        self.preemptions = 0;
+
+        self.random_choices_metric.record(self.random_choices);
+        self.random_choices = 0;
     }
 }
 
 impl<S: Scheduler> Scheduler for MetricsScheduler<S> {
-    fn new_execution(&mut self) -> bool {
+    fn new_execution(&mut self) -> Option<Schedule> {
         if self.iterations > 0 {
-            self.steps_metric.record(self.steps);
-            self.steps = 0;
-
-            self.context_switches_metric.record(self.context_switches);
-            self.context_switches = 0;
-            self.preemptions_metric.record(self.preemptions);
-            self.preemptions = 0;
+            self.record_and_reset_metrics();
 
             if self.iterations % self.iteration_divisor == 0 {
                 info!(iterations = self.iterations);
@@ -82,15 +95,29 @@ impl<S: Scheduler> Scheduler for MetricsScheduler<S> {
 
         Some(choice)
     }
+
+    fn next_u64(&mut self) -> u64 {
+        self.steps += 1;
+        self.random_choices += 1;
+        self.inner.next_u64()
+    }
 }
 
-impl<S> Drop for MetricsScheduler<S> {
+impl<S: Scheduler> Drop for MetricsScheduler<S> {
     fn drop(&mut self) {
+        // If steps > 0 then we didn't get a chance to record the metrics for the current execution
+        // (it's probably panicking), so record them now
+        if self.steps > 0 {
+            self.record_and_reset_metrics();
+            self.iterations += 1;
+        }
+
         info!(
             iterations = self.iterations - 1,
             steps = %self.steps_metric,
             context_switches = %self.context_switches_metric,
-            preemptions = %self.preemptions,
+            preemptions = %self.preemptions_metric,
+            random_choices = %self.random_choices_metric,
             "run finished"
         );
     }

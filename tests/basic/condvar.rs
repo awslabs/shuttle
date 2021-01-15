@@ -257,7 +257,7 @@ fn producer_consumer_broken1() {
                 drop(guard);
             }
         },
-        "34021500405101a901",
+        "910215000000408224002229",
     )
 }
 
@@ -307,7 +307,7 @@ fn producer_consumer_broken2() {
                 drop(guard);
             }
         },
-        "3402111422026a01",
+        "9102110090401004405202",
     )
 }
 

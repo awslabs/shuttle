@@ -13,7 +13,7 @@ use tracing::{span, Level};
 /// function as many times as dictated by the scheduler; each execution has its scheduling decisions
 /// resolved by the scheduler, which can make different choices for each execution.
 #[derive(Debug)]
-pub struct Runner<S> {
+pub struct Runner<S: Scheduler> {
     scheduler: Rc<RefCell<MetricsScheduler<S>>>,
 }
 
@@ -38,12 +38,14 @@ impl<S: Scheduler + 'static> Runner<S> {
         CONTINUATION_POOL.set(&ContinuationPool::new(), || {
             let f = Arc::new(f);
 
-            let mut i = 0;
-            while self.scheduler.borrow_mut().new_execution() {
-                let execution = Execution::new(self.scheduler.clone());
+            for i in 0.. {
+                let schedule = match self.scheduler.borrow_mut().new_execution() {
+                    None => break,
+                    Some(s) => s,
+                };
+                let execution = Execution::new(self.scheduler.clone(), schedule);
                 let f = Arc::clone(&f);
                 span!(Level::DEBUG, "execution", i).in_scope(|| execution.run(move || f()));
-                i += 1;
             }
         })
     }

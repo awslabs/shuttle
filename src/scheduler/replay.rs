@@ -1,36 +1,38 @@
 use crate::runtime::task::TaskId;
+use crate::scheduler::data::random::RandomDataSource;
+use crate::scheduler::data::DataSource;
 use crate::scheduler::serialization::deserialize_schedule;
-use crate::scheduler::{Schedule, Scheduler};
+use crate::scheduler::{Schedule, ScheduleStep, Scheduler};
 
 /// A scheduler that can replay a chosen schedule deserialized from a string.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ReplayScheduler {
     schedule: Schedule,
     steps: usize,
     started: bool,
     allow_incomplete: bool,
+    data_source: RandomDataSource,
 }
 
 impl ReplayScheduler {
     /// Given an encoded schedule, construct a new `ReplayScheduler` that will execute threads
     /// in the order specified in the schedule.
     pub fn new_from_encoded(encoded_schedule: &str) -> Self {
-        Self {
-            schedule: deserialize_schedule(encoded_schedule).expect("invalid schedule"),
-            steps: 0,
-            started: false,
-            allow_incomplete: false,
-        }
+        let schedule = deserialize_schedule(encoded_schedule).expect("invalid schedule");
+        Self::new_from_schedule(schedule)
     }
 
     /// Given an unencoded schedule, construct a new `ReplayScheduler` that will execute threads
     /// in the order specified in the schedule.
     pub fn new_from_schedule(schedule: Schedule) -> Self {
+        let data_source = RandomDataSource::initialize(schedule.seed);
+
         Self {
             schedule,
             steps: 0,
             started: false,
             allow_incomplete: false,
+            data_source,
         }
     }
 
@@ -41,31 +43,49 @@ impl ReplayScheduler {
 }
 
 impl Scheduler for ReplayScheduler {
-    fn new_execution(&mut self) -> bool {
+    fn new_execution(&mut self) -> Option<Schedule> {
         if self.started {
-            false
+            None
         } else {
             self.started = true;
-            true
+            Some(Schedule::new(self.data_source.reinitialize()))
         }
     }
 
     fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>) -> Option<TaskId> {
-        if self.steps >= self.schedule.len() {
+        if self.steps >= self.schedule.steps.len() {
             assert!(self.allow_incomplete, "schedule ended early");
             return None;
         }
-        let next = self.schedule[self.steps];
-        if !runnable.contains(&next) {
-            assert!(
-                self.allow_incomplete,
-                "scheduled task is not runnable, expected to run {:?}, but choices were {:?}",
-                next, runnable
-            );
-            None
-        } else {
-            self.steps += 1;
-            Some(next)
+        match self.schedule.steps[self.steps] {
+            ScheduleStep::Random => {
+                panic!("expected context switch but next schedule step is random choice");
+            }
+            ScheduleStep::Task(next) => {
+                if !runnable.contains(&next) {
+                    assert!(
+                        self.allow_incomplete,
+                        "scheduled task is not runnable, expected to run {:?}, but choices were {:?}",
+                        next, runnable
+                    );
+                    None
+                } else {
+                    self.steps += 1;
+                    Some(next)
+                }
+            }
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        match self.schedule.steps[self.steps] {
+            ScheduleStep::Random => {
+                self.steps += 1;
+                self.data_source.next_u64()
+            }
+            ScheduleStep::Task(_) => {
+                panic!("expected random choice but next schedule step is context switch");
+            }
         }
     }
 }
