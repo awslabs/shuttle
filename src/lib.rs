@@ -11,6 +11,7 @@
 //! [Loom]: https://github.com/tokio-rs/loom
 
 pub mod asynch;
+pub mod rand;
 pub mod sync;
 pub mod thread;
 
@@ -53,7 +54,7 @@ where
 {
     use crate::scheduler::DFSScheduler;
 
-    let scheduler = DFSScheduler::new(max_iterations, max_depth);
+    let scheduler = DFSScheduler::new(max_iterations, max_depth, false);
     let runner = Runner::new(scheduler);
     runner.run(f);
 }

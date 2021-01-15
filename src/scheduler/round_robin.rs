@@ -1,27 +1,33 @@
 use crate::runtime::task::TaskId;
-use crate::scheduler::Scheduler;
+use crate::scheduler::data::random::RandomDataSource;
+use crate::scheduler::data::DataSource;
+use crate::scheduler::{Schedule, Scheduler};
 
 /// A round robin scheduler that chooses the next available runnable task at each context switch.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RoundRobinScheduler {
     iterations: usize,
+    data_source: RandomDataSource,
 }
 
 impl RoundRobinScheduler {
     /// Construct a new `RoundRobinScheduler` that will execute the test only once, scheduling its
     /// tasks in a round-robin fashion.
     pub fn new() -> Self {
-        Self { iterations: 0 }
+        Self {
+            iterations: 0,
+            data_source: RandomDataSource::initialize(0),
+        }
     }
 }
 
 impl Scheduler for RoundRobinScheduler {
-    fn new_execution(&mut self) -> bool {
+    fn new_execution(&mut self) -> Option<Schedule> {
         if self.iterations == 0 {
             self.iterations += 1;
-            true
+            Some(Schedule::new(self.data_source.reinitialize()))
         } else {
-            false
+            None
         }
     }
 
@@ -37,5 +43,15 @@ impl Scheduler for RoundRobinScheduler {
                 .find(|t| **t > current)
                 .unwrap_or_else(|| runnable.first().unwrap()),
         )
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.data_source.next_u64()
+    }
+}
+
+impl Default for RoundRobinScheduler {
+    fn default() -> Self {
+        Self::new()
     }
 }

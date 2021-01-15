@@ -28,14 +28,18 @@ scoped_thread_local! {
 /// static variable, but clients get access to it by calling `ExecutionState::with`.
 pub(crate) struct Execution {
     scheduler: Rc<RefCell<dyn Scheduler>>,
+    initial_schedule: Schedule,
 }
 
 impl Execution {
     /// Construct a new execution that will use the given scheduler. The execution should then be
     /// invoked via its `run` method, which takes as input the closure for task 0.
     // TODO this is where we'd pass in config for max_tasks etc
-    pub(crate) fn new(scheduler: Rc<RefCell<dyn Scheduler>>) -> Self {
-        Self { scheduler }
+    pub(crate) fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+        Self {
+            scheduler,
+            initial_schedule,
+        }
     }
 }
 
@@ -47,7 +51,10 @@ impl Execution {
     where
         F: FnOnce() + Send + 'static,
     {
-        let state = RefCell::new(ExecutionState::new(Rc::clone(&self.scheduler)));
+        let state = RefCell::new(ExecutionState::new(
+            Rc::clone(&self.scheduler),
+            self.initial_schedule.clone(),
+        ));
 
         EXECUTION_STATE.set(&state, || {
             // Spawn `f` as the first task
@@ -179,13 +186,13 @@ impl ScheduledTask {
 }
 
 impl ExecutionState {
-    fn new(scheduler: Rc<RefCell<dyn Scheduler>>) -> Self {
+    fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
         Self {
             tasks: vec![],
             current_task: ScheduledTask::None,
             next_task: ScheduledTask::None,
             scheduler,
-            current_schedule: Schedule::new(),
+            current_schedule: initial_schedule,
             current_span_entered: None,
             current_span: Span::none(),
             #[cfg(debug_assertions)]
@@ -284,6 +291,15 @@ impl ExecutionState {
             })
     }
 
+    /// Generate a random u64 from the current scheduler and return it.
+    #[inline]
+    pub(crate) fn next_u64() -> u64 {
+        Self::with(|state| {
+            state.current_schedule.push_random();
+            state.scheduler.borrow_mut().next_u64()
+        })
+    }
+
     pub(crate) fn current(&self) -> &Task {
         self.get(self.current_task.id().unwrap())
     }
@@ -335,7 +351,7 @@ impl ExecutionState {
         debug_assert_ne!(self.next_task, ScheduledTask::None);
         self.current_task = self.next_task.take();
         if let ScheduledTask::Some(tid) = self.current_task {
-            self.current_schedule.push(tid);
+            self.current_schedule.push_task(tid);
         }
 
         // Safety: Unfortunately `ExecutionState` is a static, but `Entered<'a>` is tied to the
