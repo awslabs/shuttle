@@ -95,3 +95,17 @@ pub trait Scheduler: Debug {
     /// Choose the next u64 value to return to the currently running task.
     fn next_u64(&mut self) -> u64;
 }
+
+impl Scheduler for Box<dyn Scheduler + Send> {
+    fn new_execution(&mut self) -> Option<Schedule> {
+        self.as_mut().new_execution()
+    }
+
+    fn next_task(&mut self, runnable_tasks: &[TaskId], current_task: Option<TaskId>) -> Option<TaskId> {
+        self.as_mut().next_task(runnable_tasks, current_task)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.as_mut().next_u64()
+    }
+}

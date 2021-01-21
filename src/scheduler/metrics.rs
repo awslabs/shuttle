@@ -5,8 +5,8 @@ use tracing::info;
 /// A `MetricsScheduler` wraps an inner `Scheduler` and collects metrics about the schedules it's
 /// generating.
 #[derive(Debug)]
-pub(crate) struct MetricsScheduler<S: Scheduler> {
-    inner: S,
+pub(crate) struct MetricsScheduler<S: ?Sized + Scheduler> {
+    inner: Box<S>,
 
     iterations: usize,
     iteration_divisor: usize,
@@ -30,7 +30,7 @@ impl<S: Scheduler> MetricsScheduler<S> {
     /// Create a new `MetricsScheduler` by wrapping the given `Scheduler` implementation.
     pub(crate) fn new(inner: S) -> Self {
         Self {
-            inner,
+            inner: Box::new(inner),
 
             iterations: 0,
             iteration_divisor: 10,
@@ -48,7 +48,9 @@ impl<S: Scheduler> MetricsScheduler<S> {
             random_choices_metric: CountSummaryMetric::new(),
         }
     }
+}
 
+impl<S: ?Sized + Scheduler> MetricsScheduler<S> {
     fn record_and_reset_metrics(&mut self) {
         self.steps_metric.record(self.steps);
         self.steps = 0;
@@ -103,7 +105,7 @@ impl<S: Scheduler> Scheduler for MetricsScheduler<S> {
     }
 }
 
-impl<S: Scheduler> Drop for MetricsScheduler<S> {
+impl<S: ?Sized + Scheduler> Drop for MetricsScheduler<S> {
     fn drop(&mut self) {
         // If steps > 0 then we didn't get a chance to record the metrics for the current execution
         // (it's probably panicking), so record them now
