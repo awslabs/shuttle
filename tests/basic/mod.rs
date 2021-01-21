@@ -4,6 +4,7 @@ mod execution;
 mod mpsc;
 mod mutex;
 mod pct;
+mod portfolio;
 mod replay;
 mod rwlock;
 mod shrink;

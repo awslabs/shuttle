@@ -19,7 +19,7 @@ pub mod scheduler;
 
 mod runtime;
 
-pub use runtime::runner::Runner;
+pub use runtime::runner::{PortfolioRunner, Runner};
 
 /// Run the given function once under a round-robin concurrency scheduler.
 pub fn check<F>(f: F)
