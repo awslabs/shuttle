@@ -335,9 +335,9 @@ impl<T> Drop for Sender<T> {
 
 /// The sending-half of Rust's synchronous [`sync_channel`] type.
 ///
-/// Messages can be sent through this channel with [`send`] or [`try_send`].
+/// Messages can be sent through this channel with [`SyncSender::send`] or \[`try_send`\] (TODO)
 ///
-/// [`send`] will block if there is no space in the internal buffer.
+/// [`SyncSender::send`] will block if there is no space in the internal buffer.
 #[derive(Debug)]
 pub struct SyncSender<T> {
     inner: Arc<Channel<T>>,
