@@ -21,7 +21,7 @@ rand_core = "~0.5.1"
 rand = { version = "~0.7.3", default-features = false, features = ["getrandom"] }
 rand_pcg = "~0.2.1"
 scoped-tls = "~1.0.0"
-smallvec = "~1.2.0"
+smallvec = "~1.6.1"
 test-env-log = { version = "~0.2.2", default-features = false, features = ["trace"] }
 tracing = "~0.1.21"
 tracing-subscriber = "~0.2.12"

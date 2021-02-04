@@ -1,5 +1,5 @@
 use shuttle::scheduler::PCTScheduler;
-use shuttle::sync::RwLock;
+use shuttle::sync::{mpsc::channel, RwLock};
 use shuttle::{check, check_random, thread, Runner};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -124,8 +124,6 @@ fn rwlock_two_writers() {
 // This test should never deadlock.
 #[test]
 fn rwlock_allows_multiple_readers() {
-    use shuttle::sync::channel;
-
     shuttle::check_dfs(
         || {
             let lock1 = Arc::new(RwLock::new(1));

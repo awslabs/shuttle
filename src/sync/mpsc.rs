@@ -6,11 +6,10 @@ use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::result::Result;
-use std::sync::mpsc;
+pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::trace;
-
-pub use mpsc::{RecvError, SendError, TryRecvError};
 
 // TODO
 // * Add support for try_recv() and try_send()
@@ -270,6 +269,13 @@ impl<T> Receiver<T> {
     /// corresponding channel has hung up.
     pub fn recv(&self) -> Result<T, RecvError> {
         self.inner.recv()
+    }
+
+    /// Attempts to wait for a value on this receiver, returning an error if the
+    /// corresponding channel has hung up, or if it waits more than timeout.
+    pub fn recv_timeout(&self, _timeout: Duration) -> Result<T, RecvTimeoutError> {
+        // TODO support the timeout case -- this method never times out
+        self.inner.recv().map_err(|_| RecvTimeoutError::Disconnected)
     }
 }
 

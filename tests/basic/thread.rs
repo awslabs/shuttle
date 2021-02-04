@@ -66,3 +66,19 @@ fn thread_join_drop() {
         100,
     );
 }
+
+#[test]
+fn thread_builder_name() {
+    check_random(
+        || {
+            let builder = thread::Builder::new().name("producer".into());
+            let handle = builder
+                .spawn(|| {
+                    thread::yield_now();
+                })
+                .unwrap();
+            assert_eq!(handle.thread().name().unwrap(), "producer");
+        },
+        100,
+    );
+}

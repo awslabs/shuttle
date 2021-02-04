@@ -59,7 +59,7 @@ impl Execution {
         EXECUTION_STATE.set(&state, || {
             // Spawn `f` as the first task
             let first_task = ThreadFuture::new(f);
-            ExecutionState::spawn(first_task, TaskType::Thread);
+            ExecutionState::spawn(first_task, TaskType::Thread, None);
 
             // Run the test to completion
             while self.step() {}
@@ -121,8 +121,14 @@ impl Execution {
                     state.current_mut().block_after_running();
                 }
                 Err(e) => {
+                    let name = if let ScheduledTask::Some(tid) = state.current_task {
+                        state.get(tid).name.clone().unwrap_or(format!("task-{:?}", tid))
+                    } else {
+                        "?".into()
+                    };
                     let msg = format!(
-                        "test panicked with schedule: {:?}",
+                        "test panicked in task {:?} with schedule: {:?}",
+                        name,
                         serialize_schedule(&state.current_schedule),
                     );
                     eprintln!("{}", msg);
@@ -218,10 +224,14 @@ impl ExecutionState {
 
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
     /// if it wants to give the new task a chance to run immediately.
-    pub(crate) fn spawn(future: impl Future<Output = ()> + 'static + Send, task_type: TaskType) -> TaskId {
+    pub(crate) fn spawn(
+        future: impl Future<Output = ()> + 'static + Send,
+        task_type: TaskType,
+        name: Option<String>,
+    ) -> TaskId {
         Self::with(|state| {
             let task_id = TaskId(state.tasks.len());
-            let task = Task::new(Box::pin(future), task_id, task_type);
+            let task = Task::new(Box::pin(future), task_id, task_type, name);
             state.tasks.push(task);
             task_id
         })

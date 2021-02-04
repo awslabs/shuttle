@@ -15,7 +15,11 @@ where
     T: Send + 'static,
 {
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let task_id = ExecutionState::spawn(Wrapper::new(fut, std::sync::Arc::clone(&result)), TaskType::Future);
+    let task_id = ExecutionState::spawn(
+        Wrapper::new(fut, std::sync::Arc::clone(&result)),
+        TaskType::Future,
+        None,
+    );
     // TODO I think we need to yield here to give the spawned task a chance to execute before the spawner continues
     JoinHandle { task_id, result }
 }

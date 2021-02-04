@@ -1,14 +1,13 @@
 //! Shuttle's implementation of `std::sync`.
 
 mod condvar;
-mod mpsc;
+
+/// Multi-producer, single-consumer FIFO queue communication primitives.
+pub mod mpsc;
 mod mutex;
 mod rwlock;
 
 pub use condvar::{Condvar, WaitTimeoutResult};
-
-pub use mpsc::{channel, sync_channel};
-pub use mpsc::{Receiver, RecvError, Sender, SyncSender, TryRecvError};
 
 pub use mutex::Mutex;
 pub use mutex::MutexGuard;
