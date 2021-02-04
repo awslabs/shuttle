@@ -81,7 +81,6 @@ impl Task {
     }
 
     pub(crate) fn block(&mut self) {
-        debug_assert_eq!(self.state, TaskState::Runnable);
         self.state = TaskState::Blocked;
     }
 

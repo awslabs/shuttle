@@ -119,3 +119,67 @@ fn rwlock_two_writers() {
         100,
     );
 }
+
+// Check that multiple readers are allowed to read at a time
+// This test should never deadlock.
+#[test]
+fn rwlock_allows_multiple_readers() {
+    use shuttle::sync::channel;
+
+    shuttle::check_dfs(
+        || {
+            let lock1 = Arc::new(RwLock::new(1));
+            let lock2 = lock1.clone();
+
+            let (s1, r1) = channel::<usize>();
+            let (s2, r2) = channel::<usize>();
+
+            thread::spawn(move || {
+                let w = lock1.read().unwrap();
+                s1.send(*w).unwrap(); // Send value to other thread
+                let r = r2.recv().unwrap(); // Wait for value from other thread
+                assert_eq!(r, 1);
+            });
+
+            thread::spawn(move || {
+                let w = lock2.read().unwrap();
+                s2.send(*w).unwrap();
+                let r = r1.recv().unwrap();
+                assert_eq!(r, 1);
+            });
+        },
+        None,
+        None,
+    );
+}
+
+// Ensure that a writer is never woken up when a reader is using the lock
+fn two_readers_and_one_writer() {
+    let lock1 = Arc::new(RwLock::new(1));
+
+    // Spawn two readers, each tries to acquire both locks
+    for _ in 0..2 {
+        let rlock1 = lock1.clone();
+        thread::spawn(move || {
+            let r1 = rlock1.read().unwrap();
+            thread::yield_now();
+            assert!(*r1 > 0);
+        });
+    }
+
+    thread::spawn(move || {
+        let mut w = lock1.write().unwrap();
+        *w += 1;
+    });
+}
+
+#[test]
+fn rwlock_two_readers_and_one_writer_exhaustive() {
+    shuttle::check_dfs(
+        || {
+            two_readers_and_one_writer();
+        },
+        None,
+        None,
+    );
+}

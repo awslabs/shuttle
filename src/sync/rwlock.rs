@@ -175,12 +175,20 @@ impl<T> RwLock<T> {
         // Block all other waiters, since we won the race to take this lock
         // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
         // TODO never become unblocked), but might need to track more state to avoid this.
-        Self::block_waiters(&*state, me);
+        Self::block_waiters(&*state, me, typ);
         drop(state);
     }
 
-    fn block_waiters(state: &RwLockState, me: TaskId) {
-        for tid in state.waiting_readers.iter().chain(state.waiting_writers.iter()) {
+    fn block_waiters(state: &RwLockState, me: TaskId, typ: RwLockType) {
+        // Only block waiting readers if the lock is being acquired by a writer
+        if typ == RwLockType::Write {
+            for tid in state.waiting_readers.iter() {
+                assert_ne!(tid, me);
+                ExecutionState::with(|s| s.get_mut(tid).block());
+            }
+        }
+        // Always block any waiting writers
+        for tid in state.waiting_writers.iter() {
             assert_ne!(tid, me);
             ExecutionState::with(|s| s.get_mut(tid).block());
         }
@@ -196,13 +204,16 @@ impl<T> RwLock<T> {
             });
         }
 
-        for tid in state.waiting_writers.iter() {
-            debug_assert_ne!(tid, me);
-            ExecutionState::with(|s| {
-                let t = s.get_mut(tid);
-                debug_assert!(t.blocked());
-                t.unblock();
-            });
+        // Only unblock waiting writers if there are no exiting readers holding the lock
+        if state.holder == RwLockHolder::None {
+            for tid in state.waiting_writers.iter() {
+                debug_assert_ne!(tid, me);
+                ExecutionState::with(|s| {
+                    let t = s.get_mut(tid);
+                    debug_assert!(t.blocked());
+                    t.unblock();
+                });
+            }
         }
     }
 }
