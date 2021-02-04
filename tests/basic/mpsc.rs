@@ -1,4 +1,4 @@
-use shuttle::sync::{channel, sync_channel, RecvError};
+use shuttle::sync::mpsc::{channel, sync_channel, RecvError};
 use shuttle::{check_dfs, thread};
 use test_env_log::test;
 

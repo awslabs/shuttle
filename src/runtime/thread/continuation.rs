@@ -62,7 +62,8 @@ impl Continuation {
         let mut gen = {
             let function = function.clone();
 
-            Gn::new_opt(0x8000, move || {
+            // TODO Make stack size configurable
+            Gn::new_opt(0x8_0000, move || {
                 loop {
                     // Tell the caller we've finished the previous user function (or if this is our
                     // first time around the loop, the caller below expects us to pretend we've

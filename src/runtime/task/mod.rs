@@ -45,10 +45,12 @@ pub(crate) struct Task {
     waker: Waker,
     // Remember whether the waker was invoked while we were running so we don't re-block
     woken_by_self: bool,
+
+    pub(super) name: Option<String>,
 }
 
 impl Task {
-    pub(crate) fn new(future: BoxFuture<'static, ()>, id: TaskId, task_type: TaskType) -> Self {
+    pub(crate) fn new(future: BoxFuture<'static, ()>, id: TaskId, task_type: TaskType, name: Option<String>) -> Self {
         let waker = make_waker(id);
 
         Self {
@@ -61,6 +63,7 @@ impl Task {
             waiter: None,
             waker,
             woken_by_self: false,
+            name,
         }
     }
 
