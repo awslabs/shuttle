@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::{LockResult, TryLockResult};
 use tracing::trace;
 
-/// A reader-writer lock
+/// A reader-writer lock, the same as [`std::sync::RwLock`].
 #[derive(Debug)]
 pub struct RwLock<T> {
     inner: std::sync::RwLock<T>,
@@ -36,7 +36,7 @@ enum RwLockType {
 }
 
 impl<T> RwLock<T> {
-    /// Create a new instance of an `RwLock<T>` which us unlocked.
+    /// Create a new instance of an `RwLock<T>` which is unlocked.
     pub fn new(value: T) -> Self {
         let state = RwLockState {
             holder: RwLockHolder::None,

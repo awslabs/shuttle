@@ -122,7 +122,11 @@ impl Execution {
                 }
                 Err(e) => {
                     let name = if let ScheduledTask::Some(tid) = state.current_task {
-                        state.get(tid).name.clone().unwrap_or(format!("task-{:?}", tid))
+                        state
+                            .get(tid)
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| format!("task-{:?}", tid.0))
                     } else {
                         "?".into()
                     };
