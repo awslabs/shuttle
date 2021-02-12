@@ -9,7 +9,7 @@ const ITERATIONS: usize = 100;
 
 /// A toy benchmark that runs a bunch of tasks that just increment a counter
 fn counter_async(scheduler: impl Scheduler + 'static) {
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         let counter = Arc::new(AtomicUsize::new(0usize));
 
@@ -34,7 +34,7 @@ fn counter_async(scheduler: impl Scheduler + 'static) {
 
 /// A toy benchmark that runs a bunch of threads that just increment a counter
 fn counter_sync(scheduler: impl Scheduler + 'static) {
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         let counter = Arc::new(AtomicUsize::new(0usize));
 

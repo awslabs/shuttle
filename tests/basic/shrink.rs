@@ -30,7 +30,7 @@ fn shrink_before_min() {
     // increment counter to 3 and then decrement to 0 to cause panic
     let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 1, 1, 2, 2, 2, 2]);
     let scheduler = ReplayScheduler::new_from_schedule(schedule);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(counter_test);
 }
 
@@ -40,6 +40,6 @@ fn shrink_after_min() {
     // minimal schedule requires no increments
     let min_schedule = Schedule::new_from_task_ids(0, vec![0, 0, 2]);
     let scheduler = ReplayScheduler::new_from_schedule(min_schedule);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(counter_test);
 }

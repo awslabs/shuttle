@@ -1,5 +1,5 @@
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{TaskId, MAX_TASKS};
+use crate::runtime::task::{TaskId, MAX_INLINE_TASKS};
 use crate::runtime::thread;
 use smallvec::SmallVec;
 use std::cell::RefCell;
@@ -51,11 +51,11 @@ struct Channel<T> {
 // cloned).  The state below admits a more general use case, where multiple Senders
 // and Receivers can share a single channel.
 struct ChannelState<T> {
-    messages: SmallVec<[T; MAX_INLINE_MESSAGES]>,     // messages in the channel
-    known_senders: usize,                             // number of senders referencing this channel
-    known_receivers: usize,                           // number or receivers referencing this channel
-    waiting_senders: SmallVec<[TaskId; MAX_TASKS]>,   // list of currently blocked senders
-    waiting_receivers: SmallVec<[TaskId; MAX_TASKS]>, // list of currently blocked receivers
+    messages: SmallVec<[T; MAX_INLINE_MESSAGES]>, // messages in the channel
+    known_senders: usize,                         // number of senders referencing this channel
+    known_receivers: usize,                       // number or receivers referencing this channel
+    waiting_senders: SmallVec<[TaskId; MAX_INLINE_TASKS]>, // list of currently blocked senders
+    waiting_receivers: SmallVec<[TaskId; MAX_INLINE_TASKS]>, // list of currently blocked receivers
 }
 
 impl<T> Debug for ChannelState<T> {

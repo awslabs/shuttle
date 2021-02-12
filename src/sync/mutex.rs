@@ -32,7 +32,7 @@ impl<T> Mutex<T> {
     pub fn new(value: T) -> Self {
         let state = MutexState {
             holder: None,
-            waiters: TaskSet::new(),
+            waiters: TaskSet::new(ExecutionState::config().max_tasks),
         };
 
         Self {

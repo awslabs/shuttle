@@ -1,7 +1,8 @@
-use crate::runtime::task::{Task, TaskId, TaskState, TaskType, MAX_TASKS};
+use crate::runtime::task::{Task, TaskId, TaskState, TaskType, MAX_INLINE_TASKS};
 use crate::runtime::thread::future::ThreadFuture;
 use crate::scheduler::serialization::serialize_schedule;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::Config;
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -34,7 +35,6 @@ pub(crate) struct Execution {
 impl Execution {
     /// Construct a new execution that will use the given scheduler. The execution should then be
     /// invoked via its `run` method, which takes as input the closure for task 0.
-    // TODO this is where we'd pass in config for max_tasks etc
     pub(crate) fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
         Self {
             scheduler,
@@ -47,18 +47,19 @@ impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
     /// scheduler returns `None`, indicating the execution should not be explored any further.
-    pub(crate) fn run<F>(mut self, f: F)
+    pub(crate) fn run<F>(mut self, config: Config, f: F)
     where
         F: FnOnce() + Send + 'static,
     {
         let state = RefCell::new(ExecutionState::new(
+            config,
             Rc::clone(&self.scheduler),
             self.initial_schedule.clone(),
         ));
 
         EXECUTION_STATE.set(&state, || {
             // Spawn `f` as the first task
-            let first_task = ThreadFuture::new(f);
+            let first_task = ThreadFuture::new(config.stack_size, f);
             ExecutionState::spawn(first_task, TaskType::Thread, None);
 
             // Run the test to completion
@@ -86,7 +87,7 @@ impl Execution {
                         .tasks
                         .iter()
                         .map(|t| (t.id, t.state))
-                        .collect::<SmallVec<[_; MAX_TASKS]>>();
+                        .collect::<SmallVec<[_; MAX_INLINE_TASKS]>>();
                     if task_states.iter().any(|(_, s)| *s == TaskState::Blocked) {
                         panic!(
                             "deadlock with schedule: {:?}\nrunnable tasks: {:?}",
@@ -155,6 +156,7 @@ impl Execution {
 /// from within a task's execution. It tracks which tasks exist and their states, as well as which
 /// tasks are pending spawn.
 pub(crate) struct ExecutionState {
+    config: Config,
     // invariant: tasks are never removed from this list
     tasks: Vec<Task>,
     // invariant: if this transitions to Stopped or Finished, it can never change again
@@ -196,9 +198,10 @@ impl ScheduledTask {
 }
 
 impl ExecutionState {
-    fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
         Self {
-            tasks: vec![],
+            config,
+            tasks: Vec::with_capacity(config.max_tasks),
             current_task: ScheduledTask::None,
             next_task: ScheduledTask::None,
             scheduler,
@@ -224,6 +227,11 @@ impl ExecutionState {
     /// A shortcut to get the current task ID
     pub(crate) fn me() -> TaskId {
         Self::with(|s| s.current().id())
+    }
+
+    /// Configuration State
+    pub(crate) fn config() -> Config {
+        Self::with(|s| s.config)
     }
 
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
@@ -343,7 +351,7 @@ impl ExecutionState {
             .iter()
             .filter(|t| t.state == TaskState::Runnable)
             .map(|t| t.id)
-            .collect::<SmallVec<[_; MAX_TASKS]>>();
+            .collect::<Vec<_>>();
 
         if runnable.is_empty() {
             self.next_task = ScheduledTask::Finished;

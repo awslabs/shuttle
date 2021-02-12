@@ -1,7 +1,8 @@
-use crate::runtime::task::{TaskId, MAX_TASKS};
+use crate::runtime::task::TaskId;
 use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::Config;
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, RngCore, SeedableRng};
@@ -40,12 +41,13 @@ impl PCTScheduler {
         assert!(max_depth > 0);
 
         let rng = Pcg64Mcg::seed_from_u64(seed);
+        let config: Config = Default::default();
 
         Self {
             max_iterations,
             max_depth,
             iterations: 0,
-            priority_queue: (0..MAX_TASKS).map(TaskId::from).collect::<Vec<_>>(),
+            priority_queue: (0..config.max_tasks).map(TaskId::from).collect::<Vec<_>>(),
             change_points: vec![],
             max_steps: 0,
             steps: 0,

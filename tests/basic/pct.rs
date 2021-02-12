@@ -36,14 +36,14 @@ fn figure5_random() {
 fn figure5_pct() {
     // Change of hitting the bug should be 1 - (1 - 1/2)^20 > 99.9999%, so this should trip the assert
     let scheduler = PCTScheduler::new(1, 20);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(figure5);
 }
 
 #[test]
 fn one_step() {
     let scheduler = PCTScheduler::new(2, 100);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         thread::spawn(|| {});
     })

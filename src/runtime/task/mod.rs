@@ -1,5 +1,6 @@
 use futures::future::BoxFuture;
 use futures::task::Waker;
+use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
@@ -27,8 +28,7 @@ use waker::make_waker;
 //   continuation and runs it until that continuation yields, which happens when its thread decides
 //   it might want to context switch (e.g., because it's blocked on a lock).
 
-// TODO make bigger and configurable
-pub(crate) const MAX_TASKS: usize = 16;
+pub(crate) const MAX_INLINE_TASKS: usize = 16;
 
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
@@ -162,13 +162,14 @@ impl From<TaskId> for usize {
 // TODO this probably won't work well with large numbers of tasks -- maybe a BitVec?
 #[derive(PartialEq, Eq)]
 pub(crate) struct TaskSet {
-    tasks: [bool; MAX_TASKS],
+    tasks: SmallVec<[bool; MAX_INLINE_TASKS]>,
 }
 
 impl TaskSet {
-    pub fn new() -> Self {
+    pub fn new(max_tasks: usize) -> Self {
         Self {
-            tasks: [false; MAX_TASKS],
+            // Need to create the inner vec! to ensure elements are initialized
+            tasks: SmallVec::from_vec(vec![false; max_tasks]),
         }
     }
 

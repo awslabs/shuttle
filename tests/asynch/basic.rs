@@ -146,6 +146,6 @@ fn async_counter_random() {
 #[test]
 fn async_counter_pct() {
     let scheduler = PCTScheduler::new(2, 5000);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(async_counter);
 }

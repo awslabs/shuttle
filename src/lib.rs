@@ -190,6 +190,25 @@ mod runtime;
 
 pub use runtime::runner::{PortfolioRunner, Runner};
 
+/// Configuration parameters for Shuttle
+#[derive(Clone, Copy, Debug)]
+pub struct Config {
+    /// Maximum number of supported tasks (includes threads and async tasks)
+    pub max_tasks: usize,
+
+    /// Stack size allocated for each thread
+    pub stack_size: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            max_tasks: 16usize,
+            stack_size: 0x8000,
+        }
+    }
+}
+
 /// Run the given function once under a round-robin concurrency scheduler.
 // TODO consider removing this -- round robin scheduling is never what you want.
 #[doc(hidden)]
@@ -199,7 +218,7 @@ where
 {
     use crate::scheduler::RoundRobinScheduler;
 
-    let runner = Runner::new(RoundRobinScheduler::new());
+    let runner = Runner::new(RoundRobinScheduler::new(), Default::default());
     runner.run(f);
 }
 
@@ -212,7 +231,7 @@ where
     use crate::scheduler::RandomScheduler;
 
     let scheduler = RandomScheduler::new(iterations);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
 }
 
@@ -225,7 +244,7 @@ where
     use crate::scheduler::PCTScheduler;
 
     let scheduler = PCTScheduler::new(depth, iterations);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
 }
 
@@ -239,7 +258,7 @@ where
     use crate::scheduler::DFSScheduler;
 
     let scheduler = DFSScheduler::new(max_iterations, max_depth, false);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
 }
 
@@ -255,6 +274,6 @@ where
     use crate::scheduler::ReplayScheduler;
 
     let scheduler = ReplayScheduler::new_from_encoded(encoded_schedule);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
 }

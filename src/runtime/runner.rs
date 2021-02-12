@@ -3,6 +3,7 @@ use crate::runtime::task::TaskId;
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::Config;
 use std::cell::RefCell;
 use std::panic;
 use std::rc::Rc;
@@ -20,15 +21,17 @@ use tracing::{span, Level};
 #[derive(Debug)]
 pub struct Runner<S: ?Sized + Scheduler> {
     scheduler: Rc<RefCell<MetricsScheduler<S>>>,
+    config: Config,
 }
 
 impl<S: Scheduler + 'static> Runner<S> {
     /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
-    pub fn new(scheduler: S) -> Self {
+    pub fn new(scheduler: S, config: Config) -> Self {
         let metrics_scheduler = MetricsScheduler::new(scheduler);
 
         Self {
             scheduler: Rc::new(RefCell::new(metrics_scheduler)),
+            config,
         }
     }
 
@@ -50,7 +53,7 @@ impl<S: Scheduler + 'static> Runner<S> {
                 };
                 let execution = Execution::new(self.scheduler.clone(), schedule);
                 let f = Arc::clone(&f);
-                span!(Level::INFO, "execution", i).in_scope(|| execution.run(move || f()));
+                span!(Level::INFO, "execution", i).in_scope(|| execution.run(self.config, move || f()));
             }
         })
     }
@@ -63,16 +66,18 @@ impl<S: Scheduler + 'static> Runner<S> {
 pub struct PortfolioRunner {
     schedulers: Vec<Box<dyn Scheduler + Send + 'static>>,
     stop_on_first_failure: bool,
+    config: Config,
 }
 
 impl PortfolioRunner {
     /// Construct a new `PortfolioRunner` with no schedulers. If `stop_on_first_failure` is true,
     /// all schedulers will be terminated as soon as any fails; if false, they will keep running
     /// and potentially find multiple bugs.
-    pub fn new(stop_on_first_failure: bool) -> Self {
+    pub fn new(stop_on_first_failure: bool, config: Config) -> Self {
         Self {
             schedulers: Vec::new(),
             stop_on_first_failure,
+            config,
         }
     }
 
@@ -95,6 +100,7 @@ impl PortfolioRunner {
 
         let (tx, rx) = mpsc::sync_channel::<ThreadResult>(0);
         let stop_signal = Arc::new(AtomicBool::new(false));
+        let config = self.config;
 
         let threads = self
             .schedulers
@@ -108,7 +114,7 @@ impl PortfolioRunner {
                 thread::spawn(move || {
                     let scheduler = PortfolioStoppableScheduler { scheduler, stop_signal };
 
-                    let runner = Runner::new(scheduler);
+                    let runner = Runner::new(scheduler, config);
 
                     span!(Level::INFO, "job", i).in_scope(|| {
                         let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| runner.run(f)));
