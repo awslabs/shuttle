@@ -15,3 +15,6 @@ pub use mutex::MutexGuard;
 pub use rwlock::RwLock;
 pub use rwlock::RwLockReadGuard;
 pub use rwlock::RwLockWriteGuard;
+
+// TODO implement true support for `Arc`
+pub use std::sync::Arc;

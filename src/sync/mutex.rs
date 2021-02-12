@@ -7,14 +7,14 @@ use std::rc::Rc;
 use std::sync::{LockResult, TryLockResult};
 use tracing::trace;
 
-/// A mutex, the same as `std::sync::Mutex`.
+/// A mutex, the same as [`std::sync::Mutex`].
 #[derive(Debug)]
 pub struct Mutex<T> {
     inner: std::sync::Mutex<T>,
     state: Rc<RefCell<MutexState>>,
 }
 
-/// A mutex guard, the same as `std::sync::MutexGuard`.
+/// A mutex guard, the same as [`std::sync::MutexGuard`].
 #[derive(Debug)]
 pub struct MutexGuard<'a, T> {
     inner: Option<std::sync::MutexGuard<'a, T>>,
