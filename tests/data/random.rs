@@ -166,14 +166,14 @@ fn broken_atomic_counter_stress_roundtrip() {
 #[should_panic(expected = "requested random data from DFS scheduler")]
 fn dfs_thread_rng_decorrelated_disabled() {
     let scheduler = DFSScheduler::new(None, None, false);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(thread_rng_decorrelated);
 }
 
 #[test]
 fn dfs_threads_decorrelated_enabled() {
     let scheduler = DFSScheduler::new(None, None, true);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(thread_rng_decorrelated);
 }
 
@@ -184,7 +184,7 @@ fn dfs_does_not_reseed_across_executions() {
     let pair_clone = pair.clone();
 
     let scheduler = DFSScheduler::new(None, None, true);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(move || {
         thread::spawn(|| {
             for _ in 0..3 {

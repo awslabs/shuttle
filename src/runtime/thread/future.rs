@@ -15,11 +15,11 @@ pub(crate) struct ThreadFuture {
 }
 
 impl ThreadFuture {
-    pub(crate) fn new<F>(f: F) -> ThreadFuture
+    pub(crate) fn new<F>(thread_stack_size: usize, f: F) -> ThreadFuture
     where
         F: FnOnce() + Send + 'static,
     {
-        let mut continuation = ContinuationPool::acquire();
+        let mut continuation = ContinuationPool::acquire(thread_stack_size);
         continuation.initialize(Box::new(f));
         ThreadFuture { continuation }
     }

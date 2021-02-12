@@ -15,7 +15,7 @@ const MAX_QUEUE_SIZE: usize = 3;
 /// until there's space in the queue, and then put their object in. Consumers wait until the queue
 /// is non-empty, and then consume something from the queue.
 fn bounded_buffer_check(scheduler: impl Scheduler + 'static) {
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
 
     runner.run(move || {
         let lock = Arc::new(Mutex::new(()));

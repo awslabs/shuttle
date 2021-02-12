@@ -60,7 +60,7 @@ fn deadlock_random() {
 fn deadlock_pct() {
     // 100 tries should be enough to find a deadlocking execution
     let scheduler = PCTScheduler::new(2, 100);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock);
 }
 
@@ -68,7 +68,7 @@ fn deadlock_pct() {
 #[should_panic(expected = "racing increments")]
 fn concurrent_increment_buggy() {
     let scheduler = PCTScheduler::new(2, 100);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         let lock = Arc::new(Mutex::new(0usize));
 
@@ -95,7 +95,7 @@ fn concurrent_increment_buggy() {
 #[test]
 fn concurrent_increment() {
     let scheduler = PCTScheduler::new(2, 100);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         let lock = Arc::new(Mutex::new(0usize));
 

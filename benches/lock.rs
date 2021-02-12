@@ -10,7 +10,7 @@ use std::sync::Arc;
 fn basic_lock_check(scheduler: impl Scheduler + 'static) {
     const INNER_ITERATIONS: usize = 200;
 
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         let lock = Arc::new(Mutex::new(0usize));
 

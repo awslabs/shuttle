@@ -40,8 +40,8 @@ impl<T> RwLock<T> {
     pub fn new(value: T) -> Self {
         let state = RwLockState {
             holder: RwLockHolder::None,
-            waiting_readers: TaskSet::new(),
-            waiting_writers: TaskSet::new(),
+            waiting_readers: TaskSet::new(ExecutionState::config().max_tasks),
+            waiting_writers: TaskSet::new(ExecutionState::config().max_tasks),
         };
 
         Self {
@@ -145,7 +145,7 @@ impl<T> RwLock<T> {
                 state.holder = RwLockHolder::Write(me);
             }
             (RwLockType::Read, RwLockHolder::None) => {
-                let mut readers = TaskSet::new();
+                let mut readers = TaskSet::new(ExecutionState::config().max_tasks);
                 readers.insert(me);
                 state.holder = RwLockHolder::Read(readers);
             }

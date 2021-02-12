@@ -92,7 +92,7 @@ fn deadlock_random() {
 fn deadlock_pct() {
     // 200 tries should be enough to find a deadlocking execution
     let scheduler = PCTScheduler::new(2, 100);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock);
 }
 

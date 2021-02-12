@@ -30,7 +30,7 @@ fn concurrent_increment_buggy() {
 fn replay_failing() {
     let schedule = "91021000904092940400";
     let scheduler = ReplayScheduler::new_from_encoded(schedule);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(concurrent_increment_buggy);
 }
 
@@ -38,7 +38,7 @@ fn replay_failing() {
 fn replay_passing() {
     let schedule = "9102110090205124480000";
     let scheduler = ReplayScheduler::new_from_encoded(schedule);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(concurrent_increment_buggy);
 }
 
@@ -47,12 +47,12 @@ fn replay_roundtrip() {
     check_replay_roundtrip(
         || {
             let scheduler = PCTScheduler::new(2, 100);
-            let runner = Runner::new(scheduler);
+            let runner = Runner::new(scheduler, Default::default());
             runner.run(concurrent_increment_buggy);
         },
         |schedule| {
             let scheduler = ReplayScheduler::new_from_encoded(schedule);
-            let runner = Runner::new(scheduler);
+            let runner = Runner::new(scheduler, Default::default());
             runner.run(concurrent_increment_buggy);
         },
     )
@@ -78,12 +78,12 @@ fn replay_deadlock_roundtrip() {
     check_replay_roundtrip(
         || {
             let scheduler = PCTScheduler::new(2, 100);
-            let runner = Runner::new(scheduler);
+            let runner = Runner::new(scheduler, Default::default());
             runner.run(deadlock);
         },
         |schedule| {
             let scheduler = ReplayScheduler::new_from_encoded(schedule);
-            let runner = Runner::new(scheduler);
+            let runner = Runner::new(scheduler, Default::default());
             runner.run(deadlock);
         },
     )
@@ -118,7 +118,7 @@ fn replay_deadlock3_block() {
     // Reproduce deadlock
     let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 2, 1, 2, 0, 0]);
     let scheduler = ReplayScheduler::new_from_schedule(schedule);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock_3);
 }
 
@@ -128,7 +128,7 @@ fn replay_deadlock3_end_early() {
     let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 2]);
     let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
     scheduler.set_allow_incomplete();
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock_3);
 }
 
@@ -138,7 +138,7 @@ fn replay_deadlock3_task_disabled() {
     let schedule = Schedule::new_from_task_ids(0, vec![0, 1, 2, 0]);
     let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
     scheduler.set_allow_incomplete();
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock_3);
 }
 
@@ -148,6 +148,6 @@ fn replay_deadlock3_drop_mutex() {
     let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 1, 2]);
     let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
     scheduler.set_allow_incomplete();
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock_3);
 }

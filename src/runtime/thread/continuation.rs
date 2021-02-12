@@ -56,14 +56,13 @@ enum ContinuationState {
 }
 
 impl Continuation {
-    pub fn new() -> Self {
+    pub fn new(stack_size: usize) -> Self {
         let function: ContinuationFunction = Rc::new(Cell::new(None));
 
         let mut gen = {
             let function = function.clone();
 
-            // TODO Make stack size configurable
-            Gn::new_opt(0x8_0000, move || {
+            Gn::new_opt(stack_size, move || {
                 loop {
                     // Tell the caller we've finished the previous user function (or if this is our
                     // first time around the loop, the caller below expects us to pretend we've
@@ -170,21 +169,23 @@ impl ContinuationPool {
     }
 
     /// Acquire a new continuation from the pool, allocating one if the pool is empty.
-    pub fn acquire() -> PooledContinuation {
+    pub fn acquire(stack_size: usize) -> PooledContinuation {
         if CONTINUATION_POOL.is_set() {
-            CONTINUATION_POOL.with(|p| p.acquire_inner())
+            CONTINUATION_POOL.with(|p| p.acquire_inner(stack_size))
         } else {
             let p = Self::new();
-            p.acquire_inner()
+            p.acquire_inner(stack_size)
         }
     }
 
-    fn acquire_inner(&self) -> PooledContinuation {
+    fn acquire_inner(&self, stack_size: usize) -> PooledContinuation {
+        // TODO add a check to ensure that if we recycled a continuation, its
+        // TODO allocated stack size is at least the requested `stack_size`
         let continuation = self
             .continuations
             .borrow_mut()
             .pop_front()
-            .unwrap_or_else(Continuation::new);
+            .unwrap_or_else(move || Continuation::new(stack_size));
 
         PooledContinuation {
             continuation: Some(continuation),
@@ -253,12 +254,14 @@ pub(crate) fn switch() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Config;
 
     #[test]
     fn reusable_continuation_drop() {
         let pool = ContinuationPool::new();
+        let config: Config = Default::default();
 
-        let mut c = pool.acquire_inner();
+        let mut c = pool.acquire_inner(config.stack_size);
         c.initialize(Box::new(|| {
             let _ = 1 + 1;
         }));
@@ -273,7 +276,7 @@ mod tests {
             "continuation should be reusable because the function finished"
         );
 
-        let mut c = pool.acquire_inner();
+        let mut c = pool.acquire_inner(config.stack_size);
         c.initialize(Box::new(|| {
             generator::yield_with(ContinuationOutput::Yielded);
             let _ = 1 + 1;
@@ -289,7 +292,7 @@ mod tests {
             "continuation should not be reusable because the function wasn't finished"
         );
 
-        let c = pool.acquire_inner();
+        let c = pool.acquire_inner(config.stack_size);
 
         // Check that it's safe for a continuation to outlive the pool
         drop(pool);

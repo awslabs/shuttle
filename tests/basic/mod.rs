@@ -1,4 +1,5 @@
 mod condvar;
+mod config;
 mod dfs;
 mod execution;
 mod mpsc;

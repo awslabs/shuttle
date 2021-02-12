@@ -42,20 +42,23 @@ where
     F: Send + 'static,
     T: Send + 'static,
 {
-    spawn_named(f, None)
+    spawn_named(f, None, None)
 }
 
-fn spawn_named<F, T>(f: F, name: Option<String>) -> JoinHandle<T>
+fn spawn_named<F, T>(f: F, name: Option<String>, stack_size: Option<usize>) -> JoinHandle<T>
 where
     F: FnOnce() -> T,
     F: Send + 'static,
     T: Send + 'static,
 {
+    // TODO Check if it's worth avoiding the call to `ExecutionState::config()` if we're going
+    // TODO to use an existing continuation from the pool.
+    let stack_size = stack_size.unwrap_or(ExecutionState::config().stack_size);
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
     let task_id = {
         let result = std::sync::Arc::clone(&result);
         // Build a new ThreadFuture that will simulate a thread inside a Future
-        let task = ThreadFuture::new(move || {
+        let task = ThreadFuture::new(stack_size, move || {
             let ret = f();
             // Publish the result and unblock the waiter. We need to do this now, because once this
             // closure completes, the Execution will consider this task Finished and invoke the
@@ -134,12 +137,16 @@ pub fn sleep(_dur: Duration) {
 #[derive(Debug, Default)]
 pub struct Builder {
     name: Option<String>,
+    stack_size: Option<usize>,
 }
 
 impl Builder {
     /// Generates the base configuration for spawning a thread, from which configuration methods can be chained.
     pub fn new() -> Self {
-        Self { name: None }
+        Self {
+            name: None,
+            stack_size: None,
+        }
     }
 
     /// Names the thread-to-be. Currently the name is used for identification only in panic messages.
@@ -149,7 +156,8 @@ impl Builder {
     }
 
     /// Sets the size of the stack (in bytes) for the new thread.
-    pub fn stack_size(self, _size: usize) -> Self {
+    pub fn stack_size(mut self, stack_size: usize) -> Self {
+        self.stack_size = Some(stack_size);
         self
     }
 
@@ -160,6 +168,6 @@ impl Builder {
         F: Send + 'static,
         T: Send + 'static,
     {
-        Ok(spawn_named(f, self.name))
+        Ok(spawn_named(f, self.name, self.stack_size))
     }
 }

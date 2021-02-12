@@ -25,7 +25,7 @@ fn portfolio_success() {
         assert_eq!(counter, THREADS);
     };
 
-    let mut runner = PortfolioRunner::new(true);
+    let mut runner = PortfolioRunner::new(true, Default::default());
     runner.add(PCTScheduler::new(1, 100));
     runner.add(PCTScheduler::new(2, 100));
     runner.add(RandomScheduler::new(100));
@@ -64,7 +64,7 @@ fn two_thread_deadlock() {
 fn two_thread_deadlock_pct_depth_one() {
     // depth 1 shouldn't fail
     let scheduler = PCTScheduler::new(1, 1000);
-    let runner = Runner::new(scheduler);
+    let runner = Runner::new(scheduler, Default::default());
     runner.run(two_thread_deadlock);
 }
 
@@ -72,7 +72,7 @@ fn two_thread_deadlock_pct_depth_one() {
 #[should_panic(expected = "deadlock")]
 fn two_thread_deadlock_portfolio() {
     // depth 1 shouldn't fail, but depth 2 should fail very fast
-    let mut runner = PortfolioRunner::new(true);
+    let mut runner = PortfolioRunner::new(true, Default::default());
     runner.add(PCTScheduler::new(1, 100));
     runner.add(PCTScheduler::new(2, 100));
     runner.run(two_thread_deadlock);
@@ -82,7 +82,7 @@ fn two_thread_deadlock_portfolio() {
 fn two_thread_deadlock_portfolio_no_early_stop() {
     // same as two_thread_deadlock_portfolio, but without stopping on first failure, so PCT depth 1
     // should run all 100 iterations
-    let mut runner = PortfolioRunner::new(false);
+    let mut runner = PortfolioRunner::new(false, Default::default());
     runner.add(PCTScheduler::new(1, 100));
     runner.add(PCTScheduler::new(2, 100));
 
