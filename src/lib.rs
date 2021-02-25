@@ -104,7 +104,7 @@
 //! We can use Shuttle's [`replay`] function to replay the execution that causes the failure:
 //!
 //! ```should_panic
-//! # *** DON'T FORGET TO UPDATE THE TEXT OUTPUT RIGHT ABOVE THIS IF YOU CHANGE THIS TEST! ***
+//! # // *** DON'T FORGET TO UPDATE THE TEXT OUTPUT RIGHT ABOVE THIS IF YOU CHANGE THIS TEST! ***
 //! use shuttle::rand::{thread_rng, Rng};
 //!
 //! shuttle::replay(|| {

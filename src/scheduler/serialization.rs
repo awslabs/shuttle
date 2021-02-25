@@ -56,7 +56,7 @@ pub(crate) fn serialize_schedule(schedule: &Schedule) -> String {
     buf.write_usize_varint(task_id_bits).unwrap();
     buf.write_usize_varint(schedule.len()).unwrap();
     buf.write_u64_varint(schedule.seed).unwrap();
-    buf.extend(encoded.as_slice());
+    buf.extend(encoded.as_raw_slice());
     hex::encode(buf)
 }
 
