@@ -1,3 +1,4 @@
+mod barrier;
 mod condvar;
 mod config;
 mod dfs;
