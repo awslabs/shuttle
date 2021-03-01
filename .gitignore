@@ -1,5 +1,3 @@
-target
+debug/
+target/
 Cargo.lock
-.idea
-.cargo
-build
