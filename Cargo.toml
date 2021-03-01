@@ -1,16 +1,11 @@
 [package]
 name = "shuttle"
-version = "0.1.0"
-authors = ["James Bornholt <bornholt@amazon.com>"]
+version = "0.0.1"
+authors = ["James Bornholt <bornholt@amazon.com>", "Rajeev Joshi <jorajeev@amazon.com>"]
 edition = "2018"
 license = "Apache-2.0"
 description = "A library for testing concurrent Rust code"
-
-publish = false
-
-exclude = [
-    "build/*"
-]
+repository = "https://github.com/awslabs/shuttle"
 
 [dependencies]
 bitvec = "~0.21.0"
