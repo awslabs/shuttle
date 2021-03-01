@@ -1,0 +1,21 @@
+name: Dependency audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+  schedule:
+    - cron: '0 2 * * 1' # run at 2 AM UTC every Monday
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install Audit
+        run: cargo install cargo-audit
+      - name: cargo audit
+        run: cargo audit
