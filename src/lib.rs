@@ -198,14 +198,25 @@ pub struct Config {
 
     /// Stack size allocated for each thread
     pub stack_size: usize,
+
+    // Support adding more fields
+    _private: (),
+}
+
+impl Config {
+    /// Create a new default configuration
+    pub fn new() -> Self {
+        Self {
+            max_tasks: 16usize,
+            stack_size: 0x8000,
+            _private: (),
+        }
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self {
-            max_tasks: 16usize,
-            stack_size: 0x8000,
-        }
+        Self::new()
     }
 }
 
