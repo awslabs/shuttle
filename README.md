@@ -1,5 +1,9 @@
 # Shuttle
 
+[![crates.io](https://img.shields.io/crates/v/shuttle.svg)](https://crates.io/crates/shuttle)
+[![docs.rs](https://docs.rs/shuttle/badge.svg)](https://docs.rs/shuttle)
+[![Tests](https://github.com/awslabs/shuttle/actions/workflows/tests.yml/badge.svg)](https://github.com/awslabs/shuttle/actions/workflows/tests.yml)
+
 Shuttle is a library for testing concurrent Rust code. It is an implementation of a number of
 *randomized concurrency testing* techniques, including
 [A Randomized Scheduler with Probabilistic Guarantees of Finding Bugs](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf).
