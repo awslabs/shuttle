@@ -1,6 +1,6 @@
 #![deny(warnings, missing_debug_implementations, missing_docs)]
 
-//! Shuttle is a library for testing concurrent Rust code, heavily inspired by [Loom].
+//! Shuttle is a library for testing concurrent Rust code, heavily inspired by [Loom][].
 //!
 //! Shuttle focuses on randomized testing, rather than the exhaustive testing that Loom offers. This
 //! is a soundness—scalability trade-off: Shuttle is not sound (a passing Shuttle test does not
@@ -176,8 +176,8 @@
 //! with the [`Runner::run`] method. Shuttle also provides a [`PortfolioRunner`] object for running
 //! multiple schedulers, using parallelism to increase the number of test executions explored.
 //!
-//! [Loom]: https://github.com/tokio-rs/loom [pct]:
-//! https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf
+//! [Loom]: https://github.com/tokio-rs/loom
+//! [pct]: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf
 
 pub mod asynch;
 pub mod rand;
