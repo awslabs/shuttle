@@ -1,4 +1,4 @@
-//! Shuttle's implementation of `std::sync`.
+//! Shuttle's implementation of [`std::sync`].
 
 mod barrier;
 mod condvar;

@@ -125,9 +125,9 @@
 //! ## Writing Shuttle tests
 //!
 //! To test concurrent code with Shuttle, all uses of synchronization primitives from `std` must be
-//! replaced by their Shuttle equivalents. We've found that the simplest way to do this is via `cfg`
-//! flags. Specifically, if you enforce that all synchronization primitives are imported from a
-//! single `sync` module in your code, and implement that module like this:
+//! replaced by their Shuttle equivalents. The simplest way to do this is via `cfg` flags.
+//! Specifically, if you enforce that all synchronization primitives are imported from a single
+//! `sync` module in your code, and implement that module like this:
 //!
 //! ```
 //! #[cfg(all(feature = "shuttle", test))]
@@ -176,8 +176,8 @@
 //! with the [`Runner::run`] method. Shuttle also provides a [`PortfolioRunner`] object for running
 //! multiple schedulers, using parallelism to increase the number of test executions explored.
 //!
-//! [Loom]: https://github.com/tokio-rs/loom
-//! [pct]: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf
+//! [Loom]: https://github.com/tokio-rs/loom [pct]:
+//! https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf
 
 pub mod asynch;
 pub mod rand;

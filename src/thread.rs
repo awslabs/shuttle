@@ -1,4 +1,4 @@
-//! Shuttle's implementation of `std::thread`.
+//! Shuttle's implementation of [`std::thread`].
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{TaskId, TaskType};

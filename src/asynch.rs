@@ -1,4 +1,9 @@
-//! Shuttle's implementation of `async_runtime::spawn`.
+//! Shuttle's implementation of an async executor, roughly equivalent to [`futures::executor`].
+//!
+//! The [spawn] method spawns a new asynchronous task that the executor will run to completion. The
+//! [block_on] method blocks the current thread on the completion of a future.
+//!
+//! [`futures::executor`]: https://docs.rs/futures/0.3.13/futures/executor/index.html
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{TaskId, TaskType};
@@ -8,7 +13,7 @@ use std::pin::Pin;
 use std::result::Result;
 use std::task::{Context, Poll};
 
-/// Spawn a new async task.
+/// Spawn a new async task that the executor will run to completion.
 pub fn spawn<T, F>(fut: F) -> JoinHandle<T>
 where
     F: Future<Output = T> + Send + 'static,
@@ -110,7 +115,7 @@ where
     }
 }
 
-/// Block a thread on a future
+/// Run a future to completion on the current thread.
 pub fn block_on<T, F>(future: F) -> T
 where
     F: Future<Output = T> + Send + 'static,
