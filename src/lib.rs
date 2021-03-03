@@ -192,15 +192,13 @@ pub use runtime::runner::{PortfolioRunner, Runner};
 
 /// Configuration parameters for Shuttle
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct Config {
     /// Maximum number of supported tasks (includes threads and async tasks)
     pub max_tasks: usize,
 
     /// Stack size allocated for each thread
     pub stack_size: usize,
-
-    // Support adding more fields
-    _private: (),
 }
 
 impl Config {
@@ -209,7 +207,6 @@ impl Config {
         Self {
             max_tasks: 16usize,
             stack_size: 0x8000,
-            _private: (),
         }
     }
 }
