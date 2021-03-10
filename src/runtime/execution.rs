@@ -1,6 +1,6 @@
+use crate::runtime::failure::persist_failure;
 use crate::runtime::task::{Task, TaskId, TaskState, TaskType, MAX_INLINE_TASKS};
 use crate::runtime::thread::future::ThreadFuture;
-use crate::scheduler::serialization::serialize_schedule;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::Config;
 use scoped_tls::scoped_thread_local;
@@ -47,23 +47,23 @@ impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
     /// scheduler returns `None`, indicating the execution should not be explored any further.
-    pub(crate) fn run<F>(mut self, config: Config, f: F)
+    pub(crate) fn run<F>(mut self, config: &Config, f: F)
     where
         F: FnOnce() + Send + 'static,
     {
         let state = RefCell::new(ExecutionState::new(
-            config,
+            config.clone(),
             Rc::clone(&self.scheduler),
             self.initial_schedule.clone(),
         ));
 
-        EXECUTION_STATE.set(&state, || {
+        EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
             let first_task = ThreadFuture::new(config.stack_size, f);
             ExecutionState::spawn(first_task, TaskType::Thread, None);
 
             // Run the test to completion
-            while self.step() {}
+            while self.step(config) {}
 
             // Cleanup the state before it goes out of `EXECUTION_STATE` scope
             ExecutionState::cleanup();
@@ -72,7 +72,7 @@ impl Execution {
 
     /// Execute a single step of the scheduler. Returns true if the execution should continue.
     #[inline]
-    fn step(&mut self) -> bool {
+    fn step(&mut self, config: &Config) -> bool {
         let result = ExecutionState::with(|state| {
             state.schedule();
             state.advance_to_next_task();
@@ -89,11 +89,11 @@ impl Execution {
                         .map(|t| (t.id, t.state))
                         .collect::<SmallVec<[_; MAX_INLINE_TASKS]>>();
                     if task_states.iter().any(|(_, s)| *s == TaskState::Blocked) {
-                        panic!(
-                            "deadlock with schedule: {:?}\nrunnable tasks: {:?}",
-                            serialize_schedule(&state.current_schedule),
-                            task_states,
-                        );
+                        panic!(persist_failure(
+                            &state.current_schedule,
+                            format!("deadlock! runnable tasks: {:?}", task_states),
+                            config,
+                        ));
                     }
                     debug_assert!(state.tasks.iter().all(|t| t.finished()));
                     None
@@ -131,13 +131,12 @@ impl Execution {
                     } else {
                         "?".into()
                     };
-                    let msg = format!(
-                        "test panicked in task {:?} with schedule: {:?}",
-                        name,
-                        serialize_schedule(&state.current_schedule),
+                    let msg = persist_failure(
+                        &state.current_schedule,
+                        format!("test panicked in task {:?}", name),
+                        config,
                     );
                     eprintln!("{}", msg);
-                    eprintln!("pass that schedule string into `shuttle::replay` to reproduce the failure");
                     // Try to inject the schedule into the panic payload if we can
                     let payload: Box<dyn Any + Send> = match e.downcast::<String>() {
                         Ok(panic_msg) => Box::new(format!("{}\noriginal panic: {}", msg, panic_msg)),
@@ -156,7 +155,7 @@ impl Execution {
 /// from within a task's execution. It tracks which tasks exist and their states, as well as which
 /// tasks are pending spawn.
 pub(crate) struct ExecutionState {
-    config: Config,
+    pub config: Config,
     // invariant: tasks are never removed from this list
     tasks: Vec<Task>,
     // invariant: if this transitions to Stopped or Finished, it can never change again
@@ -199,9 +198,10 @@ impl ScheduledTask {
 
 impl ExecutionState {
     fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+        let max_tasks = config.max_tasks;
         Self {
             config,
-            tasks: Vec::with_capacity(config.max_tasks),
+            tasks: Vec::with_capacity(max_tasks),
             current_task: ScheduledTask::None,
             next_task: ScheduledTask::None,
             scheduler,
@@ -227,11 +227,6 @@ impl ExecutionState {
     /// A shortcut to get the current task ID
     pub(crate) fn me() -> TaskId {
         Self::with(|s| s.current().id())
-    }
-
-    /// Configuration State
-    pub(crate) fn config() -> Config {
-        Self::with(|s| s.config)
     }
 
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that

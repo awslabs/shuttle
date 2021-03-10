@@ -38,10 +38,11 @@ enum RwLockType {
 impl<T> RwLock<T> {
     /// Create a new instance of an `RwLock<T>` which is unlocked.
     pub fn new(value: T) -> Self {
+        let max_tasks = ExecutionState::with(|s| s.config.max_tasks);
         let state = RwLockState {
             holder: RwLockHolder::None,
-            waiting_readers: TaskSet::new(ExecutionState::config().max_tasks),
-            waiting_writers: TaskSet::new(ExecutionState::config().max_tasks),
+            waiting_readers: TaskSet::new(max_tasks),
+            waiting_writers: TaskSet::new(max_tasks),
         };
 
         Self {
@@ -145,7 +146,7 @@ impl<T> RwLock<T> {
                 state.holder = RwLockHolder::Write(me);
             }
             (RwLockType::Read, RwLockHolder::None) => {
-                let mut readers = TaskSet::new(ExecutionState::config().max_tasks);
+                let mut readers = TaskSet::new(ExecutionState::with(|s| s.config.max_tasks));
                 readers.insert(me);
                 state.holder = RwLockHolder::Read(readers);
             }

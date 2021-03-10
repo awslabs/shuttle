@@ -1,7 +1,7 @@
-use crate::check_replay_roundtrip;
+use crate::{check_replay_roundtrip, check_replay_roundtrip_file};
 use shuttle::scheduler::{PCTScheduler, ReplayScheduler, Schedule};
 use shuttle::sync::Mutex;
-use shuttle::{thread, Runner};
+use shuttle::{replay, thread, Runner};
 use std::sync::Arc;
 use test_env_log::test;
 
@@ -28,34 +28,22 @@ fn concurrent_increment_buggy() {
 #[test]
 #[should_panic(expected = "91021000904092940400")]
 fn replay_failing() {
-    let schedule = "91021000904092940400";
-    let scheduler = ReplayScheduler::new_from_encoded(schedule);
-    let runner = Runner::new(scheduler, Default::default());
-    runner.run(concurrent_increment_buggy);
+    replay(concurrent_increment_buggy, "91021000904092940400")
 }
 
 #[test]
 fn replay_passing() {
-    let schedule = "9102110090205124480000";
-    let scheduler = ReplayScheduler::new_from_encoded(schedule);
-    let runner = Runner::new(scheduler, Default::default());
-    runner.run(concurrent_increment_buggy);
+    replay(concurrent_increment_buggy, "9102110090205124480000")
 }
 
 #[test]
 fn replay_roundtrip() {
-    check_replay_roundtrip(
-        || {
-            let scheduler = PCTScheduler::new(2, 100);
-            let runner = Runner::new(scheduler, Default::default());
-            runner.run(concurrent_increment_buggy);
-        },
-        |schedule| {
-            let scheduler = ReplayScheduler::new_from_encoded(schedule);
-            let runner = Runner::new(scheduler, Default::default());
-            runner.run(concurrent_increment_buggy);
-        },
-    )
+    check_replay_roundtrip(concurrent_increment_buggy, PCTScheduler::new(2, 100))
+}
+
+#[test]
+fn replay_roundtrip_file() {
+    check_replay_roundtrip_file(concurrent_increment_buggy, PCTScheduler::new(2, 100))
 }
 
 fn deadlock() {
@@ -75,18 +63,12 @@ fn deadlock() {
 
 #[test]
 fn replay_deadlock_roundtrip() {
-    check_replay_roundtrip(
-        || {
-            let scheduler = PCTScheduler::new(2, 100);
-            let runner = Runner::new(scheduler, Default::default());
-            runner.run(deadlock);
-        },
-        |schedule| {
-            let scheduler = ReplayScheduler::new_from_encoded(schedule);
-            let runner = Runner::new(scheduler, Default::default());
-            runner.run(deadlock);
-        },
-    )
+    check_replay_roundtrip(deadlock, PCTScheduler::new(2, 100))
+}
+
+#[test]
+fn replay_deadlock_roundtrip_file() {
+    check_replay_roundtrip_file(deadlock, PCTScheduler::new(2, 100))
 }
 
 fn deadlock_3() {
