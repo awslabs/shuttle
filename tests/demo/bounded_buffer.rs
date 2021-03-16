@@ -1,8 +1,8 @@
 // For symmetry we clone some `Arc`s even though we could just move them
 #![allow(clippy::redundant_clone)]
 
-use rand::{Rng, SeedableRng};
-use rand_pcg::Pcg64Mcg;
+use rand::Rng;
+use shuttle::rand::thread_rng;
 use shuttle::sync::{Condvar, Mutex};
 use shuttle::{check_random, replay, thread};
 use std::sync::Arc;
@@ -130,7 +130,7 @@ fn test_bounded_buffer_trivial() {
             reader.join().unwrap();
             writer.join().unwrap();
         },
-        10000,
+        1000,
     )
 }
 
@@ -142,52 +142,47 @@ fn test_bounded_buffer_trivial() {
 /// configuration. The following slightly more interesting Coyote test explores these
 /// configurations, letting Coyote control the non-determinism introduced by these random variables
 /// and the scheduling of the resulting number of tasks.
-// TODO Unlike Coyote, Shuttle doesn't currently support data nondeterminism, so the random
-// TODO variables are outside its control. That means we need an outer loop that explores the space
-// TODO of assignments to the random variables.
 #[test]
 #[should_panic(expected = "deadlock")]
 fn test_bounded_buffer_find_deadlock_configuration() {
-    let mut rng = Pcg64Mcg::seed_from_u64(0x12345678);
+    check_random(
+        move || {
+            let mut rng = thread_rng();
 
-    for _ in 0..100 {
-        let buffer_size = rng.gen_range(0usize, 5) + 1;
-        let readers = rng.gen_range(0usize, 5) + 1;
-        let writers = rng.gen_range(0usize, 5) + 1;
-        let iterations = rng.gen_range(0usize, 10) + 1;
-        let total_iterations = iterations * readers;
-        let writer_iterations = total_iterations / writers;
-        let remainder = total_iterations % writers;
+            let buffer_size = rng.gen_range(0usize, 5) + 1;
+            let readers = rng.gen_range(0usize, 5) + 1;
+            let writers = rng.gen_range(0usize, 5) + 1;
+            let iterations = rng.gen_range(0usize, 10) + 1;
+            let total_iterations = iterations * readers;
+            let writer_iterations = total_iterations / writers;
+            let remainder = total_iterations % writers;
 
-        tracing::info!(buffer_size, readers, writers, iterations);
+            tracing::info!(buffer_size, readers, writers, iterations);
 
-        check_random(
-            move || {
-                let buffer = BoundedBuffer::new(buffer_size);
+            let buffer = BoundedBuffer::new(buffer_size);
 
-                let mut tasks = vec![];
+            let mut tasks = vec![];
 
-                for _ in 0..readers {
-                    let buffer = buffer.clone();
-                    tasks.push(thread::spawn(move || reader(buffer, iterations)));
+            for _ in 0..readers {
+                let buffer = buffer.clone();
+                tasks.push(thread::spawn(move || reader(buffer, iterations)));
+            }
+
+            for i in 0..writers {
+                let buffer = buffer.clone();
+                let mut w = writer_iterations;
+                if i == writers - 1 {
+                    w += remainder;
                 }
+                tasks.push(thread::spawn(move || writer(buffer, w)));
+            }
 
-                for i in 0..writers {
-                    let buffer = buffer.clone();
-                    let mut w = writer_iterations;
-                    if i == writers - 1 {
-                        w += remainder;
-                    }
-                    tasks.push(thread::spawn(move || writer(buffer, w)));
-                }
-
-                for task in tasks {
-                    task.join().unwrap();
-                }
-            },
-            1000,
-        )
-    }
+            for task in tasks {
+                task.join().unwrap();
+            }
+        },
+        1000,
+    )
 }
 
 /// Indeed, we now see clearly that there is a minimal test with two readers and one writer. We also
@@ -221,7 +216,7 @@ fn bounded_buffer_minimal() {
 #[test]
 #[should_panic(expected = "deadlock")]
 fn test_bounded_buffer_minimal_deadlock() {
-    check_random(bounded_buffer_minimal, 10000)
+    check_random(bounded_buffer_minimal, 1000)
 }
 
 /// Fortunately Coyote also produces another log file called BoundedBuffer_0_0.schedule. This is a
