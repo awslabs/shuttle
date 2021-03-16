@@ -1,5 +1,6 @@
 use crate::check_replay_roundtrip;
 use shuttle::rand::{thread_rng, Rng};
+use shuttle::scheduler::RandomScheduler;
 use shuttle::sync::Mutex;
 use shuttle::{check_random, replay, thread};
 use shuttle::{scheduler::DFSScheduler, Runner};
@@ -35,10 +36,7 @@ fn random_mod_10_equals_7_replay_succeeds() {
 
 #[test]
 fn random_mod_10_equals_7_replay_roundtrip() {
-    check_replay_roundtrip(
-        || check_random(random_mod_10_equals_7, 1000),
-        |schedule| replay(random_mod_10_equals_7, schedule),
-    )
+    check_replay_roundtrip(random_mod_10_equals_7, RandomScheduler::new(1000))
 }
 
 // Check that multiple threads using `thread_rng` aren't seeing the same stream of randomness
@@ -156,10 +154,7 @@ fn broken_atomic_counter_stress_random() {
 
 #[test]
 fn broken_atomic_counter_stress_roundtrip() {
-    check_replay_roundtrip(
-        || check_random(broken_atomic_counter_stress, 1000),
-        |schedule| replay(broken_atomic_counter_stress, schedule),
-    )
+    check_replay_roundtrip(broken_atomic_counter_stress, RandomScheduler::new(1000))
 }
 
 #[test]

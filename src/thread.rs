@@ -53,7 +53,7 @@ where
 {
     // TODO Check if it's worth avoiding the call to `ExecutionState::config()` if we're going
     // TODO to use an existing continuation from the pool.
-    let stack_size = stack_size.unwrap_or(ExecutionState::config().stack_size);
+    let stack_size = stack_size.unwrap_or_else(|| ExecutionState::with(|s| s.config.stack_size));
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
     let task_id = {
         let result = std::sync::Arc::clone(&result);

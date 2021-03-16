@@ -191,7 +191,7 @@ mod runtime;
 pub use runtime::runner::{PortfolioRunner, Runner};
 
 /// Configuration parameters for Shuttle
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct Config {
     /// Maximum number of supported tasks (includes threads and async tasks)
@@ -199,6 +199,9 @@ pub struct Config {
 
     /// Stack size allocated for each thread
     pub stack_size: usize,
+
+    /// How to persist schedules when a test fails
+    pub failure_persistence: FailurePersistence,
 }
 
 impl Config {
@@ -207,6 +210,7 @@ impl Config {
         Self {
             max_tasks: 16usize,
             stack_size: 0x8000,
+            failure_persistence: FailurePersistence::Print,
         }
     }
 }
@@ -215,6 +219,25 @@ impl Default for Config {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Specifies how to persist schedules when a Shuttle test fails
+///
+/// By default, schedules are printed to stdout/stderr, and can be replayed using [`replay`].
+/// Optionally, they can instead be persisted to a file and replayed using [`replay_from_file`],
+/// which can be useful if the schedule is too large to conveniently include in a call to
+/// [`replay`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FailurePersistence {
+    /// Print failing schedules to stdout/stderr
+    Print,
+    /// Persist schedules as files
+    File {
+        /// The directory in which to save schedule files. If this is `None`, defaults to the
+        /// current directory ([`std::env::current_dir`]).
+        directory: Option<std::path::PathBuf>,
+    },
 }
 
 /// Run the given function once under a round-robin concurrency scheduler.
@@ -284,4 +307,31 @@ where
     let scheduler = ReplayScheduler::new_from_encoded(encoded_schedule);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
+}
+
+/// Run the given function according to a schedule saved in the given file, usually produced as the
+/// output of a failing Shuttle test case.
+///
+/// This function allows deterministic replay of a failing schedule, as long as `f` contains no
+/// non-determinism other than that introduced by scheduling.
+pub fn replay_from_file<F, P>(f: F, path: P)
+where
+    F: Fn() + Send + Sync + 'static,
+    P: AsRef<std::path::Path>,
+{
+    use std::fs::OpenOptions;
+    use std::io::Read;
+
+    let encoded_schedule = {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(path)
+            .expect("could not open schedule file");
+        let mut encoded_schedule = String::new();
+        file.read_to_string(&mut encoded_schedule)
+            .expect("could not read schedule file");
+        encoded_schedule
+    };
+
+    replay(f, &encoded_schedule);
 }

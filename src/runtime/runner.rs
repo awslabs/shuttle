@@ -53,7 +53,7 @@ impl<S: Scheduler + 'static> Runner<S> {
                 };
                 let execution = Execution::new(self.scheduler.clone(), schedule);
                 let f = Arc::clone(&f);
-                span!(Level::INFO, "execution", i).in_scope(|| execution.run(self.config, move || f()));
+                span!(Level::INFO, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
             }
         })
     }
@@ -110,6 +110,7 @@ impl PortfolioRunner {
                 let f = f.clone();
                 let tx = tx.clone();
                 let stop_signal = stop_signal.clone();
+                let config = config.clone();
 
                 thread::spawn(move || {
                     let scheduler = PortfolioStoppableScheduler { scheduler, stop_signal };
