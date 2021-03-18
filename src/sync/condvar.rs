@@ -9,7 +9,7 @@ use std::sync::{LockResult, PoisonError};
 use std::time::Duration;
 use tracing::trace;
 
-/// A `Convdvar` represents the ability to block a thread such that it consumes no CPU time while
+/// A `Condvar` represents the ability to block a thread such that it consumes no CPU time while
 /// waiting for an event to occur.
 #[derive(Debug)]
 pub struct Condvar {
