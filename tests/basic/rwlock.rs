@@ -181,3 +181,25 @@ fn rwlock_two_readers_and_one_writer_exhaustive() {
         None,
     );
 }
+
+#[test]
+fn rwlock_default() {
+    struct Point(u32, u32);
+    impl Default for Point {
+        fn default() -> Self {
+            Self(21, 42)
+        }
+    }
+
+    shuttle::check_dfs(
+        || {
+            let point: RwLock<Point> = Default::default();
+
+            let r = point.read().unwrap();
+            assert_eq!(r.0, 21);
+            assert_eq!(r.1, 42);
+        },
+        None,
+        None,
+    );
+}
