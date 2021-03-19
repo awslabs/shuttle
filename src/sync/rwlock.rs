@@ -230,6 +230,12 @@ unsafe impl<T: Send> Sync for RwLock<T> {}
 impl<T> UnwindSafe for RwLock<T> {}
 impl<T> RefUnwindSafe for RwLock<T> {}
 
+impl<T: Default> Default for RwLock<T> {
+    fn default() -> Self {
+        Self::new(Default::default())
+    }
+}
+
 /// RAII structure used to release the shared read access of a `RwLock` when dropped.
 #[derive(Debug)]
 pub struct RwLockReadGuard<'a, T> {
