@@ -346,7 +346,7 @@ impl ExecutionState {
             .iter()
             .filter(|t| t.state == TaskState::Runnable)
             .map(|t| t.id)
-            .collect::<Vec<_>>();
+            .collect::<SmallVec<[_; MAX_INLINE_TASKS]>>();
 
         if runnable.is_empty() {
             self.next_task = ScheduledTask::Finished;
