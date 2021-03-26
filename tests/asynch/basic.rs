@@ -1,4 +1,4 @@
-use shuttle::{asynch, check_dfs, check_random, scheduler::PCTScheduler, thread, Runner};
+use shuttle::{asynch, check_dfs, check_random, scheduler::PctScheduler, thread, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use test_env_log::test;
@@ -145,7 +145,7 @@ fn async_counter_random() {
 
 #[test]
 fn async_counter_pct() {
-    let scheduler = PCTScheduler::new(2, 5000);
+    let scheduler = PctScheduler::new(2, 5000);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(async_counter);
 }

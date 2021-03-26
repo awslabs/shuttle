@@ -16,7 +16,7 @@ use rand_pcg::Pcg64Mcg;
 /// which differs slightly from the paper (see notes in `next_task`) and supports dynamically
 /// determining the bound on the number of steps.
 #[derive(Debug)]
-pub struct PCTScheduler {
+pub struct PctScheduler {
     max_iterations: usize,
     max_depth: usize,
     iterations: usize,
@@ -30,7 +30,7 @@ pub struct PCTScheduler {
     data_source: RandomDataSource,
 }
 
-impl PCTScheduler {
+impl PctScheduler {
     /// Construct a new PCTScheduler with a freshly seeded RNG.
     pub fn new(max_depth: usize, max_iterations: usize) -> Self {
         Self::new_from_seed(OsRng.next_u64(), max_depth, max_iterations)
@@ -57,7 +57,7 @@ impl PCTScheduler {
     }
 }
 
-impl Scheduler for PCTScheduler {
+impl Scheduler for PctScheduler {
     fn new_execution(&mut self) -> Option<Schedule> {
         if self.iterations >= self.max_iterations {
             return None;

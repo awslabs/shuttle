@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use shuttle::scheduler::{PCTScheduler, RandomScheduler, Scheduler};
+use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::sync::Mutex;
 use shuttle::{thread, Runner};
 use std::sync::Arc;
@@ -39,7 +39,7 @@ pub fn basic_lock_benchmark(c: &mut Criterion) {
 
     g.bench_function("pct", |b| {
         b.iter(|| {
-            let scheduler = PCTScheduler::new_from_seed(0x12345678, 2, ITERATIONS);
+            let scheduler = PctScheduler::new_from_seed(0x12345678, 2, ITERATIONS);
             basic_lock_check(scheduler);
         });
     });

@@ -187,6 +187,7 @@ fn test_bounded_buffer_find_deadlock_configuration() {
 
 /// Indeed, we now see clearly that there is a minimal test with two readers and one writer. We also
 /// see all these deadlocks can be found with a buffer size of one and a small number of iterations.
+#[allow(clippy::vec_init_then_push)]
 fn bounded_buffer_minimal() {
     let buffer = BoundedBuffer::new(1);
 

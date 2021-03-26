@@ -12,8 +12,8 @@ mod round_robin;
 pub(crate) mod metrics;
 pub(crate) mod serialization;
 
-pub use dfs::DFSScheduler;
-pub use pct::PCTScheduler;
+pub use dfs::DfsScheduler;
+pub use pct::PctScheduler;
 pub use random::RandomScheduler;
 pub use replay::ReplayScheduler;
 pub use round_robin::RoundRobinScheduler;

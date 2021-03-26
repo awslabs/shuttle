@@ -1,5 +1,5 @@
 use crate::{check_replay_roundtrip, check_replay_roundtrip_file};
-use shuttle::scheduler::{PCTScheduler, ReplayScheduler, Schedule};
+use shuttle::scheduler::{PctScheduler, ReplayScheduler, Schedule};
 use shuttle::sync::Mutex;
 use shuttle::{replay, thread, Runner};
 use std::sync::Arc;
@@ -38,12 +38,12 @@ fn replay_passing() {
 
 #[test]
 fn replay_roundtrip() {
-    check_replay_roundtrip(concurrent_increment_buggy, PCTScheduler::new(2, 100))
+    check_replay_roundtrip(concurrent_increment_buggy, PctScheduler::new(2, 100))
 }
 
 #[test]
 fn replay_roundtrip_file() {
-    check_replay_roundtrip_file(concurrent_increment_buggy, PCTScheduler::new(2, 100))
+    check_replay_roundtrip_file(concurrent_increment_buggy, PctScheduler::new(2, 100))
 }
 
 fn deadlock() {
@@ -63,12 +63,12 @@ fn deadlock() {
 
 #[test]
 fn replay_deadlock_roundtrip() {
-    check_replay_roundtrip(deadlock, PCTScheduler::new(2, 100))
+    check_replay_roundtrip(deadlock, PctScheduler::new(2, 100))
 }
 
 #[test]
 fn replay_deadlock_roundtrip_file() {
-    check_replay_roundtrip_file(deadlock, PCTScheduler::new(2, 100))
+    check_replay_roundtrip_file(deadlock, PctScheduler::new(2, 100))
 }
 
 fn deadlock_3() {

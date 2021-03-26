@@ -1,4 +1,4 @@
-use shuttle::scheduler::PCTScheduler;
+use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Mutex;
 use shuttle::{check_random, thread, Runner};
 use std::sync::Arc;
@@ -35,14 +35,14 @@ fn figure5_random() {
 #[should_panic(expected = "thread 1 ran to completion")]
 fn figure5_pct() {
     // Change of hitting the bug should be 1 - (1 - 1/2)^20 > 99.9999%, so this should trip the assert
-    let scheduler = PCTScheduler::new(1, 20);
+    let scheduler = PctScheduler::new(1, 20);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(figure5);
 }
 
 #[test]
 fn one_step() {
-    let scheduler = PCTScheduler::new(2, 100);
+    let scheduler = PctScheduler::new(2, 100);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         thread::spawn(|| {});

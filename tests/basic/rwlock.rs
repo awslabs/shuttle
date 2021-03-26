@@ -1,4 +1,4 @@
-use shuttle::scheduler::PCTScheduler;
+use shuttle::scheduler::PctScheduler;
 use shuttle::sync::{mpsc::channel, RwLock};
 use shuttle::{check, check_random, thread, Runner};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -91,7 +91,7 @@ fn deadlock_random() {
 #[should_panic(expected = "deadlock")]
 fn deadlock_pct() {
     // 200 tries should be enough to find a deadlocking execution
-    let scheduler = PCTScheduler::new(2, 100);
+    let scheduler = PctScheduler::new(2, 100);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock);
 }

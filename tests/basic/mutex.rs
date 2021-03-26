@@ -1,4 +1,4 @@
-use shuttle::scheduler::PCTScheduler;
+use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Mutex;
 use shuttle::{check, check_random, thread, Runner};
 use std::sync::Arc;
@@ -59,7 +59,7 @@ fn deadlock_random() {
 #[should_panic(expected = "deadlock")]
 fn deadlock_pct() {
     // 100 tries should be enough to find a deadlocking execution
-    let scheduler = PCTScheduler::new(2, 100);
+    let scheduler = PctScheduler::new(2, 100);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock);
 }
@@ -67,7 +67,7 @@ fn deadlock_pct() {
 #[test]
 #[should_panic(expected = "racing increments")]
 fn concurrent_increment_buggy() {
-    let scheduler = PCTScheduler::new(2, 100);
+    let scheduler = PctScheduler::new(2, 100);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         let lock = Arc::new(Mutex::new(0usize));
@@ -94,7 +94,7 @@ fn concurrent_increment_buggy() {
 
 #[test]
 fn concurrent_increment() {
-    let scheduler = PCTScheduler::new(2, 100);
+    let scheduler = PctScheduler::new(2, 100);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         let lock = Arc::new(Mutex::new(0usize));
