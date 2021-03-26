@@ -3,6 +3,7 @@ mod condvar;
 mod config;
 mod dfs;
 mod execution;
+mod metrics;
 mod mpsc;
 mod mutex;
 mod pct;
