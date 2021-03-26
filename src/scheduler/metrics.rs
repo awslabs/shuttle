@@ -115,7 +115,7 @@ impl<S: ?Sized + Scheduler> Drop for MetricsScheduler<S> {
         }
 
         info!(
-            iterations = self.iterations - 1,
+            iterations = self.iterations.saturating_sub(1),
             steps = %self.steps_metric,
             context_switches = %self.context_switches_metric,
             preemptions = %self.preemptions_metric,
