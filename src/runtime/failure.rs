@@ -48,5 +48,5 @@ fn persist_failure_to_file(serialized_schedule: &str, destination: Option<&PathB
         i += 1;
     };
     file.write_all(serialized_schedule.as_bytes())?;
-    Ok(path.canonicalize()?)
+    path.canonicalize()
 }

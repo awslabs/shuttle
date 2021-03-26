@@ -89,11 +89,14 @@ impl Execution {
                         .map(|t| (t.id, t.state))
                         .collect::<SmallVec<[_; MAX_INLINE_TASKS]>>();
                     if task_states.iter().any(|(_, s)| *s == TaskState::Blocked) {
-                        panic!(persist_failure(
-                            &state.current_schedule,
-                            format!("deadlock! runnable tasks: {:?}", task_states),
-                            config,
-                        ));
+                        panic!(
+                            "{}",
+                            persist_failure(
+                                &state.current_schedule,
+                                format!("deadlock! runnable tasks: {:?}", task_states),
+                                config,
+                            )
+                        );
                     }
                     debug_assert!(state.tasks.iter().all(|t| t.finished()));
                     None

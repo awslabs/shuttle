@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use shuttle::scheduler::{PCTScheduler, RandomScheduler, Scheduler};
+use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::{asynch, thread, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -61,7 +61,7 @@ pub fn counter_async_benchmark(c: &mut Criterion) {
 
     g.bench_function("pct", |b| {
         b.iter(|| {
-            let scheduler = PCTScheduler::new_from_seed(0x12345678, 2, ITERATIONS);
+            let scheduler = PctScheduler::new_from_seed(0x12345678, 2, ITERATIONS);
             counter_async(scheduler);
         });
     });
@@ -80,7 +80,7 @@ pub fn counter_sync_benchmark(c: &mut Criterion) {
 
     g.bench_function("pct", |b| {
         b.iter(|| {
-            let scheduler = PCTScheduler::new_from_seed(0x12345678, 2, ITERATIONS);
+            let scheduler = PctScheduler::new_from_seed(0x12345678, 2, ITERATIONS);
             counter_sync(scheduler);
         });
     });

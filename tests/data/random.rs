@@ -3,7 +3,7 @@ use shuttle::rand::{thread_rng, Rng};
 use shuttle::scheduler::RandomScheduler;
 use shuttle::sync::Mutex;
 use shuttle::{check_random, replay, thread};
-use shuttle::{scheduler::DFSScheduler, Runner};
+use shuttle::{scheduler::DfsScheduler, Runner};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -160,14 +160,14 @@ fn broken_atomic_counter_stress_roundtrip() {
 #[test]
 #[should_panic(expected = "requested random data from DFS scheduler")]
 fn dfs_thread_rng_decorrelated_disabled() {
-    let scheduler = DFSScheduler::new(None, None, false);
+    let scheduler = DfsScheduler::new(None, None, false);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(thread_rng_decorrelated);
 }
 
 #[test]
 fn dfs_threads_decorrelated_enabled() {
-    let scheduler = DFSScheduler::new(None, None, true);
+    let scheduler = DfsScheduler::new(None, None, true);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(thread_rng_decorrelated);
 }
@@ -178,7 +178,7 @@ fn dfs_does_not_reseed_across_executions() {
     let pair = std::sync::Arc::new(std::sync::Mutex::new((HashSet::new(), 0usize)));
     let pair_clone = pair.clone();
 
-    let scheduler = DFSScheduler::new(None, None, true);
+    let scheduler = DfsScheduler::new(None, None, true);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(move || {
         thread::spawn(|| {

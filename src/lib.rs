@@ -272,9 +272,9 @@ pub fn check_pct<F>(f: F, iterations: usize, depth: usize)
 where
     F: Fn() + Send + Sync + 'static,
 {
-    use crate::scheduler::PCTScheduler;
+    use crate::scheduler::PctScheduler;
 
-    let scheduler = PCTScheduler::new(depth, iterations);
+    let scheduler = PctScheduler::new(depth, iterations);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
 }
@@ -286,9 +286,9 @@ pub fn check_dfs<F>(f: F, max_iterations: Option<usize>, max_depth: Option<usize
 where
     F: Fn() + Send + Sync + 'static,
 {
-    use crate::scheduler::DFSScheduler;
+    use crate::scheduler::DfsScheduler;
 
-    let scheduler = DFSScheduler::new(max_iterations, max_depth, false);
+    let scheduler = DfsScheduler::new(max_iterations, max_depth, false);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
 }
