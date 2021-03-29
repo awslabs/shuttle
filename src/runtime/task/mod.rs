@@ -71,12 +71,16 @@ impl Task {
         self.id
     }
 
-    pub(crate) fn finished(&self) -> bool {
-        self.state == TaskState::Finished
+    pub(crate) fn runnable(&self) -> bool {
+        self.state == TaskState::Runnable
     }
 
     pub(crate) fn blocked(&self) -> bool {
         self.state == TaskState::Blocked
+    }
+
+    pub(crate) fn finished(&self) -> bool {
+        self.state == TaskState::Finished
     }
 
     pub(crate) fn waker(&self) -> Waker {
@@ -84,7 +88,20 @@ impl Task {
     }
 
     pub(crate) fn block(&mut self) {
+        assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked;
+    }
+
+    pub(crate) fn unblock(&mut self) {
+        // Note we don't assert the task is blocked here. For example, a task invoking its own waker
+        // will not be blocked when this is called.
+        assert!(self.state != TaskState::Finished);
+        self.state = TaskState::Runnable;
+    }
+
+    pub(crate) fn finish(&mut self) {
+        assert!(self.state != TaskState::Finished);
+        self.state = TaskState::Finished;
     }
 
     /// Potentially block this task after it was polled by the executor.
@@ -104,12 +121,6 @@ impl Task {
     /// not be blocked again by `block_after_running`.
     pub(super) fn set_woken_by_self(&mut self) {
         self.woken_by_self = true;
-    }
-
-    pub(crate) fn unblock(&mut self) {
-        // Note we don't assert the task was blocked here. For example, a task invoking its own
-        // waker will not be blocked.
-        self.state = TaskState::Runnable;
     }
 
     /// Register a waiter for this thread to terminate. Returns a boolean indicating whether the
