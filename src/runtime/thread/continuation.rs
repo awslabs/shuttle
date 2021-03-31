@@ -30,7 +30,14 @@ pub(crate) struct Continuation {
 }
 
 /// A cell to pass functions into continuations
-type ContinuationFunction = Rc<Cell<Option<Box<dyn FnOnce()>>>>;
+#[allow(clippy::type_complexity)]
+#[derive(Clone)]
+struct ContinuationFunction(Rc<Cell<Option<Box<dyn FnOnce() + Send>>>>);
+
+// Safety: we arrange for the `function` field of `Continuation` to only be accessed by one thread
+// at a time: Shuttle tests are single threaded, and continuations are never shared across threads
+// by the ContinuationPool, which is thread-local. The function itself already implements `Send`.
+unsafe impl Send for ContinuationFunction {}
 
 /// Inputs that we can pass to a continuation.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -57,7 +64,7 @@ enum ContinuationState {
 
 impl Continuation {
     pub fn new(stack_size: usize) -> Self {
-        let function: ContinuationFunction = Rc::new(Cell::new(None));
+        let function = ContinuationFunction(Rc::new(Cell::new(None)));
 
         let mut gen = {
             let function = function.clone();
@@ -72,7 +79,7 @@ impl Continuation {
                         _ => (),
                     }
 
-                    let f = function.take().expect("must have a function to run");
+                    let f = function.0.take().expect("must have a function to run");
 
                     f();
                 }
@@ -94,14 +101,14 @@ impl Continuation {
 
     /// Provide a new function for the continuation to execute. The continuation must
     /// be in reusable state.
-    pub fn initialize(&mut self, fun: Box<dyn FnOnce()>) {
+    pub fn initialize(&mut self, fun: Box<dyn FnOnce() + Send>) {
         debug_assert_eq!(
             self.state,
             ContinuationState::NotReady,
             "shouldn't replace a function before it runs"
         );
 
-        let old = self.function.replace(Some(fun));
+        let old = self.function.0.replace(Some(fun));
         debug_assert!(old.is_none(), "shouldn't replace a function before it runs");
 
         self.state = ContinuationState::Ready;
