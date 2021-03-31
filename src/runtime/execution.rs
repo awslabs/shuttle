@@ -119,7 +119,7 @@ impl Execution {
         ExecutionState::with(|state| {
             match ret {
                 Ok(Poll::Ready(_)) => {
-                    state.current_mut().state = TaskState::Finished;
+                    state.current_mut().finish();
                 }
                 Ok(Poll::Pending) => {
                     state.current_mut().block_after_running();
@@ -347,7 +347,7 @@ impl ExecutionState {
         let runnable = self
             .tasks
             .iter()
-            .filter(|t| t.state == TaskState::Runnable)
+            .filter(|t| t.runnable())
             .map(|t| t.id)
             .collect::<SmallVec<[_; MAX_INLINE_TASKS]>>();
 
