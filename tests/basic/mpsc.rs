@@ -14,7 +14,6 @@ fn mpsc_loom_basic_sequential_usage() {
             assert_eq!(val, 5);
         },
         None,
-        None,
     );
 }
 
@@ -29,7 +28,6 @@ fn mpsc_loom_basic_parallel_usage() {
             let val = r.recv().unwrap();
             assert_eq!(val, 5);
         },
-        None,
         None,
     );
 }
@@ -50,7 +48,6 @@ fn mpsc_loom_commutative_senders() {
             val += r.recv().unwrap();
             assert_eq!(val, 11);
         },
-        None,
         None,
     );
 }
@@ -75,7 +72,6 @@ fn mpsc_loom_non_commutative_senders1() {
             ignore_result(r.recv());
         },
         None,
-        None,
     );
 }
 
@@ -97,7 +93,6 @@ fn mpsc_loom_non_commutative_senders2() {
             ignore_result(r.recv());
         },
         None,
-        None,
     );
 }
 
@@ -112,7 +107,6 @@ fn mpsc_drop_sender_unbounded() {
             assert!(rx.recv().is_err());
         },
         None,
-        None,
     );
 }
 
@@ -124,7 +118,6 @@ fn mpsc_drop_receiver_unbounded() {
             drop(rx);
             assert!(tx.send(1).is_err());
         },
-        None,
         None,
     );
 }
@@ -140,7 +133,6 @@ fn mpsc_drop_sender_bounded() {
             drop(tx);
         },
         None,
-        None,
     );
 }
 
@@ -152,7 +144,6 @@ fn mpsc_drop_receiver_bounded() {
             drop(rx);
             assert!(tx.send(1).is_err());
         },
-        None,
         None,
     );
 }
@@ -166,7 +157,6 @@ fn mpsc_drop_sender_rendezvous() {
             assert!(rx.recv().is_err());
         },
         None,
-        None,
     );
 }
 
@@ -178,7 +168,6 @@ fn mpsc_drop_receiver_rendezvous() {
             drop(rx);
             assert!(tx.send(1).is_err());
         },
-        None,
         None,
     );
 }
@@ -209,7 +198,6 @@ fn mpsc_buffering_behavior() {
             assert_eq!(Err(RecvError), recv.recv());
         },
         None,
-        None,
     );
 }
 
@@ -234,7 +222,6 @@ fn mpsc_bounded_sum() {
             assert_eq!(r, 5);
         },
         None,
-        None,
     );
 }
 
@@ -253,7 +240,6 @@ fn mpsc_bounded_sender_buffered() {
             let r = handle.join().unwrap();
             assert_eq!(r, 42);
         },
-        None,
         None,
     );
 }
@@ -275,7 +261,6 @@ fn mpsc_bounded_sender_blocked() {
             assert_eq!(r, 42);
         },
         None,
-        None,
     );
 }
 
@@ -294,7 +279,6 @@ fn mpsc_rendezvous_channel() {
             assert_eq!(v, 53);
         },
         None,
-        None,
     );
 }
 
@@ -308,7 +292,6 @@ fn mpsc_rendezvous_sender_block() {
             rx.recv().unwrap();
             rx.recv().unwrap();
         },
-        None,
         None,
     );
 }
@@ -329,7 +312,6 @@ fn mpsc_rendezvous_two_threads() {
             let v2 = rx.recv().unwrap();
             assert_eq!(v1 + v2, 30);
         },
-        None,
         None,
     );
 }
@@ -368,7 +350,6 @@ fn mpsc_rendezvous_transfer_receiver() {
             handle.join().unwrap();
         },
         None,
-        None,
     );
 }
 
@@ -395,7 +376,6 @@ fn mpsc_send_from_outside_runtime() {
             t2.join().expect("thread panicked");
         },
         None,
-        None,
     );
 }
 
@@ -415,7 +395,6 @@ fn mpsc_recv_from_outside_runtime() {
             }
             t.join().expect("thread panicked");
         },
-        None,
         None,
     );
 }
@@ -440,7 +419,6 @@ fn mpsc_oneshot_single_thread_recv_chan_close() {
 
             assert!(res.is_err());
         },
-        None,
         None,
     );
 }
@@ -471,7 +449,6 @@ fn mpsc_many_senders_with_blocking() {
             }
         },
         None,
-        None,
     );
 }
 
@@ -499,7 +476,6 @@ fn mpsc_many_senders_drop_receiver() {
                 sender.join().unwrap();
             }
         },
-        None,
         None,
     );
 }

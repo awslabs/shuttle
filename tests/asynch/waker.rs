@@ -47,6 +47,5 @@ fn wake_after_finish() {
             }
         },
         None,
-        None,
     )
 }

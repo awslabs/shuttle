@@ -2,7 +2,7 @@ use crate::runtime::failure::persist_failure;
 use crate::runtime::task::{Task, TaskId, TaskState, TaskType, MAX_INLINE_TASKS};
 use crate::runtime::thread::future::ThreadFuture;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::Config;
+use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -74,7 +74,7 @@ impl Execution {
     #[inline]
     fn step(&mut self, config: &Config) -> bool {
         let result = ExecutionState::with(|state| {
-            state.schedule();
+            state.schedule(true);
             state.advance_to_next_task();
 
             match state.current_task {
@@ -283,7 +283,7 @@ impl ExecutionState {
                 "we're inside a task and scheduler should not yet have run"
             );
 
-            state.schedule();
+            state.schedule(false);
 
             // If the next task is the same as the current one, we can skip the context switch
             // and just advance to the next task immediately.
@@ -336,12 +336,42 @@ impl ExecutionState {
         self.tasks.get_mut(id.0).unwrap()
     }
 
-    /// Run the scheduler to choose the next task to run
-    fn schedule(&mut self) {
+    /// Run the scheduler to choose the next task to run. `has_yielded` should be false if the
+    /// scheduler is being invoked from within a running task, in which case `schedule` should not
+    /// panic.
+    fn schedule(&mut self, has_yielded: bool) {
         // Don't schedule twice. If `maybe_yield` ran the scheduler, we don't want to run it
         // again at the top of `step`.
         if self.next_task != ScheduledTask::None {
             return;
+        }
+
+        match self.config.max_steps {
+            MaxSteps::None => {}
+            MaxSteps::FailAfter(n) => {
+                if self.current_schedule.len() >= n {
+                    if has_yielded {
+                        panic!(
+                            "{}",
+                            persist_failure(
+                                &self.current_schedule,
+                                format!("exceeded max_steps bound {}. this might be caused by an unfair schedule (e.g., a spin loop)?", n),
+                                &self.config
+                            )
+                        );
+                    } else {
+                        // Force this task to yield; we'll trigger the panic next time we call `schedule`
+                        self.next_task = ScheduledTask::None;
+                        return;
+                    }
+                }
+            }
+            MaxSteps::ContinueAfter(n) => {
+                if self.current_schedule.len() >= n {
+                    self.next_task = ScheduledTask::Stopped;
+                    return;
+                }
+            }
         }
 
         let runnable = self
