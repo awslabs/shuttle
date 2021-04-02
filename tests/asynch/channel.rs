@@ -27,7 +27,6 @@ fn oneshot_once() {
             });
         },
         None,
-        None,
     )
 }
 
@@ -51,7 +50,6 @@ fn oneshot_ping_pong() {
             })
         },
         None,
-        None,
     )
 }
 
@@ -71,7 +69,6 @@ fn oneshot_deadlock() {
                 tx.send(0u32).unwrap();
             })
         },
-        None,
         None,
     )
 }
@@ -105,22 +102,22 @@ where
 
 #[test]
 fn mpsc_unbounded_stream_sum_1() {
-    check_dfs(|| mpsc_stream_sum(1, mpsc::unbounded::<usize>), None, None)
+    check_dfs(|| mpsc_stream_sum(1, mpsc::unbounded::<usize>), None)
 }
 
 #[test]
 fn mpsc_unbounded_stream_sum_4() {
-    check_dfs(|| mpsc_stream_sum(4, mpsc::unbounded::<usize>), None, None)
+    check_dfs(|| mpsc_stream_sum(4, mpsc::unbounded::<usize>), None)
 }
 
 #[test]
 fn mpsc_bounded_stream_sum_1() {
-    check_dfs(|| mpsc_stream_sum(1, || mpsc::channel::<usize>(1)), None, None)
+    check_dfs(|| mpsc_stream_sum(1, || mpsc::channel::<usize>(1)), None)
 }
 
 #[test]
 fn mpsc_bounded_stream_sum_4() {
-    check_dfs(|| mpsc_stream_sum(4, || mpsc::channel::<usize>(1)), None, None)
+    check_dfs(|| mpsc_stream_sum(4, || mpsc::channel::<usize>(1)), None)
 }
 
 /// Validate that we see every permutation of message orderings at the receiver of the mpsc channel
@@ -156,7 +153,6 @@ where
                 p.insert(result);
             })
         },
-        None,
         None,
     );
 
@@ -208,10 +204,10 @@ fn mpsc_stream_sender_maybe_deadlock(should_drop_sender: bool) {
 #[test]
 #[should_panic(expected = "deadlock")]
 fn mpsc_stream_sender_deadlock() {
-    check_dfs(|| mpsc_stream_sender_maybe_deadlock(false), None, None)
+    check_dfs(|| mpsc_stream_sender_maybe_deadlock(false), None)
 }
 
 #[test]
 fn mpsc_stream_sender_no_deadlock() {
-    check_dfs(|| mpsc_stream_sender_maybe_deadlock(true), None, None)
+    check_dfs(|| mpsc_stream_sender_maybe_deadlock(true), None)
 }

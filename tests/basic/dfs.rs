@@ -1,6 +1,6 @@
 use shuttle::scheduler::DfsScheduler;
 use shuttle::sync::Mutex;
-use shuttle::{thread, Runner};
+use shuttle::{thread, Config, MaxSteps, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use test_env_log::test;
@@ -8,13 +8,19 @@ use test_env_log::test;
 // TODO all these tests would be a lot simpler if we had some way for the scheduler to return us
 // TODO some statistics about coverage
 
+fn max_steps(n: usize) -> Config {
+    let mut config = Config::new();
+    config.max_steps = MaxSteps::ContinueAfter(n);
+    config
+}
+
 #[test]
 fn trivial_one_thread() {
     let iterations = Arc::new(AtomicUsize::new(0));
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(None, None, false);
+        let scheduler = DfsScheduler::new(None, false);
         let runner = Runner::new(scheduler, Default::default());
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -30,7 +36,7 @@ fn trivial_two_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(None, None, false);
+        let scheduler = DfsScheduler::new(None, false);
         let runner = Runner::new(scheduler, Default::default());
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -65,7 +71,7 @@ fn two_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(None, None, false);
+        let scheduler = DfsScheduler::new(None, false);
         let runner = Runner::new(scheduler, Default::default());
         runner.run(move || two_threads_work(&counter));
     }
@@ -81,8 +87,8 @@ fn two_threads_depth_4() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(None, Some(4), false);
-        let runner = Runner::new(scheduler, Default::default());
+        let scheduler = DfsScheduler::new(None, false);
+        let runner = Runner::new(scheduler, max_steps(4));
         runner.run(move || two_threads_work(&counter));
     }
 
@@ -106,8 +112,8 @@ fn two_threads_depth_5() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(None, Some(5), false);
-        let runner = Runner::new(scheduler, Default::default());
+        let scheduler = DfsScheduler::new(None, false);
+        let runner = Runner::new(scheduler, max_steps(5));
         runner.run(move || two_threads_work(&counter));
     }
 
@@ -133,7 +139,7 @@ fn yield_loop_one_thread() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(None, None, false);
+        let scheduler = DfsScheduler::new(None, false);
         let runner = Runner::new(scheduler, Default::default());
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -158,7 +164,7 @@ fn yield_loop_two_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(None, None, false);
+        let scheduler = DfsScheduler::new(None, false);
         let runner = Runner::new(scheduler, Default::default());
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -186,7 +192,7 @@ fn yield_loop_two_threads_bounded() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(Some(100), None, false);
+        let scheduler = DfsScheduler::new(Some(100), false);
         let runner = Runner::new(scheduler, Default::default());
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -212,7 +218,7 @@ fn yield_loop_three_threads() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(None, None, false);
+        let scheduler = DfsScheduler::new(None, false);
         let runner = Runner::new(scheduler, Default::default());
         runner.run(move || {
             counter.fetch_add(1, Ordering::SeqCst);
@@ -244,8 +250,8 @@ fn yield_loop_max_depth() {
 
     {
         let counter = Arc::clone(&iterations);
-        let scheduler = DfsScheduler::new(None, Some(20), false);
-        let runner = Runner::new(scheduler, Default::default());
+        let scheduler = DfsScheduler::new(None, false);
+        let runner = Runner::new(scheduler, max_steps(20));
         runner.run(move || {
             for _ in 0..100 {
                 counter.fetch_add(1, Ordering::SeqCst);

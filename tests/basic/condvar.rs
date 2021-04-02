@@ -31,7 +31,6 @@ fn notify_one() {
             cond.notify_one();
         },
         None,
-        None,
     )
 }
 
@@ -59,7 +58,7 @@ where
 
 #[test]
 fn notify_all() {
-    check_dfs(|| two_workers(|cond| cond.notify_all()), None, None)
+    check_dfs(|| two_workers(|cond| cond.notify_all()), None)
 }
 
 #[test]
@@ -71,7 +70,6 @@ fn multiple_notify_one() {
                 cond.notify_one();
             })
         },
-        None,
         None,
     )
 }
@@ -87,7 +85,6 @@ fn notify_one_deadlock() {
             })
         },
         None,
-        None,
     )
 }
 
@@ -101,7 +98,6 @@ fn notify_one_all() {
             })
         },
         None,
-        None,
     )
 }
 
@@ -114,7 +110,6 @@ fn notify_all_one() {
                 cond.notify_one();
             })
         },
-        None,
         None,
     )
 }
@@ -207,7 +202,6 @@ fn notify_one_order() {
             // Not necessary for the test; just prevent deadlock
             cond.notify_one();
         },
-        None,
         None,
     )
 }
@@ -463,7 +457,6 @@ fn notify_one_timeout() {
             // Note: it's valid to signal a condvar while not holding the corresponding lock
             cond.notify_one();
         },
-        None,
         None,
     )
 }

@@ -18,7 +18,6 @@ fn async_fncall() {
             });
         },
         None,
-        None,
     );
 }
 
@@ -34,7 +33,6 @@ fn async_with_join() {
                 });
             });
         },
-        None,
         None,
     );
 }
@@ -59,7 +57,6 @@ fn async_with_threads() {
             });
         },
         None,
-        None,
     );
 }
 
@@ -70,7 +67,6 @@ fn async_block_on() {
             let v = asynch::block_on(async { 42u32 });
             assert_eq!(v, 42u32);
         },
-        None,
         None,
     );
 }
@@ -83,7 +79,6 @@ fn async_spawn() {
             let v = asynch::block_on(async { t.await.unwrap() });
             assert_eq!(v, 42u32);
         },
-        None,
         None,
     );
 }
@@ -98,7 +93,6 @@ fn async_spawn_chain() {
             assert_eq!(v, 1u32);
         },
         None,
-        None,
     );
 }
 
@@ -112,7 +106,6 @@ fn async_yield() {
             });
             assert_eq!(v, 42u32);
         },
-        None,
         None,
     )
 }

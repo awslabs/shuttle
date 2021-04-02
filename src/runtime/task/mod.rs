@@ -154,6 +154,8 @@ pub(crate) enum TaskType {
     Future,
 }
 
+/// A `TaskId` is a unique identifier for a task. `TaskId`s are never reused within a single
+/// execution.
 #[derive(PartialEq, Eq, Hash, Clone, Copy, PartialOrd, Ord, Debug)]
 pub struct TaskId(pub(super) usize);
 

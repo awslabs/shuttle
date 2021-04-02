@@ -1,5 +1,4 @@
 //! Implementations of different scheduling strategies for concurrency testing.
-use crate::runtime::task::TaskId;
 use std::fmt::Debug;
 
 mod data;
@@ -11,6 +10,8 @@ mod round_robin;
 
 pub(crate) mod metrics;
 pub(crate) mod serialization;
+
+pub use crate::runtime::task::TaskId;
 
 pub use dfs::DfsScheduler;
 pub use pct::PctScheduler;

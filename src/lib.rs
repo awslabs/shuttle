@@ -202,6 +202,10 @@ pub struct Config {
 
     /// How to persist schedules when a test fails
     pub failure_persistence: FailurePersistence,
+
+    /// Maximum number of steps a single iteration of a test can take, and how to react when the
+    /// limit is reached
+    pub max_steps: MaxSteps,
 }
 
 impl Config {
@@ -211,6 +215,7 @@ impl Config {
             max_tasks: 16usize,
             stack_size: 0x8000,
             failure_persistence: FailurePersistence::Print,
+            max_steps: MaxSteps::FailAfter(1_000_000),
         }
     }
 }
@@ -238,6 +243,35 @@ pub enum FailurePersistence {
         /// current directory ([`std::env::current_dir`]).
         directory: Option<std::path::PathBuf>,
     },
+}
+
+/// Specifies an upper bound on the number of steps a single iteration of a Shuttle test can take,
+/// and how to react when the bound is reached.
+///
+/// A "step" is an atomic region (all the code between two yieldpoints). For example, all the
+/// (non-concurrency-operation) code between acquiring and releasing a [`Mutex`] is a single step.
+/// Shuttle can bound the maximum number of steps a single test iteration can take to prevent
+/// infinite loops. If the bound is hit, the test can either fail (`FailAfter`) or continue to the
+/// next iteration (`ContinueAfter`).
+///
+/// The steps bound can be used to protect against livelock and fairness issues. For example, if a
+/// thread is waiting for another thread to make progress, but the chosen [`Scheduler`] never
+/// schedules that thread, a livelock occurs and the test will not terminate without a step bound.
+///
+/// By default, Shuttle fails a test after 1,000,000 steps.
+///
+/// [`Mutex`]: crate::sync::Mutex
+/// [`Scheduler`]: crate::scheduler::Scheduler
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MaxSteps {
+    /// Do not enforce any bound on the maximum number of steps
+    None,
+    /// Fail the test (by panicing) after the given number of steps
+    FailAfter(usize),
+    /// When the given number of steps is reached, stop the current iteration of the test and
+    /// begin a new iteration
+    ContinueAfter(usize),
 }
 
 /// Run the given function once under a round-robin concurrency scheduler.
@@ -280,15 +314,14 @@ where
 }
 
 /// Run the given function under a depth-first-search scheduler until all interleavings have been
-/// explored (but if the max_iterations bound is provided, stop after that many iterations;
-/// and if the max_depth bound is provided, stop exploring any execution when the depth is reached).
-pub fn check_dfs<F>(f: F, max_iterations: Option<usize>, max_depth: Option<usize>)
+/// explored (but if the max_iterations bound is provided, stop after that many iterations).
+pub fn check_dfs<F>(f: F, max_iterations: Option<usize>)
 where
     F: Fn() + Send + Sync + 'static,
 {
     use crate::scheduler::DfsScheduler;
 
-    let scheduler = DfsScheduler::new(max_iterations, max_depth, false);
+    let scheduler = DfsScheduler::new(max_iterations, false);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
 }

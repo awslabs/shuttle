@@ -17,7 +17,7 @@ pub fn persist_failure(schedule: &Schedule, message: String, config: &Config) ->
         }
     }
     format!(
-        "{}\nfailing schedule: \"{}\"\npass that path to `shuttle::replay` to replay the failure",
+        "{}\nfailing schedule: \"{}\"\npass that string to `shuttle::replay` to replay the failure",
         message, serialized_schedule
     )
 }

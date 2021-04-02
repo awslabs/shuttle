@@ -147,7 +147,6 @@ fn rwlock_allows_multiple_readers() {
             });
         },
         None,
-        None,
     );
 }
 
@@ -178,7 +177,6 @@ fn rwlock_two_readers_and_one_writer_exhaustive() {
             two_readers_and_one_writer();
         },
         None,
-        None,
     );
 }
 
@@ -199,7 +197,6 @@ fn rwlock_default() {
             assert_eq!(r.0, 21);
             assert_eq!(r.1, 42);
         },
-        None,
         None,
     );
 }

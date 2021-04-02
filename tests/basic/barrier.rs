@@ -36,7 +36,6 @@ fn barrier_simple() {
             });
         },
         None,
-        None,
     );
 }
 
@@ -79,18 +78,18 @@ fn barrier_test(n: usize, c: usize) {
 
 #[test]
 fn barrier_test_many_ok() {
-    check_dfs(|| barrier_test(4, 4), None, None);
+    check_dfs(|| barrier_test(4, 4), None);
 }
 
 #[test]
 #[should_panic(expected = "deadlock")]
 fn barrier_test_many_block() {
-    check_dfs(|| barrier_test(3, 4), None, None);
+    check_dfs(|| barrier_test(3, 4), None);
 }
 
 #[test]
 fn barrier_test_one_thread() {
-    check_dfs(|| barrier_test(1, 1), None, None);
+    check_dfs(|| barrier_test(1, 1), None);
 }
 
 #[test]
@@ -102,7 +101,6 @@ fn barrier_test_reuse_one() {
                 assert!(barrier.wait().is_leader());
             }
         },
-        None,
         None,
     );
 }
@@ -116,7 +114,6 @@ fn barrier_test_reuse_zero() {
                 assert!(barrier.wait().is_leader());
             }
         },
-        None,
         None,
     );
 }
