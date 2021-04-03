@@ -164,20 +164,14 @@ fn two_readers_and_one_writer() {
         });
     }
 
-    thread::spawn(move || {
-        let mut w = lock1.write().unwrap();
-        *w += 1;
-    });
+    // Writer runs on the main thread
+    let mut w = lock1.write().unwrap();
+    *w += 1;
 }
 
 #[test]
 fn rwlock_two_readers_and_one_writer_exhaustive() {
-    shuttle::check_dfs(
-        || {
-            two_readers_and_one_writer();
-        },
-        None,
-    );
+    shuttle::check_dfs(two_readers_and_one_writer, None);
 }
 
 #[test]
