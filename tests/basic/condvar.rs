@@ -1,12 +1,10 @@
-use rand::{Rng, SeedableRng};
-use rand_pcg::Pcg64Mcg;
+use rand::Rng;
 use shuttle::sync::{Condvar, Mutex};
 use shuttle::{check_dfs, check_random, replay, thread};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use test_env_log::test;
-use tracing::info;
 
 #[test]
 fn notify_one() {
@@ -358,79 +356,75 @@ fn producer_consumer_correct() {
 
 #[test]
 fn producer_consumer_random() {
-    let mut rng = Pcg64Mcg::seed_from_u64(0x87654321);
+    check_random(
+        move || {
+            let mut rng = shuttle::rand::thread_rng();
 
-    for _ in 0..10 {
-        let num_producers = 1 + rng.gen::<usize>() % 3;
-        let num_consumers = 1 + rng.gen::<usize>() % 3;
-        // make events divisible evenly across both the producers and consumers
-        let num_events = (num_producers * num_consumers) * (1 + rng.gen::<usize>() % 4);
+            let num_producers = 1 + rng.gen::<usize>() % 3;
+            let num_consumers = 1 + rng.gen::<usize>() % 3;
+            // make events divisible evenly across both the producers and consumers
+            let num_events = (num_producers * num_consumers) * (1 + rng.gen::<usize>() % 4);
 
-        info!(num_producers, num_consumers, num_events);
+            let lock = Arc::new(Mutex::new(()));
+            let is_empty = Arc::new(Condvar::new()); // count == 0
+            let is_full = Arc::new(Condvar::new()); // count == 1
+            let count = Arc::new(AtomicUsize::new(0));
 
-        check_random(
-            move || {
-                let lock = Arc::new(Mutex::new(()));
-                let is_empty = Arc::new(Condvar::new()); // count == 0
-                let is_full = Arc::new(Condvar::new()); // count == 1
-                let count = Arc::new(AtomicUsize::new(0));
-
-                let consumers = (0..num_consumers)
-                    .map(|_| {
-                        let lock = Arc::clone(&lock);
-                        let is_empty = Arc::clone(&is_empty);
-                        let is_full = Arc::clone(&is_full);
-                        let count = Arc::clone(&count);
-                        thread::spawn(move || {
-                            let events = num_events / num_consumers;
-                            for _ in 0..events {
-                                let mut guard = lock.lock().unwrap();
-                                while count.load(Ordering::SeqCst) == 0 {
-                                    guard = is_full.wait(guard).unwrap();
-                                }
-                                // get()
-                                assert_eq!(count.load(Ordering::SeqCst), 1, "nothing to get");
-                                count.store(0, Ordering::SeqCst);
-                                is_empty.notify_one();
-                                drop(guard);
+            let consumers = (0..num_consumers)
+                .map(|_| {
+                    let lock = Arc::clone(&lock);
+                    let is_empty = Arc::clone(&is_empty);
+                    let is_full = Arc::clone(&is_full);
+                    let count = Arc::clone(&count);
+                    thread::spawn(move || {
+                        let events = num_events / num_consumers;
+                        for _ in 0..events {
+                            let mut guard = lock.lock().unwrap();
+                            while count.load(Ordering::SeqCst) == 0 {
+                                guard = is_full.wait(guard).unwrap();
                             }
-                        })
+                            // get()
+                            assert_eq!(count.load(Ordering::SeqCst), 1, "nothing to get");
+                            count.store(0, Ordering::SeqCst);
+                            is_empty.notify_one();
+                            drop(guard);
+                        }
                     })
-                    .collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>();
 
-                let producers = (0..num_producers)
-                    .map(|_| {
-                        let lock = Arc::clone(&lock);
-                        let is_empty = Arc::clone(&is_empty);
-                        let is_full = Arc::clone(&is_full);
-                        let count = Arc::clone(&count);
-                        thread::spawn(move || {
-                            let events = num_events / num_producers;
-                            for _ in 0..events {
-                                let mut guard = lock.lock().unwrap();
-                                while count.load(Ordering::SeqCst) == 1 {
-                                    guard = is_empty.wait(guard).unwrap();
-                                }
-                                // put()
-                                assert_eq!(count.load(Ordering::SeqCst), 0, "no space to put");
-                                count.store(1, Ordering::SeqCst);
-                                is_full.notify_one();
-                                drop(guard);
+            let producers = (0..num_producers)
+                .map(|_| {
+                    let lock = Arc::clone(&lock);
+                    let is_empty = Arc::clone(&is_empty);
+                    let is_full = Arc::clone(&is_full);
+                    let count = Arc::clone(&count);
+                    thread::spawn(move || {
+                        let events = num_events / num_producers;
+                        for _ in 0..events {
+                            let mut guard = lock.lock().unwrap();
+                            while count.load(Ordering::SeqCst) == 1 {
+                                guard = is_empty.wait(guard).unwrap();
                             }
-                        })
+                            // put()
+                            assert_eq!(count.load(Ordering::SeqCst), 0, "no space to put");
+                            count.store(1, Ordering::SeqCst);
+                            is_full.notify_one();
+                            drop(guard);
+                        }
                     })
-                    .collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>();
 
-                for consumer in consumers {
-                    consumer.join().unwrap();
-                }
-                for producer in producers {
-                    producer.join().unwrap();
-                }
-            },
-            5000,
-        )
-    }
+            for consumer in consumers {
+                consumer.join().unwrap();
+            }
+            for producer in producers {
+                producer.join().unwrap();
+            }
+        },
+        5000,
+    )
 }
 
 #[test]
