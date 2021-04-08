@@ -1,5 +1,5 @@
 use crate::runtime::failure::persist_failure;
-use crate::runtime::task::{Task, TaskId, TaskState, TaskType, MAX_INLINE_TASKS};
+use crate::runtime::task::{Task, TaskId, TaskState, TaskType, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::future::ThreadFuture;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::{Config, MaxSteps};
@@ -87,7 +87,7 @@ impl Execution {
                         .tasks
                         .iter()
                         .map(|t| (t.id, t.state))
-                        .collect::<SmallVec<[_; MAX_INLINE_TASKS]>>();
+                        .collect::<SmallVec<[_; DEFAULT_INLINE_TASKS]>>();
                     if task_states.iter().any(|(_, s)| *s == TaskState::Blocked) {
                         panic!(
                             "{}",
@@ -160,7 +160,7 @@ impl Execution {
 pub(crate) struct ExecutionState {
     pub config: Config,
     // invariant: tasks are never removed from this list
-    tasks: Vec<Task>,
+    tasks: SmallVec<[Task; DEFAULT_INLINE_TASKS]>,
     // invariant: if this transitions to Stopped or Finished, it can never change again
     current_task: ScheduledTask,
     // the task the scheduler has chosen to run next
@@ -201,10 +201,9 @@ impl ScheduledTask {
 
 impl ExecutionState {
     fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
-        let max_tasks = config.max_tasks;
         Self {
             config,
-            tasks: Vec::with_capacity(max_tasks),
+            tasks: SmallVec::new(),
             current_task: ScheduledTask::None,
             next_task: ScheduledTask::None,
             scheduler,
@@ -256,7 +255,7 @@ impl ExecutionState {
         // invalid state, but no one should still be accessing the tasks anyway.
         let (mut tasks, final_state) = Self::with(|state| {
             assert!(state.current_task == ScheduledTask::Stopped || state.current_task == ScheduledTask::Finished);
-            (std::mem::replace(&mut state.tasks, Vec::new()), state.current_task)
+            (std::mem::replace(&mut state.tasks, SmallVec::new()), state.current_task)
         });
 
         for task in tasks.drain(..) {
@@ -379,7 +378,7 @@ impl ExecutionState {
             .iter()
             .filter(|t| t.runnable())
             .map(|t| t.id)
-            .collect::<SmallVec<[_; MAX_INLINE_TASKS]>>();
+            .collect::<SmallVec<[_; DEFAULT_INLINE_TASKS]>>();
 
         if runnable.is_empty() {
             self.next_task = ScheduledTask::Finished;

@@ -194,9 +194,6 @@ pub use runtime::runner::{PortfolioRunner, Runner};
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct Config {
-    /// Maximum number of supported tasks (includes threads and async tasks)
-    pub max_tasks: usize,
-
     /// Stack size allocated for each thread
     pub stack_size: usize,
 
@@ -212,7 +209,6 @@ impl Config {
     /// Create a new default configuration
     pub fn new() -> Self {
         Self {
-            max_tasks: 16usize,
             stack_size: 0x8000,
             failure_persistence: FailurePersistence::Print,
             max_steps: MaxSteps::FailAfter(1_000_000),

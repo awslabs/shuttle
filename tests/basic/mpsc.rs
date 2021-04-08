@@ -1,5 +1,5 @@
 use shuttle::sync::mpsc::{channel, sync_channel, RecvError};
-use shuttle::{check_dfs, thread};
+use shuttle::{check_dfs, check_random, thread};
 use test_env_log::test;
 
 // The following tests (prefixed with mpsc_loom) are from the
@@ -423,33 +423,36 @@ fn mpsc_oneshot_single_thread_recv_chan_close() {
     );
 }
 
+fn mpsc_senders_with_blocking_inner(num_senders: usize, channel_size: usize) {
+    assert!(num_senders >= channel_size);
+    let num_receives = num_senders - channel_size;
+    let (tx, rx) = sync_channel::<usize>(channel_size);
+    let senders = (0..num_senders)
+        .map(move |i| {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                tx.send(i).unwrap();
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Receive enough messages to ensure no sender will block
+    for _ in 0..num_receives {
+        rx.recv().unwrap();
+    }
+    for sender in senders {
+        sender.join().unwrap();
+    }
+}
+
+#[test]
+fn mpsc_some_senders_with_blocking() {
+    check_dfs(|| mpsc_senders_with_blocking_inner(4, 2), None);
+}
+
 #[test]
 fn mpsc_many_senders_with_blocking() {
-    const NUM_SENDERS: usize = 4;
-    const CHANNEL_SIZE: usize = 2;
-    const NUM_RECEIVES: usize = NUM_SENDERS - CHANNEL_SIZE;
-    check_dfs(
-        || {
-            let (tx, rx) = sync_channel::<usize>(CHANNEL_SIZE);
-            let senders = (0..NUM_SENDERS)
-                .map(move |i| {
-                    let tx = tx.clone();
-                    thread::spawn(move || {
-                        tx.send(i).unwrap();
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            // Receive enough messages to ensure no sender will block
-            for _ in 0..NUM_RECEIVES {
-                rx.recv().unwrap();
-            }
-            for sender in senders {
-                sender.join().unwrap();
-            }
-        },
-        None,
-    );
+    check_random(|| mpsc_senders_with_blocking_inner(1000, 500), 10);
 }
 
 #[test]

@@ -1,6 +1,7 @@
+use bitvec::prelude::*;
+use bitvec::vec::BitVec;
 use futures::future::BoxFuture;
 use futures::task::Waker;
-use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
@@ -28,7 +29,7 @@ use waker::make_waker;
 //   continuation and runs it until that continuation yields, which happens when its thread decides
 //   it might want to context switch (e.g., because it's blocked on a lock).
 
-pub(crate) const MAX_INLINE_TASKS: usize = 16;
+pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
@@ -175,19 +176,19 @@ impl From<TaskId> for usize {
 // TODO this probably won't work well with large numbers of tasks -- maybe a BitVec?
 #[derive(PartialEq, Eq)]
 pub(crate) struct TaskSet {
-    tasks: SmallVec<[bool; MAX_INLINE_TASKS]>,
+    tasks: BitVec,
 }
 
 impl TaskSet {
-    pub fn new(max_tasks: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            // Need to create the inner vec! to ensure elements are initialized
-            tasks: SmallVec::from_vec(vec![false; max_tasks]),
+            tasks: BitVec::from_bitslice(bits![0; DEFAULT_INLINE_TASKS]),
         }
     }
 
     pub fn contains(&self, tid: TaskId) -> bool {
-        self.tasks[tid.0]
+        // Return false if tid is outside the TaskSet
+        (tid.0 < self.tasks.len()) && self.tasks[tid.0]
     }
 
     pub fn is_empty(&self) -> bool {
@@ -195,11 +196,15 @@ impl TaskSet {
     }
 
     pub fn insert(&mut self, tid: TaskId) {
-        self.tasks[tid.0] = true;
+        if tid.0 >= self.tasks.len() {
+            self.tasks.resize(1 + tid.0, false);
+        }
+        assert!(self.tasks.len() > tid.0);
+        *self.tasks.get_mut(tid.0).unwrap() = true;
     }
 
     pub fn remove(&mut self, tid: TaskId) -> bool {
-        std::mem::replace(&mut self.tasks[tid.0], false)
+        std::mem::replace(&mut self.tasks.get_mut(tid.0).unwrap(), false)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = TaskId> + '_ {
