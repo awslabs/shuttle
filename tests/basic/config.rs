@@ -3,32 +3,29 @@ use shuttle::sync::Mutex;
 use shuttle::{thread, Config, Runner};
 use std::sync::Arc;
 
-fn check_max_tasks(max_tasks: usize, num_spawn: usize) {
-    let mut config = Config::new();
-    config.max_tasks = max_tasks;
-
-    let scheduler = RandomScheduler::new(100);
+#[test]
+fn many_tasks_with_mutex() {
+    let num_spawn = 1000;
+    let config = Config::new();
+    let scheduler = RandomScheduler::new(10);
     let runner = Runner::new(scheduler, config);
     runner.run(move || {
-        let lock = Arc::new(Mutex::new(()));
-        for _ in 0..num_spawn {
-            let mlock = Arc::clone(&lock);
-            thread::spawn(move || {
-                mlock.lock().unwrap();
-            });
+        let count = Arc::new(Mutex::new(0));
+        let handles = (0..num_spawn)
+            .map(|_| {
+                let count = Arc::clone(&count);
+                thread::spawn(move || {
+                    *count.lock().unwrap() += 1;
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap();
         }
+
+        assert_eq!(*count.lock().unwrap(), num_spawn);
     });
-}
-
-#[test]
-#[should_panic(expected = "index out of bounds")]
-fn max_task_fail() {
-    check_max_tasks(5, 5); // initial thread adds 1
-}
-
-#[test]
-fn max_task_ok() {
-    check_max_tasks(5, 4);
 }
 
 #[test]

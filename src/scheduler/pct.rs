@@ -1,8 +1,7 @@
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::Config;
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, RngCore, SeedableRng};
@@ -41,13 +40,14 @@ impl PctScheduler {
         assert!(max_depth > 0);
 
         let rng = Pcg64Mcg::seed_from_u64(seed);
-        let config: Config = Default::default();
 
+        // TODO This implementation crashes if we have an application that spawns more than `DEFAULT_INLINE_TASKS`
+        // TODO Fix the code so that we can handle an arbitrary number of tasks
         Self {
             max_iterations,
             max_depth,
             iterations: 0,
-            priority_queue: (0..config.max_tasks).map(TaskId::from).collect::<Vec<_>>(),
+            priority_queue: (0..DEFAULT_INLINE_TASKS).map(TaskId::from).collect::<Vec<_>>(),
             change_points: vec![],
             max_steps: 0,
             steps: 0,

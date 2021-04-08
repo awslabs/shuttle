@@ -1,5 +1,5 @@
 use crate::runtime::failure::persist_failure;
-use crate::runtime::task::{Task, TaskId, TaskState, TaskType, MAX_INLINE_TASKS};
+use crate::runtime::task::{Task, TaskId, TaskState, TaskType, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::future::ThreadFuture;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::{Config, MaxSteps};
@@ -87,7 +87,7 @@ impl Execution {
                         .tasks
                         .iter()
                         .map(|t| (t.id, t.state))
-                        .collect::<SmallVec<[_; MAX_INLINE_TASKS]>>();
+                        .collect::<SmallVec<[_; DEFAULT_INLINE_TASKS]>>();
                     if task_states.iter().any(|(_, s)| *s == TaskState::Blocked) {
                         panic!(
                             "{}",
@@ -201,10 +201,9 @@ impl ScheduledTask {
 
 impl ExecutionState {
     fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
-        let max_tasks = config.max_tasks;
         Self {
             config,
-            tasks: Vec::with_capacity(max_tasks),
+            tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
             current_task: ScheduledTask::None,
             next_task: ScheduledTask::None,
             scheduler,
@@ -379,7 +378,7 @@ impl ExecutionState {
             .iter()
             .filter(|t| t.runnable())
             .map(|t| t.id)
-            .collect::<SmallVec<[_; MAX_INLINE_TASKS]>>();
+            .collect::<SmallVec<[_; DEFAULT_INLINE_TASKS]>>();
 
         if runnable.is_empty() {
             self.next_task = ScheduledTask::Finished;
