@@ -199,7 +199,6 @@ impl TaskSet {
         if tid.0 >= self.tasks.len() {
             self.tasks.resize(1 + tid.0, false);
         }
-        assert!(self.tasks.len() > tid.0);
         *self.tasks.get_mut(tid.0).unwrap() = true;
     }
 
