@@ -3,7 +3,7 @@ use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
 use crate::scheduler::{Schedule, Scheduler};
 use rand::rngs::OsRng;
-use rand::seq::SliceRandom;
+use rand::seq::{index::sample, SliceRandom};
 use rand::{Rng, RngCore, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 
@@ -19,7 +19,7 @@ pub struct PctScheduler {
     max_iterations: usize,
     max_depth: usize,
     iterations: usize,
-    // invariant: always contains all possible TaskIds (never added or removed)
+    // invariant: queue is downward closed; contains all elements in range [0, len)
     priority_queue: Vec<TaskId>,
     // invariant: length is self.max_depth - 1
     change_points: Vec<usize>,
@@ -41,8 +41,6 @@ impl PctScheduler {
 
         let rng = Pcg64Mcg::seed_from_u64(seed);
 
-        // TODO This implementation crashes if we have an application that spawns more than `DEFAULT_INLINE_TASKS`
-        // TODO Fix the code so that we can handle an arbitrary number of tasks
         Self {
             max_iterations,
             max_depth,
@@ -68,22 +66,21 @@ impl Scheduler for PctScheduler {
         // On the first iteration, we run a simple oldest-task-first scheduler to determine a
         // bound on the maximum number of steps. Once we have that, we can initialize PCT.
         if self.iterations > 0 {
+            assert!(self.max_steps > 0);
+
             // Initialize priorities by shuffling the task IDs
             self.priority_queue.shuffle(&mut self.rng);
 
             // Initialize change points by sampling from the current max_steps. We skip step 0
             // because there's no point making a priority change before any tasks have run; the
             // random priority initialization takes care of that.
-            if self.change_points.len() != self.max_depth - 1 {
-                self.change_points = vec![usize::MAX, self.max_depth - 1];
-            }
-            let rng = &mut self.rng;
-            let max_steps = self.max_steps;
-            if max_steps > 1 {
-                for point in self.change_points.iter_mut() {
-                    *point = rng.gen_range(1, max_steps);
-                }
-            }
+            let num_points = std::cmp::min(self.max_depth - 1, self.max_steps - 1);
+            // sample(R, L, n) returns n distinct values in the range [0, L)
+            // but we want values in range [1, self.max_steps] so we offset by 1
+            self.change_points = sample(&mut self.rng, self.max_steps - 1, num_points)
+                .iter()
+                .map(|v| v + 1)
+                .collect::<Vec<_>>();
         }
 
         self.iterations += 1;
@@ -92,6 +89,15 @@ impl Scheduler for PctScheduler {
     }
 
     fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>, is_yielding: bool) -> Option<TaskId> {
+        // If any new tasks were created, assign them priorities at random
+        let known_tasks = self.priority_queue.len();
+        let max_tasks = usize::from(*runnable.iter().max().unwrap());
+
+        for tid in known_tasks..1 + max_tasks {
+            let index = self.rng.gen_range(0, self.priority_queue.len() + 1);
+            self.priority_queue.insert(index, TaskId::from(tid));
+        }
+
         // No point doing priority changes when there's only one runnable task. This also means that
         // our step counter is counting actual scheduling decisions, not no-ops where there was no
         // choice about which task to run. From the paper (4.1, "Identifying Sequential Execution"):
