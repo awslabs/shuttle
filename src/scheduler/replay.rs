@@ -3,6 +3,9 @@ use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
 use crate::scheduler::serialization::deserialize_schedule;
 use crate::scheduler::{Schedule, ScheduleStep, Scheduler};
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::path::Path;
 
 /// A scheduler that can replay a chosen schedule deserialized from a string.
 #[derive(Debug)]
@@ -15,15 +18,24 @@ pub struct ReplayScheduler {
 }
 
 impl ReplayScheduler {
-    /// Given an encoded schedule, construct a new `ReplayScheduler` that will execute threads
-    /// in the order specified in the schedule.
+    /// Given an encoded schedule, construct a new [`ReplayScheduler`] that will execute threads in
+    /// the order specified in the schedule.
     pub fn new_from_encoded(encoded_schedule: &str) -> Self {
         let schedule = deserialize_schedule(encoded_schedule).expect("invalid schedule");
         Self::new_from_schedule(schedule)
     }
 
-    /// Given an unencoded schedule, construct a new `ReplayScheduler` that will execute threads
-    /// in the order specified in the schedule.
+    /// Given a file containing a schedule, construct a new [`ReplayScheduler`] that will execute
+    /// threads in the order epseicied in the schedule.
+    pub fn new_from_file<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
+        let mut file = OpenOptions::new().read(true).open(path)?;
+        let mut encoded_schedule = String::new();
+        file.read_to_string(&mut encoded_schedule)?;
+        Ok(Self::new_from_encoded(&encoded_schedule))
+    }
+
+    /// Given a schedule, construct a new [`ReplayScheduler`] that will execute threads in the order
+    /// specified in the schedule.
     pub fn new_from_schedule(schedule: Schedule) -> Self {
         let data_source = RandomDataSource::initialize(schedule.seed);
 
