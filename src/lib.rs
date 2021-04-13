@@ -322,11 +322,14 @@ where
     runner.run(f);
 }
 
-/// Run the given function according to a given encoded schedule, usually produced as the output
-/// of a failing Shuttle test case.
+/// Run the given function according to a given encoded schedule, usually produced as the output of
+/// a failing Shuttle test case.
 ///
 /// This function allows deterministic replay of a failing schedule, as long as `f` contains no
 /// non-determinism other than that introduced by scheduling.
+///
+/// This is a convenience function for constructing a [`Runner`] that uses
+/// [`ReplayScheduler::new_from_encoded`](scheduler::ReplayScheduler::new_from_encoded).
 pub fn replay<F>(f: F, encoded_schedule: &str)
 where
     F: Fn() + Send + Sync + 'static,
@@ -343,24 +346,17 @@ where
 ///
 /// This function allows deterministic replay of a failing schedule, as long as `f` contains no
 /// non-determinism other than that introduced by scheduling.
+///
+/// This is a convenience function for constructing a [`Runner`] that uses
+/// [`ReplayScheduler::new_from_file`](scheduler::ReplayScheduler::new_from_file).
 pub fn replay_from_file<F, P>(f: F, path: P)
 where
     F: Fn() + Send + Sync + 'static,
     P: AsRef<std::path::Path>,
 {
-    use std::fs::OpenOptions;
-    use std::io::Read;
+    use crate::scheduler::ReplayScheduler;
 
-    let encoded_schedule = {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(path)
-            .expect("could not open schedule file");
-        let mut encoded_schedule = String::new();
-        file.read_to_string(&mut encoded_schedule)
-            .expect("could not read schedule file");
-        encoded_schedule
-    };
-
-    replay(f, &encoded_schedule);
+    let scheduler = ReplayScheduler::new_from_file(path).expect("could not load schedule from file");
+    let runner = Runner::new(scheduler, Default::default());
+    runner.run(f);
 }
