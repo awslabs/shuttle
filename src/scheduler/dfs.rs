@@ -64,7 +64,9 @@ impl Scheduler for DfsScheduler {
         Some(Schedule::new(self.data_source.reinitialize()))
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>) -> Option<TaskId> {
+    // TODO should we respect `is_yielding` by not allowing `current` to be scheduled next? That
+    // TODO would be unsound but perhaps useful for validating some code
+    fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
         let next = if self.steps >= self.levels.len() {
             // First time we've reached this level
             assert_eq!(self.steps, self.levels.len());

@@ -165,6 +165,8 @@ pub(crate) struct ExecutionState {
     current_task: ScheduledTask,
     // the task the scheduler has chosen to run next
     next_task: ScheduledTask,
+    // whether the current task has asked to yield
+    has_yielded: bool,
 
     scheduler: Rc<RefCell<dyn Scheduler>>,
     current_schedule: Schedule,
@@ -206,6 +208,7 @@ impl ExecutionState {
             tasks: SmallVec::new(),
             current_task: ScheduledTask::None,
             next_task: ScheduledTask::None,
+            has_yielded: false,
             scheduler,
             current_schedule: initial_schedule,
             current_span_entered: None,
@@ -293,6 +296,14 @@ impl ExecutionState {
                 true
             }
         })
+    }
+
+    /// Tell the scheduler that the next context switch is an explicit yield requested by the
+    /// current task. Some schedulers use this as a hint to influence scheduling.
+    pub(crate) fn request_yield() {
+        Self::with(|state| {
+            state.has_yielded = true;
+        });
     }
 
     /// Check whether the current execution has stopped. Call from `Drop` handlers to early exit if
@@ -385,10 +396,12 @@ impl ExecutionState {
             return;
         }
 
+        let is_yielding = std::mem::replace(&mut self.has_yielded, false);
+
         self.next_task = self
             .scheduler
             .borrow_mut()
-            .next_task(&runnable, self.current_task.id())
+            .next_task(&runnable, self.current_task.id(), is_yielding)
             .map(ScheduledTask::Some)
             .unwrap_or(ScheduledTask::Stopped);
 

@@ -91,7 +91,7 @@ impl Scheduler for PctScheduler {
         Some(Schedule::new(self.data_source.reinitialize()))
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> Option<TaskId> {
+    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>, is_yielding: bool) -> Option<TaskId> {
         // No point doing priority changes when there's only one runnable task. This also means that
         // our step counter is counting actual scheduling decisions, not no-ops where there was no
         // choice about which task to run. From the paper (4.1, "Identifying Sequential Execution"):
@@ -100,7 +100,7 @@ impl Scheduler for PctScheduler {
         // > enables/creates a second thread.
         // TODO is this really correct? need to think about it more
         if runnable.len() > 1 {
-            if self.change_points.contains(&self.steps) {
+            if self.change_points.contains(&self.steps) || is_yielding {
                 // Deprioritize `current` by moving it to the end of the list
                 // TODO in the paper, the i'th change point gets priority i, whereas this gives d-i.
                 // TODO I don't think this matters, because the change points are randomized.

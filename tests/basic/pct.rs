@@ -1,7 +1,10 @@
 use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Mutex;
-use shuttle::{check_random, thread, Runner};
+use shuttle::{check_random, thread, Config, MaxSteps, Runner};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use test_env_log::test;
 
 const TEST_LENGTH: usize = 20;
@@ -15,7 +18,7 @@ fn figure5() {
 
     thread::spawn(move || {
         for _ in 0..TEST_LENGTH {
-            thread::yield_now();
+            thread::sleep(Duration::from_millis(1));
         }
 
         *lock_clone.lock().unwrap() = 1;
@@ -47,4 +50,47 @@ fn one_step() {
     runner.run(|| {
         thread::spawn(|| {});
     })
+}
+
+// Check that PCT correctly deprioritizes a yielding thread. If it wasn't, there would be some
+// iteration of this test where the yielding thread has the highest priority and so the others
+// never make progress.
+fn yield_spin_loop(use_yield: bool) {
+    const NUM_THREADS: usize = 4;
+
+    let scheduler = PctScheduler::new(1, 100);
+    let mut config = Config::new();
+    config.max_steps = MaxSteps::FailAfter(50);
+    let runner = Runner::new(scheduler, config);
+    runner.run(move || {
+        let count = Arc::new(AtomicUsize::new(0usize));
+
+        let _thds = (0..NUM_THREADS)
+            .map(|_| {
+                let count = count.clone();
+                thread::spawn(move || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                })
+            })
+            .collect::<Vec<_>>();
+
+        while count.load(Ordering::SeqCst) < NUM_THREADS {
+            if use_yield {
+                thread::yield_now();
+            } else {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    })
+}
+
+#[test]
+fn yield_spin_loop_fair() {
+    yield_spin_loop(true);
+}
+
+#[test]
+#[should_panic(expected = "exceeded max_steps bound")]
+fn yield_spin_loop_unfair() {
+    yield_spin_loop(false);
 }

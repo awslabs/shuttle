@@ -133,7 +133,12 @@ fn max_steps_early_exit_scheduler() {
             }
         }
 
-        fn next_task(&mut self, runnable_tasks: &[TaskId], _current_task: Option<TaskId>) -> Option<TaskId> {
+        fn next_task(
+            &mut self,
+            runnable_tasks: &[TaskId],
+            _current_task: Option<TaskId>,
+            _is_yielding: bool,
+        ) -> Option<TaskId> {
             if self.steps >= self.max_steps {
                 None
             } else {

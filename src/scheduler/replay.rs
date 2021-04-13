@@ -52,7 +52,7 @@ impl Scheduler for ReplayScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>) -> Option<TaskId> {
+    fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
         if self.steps >= self.schedule.steps.len() {
             assert!(self.allow_incomplete, "schedule ended early");
             return None;

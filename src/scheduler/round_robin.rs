@@ -31,7 +31,7 @@ impl Scheduler for RoundRobinScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>) -> Option<TaskId> {
+    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
         if current.is_none() {
             return Some(*runnable.first().unwrap());
         }
