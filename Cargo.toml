@@ -15,7 +15,7 @@ futures = "~0.3.5"
 generator = "~0.7.0"
 hex = "~0.4.2"
 rand_core = "~0.5.1"
-rand = { version = "~0.7.3", default-features = false, features = ["getrandom", "alloc"] }
+rand = { version = "~0.7.3", default-features = false, features = ["getrandom"] }
 rand_pcg = "~0.2.1"
 scoped-tls = "~1.0.0"
 smallvec = "~1.6.1"
