@@ -161,6 +161,7 @@ pub async fn yield_now() {
 
             self.yielded = true;
             cx.waker().wake_by_ref();
+            ExecutionState::request_yield();
             Poll::Pending
         }
     }

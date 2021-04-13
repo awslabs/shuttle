@@ -172,11 +172,16 @@ impl<S: Scheduler> Scheduler for PortfolioStoppableScheduler<S> {
         }
     }
 
-    fn next_task(&mut self, runnable_tasks: &[TaskId], current_task: Option<TaskId>) -> Option<TaskId> {
+    fn next_task(
+        &mut self,
+        runnable_tasks: &[TaskId],
+        current_task: Option<TaskId>,
+        is_yielding: bool,
+    ) -> Option<TaskId> {
         if self.stop_signal.load(Ordering::SeqCst) {
             None
         } else {
-            self.scheduler.next_task(runnable_tasks, current_task)
+            self.scheduler.next_task(runnable_tasks, current_task, is_yielding)
         }
     }
 

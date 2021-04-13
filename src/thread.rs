@@ -118,9 +118,12 @@ impl<T> JoinHandle<T> {
     }
 }
 
-// TODO: don't need this? Just call switch directly?
 /// Cooperatively gives up a timeslice to the Shuttle scheduler.
+///
+/// Some Shuttle schedulers use this as a hint to deprioritize the current thread in order for other
+/// threads to make progress (e.g., in a spin loop).
 pub fn yield_now() {
+    ExecutionState::request_yield();
     thread::switch();
 }
 

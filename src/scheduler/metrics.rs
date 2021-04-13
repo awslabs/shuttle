@@ -83,8 +83,13 @@ impl<S: Scheduler> Scheduler for MetricsScheduler<S> {
         self.inner.new_execution()
     }
 
-    fn next_task(&mut self, runnable_tasks: &[TaskId], current_task: Option<TaskId>) -> Option<TaskId> {
-        let choice = self.inner.next_task(runnable_tasks, current_task)?;
+    fn next_task(
+        &mut self,
+        runnable_tasks: &[TaskId],
+        current_task: Option<TaskId>,
+        is_yielding: bool,
+    ) -> Option<TaskId> {
+        let choice = self.inner.next_task(runnable_tasks, current_task, is_yielding)?;
 
         self.steps += 1;
         if choice != self.last_task {
