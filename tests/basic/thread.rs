@@ -1,5 +1,5 @@
 use shuttle::sync::Mutex;
-use shuttle::{check_random, thread};
+use shuttle::{check_dfs, check_random, thread};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use test_env_log::test;
@@ -80,5 +80,38 @@ fn thread_builder_name() {
             assert_eq!(handle.thread().name().unwrap(), "producer");
         },
         100,
+    );
+}
+
+#[test]
+fn thread_identity() {
+    check_dfs(
+        || {
+            let lock = std::sync::Arc::new(Mutex::new(None));
+            let lock2 = lock.clone();
+
+            let builder = thread::Builder::new().name("producer".into());
+            let _handle = builder
+                .spawn(move || {
+                    let me = thread::current();
+                    assert_eq!(me.name(), Some("producer"));
+                    let id = me.id();
+
+                    thread::yield_now();
+
+                    let me = thread::current();
+                    assert_eq!(me.name(), Some("producer"));
+                    assert_eq!(me.id(), id);
+
+                    *lock2.lock().unwrap() = Some(id);
+                })
+                .unwrap();
+
+            let id = *lock.lock().unwrap();
+            if let Some(id) = id {
+                assert_ne!(id, thread::current().id());
+            }
+        },
+        None,
     );
 }
