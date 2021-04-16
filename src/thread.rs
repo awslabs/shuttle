@@ -7,7 +7,7 @@ use crate::runtime::thread::future::ThreadFuture;
 use std::time::Duration;
 
 /// A unique identifier for a running thread
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ThreadId {
     // TODO Should we add an execution id here, like Loom does?
     task_id: TaskId,
@@ -133,7 +133,19 @@ pub fn sleep(_dur: Duration) {
     thread::switch();
 }
 
-// TODO: Implement current()
+/// Get a handle to the thread that invokes it
+pub fn current() -> Thread {
+    let (task_id, name) = ExecutionState::with(|s| {
+        let me = s.current();
+        (me.id(), me.name())
+    });
+
+    Thread {
+        id: ThreadId { task_id },
+        name,
+    }
+}
+
 // TODO: Implement park(), unpark()
 
 /// Thread factory, which can be used in order to configure the properties of a new thread.

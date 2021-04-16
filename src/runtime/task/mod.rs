@@ -47,7 +47,7 @@ pub(crate) struct Task {
     // Remember whether the waker was invoked while we were running so we don't re-block
     woken_by_self: bool,
 
-    pub(super) name: Option<String>,
+    name: Option<String>,
 }
 
 impl Task {
@@ -139,6 +139,10 @@ impl Task {
 
     pub(crate) fn take_waiter(&mut self) -> Option<TaskId> {
         self.waiter.take()
+    }
+
+    pub(crate) fn name(&self) -> Option<String> {
+        self.name.clone()
     }
 }
 
