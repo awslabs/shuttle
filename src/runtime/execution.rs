@@ -1,4 +1,5 @@
 use crate::runtime::failure::persist_failure;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{Task, TaskId, TaskState, DEFAULT_INLINE_TASKS};
 use crate::scheduler::{Schedule, Scheduler};
 use crate::{Config, MaxSteps};
@@ -57,7 +58,7 @@ impl Execution {
 
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
-            ExecutionState::spawn_thread(f, config.stack_size, None);
+            ExecutionState::spawn_thread(f, config.stack_size, None, Some(VectorClock::new()));
 
             // Run the test to completion
             while self.step(config) {}
@@ -234,19 +235,33 @@ impl ExecutionState {
     {
         Self::with(|state| {
             let task_id = TaskId(state.tasks.len());
-            let task = Task::from_future(future, stack_size, task_id, name);
+            let clock = state.increment_clock_mut(); // Increment the parent's clock
+            clock.extend(task_id); // and extend it with an entry for the new task
+            let task = Task::from_future(future, stack_size, task_id, name, clock.clone());
             state.tasks.push(task);
             task_id
         })
     }
 
-    pub(crate) fn spawn_thread<F>(f: F, stack_size: usize, name: Option<String>) -> TaskId
+    pub(crate) fn spawn_thread<F>(
+        f: F,
+        stack_size: usize,
+        name: Option<String>,
+        mut initial_clock: Option<VectorClock>,
+    ) -> TaskId
     where
         F: FnOnce() + Send + 'static,
     {
         Self::with(|state| {
             let task_id = TaskId(state.tasks.len());
-            let task = Task::from_closure(f, stack_size, task_id, name);
+            let clock = if let Some(ref mut clock) = initial_clock {
+                clock
+            } else {
+                // Inherit the clock of the parent thread (which spawned this task)
+                state.increment_clock_mut()
+            };
+            clock.extend(task_id); // and extend it with an entry for the new thread
+            let task = Task::from_closure(f, stack_size, task_id, name, clock.clone());
             state.tasks.push(task);
             task_id
         })
@@ -351,6 +366,35 @@ impl ExecutionState {
 
     pub(crate) fn context_switches() -> usize {
         Self::with(|state| state.context_switches)
+    }
+
+    pub(crate) fn get_clock(&self, id: TaskId) -> &VectorClock {
+        &self.tasks.get(id.0).unwrap().clock
+    }
+
+    pub(crate) fn get_clock_mut(&mut self, id: TaskId) -> &mut VectorClock {
+        &mut self.tasks.get_mut(id.0).unwrap().clock
+    }
+
+    // Increment the current thread's clock entry and update its clock with the one provided.
+    pub(crate) fn update_clock(&mut self, clock: &VectorClock) {
+        let task = self.current_mut();
+        task.clock.increment(task.id);
+        task.clock.update(clock);
+    }
+
+    // Increment the current thread's clock and return a shared reference to it
+    pub(crate) fn increment_clock(&mut self) -> &VectorClock {
+        let task = self.current_mut();
+        task.clock.increment(task.id);
+        &task.clock
+    }
+
+    // Increment the current thread's clock and return a mutable reference to it
+    pub(crate) fn increment_clock_mut(&mut self) -> &mut VectorClock {
+        let task = self.current_mut();
+        task.clock.increment(task.id);
+        &mut task.clock
     }
 
     /// Run the scheduler to choose the next task to run. `has_yielded` should be false if the

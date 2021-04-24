@@ -1,4 +1,5 @@
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::{ContinuationPool, PooledContinuation};
 use bitvec::prelude::*;
@@ -9,6 +10,7 @@ use std::fmt::Debug;
 use std::rc::Rc;
 use std::task::Context;
 
+pub(crate) mod clock;
 pub(crate) mod waker;
 use waker::make_waker;
 
@@ -42,6 +44,8 @@ pub(crate) struct Task {
 
     pub(super) continuation: Rc<RefCell<PooledContinuation>>,
 
+    pub(crate) clock: VectorClock,
+
     waiter: Option<TaskId>,
 
     waker: Waker,
@@ -53,10 +57,18 @@ pub(crate) struct Task {
 
 impl Task {
     /// Create a task from a continuation
-    fn new<F>(f: F, stack_size: usize, id: TaskId, task_type: TaskType, name: Option<String>) -> Self
+    fn new<F>(
+        f: F,
+        stack_size: usize,
+        id: TaskId,
+        task_type: TaskType,
+        name: Option<String>,
+        clock: VectorClock,
+    ) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
+        assert!(id.0 < clock.time.len());
         let mut continuation = ContinuationPool::acquire(stack_size);
         continuation.initialize(Box::new(f));
         let waker = make_waker(id);
@@ -66,6 +78,7 @@ impl Task {
             state: TaskState::Runnable,
             task_type,
             continuation,
+            clock,
             waiter: None,
             waker,
             woken_by_self: false,
@@ -73,14 +86,20 @@ impl Task {
         }
     }
 
-    pub(crate) fn from_closure<F>(f: F, stack_size: usize, id: TaskId, name: Option<String>) -> Self
+    pub(crate) fn from_closure<F>(f: F, stack_size: usize, id: TaskId, name: Option<String>, clock: VectorClock) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
-        Self::new(f, stack_size, id, TaskType::Thread, name)
+        Self::new(f, stack_size, id, TaskType::Thread, name, clock)
     }
 
-    pub(crate) fn from_future<F>(future: F, stack_size: usize, id: TaskId, name: Option<String>) -> Self
+    pub(crate) fn from_future<F>(
+        future: F,
+        stack_size: usize,
+        id: TaskId,
+        name: Option<String>,
+        clock: VectorClock,
+    ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -101,6 +120,7 @@ impl Task {
             id,
             TaskType::Future,
             name,
+            clock,
         )
     }
 

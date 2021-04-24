@@ -1,4 +1,6 @@
+use crate::my_clock;
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use crate::sync::MutexGuard;
@@ -22,13 +24,18 @@ struct CondvarState {
     next_epoch: usize,
 }
 
+// For tracking causal dependencies, we record the clock C of the thread that does the notify.
+// When a thread is unblocked, its clock is updated by C.
 #[derive(PartialEq, Eq, Debug)]
 enum CondvarWaitStatus {
     Waiting,
     // invariant: VecDeque is non-empty (if it's empty, we should be Waiting instead)
-    Signal(VecDeque<usize>),
-    Broadcast,
+    Signal(VecDeque<(usize, VectorClock)>),
+    Broadcast(VectorClock),
 }
+
+// TODO Check if we can avoid using epochs now that we have vector clocks.
+// TODO See [Issue 39](https://github.com/awslabs/shuttle/issues/39)
 
 // We implement `Condvar` by tracking the `CondvarWaitStatus` of each thread currently waiting on
 // the `Condvar`.
@@ -138,15 +145,16 @@ impl Condvar {
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "woken from condvar {:p}", self);
         let my_status = state.waiters.remove(&me).expect("should be waiting");
         match my_status {
-            CondvarWaitStatus::Broadcast => {
-                // Woken by a broadcast, so nothing to do
+            CondvarWaitStatus::Broadcast(clock) => {
+                // Woken by a broadcast, so nothing to do except update the clock
+                ExecutionState::with(|s| s.update_clock(&clock));
             }
             CondvarWaitStatus::Signal(mut epochs) => {
-                let epoch = epochs.pop_front().expect("should be a pending signal");
+                let (epoch, clock) = epochs.pop_front().expect("should be a pending signal");
                 // No other waiter is allowed to be unblocked by the epoch that woke us
                 for (tid, status) in state.waiters.iter_mut() {
                     if let CondvarWaitStatus::Signal(epochs) = status {
-                        if let Some(i) = epochs.iter().position(|e| epoch == *e) {
+                        if let Some(i) = epochs.iter().position(|e| epoch == e.0) {
                             epochs.remove(i);
                             if epochs.is_empty() {
                                 *status = CondvarWaitStatus::Waiting;
@@ -157,6 +165,8 @@ impl Condvar {
                         }
                     }
                 }
+                // Update the thread's clock with the clock from the notifier
+                ExecutionState::with(|s| s.update_clock(&clock));
             }
             CondvarWaitStatus::Waiting => panic!("should not have been woken while in Waiting status"),
         }
@@ -195,21 +205,22 @@ impl Condvar {
         for (tid, status) in state.waiters.iter_mut() {
             assert_ne!(*tid, me);
 
+            let clock = my_clock();
             match status {
                 CondvarWaitStatus::Waiting => {
                     let mut epochs = VecDeque::new();
-                    epochs.push_back(epoch);
+                    epochs.push_back((epoch, clock));
                     *status = CondvarWaitStatus::Signal(epochs);
                 }
                 CondvarWaitStatus::Signal(epochs) => {
-                    epochs.push_back(epoch);
+                    epochs.push_back((epoch, clock));
                 }
-                CondvarWaitStatus::Broadcast => {
+                CondvarWaitStatus::Broadcast(_) => {
                     // no-op, broadcast will already unblock this task
                 }
             }
 
-            // The task might have been unblocked by a previous signal, so maybe_unblock
+            // Note: the task might have been unblocked by a previous signal
             ExecutionState::with(|s| s.get_mut(*tid).unblock());
         }
         state.next_epoch += 1;
@@ -229,8 +240,8 @@ impl Condvar {
 
         for (tid, status) in state.waiters.iter_mut() {
             assert_ne!(*tid, me);
-            *status = CondvarWaitStatus::Broadcast;
-            // The task might have been unblocked by a previous signal, so maybe_unblock
+            *status = CondvarWaitStatus::Broadcast(my_clock());
+            // Note: the task might have been unblocked by a previous signal
             ExecutionState::with(|s| s.get_mut(*tid).unblock());
         }
 

@@ -1,3 +1,4 @@
+use crate::basic::clocks::{check_clock, me};
 use shuttle::sync::mpsc::{channel, sync_channel, RecvError};
 use shuttle::{check_dfs, check_random, thread};
 use test_env_log::test;
@@ -23,9 +24,13 @@ fn mpsc_loom_basic_parallel_usage() {
         || {
             let (s, r) = channel();
             thread::spawn(move || {
+                assert_eq!(me(), 1);
                 s.send(5).unwrap();
             });
+            check_clock(|i, c| (c > 0) == (i == 0));
             let val = r.recv().unwrap();
+            // After receiving a message from thread 1, we have a causal dependency on it
+            check_clock(|i, c| (c > 0) == (i == 0 || i == 1));
             assert_eq!(val, 5);
         },
         None,
@@ -39,13 +44,24 @@ fn mpsc_loom_commutative_senders() {
             let (s, r) = channel();
             let s2 = s.clone();
             thread::spawn(move || {
+                assert_eq!(me(), 1);
                 s.send(5).unwrap();
             });
             thread::spawn(move || {
+                assert_eq!(me(), 2);
                 s2.send(6).unwrap();
             });
             let mut val = r.recv().unwrap();
+            check_clock(|i, c| {
+                (c > 0)
+                    == match val {
+                        5 => i == 0 || i == 1, // thread 1 must have executed
+                        6 => i == 0 || i == 2, // thread 2 must have executed
+                        _ => unreachable!(),
+                    }
+            });
             val += r.recv().unwrap();
+            check_clock(|i, c| (c > 0) == (i == 0 || i == 1 || i == 2)); // both threads have executed
             assert_eq!(val, 11);
         },
         None,
@@ -105,6 +121,8 @@ fn mpsc_drop_sender_unbounded() {
                 drop(tx);
             });
             assert!(rx.recv().is_err());
+            // no message was sent, hence no causal dependency
+            check_clock(|i, c| (c > 0) == (i == 0));
         },
         None,
     );
@@ -131,6 +149,7 @@ fn mpsc_drop_sender_bounded() {
                 assert!(rx.recv().is_err());
             });
             drop(tx);
+            check_clock(|i, c| (c > 0) == (i == 0));
         },
         None,
     );
@@ -207,6 +226,7 @@ fn mpsc_bounded_sum() {
         || {
             let (tx, rx) = sync_channel::<i32>(5);
             thread::spawn(move || {
+                assert_eq!(me(), 1);
                 for _ in 0..5 {
                     tx.send(1).unwrap();
                 }
@@ -214,7 +234,9 @@ fn mpsc_bounded_sum() {
             let handle = thread::spawn(move || {
                 let mut sum = 0;
                 for _ in 0..5 {
+                    let c1 = shuttle::my_clock().get(1); // save knowledge of sender's clock
                     sum += rx.recv().unwrap();
+                    check_clock(|i, c| (i != 1) || (c > c1)); // sender's clock must have increased
                 }
                 sum
             });

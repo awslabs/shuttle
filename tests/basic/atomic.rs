@@ -1,3 +1,4 @@
+use crate::basic::clocks::{check_clock, me};
 use shuttle::sync::atomic::*;
 use shuttle::{asynch, check_dfs, thread};
 use std::collections::HashSet;
@@ -26,6 +27,9 @@ macro_rules! int_tests {
                             thread::spawn(move || {
                                 x.store(1, Ordering::SeqCst);
                                 y.store(1, Ordering::SeqCst);
+                                // A writer's clock is not affected by readers
+                                assert_eq!(me(), 1usize);
+                                check_clock(|i, c| (c > 0) == (i == 0 || i == 1));
                                 ()
                             })
                         };
@@ -35,6 +39,15 @@ macro_rules! int_tests {
                             thread::spawn(move || {
                                 let y = y.load(Ordering::SeqCst);
                                 let x = x.load(Ordering::SeqCst);
+                                // A reader inherits the clock from writers
+                                assert_eq!(me(), 2usize);
+                                check_clock(|i, c| {
+                                    (c > 0)
+                                        == match (x, y) {
+                                            (0, 0) => i == 0 || i == 2,
+                                            _ => i == 0 || i == 2 || i == 1,
+                                        }
+                                });
                                 (x, y)
                             })
                         };
@@ -72,6 +85,14 @@ macro_rules! int_tests {
                             thread::spawn(move || {
                                 let x = x.load(Ordering::SeqCst);
                                 y.store(1, Ordering::SeqCst);
+                                assert_eq!(me(), 1usize);
+                                check_clock(|i, c| {
+                                    (c > 0)
+                                        == match x {
+                                            0 => i == 0 || i == 1,
+                                            _ => i == 0 || i == 1 || i == 2,
+                                        }
+                                });
                                 (x,)
                             })
                         };
@@ -81,6 +102,14 @@ macro_rules! int_tests {
                             thread::spawn(move || {
                                 let y = y.load(Ordering::SeqCst);
                                 x.store(1, Ordering::SeqCst);
+                                assert_eq!(me(), 2usize);
+                                check_clock(|i, c| {
+                                    (c > 0)
+                                        == match y {
+                                            0 => i == 0 || i == 2,
+                                            _ => i == 0 || i == 2 || i == 1,
+                                        }
+                                });
                                 (y,)
                             })
                         };
@@ -118,6 +147,14 @@ macro_rules! int_tests {
                             thread::spawn(move || {
                                 x.store(1, Ordering::SeqCst);
                                 let y = y.load(Ordering::SeqCst);
+                                assert_eq!(me(), 1usize);
+                                check_clock(|i, c| {
+                                    (c > 0)
+                                        == match y {
+                                            0 => i == 0 || i == 1,
+                                            _ => i == 0 || i == 1 || i == 2,
+                                        }
+                                });
                                 (y,)
                             })
                         };
@@ -127,6 +164,14 @@ macro_rules! int_tests {
                             thread::spawn(move || {
                                 y.store(1, Ordering::SeqCst);
                                 let x = x.load(Ordering::SeqCst);
+                                assert_eq!(me(), 2usize);
+                                check_clock(|i, c| {
+                                    (c > 0)
+                                        == match x {
+                                            0 => i == 0 || i == 2,
+                                            _ => i == 0 || i == 2 || i == 1,
+                                        }
+                                });
                                 (x,)
                             })
                         };
@@ -161,6 +206,7 @@ macro_rules! int_tests {
                             let x = x.clone();
                             thread::spawn(move || {
                                 x.store(1, Ordering::SeqCst);
+                                assert_eq!(me(), 1);
                             })
                         };
 
@@ -168,11 +214,23 @@ macro_rules! int_tests {
                             let x = x.clone();
                             thread::spawn(move || {
                                 x.store(2, Ordering::SeqCst);
+                                assert_eq!(me(), 2);
                             })
                         };
 
-                        x.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(x + 5))
+                        let val = x
+                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(x + 5))
                             .unwrap();
+
+                        assert_eq!(me(), 0);
+                        // Note: since either thd1 or thd2 can overwrite the other,
+                        // we can only check implications here
+                        check_clock(|i, c| match val {
+                            0 => (i == 0) == (c > 0),  // neither thread has executed
+                            1 => !(i == 1) || (c > 0), // must have inherited clock from thd1
+                            2 => !(i == 2) || (c > 0), // must have inherited clock from thd2
+                            _ => unreachable!(),
+                        });
 
                         thd1.join().unwrap();
                         thd2.join().unwrap();
@@ -204,10 +262,18 @@ macro_rules! int_tests {
                             let x = x.clone();
                             thread::spawn(move || {
                                 x.store(1, Ordering::SeqCst);
+                                assert_eq!(me(), 1);
                             })
                         };
 
                         let result = x.compare_exchange(1, 5, Ordering::SeqCst, Ordering::SeqCst);
+                        check_clock(|i, c| {
+                            (c > 0)
+                                == match result {
+                                    Ok(_) => i == 0 || i == 1, // thd1 must have executed
+                                    Err(_) => i == 0,          // thd1 hasn't executed yet
+                                }
+                        });
 
                         thd1.join().unwrap();
 
@@ -235,10 +301,18 @@ macro_rules! int_tests {
                             let x = x.clone();
                             thread::spawn(move || {
                                 x.store(1, Ordering::SeqCst);
+                                assert_eq!(me(), 1);
                             })
                         };
 
                         let result = x.compare_exchange_weak(1, 5, Ordering::SeqCst, Ordering::SeqCst);
+                        check_clock(|i, c| {
+                            (c > 0)
+                                == match result {
+                                    Ok(_) => i == 0 || i == 1, // thd1 must have executed
+                                    Err(_) => i == 0,          // thd1 hasn't executed yet
+                                }
+                        });
 
                         thd1.join().unwrap();
 
@@ -285,11 +359,21 @@ mod bool {
                     let x = x.clone();
                     thread::spawn(move || {
                         x.store(true, Ordering::SeqCst);
+                        assert_eq!(me(), 1);
                     })
                 };
 
-                x.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(!x))
+                let val = x
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(!x))
                     .unwrap();
+                assert_eq!(me(), 0);
+                check_clock(|i, c| {
+                    (c > 0)
+                        == match val {
+                            false => i == 0,          // thd1 hasn't executed
+                            true => i == 0 || i == 1, // thd1 must have executed
+                        }
+                });
 
                 thd1.join().unwrap();
 
@@ -316,10 +400,18 @@ mod bool {
                     let x = x.clone();
                     thread::spawn(move || {
                         x.store(true, Ordering::SeqCst);
+                        assert_eq!(me(), 1);
                     })
                 };
 
                 let result = x.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst);
+                check_clock(|i, c| {
+                    (c > 0)
+                        == match result {
+                            Ok(_) => i == 0,            // thd1 hasn't executed
+                            Err(_) => i == 0 || i == 1, // thd1 must have executed
+                        }
+                });
 
                 thd1.join().unwrap();
 
@@ -355,11 +447,14 @@ mod ptr {
                     thread::spawn(move || {
                         let mut y = 0usize;
                         ptr.store(&mut y as *mut _, Ordering::SeqCst);
+                        assert_eq!(me(), 1);
                     })
                 };
 
-                ptr.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(x_ptr))
+                let val = ptr
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(x_ptr))
                     .unwrap();
+                check_clock(|i, c| (c > 0) == if val == x_ptr { i == 0 } else { i == 0 || i == 1 });
 
                 thd1.join().unwrap();
 
@@ -391,10 +486,18 @@ mod ptr {
                     thread::spawn(move || {
                         let mut y = 0usize;
                         ptr.store(&mut y as *mut _, Ordering::SeqCst);
+                        assert_eq!(me(), 1);
                     })
                 };
 
                 let result = ptr.compare_exchange(x_ptr, x2_ptr, Ordering::SeqCst, Ordering::SeqCst);
+                check_clock(|i, c| {
+                    (c > 0)
+                        == match result {
+                            Ok(_) => i == 0,            // thd1 hasn't executed
+                            Err(_) => i == 0 || i == 1, // thd1 must have executed
+                        }
+                });
 
                 thd1.join().unwrap();
 

@@ -189,13 +189,13 @@ fn figure1b_pct() {
 #[test]
 #[should_panic(expected = "null dereference")]
 fn figure1b_pct_with_many_tasks() {
-    // Spawn 48 busy threads, each taking 5 steps, plus 2 main threads with 10 steps, so k=260
-    // n=50, k=260, d=2, so probability of finding the bug in one iteration is at least 1/(50*260)
-    // So probability of hitting the bug in 2000 iterations = 1 - (1 - 1/400)^2000 > 99.9%
-    let scheduler = PctScheduler::new(2, 2000);
+    // Spawn 18 busy threads, each taking 5 steps, plus 2 main threads with 10 steps, so k=110
+    // n=50, k=110, d=2, so probability of finding the bug in one iteration is at least 1/(20*110)
+    // So probability of hitting the bug in 16_000 iterations = 1 - (1 - 1/2200)^16_000 > 99.9%
+    let scheduler = PctScheduler::new(2, 16_000);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
-        figure1b(50);
+        figure1b(20);
     });
 }
 

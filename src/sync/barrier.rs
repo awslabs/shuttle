@@ -1,4 +1,5 @@
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use std::cell::RefCell;
@@ -24,6 +25,7 @@ struct BarrierState {
     bound: usize,
     leader: Option<TaskId>,
     waiters: HashSet<TaskId>,
+    clock: VectorClock,
 }
 
 #[derive(Debug)]
@@ -41,6 +43,7 @@ impl Barrier {
             bound: n,
             leader: None,
             waiters: HashSet::new(),
+            clock: VectorClock::new(),
         };
 
         Self {
@@ -64,6 +67,12 @@ impl Barrier {
             state.leader = Some(me);
         }
 
+        // Update the barrier's clock with the clock of this thread
+        ExecutionState::with(|s| {
+            let clock = s.increment_clock();
+            state.clock.update(clock);
+        });
+
         if state.waiters.len() + 1 < state.bound {
             // Block current thread
             assert!(state.waiters.insert(me)); // current thread shouldn't already be in the set
@@ -71,15 +80,22 @@ impl Barrier {
             trace!(leader=?state.leader, waiters=?state.waiters, "blocked on barrier {:?}", self);
         } else {
             trace!(leader=?state.leader, waiters=?state.waiters, "releasing waiters on barrier {:?}", self);
-            // Unblock all waiters
-            for tid in state.waiters.drain() {
-                debug_assert_ne!(tid, me);
-                ExecutionState::with(|s| {
+            // Unblock each waiter, updating its clock with the barrier's clock
+            let clock = state.clock.clone();
+            ExecutionState::with(|s| {
+                for tid in state.waiters.drain() {
+                    debug_assert_ne!(tid, me);
                     let t = s.get_mut(tid);
                     debug_assert!(t.blocked());
+                    t.clock.increment(tid);
+                    t.clock.update(&clock);
                     t.unblock();
-                });
-            }
+                }
+                // Update the leader's clock
+                let t = s.current_mut();
+                t.clock.increment(me);
+                t.clock.update(&clock);
+            });
         }
 
         let result = BarrierWaitResult {

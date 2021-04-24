@@ -12,6 +12,12 @@ pub struct ThreadId {
     task_id: TaskId,
 }
 
+impl From<ThreadId> for usize {
+    fn from(id: ThreadId) -> usize {
+        id.task_id.into()
+    }
+}
+
 /// A handle to a thread.
 #[derive(Debug, Clone)]
 pub struct Thread {
@@ -68,7 +74,7 @@ where
                 }
             });
         };
-        ExecutionState::spawn_thread(f, stack_size, name.clone())
+        ExecutionState::spawn_thread(f, stack_size, name.clone(), None)
     };
 
     thread::switch();
@@ -106,6 +112,13 @@ impl<T> JoinHandle<T> {
 
         // TODO can we soundly skip the yield if the target thread has already finished?
         thread::switch();
+
+        // Waiting thread inherits the clock of the finished thread
+        ExecutionState::with(|state| {
+            let target = state.get_mut(self.task_id);
+            let clock = target.clock.clone();
+            state.update_clock(&clock);
+        });
 
         self.result.lock().unwrap().take().expect("target should have finished")
     }

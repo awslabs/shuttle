@@ -61,6 +61,7 @@ pub use ptr::AtomicPtr;
 pub use std::sync::atomic::Ordering;
 
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
 use std::cell::RefCell;
 
@@ -117,6 +118,7 @@ pub use std::sync::atomic::compiler_fence;
 #[derive(Debug)]
 struct Atomic<T> {
     inner: RefCell<T>,
+    clock: RefCell<Option<VectorClock>>, // wrapped in option to support the const new()
 }
 
 // Safety: Atomic is never actually passed across true threads, only across continuations. The
@@ -125,16 +127,28 @@ unsafe impl<T: Sync> Sync for Atomic<T> {}
 
 impl<T> Atomic<T> {
     const fn new(v: T) -> Self {
-        Self { inner: RefCell::new(v) }
+        // Since this is a `const fn`, the clock associated with this Atomic is assigned a const value of None
+        // (which represents all zeros).  At the time of creation of the atomic, however, we have more causal
+        // knowledge (the value of the current thread's vector clock).  However, it should be safe to initialize
+        // the Atomic's clock to all-zeros because the only way for another thread to access this Atomic is for
+        // a reference to it to be passed to it via some other synchronization mechanism, which will carry the
+        // knowledge about the owning thread's clock.
+        // TODO Check that the argument above is sound
+        Self {
+            inner: RefCell::new(v),
+            clock: RefCell::new(None),
+        }
     }
 }
 
 impl<T: Copy + Eq> Atomic<T> {
     fn get_mut(&mut self) -> &mut T {
+        self.exhale_clock();
         self.inner.get_mut()
     }
 
     fn into_inner(self) -> T {
+        self.exhale_clock();
         self.inner.into_inner()
     }
 
@@ -142,6 +156,7 @@ impl<T: Copy + Eq> Atomic<T> {
         maybe_warn_about_ordering(order);
 
         thread::switch();
+        self.exhale_clock();
         let value = *self.inner.borrow();
         thread::switch();
         value
@@ -151,6 +166,7 @@ impl<T: Copy + Eq> Atomic<T> {
         maybe_warn_about_ordering(order);
 
         thread::switch();
+        self.inhale_clock();
         *self.inner.borrow_mut() = val;
         thread::switch();
     }
@@ -158,7 +174,10 @@ impl<T: Copy + Eq> Atomic<T> {
     fn swap(&self, mut val: T, order: Ordering) -> T {
         maybe_warn_about_ordering(order);
 
+        // swap behaves like { let x = load() ; store(val) ; x }
         thread::switch();
+        self.exhale_clock(); // for the load
+        self.inhale_clock(); // for the store
         std::mem::swap(&mut *self.inner.borrow_mut(), &mut val);
         thread::switch();
         val
@@ -171,10 +190,14 @@ impl<T: Copy + Eq> Atomic<T> {
         maybe_warn_about_ordering(set_order);
         maybe_warn_about_ordering(fetch_order);
 
+        // fetch_update behaves like (ignoring error): { let x = load() ; store(f(x)); x }
+        // in the error case, there is no store, so the register does not inherit the clock of the caller
         thread::switch();
+        self.exhale_clock(); // for the load()
         let current = *self.inner.borrow();
         let ret = if let Some(new) = f(current) {
             *self.inner.borrow_mut() = new;
+            self.inhale_clock(); // for the store()
             Ok(current)
         } else {
             Err(current)
@@ -185,5 +208,30 @@ impl<T: Copy + Eq> Atomic<T> {
 
     unsafe fn raw_load(&self) -> T {
         *self.inner.borrow()
+    }
+
+    fn init_clock(&self) {
+        self.clock.borrow_mut().get_or_insert(VectorClock::new());
+    }
+
+    // Increment the clock for the current thread, and update the Atomic's clock with it
+    // The Atomic (self) "inhales" the clock from the thread
+    fn inhale_clock(&self) {
+        self.init_clock();
+        ExecutionState::with(|s| {
+            let clock = s.increment_clock();
+            let mut self_clock = self.clock.borrow_mut();
+            self_clock.as_mut().unwrap().update(clock);
+        });
+    }
+
+    // Increment the clock for the current thread, and update with the Atomic's current clock
+    // The Atomic (self) "exhales" its clock to the thread
+    fn exhale_clock(&self) {
+        self.init_clock();
+        ExecutionState::with(|s| {
+            let self_clock = self.clock.borrow();
+            s.update_clock(self_clock.as_ref().unwrap());
+        });
     }
 }
