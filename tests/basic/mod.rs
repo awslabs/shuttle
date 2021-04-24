@@ -1,5 +1,6 @@
 mod atomic;
 mod barrier;
+mod clocks;
 mod condvar;
 mod config;
 mod dfs;

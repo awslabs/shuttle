@@ -1,4 +1,5 @@
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, TaskSet};
 use crate::runtime::thread;
 use std::cell::RefCell;
@@ -20,6 +21,7 @@ struct RwLockState {
     holder: RwLockHolder,
     waiting_readers: TaskSet,
     waiting_writers: TaskSet,
+    clock: VectorClock,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -42,6 +44,7 @@ impl<T> RwLock<T> {
             holder: RwLockHolder::None,
             waiting_readers: TaskSet::new(),
             waiting_writers: TaskSet::new(),
+            clock: VectorClock::new(),
         };
 
         Self {
@@ -108,7 +111,12 @@ impl<T> RwLock<T> {
 
     /// Consumes this `RwLock`, returning the underlying data
     pub fn into_inner(self) -> LockResult<T> {
-        assert_eq!(self.state.borrow().holder, RwLockHolder::None);
+        let state = self.state.borrow();
+        assert_eq!(state.holder, RwLockHolder::None);
+        // Update the receiver's clock with the RwLock clock
+        ExecutionState::with(|s| {
+            s.update_clock(&state.clock);
+        });
         self.inner.into_inner()
     }
 
@@ -186,6 +194,9 @@ impl<T> RwLock<T> {
             typ,
             self.state
         );
+        // Update acquiring thread's clock with the clock stored in the RwLock
+        ExecutionState::with(|s| s.update_clock(&state.clock));
+
         // Block all other waiters, since we won the race to take this lock
         // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
         // TODO never become unblocked), but might need to track more state to avoid this.
@@ -318,7 +329,6 @@ impl<T> Drop for RwLockWriteGuard<'_, T> {
         self.inner = None;
 
         let mut state = self.state.borrow_mut();
-
         trace!(
             holder = ?state.holder,
             waiting_readers = ?state.waiting_readers,
@@ -329,6 +339,12 @@ impl<T> Drop for RwLockWriteGuard<'_, T> {
 
         assert_eq!(state.holder, RwLockHolder::Write(self.me));
         state.holder = RwLockHolder::None;
+
+        // Update the RwLock clock with the owning thread's clock
+        ExecutionState::with(|s| {
+            let clock = s.increment_clock();
+            state.clock.update(clock);
+        });
 
         if ExecutionState::should_stop() {
             return;

@@ -1,4 +1,5 @@
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, TaskSet};
 use crate::runtime::thread;
 use std::cell::RefCell;
@@ -25,6 +26,7 @@ pub struct MutexGuard<'a, T> {
 struct MutexState {
     holder: Option<TaskId>,
     waiters: TaskSet,
+    clock: VectorClock,
 }
 
 impl<T> Mutex<T> {
@@ -33,6 +35,7 @@ impl<T> Mutex<T> {
         let state = MutexState {
             holder: None,
             waiters: TaskSet::new(),
+            clock: VectorClock::new(),
         };
 
         Self {
@@ -51,8 +54,8 @@ impl<T> Mutex<T> {
         // We are waiting for the lock
         state.waiters.insert(me);
         // If the lock is already held, then we are blocked
-        if state.holder.is_some() {
-            assert_ne!(state.holder.unwrap(), me);
+        if let Some(holder) = state.holder {
+            assert_ne!(holder, me);
             ExecutionState::with(|s| s.current_mut().block());
         }
         drop(state);
@@ -74,6 +77,8 @@ impl<T> Mutex<T> {
         for tid in state.waiters.iter() {
             ExecutionState::with(|s| s.get_mut(tid).block());
         }
+        // Update acquiring thread's clock with the clock stored in the Mutex
+        ExecutionState::with(|s| s.update_clock(&state.clock));
         drop(state);
 
         match self.inner.try_lock() {
@@ -99,8 +104,13 @@ impl<T> Mutex<T> {
 
     /// Consumes this mutex, returning the underlying data.
     pub fn into_inner(self) -> LockResult<T> {
-        assert!(self.state.borrow().holder.is_none());
-        assert!(self.state.borrow().waiters.is_empty());
+        let state = self.state.borrow();
+        assert!(state.holder.is_none());
+        assert!(state.waiters.is_empty());
+        // Update the receiver's clock with the Mutex clock
+        ExecutionState::with(|s| {
+            s.update_clock(&state.clock);
+        });
         self.inner.into_inner()
     }
 }
@@ -142,6 +152,14 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
         let me = ExecutionState::me();
+
+        // Update the Mutex clock with the owning thread's clock
+        ExecutionState::with(|s| {
+            let clock = s.increment_clock();
+            state.clock.update(clock);
+        });
+
+        state.holder = None;
         for tid in state.waiters.iter() {
             debug_assert_ne!(tid, me);
             ExecutionState::with(|s| {

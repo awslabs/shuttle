@@ -1,6 +1,7 @@
 //! Multi-producer, single-consumer FIFO queue communication primitives.
 
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
 use smallvec::SmallVec;
@@ -49,15 +50,46 @@ struct Channel<T> {
     state: Rc<RefCell<ChannelState<T>>>,
 }
 
+// For tracking causality on channels, we timestamp each message with the clock of the sender.
+// When the receiver gets the message, it updates its clock with the the associated timestamp.
+// For unbounded channels, that's all the work we need to do.
+//
+// For bounded and rendezvous channels, things get a bit more interesting.
+// Consider a bounded channel of depth K.  As soon as the sender successfully sends its K+1'th
+// message, it knows that the receiver has received at least 1 message.  At this point, the
+// first receive event causally precedes the (K+1)'th send.  By the rule for vector clocks,
+//  (clock of the first receive)  <  (clock of the K+1'th send)
+// In order to ensure this ordering, we add a return queue of depth K to bounded channels.
+// Initially, this queue contains K empty vector clocks.  On each receive, we push the
+// receiver's clock at the time of the receive to the end of this queue.  Whenever the sender
+// successfully sends a message, it pops the clock at the front of the queue, and updates its
+// own clock with this value.  Thus, on the (K+1)'th send, the sender's clock will be updated
+// with the clock at the first receive, as needed.
+//
+// The story is similar for rendezvous channels, except we have to handle things a bit more
+// specially because K=0.
+
+struct TimestampedValue<T> {
+    value: T,
+    clock: VectorClock,
+}
+
+impl<T> TimestampedValue<T> {
+    fn new(value: T, clock: VectorClock) -> Self {
+        Self { value, clock }
+    }
+}
+
 // Note: The channels in std::sync::mpsc only support a single Receiver (which cannot be
 // cloned).  The state below admits a more general use case, where multiple Senders
 // and Receivers can share a single channel.
 struct ChannelState<T> {
-    messages: SmallVec<[T; MAX_INLINE_MESSAGES]>, // messages in the channel
-    known_senders: usize,                         // number of senders referencing this channel
-    known_receivers: usize,                       // number or receivers referencing this channel
-    waiting_senders: SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>, // list of currently blocked senders
-    waiting_receivers: SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>, // list of currently blocked receivers
+    messages: SmallVec<[TimestampedValue<T>; MAX_INLINE_MESSAGES]>, // messages in the channel
+    receiver_clock: Option<SmallVec<[VectorClock; MAX_INLINE_MESSAGES]>>, // receiver vector clocks for bounded case
+    known_senders: usize,                                           // number of senders referencing this channel
+    known_receivers: usize,                                         // number or receivers referencing this channel
+    waiting_senders: SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>,      // list of currently blocked senders
+    waiting_receivers: SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>,    // list of currently blocked receivers
 }
 
 impl<T> Debug for ChannelState<T> {
@@ -77,10 +109,20 @@ impl<T> Debug for ChannelState<T> {
 
 impl<T> Channel<T> {
     fn new(bound: Option<usize>) -> Self {
+        let receiver_clock = if let Some(bound) = bound {
+            let mut s = SmallVec::with_capacity(bound);
+            for _ in 0..bound {
+                s.push(VectorClock::new());
+            }
+            Some(s)
+        } else {
+            None
+        };
         Self {
             bound,
             state: Rc::new(RefCell::new(ChannelState {
                 messages: SmallVec::new(),
+                receiver_clock,
                 known_senders: 1,
                 known_receivers: 1,
                 waiting_senders: SmallVec::new(),
@@ -141,7 +183,7 @@ impl<T> Channel<T> {
                 self,
             );
 
-            // Check again that there are no receivers
+            // Check again that we still have a receiver; if not, return with error.
             // We repeat this check because the receivers may have disconnected while the sender was blocked.
             if state.known_receivers == 0 {
                 // No receivers are left, so the channel is disconnected.  Stop and return failure.
@@ -152,16 +194,38 @@ impl<T> Channel<T> {
         let head = state.waiting_senders.remove(0);
         assert_eq!(head, me);
 
-        state.messages.push(message);
+        ExecutionState::with(|s| {
+            let clock = s.increment_clock();
+            state.messages.push(TimestampedValue::new(message, clock.clone()));
+        });
+
         // The sender has just added a message to the channel, so unblock the first waiting receiver if any
         if let Some(&tid) = state.waiting_receivers.first() {
-            ExecutionState::with(|s| s.get_mut(tid).unblock());
+            ExecutionState::with(|s| {
+                s.get_mut(tid).unblock();
+
+                // When a sender successfully sends on a rendezvous channel, it knows that the receiver will perform
+                // the matching receive, so we need to update the sender's clock with the receiver's.
+                if is_rendezvous {
+                    let recv_clock = s.get_clock(tid).clone();
+                    s.update_clock(&recv_clock);
+                }
+            });
+        } else {
+            assert!(!is_rendezvous); // Sender on a rendezvous channel is only unblocked if there's a waiting receiver
         }
         // Check and unblock the next the waiting sender, if eligible
         if let Some(&tid) = state.waiting_senders.first() {
             let bound = self.bound.expect("can't have waiting senders on an unbounded channel");
             if state.messages.len() < bound {
                 ExecutionState::with(|s| s.get_mut(tid).unblock());
+            }
+        }
+
+        if !is_rendezvous {
+            if let Some(receiver_clock) = &mut state.receiver_clock {
+                let recv_clock = receiver_clock.remove(0);
+                ExecutionState::with(|s| s.update_clock(&recv_clock));
             }
         }
 
@@ -183,11 +247,25 @@ impl<T> Channel<T> {
             return Err(RecvError);
         }
 
+        // Pre-increment the receiver's clock before continuing
+        //
+        // Note: The reason for pre-incrementing the receiver's clock is to deal properly with rendezvous channels.
+        // Here's the scenario we have to handle:
+        //   1. the receiver arrives at a rendezvous channel and blocks
+        //   2. the sender arrives, sees the receiver is waiting and does not block
+        //   3. the sender drops the message in the channel and updates its clock with the receiver's clock and continues
+        //   4. later, the receiver unblocks and picks up the message and updates its clock with the sender's
+        // Without the pre-increment, in step 3, the sender would update its clock with the receiver's clock before
+        // it is incremented.  (The increment records the fact that the receiver arrived at the synchronization point.)
+        ExecutionState::with(|s| {
+            let _ = s.increment_clock();
+        });
+
         // If this is a rendezvous channel, and the channel is empty, and there are waiting senders,
         // notify the first waiting sender
         if self.bound == Some(0) && state.messages.is_empty() {
             if let Some(&tid) = state.waiting_senders.first() {
-                // maybe_unblock because another receiver may have unblocked the sender already
+                // Note: another receiver may have unblocked the sender already
                 ExecutionState::with(|s| s.get_mut(tid).unblock());
             }
         }
@@ -249,7 +327,23 @@ impl<T> Channel<T> {
             }
         }
 
-        Ok(item)
+        // Update receiver clock from the clock attached to the message received
+        let TimestampedValue { value, clock } = item;
+        ExecutionState::with(|s| {
+            // Since we already incremented the receiver's clock above, just update it here
+            s.get_clock_mut(me).update(&clock);
+
+            // If this is a (non-rendezvous) bounded channel, propagate causality backwards to sender
+            if let Some(receiver_clock) = &mut state.receiver_clock {
+                let bound = self.bound.expect("unexpected internal error"); // must be defined for bounded channels
+                if bound > 0 {
+                    // non-rendezvous
+                    assert!(receiver_clock.len() < bound);
+                    receiver_clock.push(s.get_clock(me).clone());
+                }
+            }
+        });
+        Ok(value)
     }
 }
 
