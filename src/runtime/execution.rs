@@ -419,7 +419,7 @@ impl ExecutionState {
         // `self.current_span_entered` before dropping the `self.current_span` it points to.
         self.current_span_entered.take();
         if let ScheduledTask::Some(tid) = self.current_task {
-            self.current_span = span!(Level::DEBUG, "step", i = self.current_schedule.len() - 1, task = tid.0);
+            self.current_span = span!(Level::ERROR, "step", i = self.current_schedule.len() - 1, task = tid.0);
             self.current_span_entered = Some(unsafe { extend_span_entered_lt(self.current_span.enter()) });
         }
     }
