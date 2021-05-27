@@ -203,6 +203,12 @@ pub struct Config {
     /// Maximum number of steps a single iteration of a test can take, and how to react when the
     /// limit is reached
     pub max_steps: MaxSteps,
+
+    /// Time limit for an entire test. If set, calls to [`Runner::run`] will return when the time
+    /// limit is exceeded or the [`Scheduler`](crate::scheduler::Scheduler) chooses to stop (e.g.,
+    /// by hitting its maximum number of iterations), whichever comes first. This time limit will
+    /// not abort a currently running test iteration; the limit is only checked between iterations.
+    pub max_time: Option<std::time::Duration>,
 }
 
 impl Config {
@@ -212,6 +218,7 @@ impl Config {
             stack_size: 0x8000,
             failure_persistence: FailurePersistence::Print,
             max_steps: MaxSteps::FailAfter(1_000_000),
+            max_time: None,
         }
     }
 }
