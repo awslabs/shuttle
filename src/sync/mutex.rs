@@ -91,6 +91,13 @@ impl<T> Mutex<T> {
     pub fn try_lock(&self) -> TryLockResult<MutexGuard<T>> {
         unimplemented!()
     }
+
+    /// Consumes this mutex, returning the underlying data.
+    pub fn into_inner(self) -> LockResult<T> {
+        assert!(self.state.borrow().holder.is_none());
+        assert!(self.state.borrow().waiters.is_empty());
+        self.inner.into_inner()
+    }
 }
 
 // Safety: Mutex is never actually passed across true threads, only across continuations. The
