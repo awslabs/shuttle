@@ -58,7 +58,7 @@ fn yield_spin_loop(use_yield: bool) {
                 }
             }
         })
-    })
+    });
 }
 
 #[test]

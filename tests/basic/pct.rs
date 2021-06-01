@@ -49,7 +49,7 @@ fn one_step() {
     let runner = Runner::new(scheduler, Default::default());
     runner.run(|| {
         thread::spawn(|| {});
-    })
+    });
 }
 
 // Check that PCT correctly deprioritizes a yielding thread. If it wasn't, there would be some
@@ -81,7 +81,7 @@ fn yield_spin_loop(use_yield: bool) {
                 thread::sleep(Duration::from_millis(1));
             }
         }
-    })
+    });
 }
 
 #[test]

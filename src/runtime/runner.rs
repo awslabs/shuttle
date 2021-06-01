@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
+use std::time::Instant;
 use tracing::{span, Level};
 
 /// A `Runner` is the entry-point for testing concurrent code.
@@ -35,8 +36,9 @@ impl<S: Scheduler + 'static> Runner<S> {
         }
     }
 
-    /// Test the given function.
-    pub fn run<F>(self, f: F)
+    /// Test the given function and return the number of times the function was invoked during the
+    /// test (i.e., the number of iterations run).
+    pub fn run<F>(self, f: F) -> usize
     where
         F: Fn() + Send + Sync + 'static,
     {
@@ -46,15 +48,26 @@ impl<S: Scheduler + 'static> Runner<S> {
         CONTINUATION_POOL.set(&ContinuationPool::new(), || {
             let f = Arc::new(f);
 
-            for i in 0.. {
+            let start = Instant::now();
+
+            let mut i = 0;
+            loop {
+                if self.config.max_time.map(|t| start.elapsed() > t).unwrap_or(false) {
+                    break;
+                }
+
                 let schedule = match self.scheduler.borrow_mut().new_execution() {
                     None => break,
                     Some(s) => s,
                 };
+
                 let execution = Execution::new(self.scheduler.clone(), schedule);
                 let f = Arc::clone(&f);
                 span!(Level::ERROR, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
+
+                i += 1;
             }
+            i
         })
     }
 }
