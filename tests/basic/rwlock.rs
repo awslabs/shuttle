@@ -194,3 +194,29 @@ fn rwlock_default() {
         None,
     );
 }
+
+#[test]
+fn rwlock_into_inner() {
+    shuttle::check_dfs(
+        || {
+            let lock = Arc::new(RwLock::new(0u64));
+
+            let threads = (0..2)
+                .map(|_| {
+                    let lock = lock.clone();
+                    thread::spawn(move || {
+                        *lock.write().unwrap() += 1;
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            for thread in threads {
+                thread.join().unwrap();
+            }
+
+            let lock = Arc::try_unwrap(lock).unwrap();
+            assert_eq!(lock.into_inner().unwrap(), 2);
+        },
+        None,
+    )
+}
