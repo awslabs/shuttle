@@ -1,6 +1,6 @@
 [package]
 name = "shuttle"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["James Bornholt <bornholt@amazon.com>", "Rajeev Joshi <jorajeev@amazon.com>"]
 edition = "2018"
 license = "Apache-2.0"
