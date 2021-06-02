@@ -1,3 +1,9 @@
+# 0.0.4 (June 1, 2021)
+
+* Add a timeout option to run tests for a fixed amount of time (#25)
+* Include task ID in all `tracing` log output (#24)
+* Implement `thread::current` (#23)
+
 # 0.0.3 (April 13, 2021)
 
 * Update for Rust 1.51 (#11)

@@ -172,9 +172,10 @@
 //!   scheduler can be configured with a bound on the depth of schedules to explore.
 //!
 //! When these convenience methods do not provide enough control, Shuttle provides a [`Runner`]
-//! object for executing a test. A runner is constructed from a chosen scheduler, and then invoked
-//! with the [`Runner::run`] method. Shuttle also provides a [`PortfolioRunner`] object for running
-//! multiple schedulers, using parallelism to increase the number of test executions explored.
+//! object for executing a test. A runner is constructed from a chosen [scheduler](scheduler), and
+//! then invoked with the [`Runner::run`] method. Shuttle also provides a [`PortfolioRunner`] object
+//! for running multiple schedulers, using parallelism to increase the number of test executions
+//! explored.
 //!
 //! [Loom]: https://github.com/tokio-rs/loom
 //! [pct]: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf
