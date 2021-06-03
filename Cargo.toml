@@ -10,6 +10,7 @@ keywords = ["concurrency", "lock", "thread", "async"]
 categories = ["asynchronous", "concurrency", "development-tools::testing"]
 
 [dependencies]
+ansi_term = "~0.12.1"
 bitvec = "~0.21.0"
 futures = "~0.3.5"
 generator = "~0.7.0"

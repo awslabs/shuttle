@@ -210,6 +210,10 @@ pub struct Config {
     /// by hitting its maximum number of iterations), whichever comes first. This time limit will
     /// not abort a currently running test iteration; the limit is only checked between iterations.
     pub max_time: Option<std::time::Duration>,
+
+    /// Whether to enable warnings about [Shuttle's unsound implementation of
+    /// `atomic`](crate::sync::atomic#warning-about-relaxed-behaviors).
+    pub silence_atomic_ordering_warning: bool,
 }
 
 impl Config {
@@ -220,6 +224,7 @@ impl Config {
             failure_persistence: FailurePersistence::Print,
             max_steps: MaxSteps::FailAfter(1_000_000),
             max_time: None,
+            silence_atomic_ordering_warning: false,
         }
     }
 }
