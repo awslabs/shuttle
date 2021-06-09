@@ -1,3 +1,4 @@
+use shuttle::sync::Mutex;
 use shuttle::{asynch, check_dfs, check_random, scheduler::PctScheduler, thread, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -94,6 +95,71 @@ fn async_spawn_chain() {
         },
         None,
     );
+}
+
+#[test]
+fn async_thread_yield() {
+    // This tests if thread::yield_now can be called from within an async block
+    check_dfs(
+        || {
+            asynch::spawn(async move {
+                thread::yield_now();
+            });
+            asynch::spawn(async move {});
+        },
+        None,
+    )
+}
+
+#[test]
+#[should_panic(expected = "DFS should find a schedule where r=1 here")]
+fn async_atomic() {
+    // This tests if shuttle can correctly schedule a different task
+    // after thread::yield_now is called from within an async block
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    check_dfs(
+        || {
+            let r = Arc::new(AtomicUsize::new(0));
+            let r1 = r.clone();
+            asynch::spawn(async move {
+                r1.store(1, Ordering::SeqCst);
+                thread::yield_now();
+                r1.store(0, Ordering::SeqCst);
+            });
+            asynch::spawn(async move {
+                assert_eq!(r.load(Ordering::SeqCst), 0, "DFS should find a schedule where r=1 here");
+            });
+        },
+        None,
+    )
+}
+
+#[test]
+fn async_mutex() {
+    // This test checks that futures can acquire Shuttle sync mutexes.
+    // The future should only block on acquiring a lock when
+    // another task holds the lock.
+    check_dfs(
+        move || {
+            let lock = Arc::new(Mutex::new(0u64));
+
+            let t1 = {
+                let lock = Arc::clone(&lock);
+                asynch::spawn(async move {
+                    let mut l = lock.lock().unwrap();
+                    *l += 1;
+                })
+            };
+
+            let t2 = asynch::block_on(async move {
+                t1.await.unwrap();
+                *lock.lock().unwrap()
+            });
+
+            assert_eq!(t2, 1);
+        },
+        None,
+    )
 }
 
 #[test]

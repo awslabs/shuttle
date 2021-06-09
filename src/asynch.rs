@@ -6,7 +6,7 @@
 //! [`futures::executor`]: https://docs.rs/futures/0.3.13/futures/executor/index.html
 
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{TaskId, TaskType};
+use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use futures::future::Future;
 use std::pin::Pin;
@@ -20,11 +20,8 @@ where
     T: Send + 'static,
 {
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let task_id = ExecutionState::spawn(
-        Wrapper::new(fut, std::sync::Arc::clone(&result)),
-        TaskType::Future,
-        None,
-    );
+    let stack_size = ExecutionState::with(|s| s.config.stack_size);
+    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, std::sync::Arc::clone(&result)), stack_size, None);
     // TODO I think we need to yield here to give the spawned task a chance to execute before the spawner continues
     JoinHandle { task_id, result }
 }

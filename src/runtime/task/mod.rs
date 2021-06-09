@@ -1,10 +1,13 @@
+use crate::runtime::execution::ExecutionState;
+use crate::runtime::thread;
+use crate::runtime::thread::continuation::{ContinuationPool, PooledContinuation};
 use bitvec::prelude::*;
 use bitvec::vec::BitVec;
-use futures::future::BoxFuture;
-use futures::task::Waker;
+use futures::{task::Waker, Future};
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
+use std::task::Context;
 
 pub(crate) mod waker;
 use waker::make_waker;
@@ -12,22 +15,20 @@ use waker::make_waker;
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
 // * A "thread" is a user-level unit of concurrency. User code creates threads, passes data
-//   between them, etc. There is no notion of "thread" inside the Shuttle executor, which only
-//   understands Futures. We implement threads via `ThreadFuture`, which emulates a thread inside
-//   a Future using a continuation.
+//   between them, etc.
 // * A "future" is another user-level unit of concurrency, corresponding directly to Rust's notion
 //   in std::future::Future. A future has a single method `poll` that can be used to resume
-//   executing its computation.
+//   executing its computation. Both futures and threads are implemented in Task,
+//   which wraps a continuation that is resumed when the task is scheduled.
 // * A "task" is the Shuttle executor's reflection of a user-level unit of concurrency. Each task
-//   has a corresponding Future, which is the user-level code it runs, as well as a state like
+//   has a corresponding continuation, which is the user-level code it runs, as well as a state like
 //   "blocked", "runnable", etc. Scheduling algorithms take as input the state of all tasks
 //   and decide which task should execute next. A context switch is when one task stops executing
 //   and another begins.
 // * A "continuation" is a low-level implementation of green threading for concurrency. Each
-//   ThreadFuture contains a corresponding continuation. When the Shuttle executor polls a
-//   ThreadFuture, which corresponds to a user-level thread, the ThreadFuture resumes its
-//   continuation and runs it until that continuation yields, which happens when its thread decides
-//   it might want to context switch (e.g., because it's blocked on a lock).
+//   Task contains a corresponding continuation. When the Shuttle executor context switches to a
+//   Task, the executor resumes that task's continuation until it yields, which happens when its
+//   thread decides it might want to context switch (e.g., because it's blocked on a lock).
 
 pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 
@@ -36,10 +37,10 @@ pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 pub(crate) struct Task {
     pub(super) id: TaskId,
     pub(super) state: TaskState,
-    // We use this to decide whether to block this task if it returns Poll::Pending
+    // We use this to check `block_unless_self_woken` is only called from a Future task
     task_type: TaskType,
 
-    pub(super) future: Rc<RefCell<BoxFuture<'static, ()>>>,
+    pub(super) continuation: Rc<RefCell<PooledContinuation>>,
 
     waiter: Option<TaskId>,
 
@@ -51,21 +52,56 @@ pub(crate) struct Task {
 }
 
 impl Task {
-    pub(crate) fn new(future: BoxFuture<'static, ()>, id: TaskId, task_type: TaskType, name: Option<String>) -> Self {
+    /// Create a task from a continuation
+    fn new<F>(f: F, stack_size: usize, id: TaskId, task_type: TaskType, name: Option<String>) -> Self
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let mut continuation = ContinuationPool::acquire(stack_size);
+        continuation.initialize(Box::new(f));
         let waker = make_waker(id);
-
+        let continuation = Rc::new(RefCell::new(continuation));
         Self {
             id,
             state: TaskState::Runnable,
             task_type,
-
-            future: Rc::new(RefCell::new(future)),
-
+            continuation,
             waiter: None,
             waker,
             woken_by_self: false,
             name,
         }
+    }
+
+    pub(crate) fn from_closure<F>(f: F, stack_size: usize, id: TaskId, name: Option<String>) -> Self
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        Self::new(f, stack_size, id, TaskType::Thread, name)
+    }
+
+    pub(crate) fn from_future<F>(future: F, stack_size: usize, id: TaskId, name: Option<String>) -> Self
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let mut future = Box::pin(future);
+        Self::new(
+            move || {
+                let waker = ExecutionState::with(|state| state.current_mut().waker());
+                let cx = &mut Context::from_waker(&waker);
+                while future.as_mut().poll(cx).is_pending() {
+                    ExecutionState::with(|state| {
+                        // We need to block before thread::switch() unless we woke ourselves up
+                        state.current_mut().block_unless_self_woken();
+                    });
+                    thread::switch();
+                }
+            },
+            stack_size,
+            id,
+            TaskType::Future,
+            name,
+        )
     }
 
     pub(crate) fn id(&self) -> TaskId {
@@ -107,19 +143,20 @@ impl Task {
 
     /// Potentially block this task after it was polled by the executor.
     ///
-    /// A task that wraps a `ThreadFuture` won't be blocked here, because we want threads to be
+    /// A synchronous Task should never call this, because we want threads to be
     /// enabled-by-default to avoid bugs where Shuttle incorrectly omits a potential execution.
     /// We also need to handle a special case where a task invoked its own waker, in which case
     /// we should not block the task.
-    pub(crate) fn block_after_running(&mut self) {
+    pub(crate) fn block_unless_self_woken(&mut self) {
+        assert!(self.task_type == TaskType::Future);
         let was_woken_by_self = std::mem::replace(&mut self.woken_by_self, false);
-        if self.task_type == TaskType::Future && !was_woken_by_self {
+        if !was_woken_by_self {
             self.block();
         }
     }
 
     /// Remember that we have been unblocked while we were currently running, and therefore should
-    /// not be blocked again by `block_after_running`.
+    /// not be blocked again by `block_unless_self_woken`.
     pub(super) fn set_woken_by_self(&mut self) {
         self.woken_by_self = true;
     }
