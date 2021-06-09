@@ -6,6 +6,7 @@ mod execution;
 mod metrics;
 mod mpsc;
 mod mutex;
+mod panic;
 mod pct;
 mod portfolio;
 mod replay;
