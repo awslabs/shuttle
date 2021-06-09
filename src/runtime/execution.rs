@@ -1,16 +1,14 @@
 use crate::runtime::failure::persist_failure;
-use crate::runtime::task::{Task, TaskId, TaskState, TaskType, DEFAULT_INLINE_TASKS};
-use crate::runtime::thread::future::ThreadFuture;
+use crate::runtime::task::{Task, TaskId, TaskState, DEFAULT_INLINE_TASKS};
 use crate::scheduler::{Schedule, Scheduler};
 use crate::{Config, MaxSteps};
+use futures::Future;
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
 use std::cell::RefCell;
-use std::future::Future;
 use std::panic;
 use std::rc::Rc;
-use std::task::{Context, Poll};
 use tracing::span::Entered;
 use tracing::{span, trace, Level, Span};
 
@@ -59,8 +57,7 @@ impl Execution {
 
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
-            let first_task = ThreadFuture::new(config.stack_size, f);
-            ExecutionState::spawn(first_task, TaskType::Thread, None);
+            ExecutionState::spawn_thread(f, config.stack_size, None);
 
             // Run the test to completion
             while self.step(config) {}
@@ -80,7 +77,7 @@ impl Execution {
             match state.current_task {
                 ScheduledTask::Some(tid) => {
                     let task = state.get(tid);
-                    Some((Rc::clone(&task.future), task.waker()))
+                    Some(Rc::clone(&task.continuation))
                 }
                 ScheduledTask::Finished => {
                     let task_states = state
@@ -106,24 +103,20 @@ impl Execution {
             }
         });
 
-        // Run a single step of the chosen future. The future might be a ThreadFuture, in which case
-        // it may run multiple steps of the same future if the scheduler so decides.
+        // Run a single step of the chosen task.
         let ret = match result {
-            Some((future, waker)) => panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                let mut cx = &mut Context::from_waker(&waker);
-                future.borrow_mut().as_mut().poll(&mut cx)
-            })),
+            Some(continuation) => panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume())),
             None => return false,
         };
 
         ExecutionState::with(|state| {
             match ret {
-                Ok(Poll::Ready(_)) => {
+                // Task finished
+                Ok(true) => {
                     state.current_mut().finish();
                 }
-                Ok(Poll::Pending) => {
-                    state.current_mut().block_after_running();
-                }
+                // Task yielded
+                Ok(false) => {}
                 Err(e) => {
                     let name = if let ScheduledTask::Some(tid) = state.current_task {
                         state.get(tid).name().unwrap_or_else(|| format!("task-{:?}", tid.0))
@@ -232,14 +225,25 @@ impl ExecutionState {
 
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
     /// if it wants to give the new task a chance to run immediately.
-    pub(crate) fn spawn(
-        future: impl Future<Output = ()> + 'static + Send,
-        task_type: TaskType,
-        name: Option<String>,
-    ) -> TaskId {
+    pub(crate) fn spawn_future<F>(future: F, stack_size: usize, name: Option<String>) -> TaskId
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
         Self::with(|state| {
             let task_id = TaskId(state.tasks.len());
-            let task = Task::new(Box::pin(future), task_id, task_type, name);
+            let task = Task::from_future(future, stack_size, task_id, name);
+            state.tasks.push(task);
+            task_id
+        })
+    }
+
+    pub(crate) fn spawn_thread<F>(f: F, stack_size: usize, name: Option<String>) -> TaskId
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        Self::with(|state| {
+            let task_id = TaskId(state.tasks.len());
+            let task = Task::from_closure(f, stack_size, task_id, name);
             state.tasks.push(task);
             task_id
         })
@@ -262,7 +266,7 @@ impl ExecutionState {
                 final_state == ScheduledTask::Stopped || task.finished(),
                 "execution finished but task is not"
             );
-            Rc::try_unwrap(task.future)
+            Rc::try_unwrap(task.continuation)
                 .map_err(|_| ())
                 .expect("couldn't cleanup a future");
         }

@@ -1,9 +1,8 @@
 //! Shuttle's implementation of [`std::thread`].
 
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{TaskId, TaskType};
+use crate::runtime::task::TaskId;
 use crate::runtime::thread;
-use crate::runtime::thread::future::ThreadFuture;
 use std::time::Duration;
 
 /// A unique identifier for a running thread
@@ -57,8 +56,7 @@ where
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
     let task_id = {
         let result = std::sync::Arc::clone(&result);
-        // Build a new ThreadFuture that will simulate a thread inside a Future
-        let task = ThreadFuture::new(stack_size, move || {
+        let f = move || {
             let ret = f();
             // Publish the result and unblock the waiter. We need to do this now, because once this
             // closure completes, the Execution will consider this task Finished and invoke the
@@ -69,8 +67,8 @@ where
                     state.get_mut(waiter).unblock();
                 }
             });
-        });
-        ExecutionState::spawn(task, TaskType::Thread, name.clone())
+        };
+        ExecutionState::spawn_thread(f, stack_size, name.clone())
     };
 
     thread::switch();
@@ -123,6 +121,8 @@ impl<T> JoinHandle<T> {
 /// Some Shuttle schedulers use this as a hint to deprioritize the current thread in order for other
 /// threads to make progress (e.g., in a spin loop).
 pub fn yield_now() {
+    let waker = ExecutionState::with(|state| state.current().waker());
+    waker.wake_by_ref();
     ExecutionState::request_yield();
     thread::switch();
 }
