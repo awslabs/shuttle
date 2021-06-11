@@ -1,3 +1,8 @@
+# 0.0.5 (June 11, 2021)
+
+* Fix a performance regression with `tracing` introduced by #24 (#31)
+* Include default features for the `rand` crate to fix compilation issues (#29)
+
 # 0.0.4 (June 1, 2021)
 
 * Add a timeout option to run tests for a fixed amount of time (#25)
