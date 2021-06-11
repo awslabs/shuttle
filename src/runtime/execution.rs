@@ -12,7 +12,7 @@ use std::panic;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 use tracing::span::Entered;
-use tracing::{debug, span, Level, Span};
+use tracing::{span, trace, Level, Span};
 
 // We use this scoped TLS to smuggle the ExecutionState, which is not 'static, across tasks that
 // need access to it (to spawn new tasks, interrogate task status, etc).
@@ -401,7 +401,7 @@ impl ExecutionState {
             .map(ScheduledTask::Some)
             .unwrap_or(ScheduledTask::Stopped);
 
-        debug!(?runnable, next_task=?self.next_task);
+        trace!(?runnable, next_task=?self.next_task);
     }
 
     /// Set the next task as the current task, and update our tracing span
@@ -419,7 +419,7 @@ impl ExecutionState {
         // `self.current_span_entered` before dropping the `self.current_span` it points to.
         self.current_span_entered.take();
         if let ScheduledTask::Some(tid) = self.current_task {
-            self.current_span = span!(Level::ERROR, "step", i = self.current_schedule.len() - 1, task = tid.0);
+            self.current_span = span!(Level::INFO, "step", i = self.current_schedule.len() - 1, task = tid.0);
             self.current_span_entered = Some(unsafe { extend_span_entered_lt(self.current_span.enter()) });
         }
     }
