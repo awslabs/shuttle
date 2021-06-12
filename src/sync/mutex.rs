@@ -4,7 +4,7 @@ use crate::runtime::thread;
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
-use std::sync::{LockResult, TryLockResult};
+use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use tracing::trace;
 
 /// A mutex, the same as [`std::sync::Mutex`].
@@ -76,12 +76,17 @@ impl<T> Mutex<T> {
         }
         drop(state);
 
-        let inner = self.inner.try_lock().expect("mutex state out of sync");
-
-        Ok(MutexGuard {
-            inner: Some(inner),
-            mutex: self,
-        })
+        match self.inner.try_lock() {
+            Ok(guard) => Ok(MutexGuard {
+                inner: Some(guard),
+                mutex: self,
+            }),
+            Err(TryLockError::Poisoned(guard)) => Err(PoisonError::new(MutexGuard {
+                inner: Some(guard.into_inner()),
+                mutex: self,
+            })),
+            Err(TryLockError::WouldBlock) => panic!("mutex state out of sync"),
+        }
     }
 
     /// Attempts to acquire this lock.
@@ -124,6 +129,12 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
         self.inner = None;
 
+        let mut state = self.mutex.state.borrow_mut();
+
+        trace!(waiters=?state.waiters, "releasing mutex {:p}", self.mutex);
+
+        state.holder = None;
+
         if ExecutionState::should_stop() {
             return;
         }
@@ -131,8 +142,6 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
         let me = ExecutionState::me();
-        let mut state = self.mutex.state.borrow_mut();
-        state.holder = None;
         for tid in state.waiters.iter() {
             debug_assert_ne!(tid, me);
             ExecutionState::with(|s| {
@@ -141,7 +150,7 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
                 t.unblock();
             });
         }
-        trace!(waiters=?state.waiters, "releasing mutex {:p}", self.mutex);
+
         drop(state);
 
         // Releasing a lock is a yield point

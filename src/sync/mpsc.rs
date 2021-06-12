@@ -1,3 +1,5 @@
+//! Multi-producer, single-consumer FIFO queue communication primitives.
+
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;

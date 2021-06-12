@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
-use std::sync::{LockResult, TryLockResult};
+use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use tracing::trace;
 
 /// A reader-writer lock, the same as [`std::sync::RwLock`].
@@ -55,12 +55,19 @@ impl<T> RwLock<T> {
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
         self.lock(RwLockType::Read);
 
-        let inner = self.inner.try_read().expect("rwlock state out of sync");
-
-        Ok(RwLockReadGuard {
-            inner: Some(inner),
-            state: Rc::clone(&self.state),
-        })
+        match self.inner.try_read() {
+            Ok(guard) => Ok(RwLockReadGuard {
+                inner: Some(guard),
+                state: Rc::clone(&self.state),
+                me: ExecutionState::me(),
+            }),
+            Err(TryLockError::Poisoned(err)) => Err(PoisonError::new(RwLockReadGuard {
+                inner: Some(err.into_inner()),
+                state: Rc::clone(&self.state),
+                me: ExecutionState::me(),
+            })),
+            Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
+        }
     }
 
     /// Locks this rwlock with exclusive write access, blocking the current thread until it can
@@ -68,12 +75,19 @@ impl<T> RwLock<T> {
     pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, T>> {
         self.lock(RwLockType::Write);
 
-        let inner = self.inner.try_write().expect("rwlock state out of sync");
-
-        Ok(RwLockWriteGuard {
-            inner: Some(inner),
-            state: Rc::clone(&self.state),
-        })
+        match self.inner.try_write() {
+            Ok(guard) => Ok(RwLockWriteGuard {
+                inner: Some(guard),
+                state: Rc::clone(&self.state),
+                me: ExecutionState::me(),
+            }),
+            Err(TryLockError::Poisoned(err)) => Err(PoisonError::new(RwLockWriteGuard {
+                inner: Some(err.into_inner()),
+                state: Rc::clone(&self.state),
+                me: ExecutionState::me(),
+            })),
+            Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
+        }
     }
 
     /// Attempts to acquire this rwlock with shared read access.
@@ -240,6 +254,7 @@ impl<T: Default> Default for RwLock<T> {
 pub struct RwLockReadGuard<'a, T> {
     inner: Option<std::sync::RwLockReadGuard<'a, T>>,
     state: Rc<RefCell<RwLockState>>,
+    me: TaskId,
 }
 
 impl<T> Deref for RwLockReadGuard<'_, T> {
@@ -254,31 +269,35 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
         self.inner = None;
 
-        if ExecutionState::should_stop() {
-            return;
-        }
-
-        // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
-        // the race to this lock, and that thread will re-block all the losers.
-        let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
+
+        trace!(
+            holder = ?state.holder,
+            waiting_readers = ?state.waiting_readers,
+            waiting_writers = ?state.waiting_writers,
+            "releasing Read lock on rwlock {:p}",
+            self.state
+        );
+
         match &mut state.holder {
             RwLockHolder::Read(readers) => {
-                readers.remove(me);
+                let was_reader = readers.remove(self.me);
+                assert!(was_reader);
                 if readers.is_empty() {
                     state.holder = RwLockHolder::None;
                 }
             }
             _ => panic!("exiting a reader but rwlock is in the wrong state"),
         }
-        RwLock::<T>::unblock_waiters(&*state, me, RwLockType::Read);
-        trace!(
-            holder = ?state.holder,
-            waiting_readers = ?state.waiting_readers,
-            waiting_writers = ?state.waiting_writers,
-            "released Read lock on rwlock {:p}",
-            self.state
-        );
+
+        if ExecutionState::should_stop() {
+            return;
+        }
+
+        // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
+        // the race to this lock, and that thread will re-block all the losers.
+        RwLock::<T>::unblock_waiters(&*state, self.me, RwLockType::Read);
+
         drop(state);
 
         // Releasing a lock is a yield point
@@ -291,11 +310,25 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
 pub struct RwLockWriteGuard<'a, T> {
     inner: Option<std::sync::RwLockWriteGuard<'a, T>>,
     state: Rc<RefCell<RwLockState>>,
+    me: TaskId,
 }
 
 impl<T> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
         self.inner = None;
+
+        let mut state = self.state.borrow_mut();
+
+        trace!(
+            holder = ?state.holder,
+            waiting_readers = ?state.waiting_readers,
+            waiting_writers = ?state.waiting_writers,
+            "releasing Write lock on rwlock {:p}",
+            self.state
+        );
+
+        assert_eq!(state.holder, RwLockHolder::Write(self.me));
+        state.holder = RwLockHolder::None;
 
         if ExecutionState::should_stop() {
             return;
@@ -303,18 +336,7 @@ impl<T> Drop for RwLockWriteGuard<'_, T> {
 
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
-        let me = ExecutionState::me();
-        let mut state = self.state.borrow_mut();
-        assert_eq!(state.holder, RwLockHolder::Write(me));
-        state.holder = RwLockHolder::None;
-        RwLock::<T>::unblock_waiters(&*state, me, RwLockType::Write);
-        trace!(
-            holder = ?state.holder,
-            waiting_readers = ?state.waiting_readers,
-            waiting_writers = ?state.waiting_writers,
-            "released Write lock on rwlock {:p}",
-            self.state
-        );
+        RwLock::<T>::unblock_waiters(&*state, self.me, RwLockType::Write);
         drop(state);
 
         // Releasing a lock is a yield point

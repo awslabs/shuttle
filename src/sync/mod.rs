@@ -2,8 +2,6 @@
 
 mod barrier;
 mod condvar;
-
-/// Multi-producer, single-consumer FIFO queue communication primitives.
 pub mod mpsc;
 mod mutex;
 mod rwlock;
