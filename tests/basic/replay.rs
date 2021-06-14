@@ -1,7 +1,8 @@
-use crate::{check_replay_roundtrip, check_replay_roundtrip_file};
+use crate::{check_replay_roundtrip, check_replay_roundtrip_file, Config, FailurePersistence};
 use shuttle::scheduler::{PctScheduler, ReplayScheduler, Schedule};
 use shuttle::sync::Mutex;
 use shuttle::{replay, thread, Runner};
+use std::panic;
 use std::sync::Arc;
 use test_env_log::test;
 
@@ -22,7 +23,8 @@ fn concurrent_increment_buggy() {
         thd.join().unwrap();
     }
 
-    assert_eq!(*lock.lock().unwrap(), 2, "both threads should run");
+    // there's a race where both threads read 0 and then set the counter to 1, so this can fail
+    assert_eq!(*lock.lock().unwrap(), 2, "counter is wrong");
 }
 
 #[test]
@@ -132,4 +134,21 @@ fn replay_deadlock3_drop_mutex() {
     scheduler.set_allow_incomplete();
     let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock_3);
+}
+
+// Check that FailurePersistence::None does not print a schedule
+#[test]
+fn replay_persist_none() {
+    let result = panic::catch_unwind(|| {
+        let scheduler = PctScheduler::new(2, 100);
+        let mut config = Config::new();
+        config.failure_persistence = FailurePersistence::None;
+        let runner = Runner::new(scheduler, config);
+        runner.run(concurrent_increment_buggy);
+    })
+    .expect_err("test should panic");
+    let output = result.downcast::<String>().unwrap();
+    assert!(output.contains("counter is wrong"));
+    // All our current failure persistence modes print the word "schedule", so check that's missing
+    assert!(!output.contains("schedule"));
 }

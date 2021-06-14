@@ -244,14 +244,12 @@ impl Default for Config {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FailurePersistence {
+    /// Do not persist failing schedules
+    None,
     /// Print failing schedules to stdout/stderr
     Print,
-    /// Persist schedules as files
-    File {
-        /// The directory in which to save schedule files. If this is `None`, defaults to the
-        /// current directory ([`std::env::current_dir`]).
-        directory: Option<std::path::PathBuf>,
-    },
+    /// Persist schedules as files in the given directory, or the current directory if None.
+    File(Option<std::path::PathBuf>),
 }
 
 /// Specifies an upper bound on the number of steps a single iteration of a Shuttle test can take,

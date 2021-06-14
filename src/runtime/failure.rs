@@ -8,9 +8,13 @@ use crate::{Config, FailurePersistence};
 
 /// Produce a message describing how to replay a failing schedule.
 pub fn persist_failure(schedule: &Schedule, message: String, config: &Config) -> String {
+    if config.failure_persistence == FailurePersistence::None {
+        return message;
+    }
+
     let serialized_schedule = serialize_schedule(schedule);
     // Try to persist to a file, but fall through to stdout if that fails for some reason
-    if let FailurePersistence::File { directory } = &config.failure_persistence {
+    if let FailurePersistence::File(directory) = &config.failure_persistence {
         match persist_failure_to_file(&serialized_schedule, directory.as_ref()) {
             Ok(path) => return format!("{}\nfailing schedule persisted to file: {}\npass that path to `shuttle::replay_from_file` to replay the failure", message, path.display()),
             Err(e) => eprintln!("failed to persist schedule to file (error: {}), falling back to printing the schedule", e),
