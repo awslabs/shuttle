@@ -69,9 +69,7 @@ where
         let tempdir_path = tempdir.path().to_path_buf();
         panic::catch_unwind(move || {
             let mut config = Config::new();
-            config.failure_persistence = FailurePersistence::File {
-                directory: Some(tempdir_path),
-            };
+            config.failure_persistence = FailurePersistence::File(Some(tempdir_path));
             let runner = Runner::new(scheduler, config);
             runner.run(move || test_func())
         })
