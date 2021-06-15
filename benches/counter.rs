@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
+use shuttle::sync::atomic::{AtomicUsize, Ordering};
 use shuttle::{asynch, thread, Runner};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 const NUM_TASKS: usize = 10;
@@ -17,9 +17,7 @@ fn counter_async(scheduler: impl Scheduler + 'static) {
             .map(|_| {
                 let counter = Arc::clone(&counter);
                 asynch::spawn(async move {
-                    let c = counter.load(Ordering::SeqCst);
-                    asynch::yield_now().await;
-                    counter.fetch_add(c, Ordering::SeqCst);
+                    counter.fetch_add(1, Ordering::SeqCst);
                 })
             })
             .collect();
@@ -42,9 +40,7 @@ fn counter_sync(scheduler: impl Scheduler + 'static) {
             .map(|_| {
                 let counter = Arc::clone(&counter);
                 thread::spawn(move || {
-                    let c = counter.load(Ordering::SeqCst);
-                    thread::yield_now();
-                    counter.fetch_add(c, Ordering::SeqCst);
+                    counter.fetch_add(1, Ordering::SeqCst);
                 })
             })
             .collect();

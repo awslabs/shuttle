@@ -1,5 +1,6 @@
 //! Shuttle's implementation of [`std::sync`].
 
+pub mod atomic;
 mod barrier;
 mod condvar;
 pub mod mpsc;
