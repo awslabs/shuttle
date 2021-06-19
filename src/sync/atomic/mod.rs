@@ -70,7 +70,7 @@ static PRINTED_ORDERING_WARNING: std::sync::atomic::AtomicBool = std::sync::atom
 fn maybe_warn_about_ordering(order: Ordering) {
     use ansi_term::Colour;
 
-    #[allow(clippy::clippy::collapsible_if)]
+    #[allow(clippy::collapsible_if)]
     if order != Ordering::SeqCst {
         if PRINTED_ORDERING_WARNING
             .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
