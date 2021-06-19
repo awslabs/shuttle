@@ -75,7 +75,7 @@ impl Schedule {
 /// A `Scheduler` is an oracle that decides the order in which to execute concurrent tasks and the
 /// data to return to calls for random values.
 ///
-/// The`Scheduler` lives across multiple executions of the test case, allowing it to retain some
+/// The `Scheduler` lives across multiple executions of the test case, allowing it to retain some
 /// state and strategically explore different schedules. At the start of each test execution, the
 /// executor calls `new_execution()` to inform the scheduler that a new execution is starting. Then,
 /// for each scheduling decision, the executor calls `next_task` to determine which task to run.
