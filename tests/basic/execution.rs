@@ -1,5 +1,5 @@
 use shuttle::scheduler::RandomScheduler;
-use shuttle::{check, thread, Config, MaxSteps, Runner};
+use shuttle::{check, check_dfs, thread, Config, MaxSteps, Runner};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use test_env_log::test;
 // Not actually trying to explore interleavings involving AtomicUsize, just using to smuggle a
@@ -26,9 +26,6 @@ fn basic_scheduler_test() {
 
 #[test]
 fn max_steps_none() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -49,9 +46,6 @@ fn max_steps_none() {
 
 #[test]
 fn max_steps_continue() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -72,9 +66,6 @@ fn max_steps_continue() {
 
 #[test]
 fn max_steps_fail() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -100,8 +91,6 @@ fn max_steps_fail() {
 #[test]
 fn max_steps_early_exit_scheduler() {
     use shuttle::scheduler::{Schedule, Scheduler, TaskId};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
 
     #[derive(Debug)]
     struct EarlyExitScheduler {
@@ -168,4 +157,81 @@ fn max_steps_early_exit_scheduler() {
     });
 
     assert_eq!(counter_clone.load(Ordering::SeqCst), 50 * 10);
+}
+
+#[test]
+#[should_panic]
+fn context_switches_outside_execution() {
+    shuttle::context_switches();
+}
+
+#[test]
+fn context_switches_atomic() {
+    // The current implementation makes the following context switches:
+    // 1 initial
+    // 2 spawns
+    // 2 joins
+    // 2 thread terminations
+    // 4 `fetch_add` (one before and one after each)
+    const EXPECTED_CONTEXT_SWITCHES: usize = 11;
+
+    check_dfs(
+        move || {
+            let mut threads = vec![];
+            let counter = Arc::new(shuttle::sync::atomic::AtomicUsize::new(0));
+
+            assert_eq!(shuttle::context_switches(), 1);
+
+            for _ in 0..2 {
+                let counter = Arc::clone(&counter);
+
+                threads.push(thread::spawn(move || {
+                    let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
+
+                    // We saw the initial context switch, the spawn and first context switch for each `fetch_add`,
+                    // and the second context switch after the `fetch_add` of this thread.
+                    assert!(shuttle::context_switches() >= 2 + 2 * count);
+
+                    // We did not see the last context switch of this thread.
+                    assert!(shuttle::context_switches() < EXPECTED_CONTEXT_SWITCHES);
+                }));
+            }
+
+            for thread in threads {
+                thread.join().unwrap();
+            }
+
+            assert_eq!(shuttle::context_switches(), EXPECTED_CONTEXT_SWITCHES);
+        },
+        None,
+    );
+}
+
+#[test]
+fn context_switches_mutex() {
+    use shuttle::sync::Mutex;
+
+    check_dfs(
+        move || {
+            let mutex1 = Arc::new(Mutex::new(0));
+            let mutex2 = Arc::new(Mutex::new(0));
+
+            assert_eq!(shuttle::context_switches(), 1);
+
+            {
+                let mutex1 = mutex1.lock().unwrap();
+                assert_eq!(shuttle::context_switches(), 2);
+                {
+                    let mutex2 = mutex2.lock().unwrap();
+                    assert_eq!(shuttle::context_switches(), 3);
+                    drop(mutex2);
+                }
+                assert_eq!(shuttle::context_switches(), 4);
+                drop(mutex1);
+            }
+
+            assert_eq!(shuttle::context_switches(), 5);
+        },
+        None,
+    );
 }
