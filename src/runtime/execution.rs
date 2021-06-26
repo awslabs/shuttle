@@ -156,6 +156,8 @@ pub(crate) struct ExecutionState {
     next_task: ScheduledTask,
     // whether the current task has asked to yield
     has_yielded: bool,
+    // the number of scheduling decisions made so far
+    context_switches: usize,
 
     scheduler: Rc<RefCell<dyn Scheduler>>,
     current_schedule: Schedule,
@@ -198,6 +200,7 @@ impl ExecutionState {
             current_task: ScheduledTask::None,
             next_task: ScheduledTask::None,
             has_yielded: false,
+            context_switches: 0,
             scheduler,
             current_schedule: initial_schedule,
             current_span_entered: None,
@@ -346,6 +349,10 @@ impl ExecutionState {
         self.tasks.get_mut(id.0).unwrap()
     }
 
+    pub(crate) fn context_switches() -> usize {
+        Self::with(|state| state.context_switches)
+    }
+
     /// Run the scheduler to choose the next task to run. `has_yielded` should be false if the
     /// scheduler is being invoked from within a running task, in which case `schedule` should not
     /// panic.
@@ -355,6 +362,8 @@ impl ExecutionState {
         if self.next_task != ScheduledTask::None {
             return;
         }
+
+        self.context_switches += 1;
 
         match self.config.max_steps {
             MaxSteps::None => {}

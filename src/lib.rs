@@ -371,3 +371,13 @@ where
     let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
 }
+
+/// The number of context switches that happened so far in the current Shuttle execution.
+///
+/// Note that this is the number of *possible* context switches, i.e., including times when the
+/// scheduler decided to continue with the same task.
+///
+/// Panics if called outside of a Shuttle execution.
+pub fn context_switches() -> usize {
+    crate::runtime::execution::ExecutionState::context_switches()
+}
