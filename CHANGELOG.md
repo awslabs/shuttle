@@ -1,3 +1,11 @@
+# 0.0.6 (July 8, 2021)
+
+* Add support for `std::sync::atomic` (#33)
+* Add `shuttle::context_switches` to get a logical clock for an execution (#37)
+* Track causality between threads (#38)
+* Better handling for double panics and poisoned locks (#30, #40)
+* Add option to not persist failures (#34)
+
 # 0.0.5 (June 11, 2021)
 
 * Fix a performance regression with `tracing` introduced by #24 (#31)
