@@ -227,11 +227,12 @@ impl ExecutionState {
     where
         F: FnOnce(&mut ExecutionState) -> T,
     {
-        EXECUTION_STATE.with(|cell| f(&mut *cell.borrow_mut()))
+        Self::try_with(f).expect("Shuttle internal error: cannot access ExecutionState. are you trying to access a Shuttle primitive from outside a Shuttle test?")
     }
 
     /// Like `with`, but returns None instead of panicing if there is no current ExecutionState or
     /// if the current ExecutionState is already borrowed.
+    #[inline]
     pub(crate) fn try_with<F, T>(f: F) -> Option<T>
     where
         F: FnOnce(&mut ExecutionState) -> T,
