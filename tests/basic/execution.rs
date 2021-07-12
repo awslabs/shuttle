@@ -235,3 +235,12 @@ fn context_switches_mutex() {
         None,
     );
 }
+
+/// Check that we get a good failure message if accessing a Shuttle primitive from outside an
+/// execution.
+#[test]
+#[should_panic(expected = "are you trying to access a Shuttle primitive from outside a Shuttle test?")]
+fn failure_outside_execution() {
+    let lock = shuttle::sync::Mutex::new(0u64);
+    let _ = lock.lock().unwrap();
+}
