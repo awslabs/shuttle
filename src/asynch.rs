@@ -96,6 +96,15 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.future.as_mut().poll(cx) {
             Poll::Ready(result) => {
+                // Run thread-local destructors before publishing the result.
+                // See `pop_local` for details on why this loop looks this slightly funky way.
+                // TODO: thread locals and futures don't mix well right now. each task gets its own
+                //       thread local storage, but real async code might know that its executor is
+                //       single-threaded and so use TLS to share objects across all tasks.
+                while let Some(local) = ExecutionState::with(|state| state.current_mut().pop_local()) {
+                    drop(local);
+                }
+
                 *self.result.lock().unwrap() = Some(Ok(result));
 
                 // Unblock our waiter if we have one
