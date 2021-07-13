@@ -10,10 +10,11 @@ use rand_pcg::Pcg64Mcg;
 /// A scheduler that implements the Probabilistic Concurrency Testing (PCT) algorithm.
 ///
 /// The PCT algorithm comes from the paper "A Randomized Scheduler with Probabilistic Guarantees of
-/// Finding Bugs", Burckhardt et al, ASPLOS 2010. This implementation follows the one in Coyote
-/// (https://github.com/microsoft/coyote/blob/master/Source/Core/SystematicTesting/Strategies/Probabilistic/PCTStrategy.cs)
+/// Finding Bugs", Burckhardt et al, ASPLOS 2010. This implementation follows the one in [Coyote]
 /// which differs slightly from the paper (see notes in `next_task`) and supports dynamically
 /// determining the bound on the number of steps.
+///
+/// [Coyote]: https://github.com/microsoft/coyote/blob/master/Source/Core/SystematicTesting/Strategies/Probabilistic/PCTStrategy.cs
 #[derive(Debug)]
 pub struct PctScheduler {
     max_iterations: usize,
