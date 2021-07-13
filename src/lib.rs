@@ -394,3 +394,44 @@ pub fn my_clock() -> crate::runtime::task::clock::VectorClock {
 pub fn get_clock(task_id: crate::runtime::task::TaskId) -> crate::runtime::task::clock::VectorClock {
     crate::runtime::execution::ExecutionState::with(|state| state.get_clock(task_id).clone())
 }
+
+/// Declare a new thread local storage key of type [`LocalKey`](crate::thread::LocalKey).
+#[macro_export]
+macro_rules! thread_local {
+    // empty (base case for the recursion)
+    () => {};
+
+    // process multiple declarations with a const initializer
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = const { $init:expr }; $($rest:tt)*) => (
+        $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
+        $crate::thread_local!($($rest)*);
+    );
+
+    // handle a single declaration with a const initializer
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = const { $init:expr }) => (
+        $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
+    );
+
+    // process multiple declarations
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr; $($rest:tt)*) => (
+        $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
+        $crate::thread_local!($($rest)*);
+    );
+
+    // handle a single declaration
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr) => (
+        $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
+    );
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __thread_local_inner {
+    ($(#[$attr:meta])* $vis:vis $name:ident, $t:ty, $init:expr) => {
+        $(#[$attr])* $vis const $name: $crate::thread::LocalKey<$t> =
+            $crate::thread::LocalKey {
+                init: || { $init },
+                _p: std::marker::PhantomData,
+            };
+    }
+}
