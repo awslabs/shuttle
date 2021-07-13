@@ -55,3 +55,13 @@ jobs:
         run: rustup update stable
       - name: cargo bench
         run: cargo bench
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust
+        run: rustup update stable
+      - name: cargo doc
+        run: cargo doc --no-deps
