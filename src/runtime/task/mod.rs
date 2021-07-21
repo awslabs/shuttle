@@ -2,10 +2,13 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::{ContinuationPool, PooledContinuation};
+use crate::thread::LocalKey;
 use bitvec::prelude::*;
 use bitvec::vec::BitVec;
 use futures::{task::Waker, Future};
+use std::any::Any;
 use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::task::Context;
@@ -53,6 +56,8 @@ pub(crate) struct Task {
     woken_by_self: bool,
 
     name: Option<String>,
+
+    local_storage: LocalMap,
 }
 
 impl Task {
@@ -83,6 +88,7 @@ impl Task {
             waker,
             woken_by_self: false,
             name,
+            local_storage: LocalMap::new(),
         }
     }
 
@@ -201,6 +207,39 @@ impl Task {
     pub(crate) fn name(&self) -> Option<String> {
         self.name.clone()
     }
+
+    /// Retrieve a reference to the given thread-local storage slot.
+    ///
+    /// Returns Some(Err(_)) if the slot has already been destructed. Returns None if the slot has
+    /// not yet been initialized.
+    pub(crate) fn local<T: 'static>(&self, key: &'static LocalKey<T>) -> Option<Result<&T, AlreadyDestructedError>> {
+        self.local_storage.get(key)
+    }
+
+    /// Initialize the given thread-local storage slot with a new value.
+    ///
+    /// Panics if the slot has already been initialized.
+    pub(crate) fn init_local<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
+        self.local_storage.init(key, value)
+    }
+
+    /// Return ownership of the next still-initialized thread-local storage slot, to be used when
+    /// running thread-local storage destructors.
+    ///
+    /// TLS destructors are a little tricky:
+    /// 1. Their code can perform synchronization operations (and so require Shuttle to call back
+    ///    into ExecutionState), so we can't drop them from within an ExecutionState borrow. Instead
+    ///    we move the contents of a slot to the caller to be dropped outside the borrow.
+    /// 2. It's valid for destructors to read other TLS slots, although destructor order is
+    ///    undefined. This also means it's valid for a destructor to *initialize* another TLS slot.
+    ///    To make this work, we run the destructors incrementally, so one destructor can initialize
+    ///    another slot that just gets added via `init_local` like normal, and then will be
+    ///    available to be popped on a future call to `pop_local`. To prevent an infinite loop, we
+    ///    forbid *reinitializing* a TLS slot whose destructor has already run, or is currently
+    ///    being run.
+    pub(crate) fn pop_local(&mut self) -> Option<Box<dyn Any>> {
+        self.local_storage.pop()
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -285,3 +324,68 @@ impl Debug for TaskSet {
         write!(f, "}}")
     }
 }
+
+/// A unique identifier for a [`LocalKey`](crate::thread::LocalKey)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LocalKeyId(usize);
+
+impl LocalKeyId {
+    fn new<T: 'static>(key: &'static LocalKey<T>) -> Self {
+        Self(key as *const _ as usize)
+    }
+}
+
+/// A map of thread-local storage values.
+///
+/// We remember the insertion order into the storage HashMap so that destruction is deterministic.
+/// Values are Option<_> because we need to be able to incrementally destruct them, as it's valid
+/// for TLS destructors to initialize new TLS slots. When a slot is destructed, its key is removed
+/// from `order` and its value is replaced with None.
+struct LocalMap {
+    locals: HashMap<LocalKeyId, Option<Box<dyn Any>>>,
+    order: VecDeque<LocalKeyId>,
+}
+
+impl LocalMap {
+    fn new() -> Self {
+        Self {
+            locals: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get<T: 'static>(&self, key: &'static LocalKey<T>) -> Option<Result<&T, AlreadyDestructedError>> {
+        self.locals.get(&LocalKeyId::new(key)).map(|val| {
+            val.as_ref()
+                .map(|val| {
+                    Ok(val
+                        .downcast_ref::<T>()
+                        .expect("local value must downcast to expected type"))
+                })
+                .unwrap_or(Err(AlreadyDestructedError))
+        })
+    }
+
+    fn init<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
+        let key = LocalKeyId::new(key);
+        let result = self.locals.insert(key, Some(Box::new(value)));
+        assert!(result.is_none(), "cannot reinitialize a TLS slot");
+        self.order.push_back(key);
+    }
+
+    /// Return ownership of the next still-initialized TLS slot.
+    fn pop(&mut self) -> Option<Box<dyn Any>> {
+        let key = self.order.pop_front()?;
+        let value = self
+            .locals
+            .get_mut(&key)
+            .expect("keys in `order` must exist")
+            .take()
+            .expect("keys in `order` must not yet be destructed");
+        Some(value)
+    }
+}
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub(crate) struct AlreadyDestructedError;
