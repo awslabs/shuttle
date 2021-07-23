@@ -103,7 +103,7 @@ impl PortfolioRunner {
     /// a failing execution, this function panics.
     pub fn run<F>(self, f: F)
     where
-        F: Fn() + Send + Sync + Clone + 'static,
+        F: Fn() + Send + Sync + 'static,
     {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum ThreadResult {
@@ -114,13 +114,14 @@ impl PortfolioRunner {
         let (tx, rx) = mpsc::sync_channel::<ThreadResult>(0);
         let stop_signal = Arc::new(AtomicBool::new(false));
         let config = self.config;
+        let f = Arc::new(f);
 
         let threads = self
             .schedulers
             .into_iter()
             .enumerate()
             .map(|(i, scheduler)| {
-                let f = f.clone();
+                let f = Arc::clone(&f);
                 let tx = tx.clone();
                 let stop_signal = stop_signal.clone();
                 let config = config.clone();
@@ -131,7 +132,7 @@ impl PortfolioRunner {
                     let runner = Runner::new(scheduler, config);
 
                     span!(Level::INFO, "job", i).in_scope(|| {
-                        let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| runner.run(f)));
+                        let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| runner.run(move || f())));
 
                         match ret {
                             Ok(_) => tx.send(ThreadResult::Passed),
