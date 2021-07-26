@@ -182,6 +182,7 @@
 
 pub mod future;
 pub mod hint;
+pub mod lazy_static;
 pub mod rand;
 pub mod sync;
 pub mod thread;
@@ -413,4 +414,65 @@ macro_rules! __thread_local_inner {
                 _p: std::marker::PhantomData,
             };
     }
+}
+
+/// Declare a new [lazy static value](crate::lazy_static::Lazy), like the `lazy_static` crate.
+// These macros are copied from the lazy_static crate.
+#[macro_export]
+macro_rules! lazy_static {
+    ($(#[$attr:meta])* static ref $N:ident : $T:ty = $e:expr; $($t:tt)*) => {
+        // use `()` to explicitly forward the information about private items
+        $crate::__lazy_static_internal!($(#[$attr])* () static ref $N : $T = $e; $($t)*);
+    };
+    ($(#[$attr:meta])* pub static ref $N:ident : $T:ty = $e:expr; $($t:tt)*) => {
+        $crate::__lazy_static_internal!($(#[$attr])* (pub) static ref $N : $T = $e; $($t)*);
+    };
+    ($(#[$attr:meta])* pub ($($vis:tt)+) static ref $N:ident : $T:ty = $e:expr; $($t:tt)*) => {
+        $crate::__lazy_static_internal!($(#[$attr])* (pub ($($vis)+)) static ref $N : $T = $e; $($t)*);
+    };
+    () => ()
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __lazy_static_internal {
+    // optional visibility restrictions are wrapped in `()` to allow for
+    // explicitly passing otherwise implicit information about private items
+    ($(#[$attr:meta])* ($($vis:tt)*) static ref $N:ident : $T:ty = $e:expr; $($t:tt)*) => {
+        $crate::__lazy_static_internal!(@MAKE TY, $(#[$attr])*, ($($vis)*), $N);
+        $crate::__lazy_static_internal!(@TAIL, $N : $T = $e);
+        $crate::lazy_static!($($t)*);
+    };
+    (@TAIL, $N:ident : $T:ty = $e:expr) => {
+        impl ::std::ops::Deref for $N {
+            type Target = $T;
+            fn deref(&self) -> &$T {
+                #[inline(always)]
+                fn __static_ref_initialize() -> $T { $e }
+
+                #[inline(always)]
+                fn __stability() -> &'static $T {
+                    static LAZY: $crate::lazy_static::Lazy<$T> =
+                        $crate::lazy_static::Lazy {
+                            cell: $crate::sync::Once::new(),
+                            init: __static_ref_initialize,
+                            _p: std::marker::PhantomData,
+                        };
+                    LAZY.get()
+                }
+                __stability()
+            }
+        }
+    };
+    // `vis` is wrapped in `()` to prevent parsing ambiguity
+    (@MAKE TY, $(#[$attr:meta])*, ($($vis:tt)*), $N:ident) => {
+        #[allow(missing_copy_implementations)]
+        #[allow(non_camel_case_types)]
+        #[allow(dead_code)]
+        $(#[$attr])*
+        $($vis)* struct $N {__private_field: ()}
+        #[doc(hidden)]
+        $($vis)* static $N: $N = $N {__private_field: ()};
+    };
+    () => ()
 }

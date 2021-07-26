@@ -5,6 +5,7 @@ mod condvar;
 mod config;
 mod dfs;
 mod execution;
+mod lazy_static;
 mod metrics;
 mod mpsc;
 mod mutex;
