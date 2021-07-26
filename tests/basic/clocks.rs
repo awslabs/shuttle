@@ -1,11 +1,9 @@
-use shuttle::sync::{
-    atomic::{AtomicBool, AtomicU32},
-    mpsc::{channel, sync_channel},
-    Barrier, Condvar, Mutex, RwLock,
-};
+use shuttle::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use shuttle::sync::mpsc::{channel, sync_channel};
+use shuttle::sync::{Barrier, Condvar, Mutex, Once, RwLock};
 use shuttle::{check_dfs, check_pct, thread};
 use std::collections::HashSet;
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::Arc;
 use test_env_log::test;
 
 pub fn me() -> usize {
@@ -15,7 +13,12 @@ pub fn me() -> usize {
 // TODO Maybe make this a macro so backtraces are more informative
 pub fn check_clock(f: impl Fn(usize, u32) -> bool) {
     for (i, &c) in shuttle::my_clock().iter().enumerate() {
-        assert!(f(i, c));
+        assert!(
+            f(i, c),
+            "clock {:?} doesn't satisfy predicate at {}",
+            shuttle::my_clock(),
+            i
+        );
     }
 }
 
@@ -436,4 +439,38 @@ fn clock_fetch_update() {
         },
         None,
     );
+}
+
+fn clock_once(num_threads: usize) {
+    let once = Arc::new(Once::new());
+    let init = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let threads = (0..num_threads)
+        .map(|_| {
+            let once = Arc::clone(&once);
+            let init = Arc::clone(&init);
+            thread::spawn(move || {
+                check_clock(|i, c| (c > 0) == (i == 0));
+                once.call_once(|| init.store(me(), std::sync::atomic::Ordering::SeqCst));
+                let who_inited = init.load(std::sync::atomic::Ordering::SeqCst);
+                // should have inhaled the clock of the thread that inited the Once, but might also
+                // have inhaled the clocks of threads that we were racing with for initialization
+                check_clock(|i, c| !(i == who_inited || i == 0 || i == me()) || c > 0);
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for thd in threads {
+        thd.join().unwrap();
+    }
+}
+
+#[test]
+fn clock_once_dfs() {
+    check_dfs(|| clock_once(2), None);
+}
+
+#[test]
+fn clock_once_pct() {
+    check_pct(|| clock_once(20), 10_000, 3);
 }

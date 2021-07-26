@@ -1,4 +1,5 @@
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::{ContinuationPool, PooledContinuation};
@@ -8,7 +9,6 @@ use bitvec::vec::BitVec;
 use futures::{task::Waker, Future};
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::task::Context;
@@ -57,7 +57,7 @@ pub(crate) struct Task {
 
     name: Option<String>,
 
-    local_storage: LocalMap,
+    local_storage: StorageMap,
 }
 
 impl Task {
@@ -88,7 +88,7 @@ impl Task {
             waker,
             woken_by_self: false,
             name,
-            local_storage: LocalMap::new(),
+            local_storage: StorageMap::new(),
         }
     }
 
@@ -213,14 +213,14 @@ impl Task {
     /// Returns Some(Err(_)) if the slot has already been destructed. Returns None if the slot has
     /// not yet been initialized.
     pub(crate) fn local<T: 'static>(&self, key: &'static LocalKey<T>) -> Option<Result<&T, AlreadyDestructedError>> {
-        self.local_storage.get(key)
+        self.local_storage.get(key.into())
     }
 
     /// Initialize the given thread-local storage slot with a new value.
     ///
     /// Panics if the slot has already been initialized.
     pub(crate) fn init_local<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
-        self.local_storage.init(key, value)
+        self.local_storage.init(key.into(), value)
     }
 
     /// Return ownership of the next still-initialized thread-local storage slot, to be used when
@@ -325,67 +325,8 @@ impl Debug for TaskSet {
     }
 }
 
-/// A unique identifier for a [`LocalKey`](crate::thread::LocalKey)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct LocalKeyId(usize);
-
-impl LocalKeyId {
-    fn new<T: 'static>(key: &'static LocalKey<T>) -> Self {
-        Self(key as *const _ as usize)
+impl<T: 'static> From<&'static LocalKey<T>> for StorageKey {
+    fn from(key: &'static LocalKey<T>) -> Self {
+        Self(key as *const _ as usize, 0x1)
     }
 }
-
-/// A map of thread-local storage values.
-///
-/// We remember the insertion order into the storage HashMap so that destruction is deterministic.
-/// Values are Option<_> because we need to be able to incrementally destruct them, as it's valid
-/// for TLS destructors to initialize new TLS slots. When a slot is destructed, its key is removed
-/// from `order` and its value is replaced with None.
-struct LocalMap {
-    locals: HashMap<LocalKeyId, Option<Box<dyn Any>>>,
-    order: VecDeque<LocalKeyId>,
-}
-
-impl LocalMap {
-    fn new() -> Self {
-        Self {
-            locals: HashMap::new(),
-            order: VecDeque::new(),
-        }
-    }
-
-    fn get<T: 'static>(&self, key: &'static LocalKey<T>) -> Option<Result<&T, AlreadyDestructedError>> {
-        self.locals.get(&LocalKeyId::new(key)).map(|val| {
-            val.as_ref()
-                .map(|val| {
-                    Ok(val
-                        .downcast_ref::<T>()
-                        .expect("local value must downcast to expected type"))
-                })
-                .unwrap_or(Err(AlreadyDestructedError))
-        })
-    }
-
-    fn init<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
-        let key = LocalKeyId::new(key);
-        let result = self.locals.insert(key, Some(Box::new(value)));
-        assert!(result.is_none(), "cannot reinitialize a TLS slot");
-        self.order.push_back(key);
-    }
-
-    /// Return ownership of the next still-initialized TLS slot.
-    fn pop(&mut self) -> Option<Box<dyn Any>> {
-        let key = self.order.pop_front()?;
-        let value = self
-            .locals
-            .get_mut(&key)
-            .expect("keys in `order` must exist")
-            .take()
-            .expect("keys in `order` must not yet be destructed");
-        Some(value)
-    }
-}
-
-#[derive(Debug)]
-#[non_exhaustive]
-pub(crate) struct AlreadyDestructedError;

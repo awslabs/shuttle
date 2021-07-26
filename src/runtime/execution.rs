@@ -1,4 +1,5 @@
 use crate::runtime::failure::{init_panic_hook, persist_failure, persist_task_failure};
+use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{Task, TaskId, TaskState, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
@@ -168,6 +169,9 @@ pub(crate) struct ExecutionState {
     // the number of scheduling decisions made so far
     context_switches: usize,
 
+    // static values for the current execution
+    storage: StorageMap,
+
     scheduler: Rc<RefCell<dyn Scheduler>>,
     current_schedule: Schedule,
 
@@ -210,6 +214,7 @@ impl ExecutionState {
             next_task: ScheduledTask::None,
             has_yielded: false,
             context_switches: 0,
+            storage: StorageMap::new(),
             scheduler,
             current_schedule: initial_schedule,
             current_span_entered: None,
@@ -317,6 +322,8 @@ impl ExecutionState {
                 .expect("couldn't cleanup a future");
         }
 
+        while Self::with(|state| state.storage.pop()).is_some() {}
+
         #[cfg(debug_assertions)]
         Self::with(|state| state.has_cleaned_up = true);
     }
@@ -421,6 +428,16 @@ impl ExecutionState {
         Self::with(|state| state.context_switches)
     }
 
+    pub(crate) fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
+        self.storage
+            .get(key.into())
+            .map(|result| result.expect("global storage is never destructed"))
+    }
+
+    pub(crate) fn init_storage<K: Into<StorageKey>, T: 'static>(&mut self, key: K, value: T) {
+        self.storage.init(key.into(), value);
+    }
+
     pub(crate) fn get_clock(&self, id: TaskId) -> &VectorClock {
         &self.tasks.get(id.0).unwrap().clock
     }
@@ -429,21 +446,21 @@ impl ExecutionState {
         &mut self.tasks.get_mut(id.0).unwrap().clock
     }
 
-    // Increment the current thread's clock entry and update its clock with the one provided.
+    /// Increment the current thread's clock entry and update its clock with the one provided.
     pub(crate) fn update_clock(&mut self, clock: &VectorClock) {
         let task = self.current_mut();
         task.clock.increment(task.id);
         task.clock.update(clock);
     }
 
-    // Increment the current thread's clock and return a shared reference to it
+    /// Increment the current thread's clock and return a shared reference to it
     pub(crate) fn increment_clock(&mut self) -> &VectorClock {
         let task = self.current_mut();
         task.clock.increment(task.id);
         &task.clock
     }
 
-    // Increment the current thread's clock and return a mutable reference to it
+    /// Increment the current thread's clock and return a mutable reference to it
     pub(crate) fn increment_clock_mut(&mut self) -> &mut VectorClock {
         let task = self.current_mut();
         task.clock.increment(task.id);
