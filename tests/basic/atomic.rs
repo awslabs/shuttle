@@ -30,7 +30,6 @@ macro_rules! int_tests {
                                 // A writer's clock is not affected by readers
                                 assert_eq!(me(), 1usize);
                                 check_clock(|i, c| (c > 0) == (i == 0 || i == 1));
-                                ()
                             })
                         };
                         let thd2 = {
