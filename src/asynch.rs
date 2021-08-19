@@ -22,7 +22,9 @@ where
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
     let stack_size = ExecutionState::with(|s| s.config.stack_size);
     let task_id = ExecutionState::spawn_future(Wrapper::new(fut, std::sync::Arc::clone(&result)), stack_size, None);
-    // TODO I think we need to yield here to give the spawned task a chance to execute before the spawner continues
+
+    thread::switch();
+
     JoinHandle { task_id, result }
 }
 
@@ -47,6 +49,17 @@ impl<T> JoinHandle<T> {
 pub enum JoinError {
     /// Task was aborted
     Cancelled,
+}
+
+impl<T> Drop for JoinHandle<T> {
+    fn drop(&mut self) {
+        ExecutionState::try_with(|state| {
+            if !state.is_finished() {
+                let task = state.get_mut(self.task_id);
+                task.detach();
+            }
+        });
+    }
 }
 
 impl<T> Future for JoinHandle<T> {
@@ -129,7 +142,7 @@ where
 {
     let handle = spawn(future);
 
-    thread::switch(); // Required to allow Execution to spawn the future
+    // NOTE: A switch here is not necessary, since spawn calls thread::switch()
 
     ExecutionState::with(|state| {
         let me = state.current().id();

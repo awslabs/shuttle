@@ -28,6 +28,10 @@ unsafe fn raw_waker_clone(data: *const ()) -> RawWaker {
 unsafe fn raw_waker_wake(data: *const ()) {
     let task_id = TaskId::from(data as usize);
     ExecutionState::with(|state| {
+        if state.is_finished() {
+            return;
+        }
+
         let waiter = state.get_mut(task_id);
 
         if waiter.finished() {

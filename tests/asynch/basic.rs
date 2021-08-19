@@ -1,3 +1,4 @@
+use futures::try_join;
 use shuttle::sync::Mutex;
 use shuttle::{asynch, check_dfs, check_random, scheduler::PctScheduler, thread, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -207,4 +208,106 @@ fn async_counter_pct() {
     let scheduler = PctScheduler::new(2, 5000);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(async_counter);
+}
+
+async fn do_err(e: bool) -> Result<(), ()> {
+    if e {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
+// Check that try_join on Shuttle futures works as expected
+#[test]
+fn test_try_join() {
+    check_dfs(
+        || {
+            let f2 = do_err(true);
+            let f1 = do_err(false);
+            let res = asynch::block_on(async { try_join!(f1, f2) });
+            assert!(res.is_err());
+        },
+        None,
+    );
+}
+
+// Check that when we block on a future, it gets executed in both executions
+// (block_on task finishing first and main task finishing first).
+#[test]
+fn block_shuttle_future() {
+    let orderings = Arc::new(AtomicUsize::new(0));
+    let async_accesses = Arc::new(AtomicUsize::new(0));
+    let orderings_clone = orderings.clone();
+    let async_accesses_clone = async_accesses.clone();
+
+    check_dfs(
+        move || {
+            orderings.fetch_add(1, Ordering::SeqCst);
+            let async_accesses = async_accesses.clone();
+            asynch::block_on(async move {
+                async_accesses.fetch_add(1, Ordering::SeqCst);
+            });
+        },
+        None,
+    );
+
+    assert_eq!(2, orderings_clone.load(Ordering::SeqCst));
+    assert_eq!(2, async_accesses_clone.load(Ordering::SeqCst));
+}
+
+// Check that a task may not run if its JoinHandle is dropped
+#[test]
+fn drop_shuttle_future() {
+    let orderings = Arc::new(AtomicUsize::new(0));
+    let async_accesses = Arc::new(AtomicUsize::new(0));
+    let orderings_clone = orderings.clone();
+    let async_accesses_clone = async_accesses.clone();
+
+    check_dfs(
+        move || {
+            orderings.fetch_add(1, Ordering::SeqCst);
+            let async_accesses = async_accesses.clone();
+            asynch::spawn(async move {
+                async_accesses.fetch_add(1, Ordering::SeqCst);
+            });
+        },
+        None,
+    );
+
+    assert_eq!(2, orderings_clone.load(Ordering::SeqCst));
+    assert_eq!(1, async_accesses_clone.load(Ordering::SeqCst));
+}
+
+// Same as `drop_shuttle_future`, but the inner task yields first, and might be cancelled part way through
+#[test]
+fn drop_shuttle_yield_future() {
+    let orderings = Arc::new(AtomicUsize::new(0));
+    let async_accesses = Arc::new(AtomicUsize::new(0));
+    let post_yield_accesses = Arc::new(AtomicUsize::new(0));
+    let orderings_clone = orderings.clone();
+    let async_accesses_clone = async_accesses.clone();
+    let post_yield_accesses_clone = post_yield_accesses.clone();
+
+    check_dfs(
+        move || {
+            orderings.fetch_add(1, Ordering::SeqCst);
+            let async_accesses = async_accesses.clone();
+            let post_yield_accesses = post_yield_accesses.clone();
+            asynch::spawn(async move {
+                async_accesses.fetch_add(1, Ordering::SeqCst);
+                asynch::yield_now().await;
+                post_yield_accesses.fetch_add(1, Ordering::SeqCst);
+            });
+        },
+        None,
+    );
+
+    // The three orderings of main task M and spawned task S are:
+    // (1) M runs and finished, then S gets dropped and doesn't run
+    // (2) M runs, S runs until yield point, then M finishes and S is dropped
+    // (3) M runs, S runs until yield point, S runs again and finished, then M finishes
+    assert_eq!(3, orderings_clone.load(Ordering::SeqCst));
+    assert_eq!(2, async_accesses_clone.load(Ordering::SeqCst));
+    assert_eq!(1, post_yield_accesses_clone.load(Ordering::SeqCst));
 }

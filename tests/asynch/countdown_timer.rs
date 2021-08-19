@@ -52,12 +52,12 @@ fn timer_simple() {
             // Start 3 timers with delays 1,2,3 and values 10,20,40
             let timera = CountdownTimer::new(1, 10);
             let timerb = CountdownTimer::new(2, 20);
-            let timerc = CountdownTimer::new(4, 40);
+            let timerc = CountdownTimer::new(3, 40);
             let v1 = asynch::spawn(timera); // no need for async block
             let v2 = asynch::spawn(async move { timerb.await });
             let v3 = asynch::spawn(async move { timerc.await });
             // Spawn another task that waits for the timers and checks the return values
-            asynch::spawn(async move {
+            asynch::block_on(async move {
                 let sum = v1.await.unwrap() + v2.await.unwrap() + v3.await.unwrap();
                 assert_eq!(sum, 10 + 20 + 40);
             });
