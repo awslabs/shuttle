@@ -42,6 +42,7 @@ pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 pub(crate) struct Task {
     pub(super) id: TaskId,
     pub(super) state: TaskState,
+    pub(super) detached: bool,
     // We use this to check `block_unless_self_woken` is only called from a Future task
     task_type: TaskType,
 
@@ -87,6 +88,7 @@ impl Task {
             waiter: None,
             waker,
             woken_by_self: false,
+            detached: false,
             name,
             local_storage: LocalMap::new(),
         }
@@ -144,6 +146,10 @@ impl Task {
 
     pub(crate) fn finished(&self) -> bool {
         self.state == TaskState::Finished
+    }
+
+    pub(crate) fn detach(&mut self) {
+        self.detached = true;
     }
 
     pub(crate) fn waker(&self) -> Waker {
