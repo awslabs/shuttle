@@ -197,7 +197,10 @@ impl Task {
     /// waiter should block or not. If false, this task has already finished, and so the waiter need
     /// not block.
     pub(crate) fn set_waiter(&mut self, waiter: TaskId) -> bool {
-        assert!(self.waiter.is_none());
+        assert!(
+            self.waiter.is_none() || self.waiter == Some(waiter),
+            "Task cannot have more than one waiter"
+        );
         if self.finished() {
             false
         } else {

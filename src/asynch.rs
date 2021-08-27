@@ -120,10 +120,12 @@ where
 
                 *self.result.lock().unwrap() = Some(Ok(result));
 
-                // Unblock our waiter if we have one
+                // Unblock our waiter if we have one and it's still alive
                 ExecutionState::with(|state| {
                     if let Some(waiter) = state.current_mut().take_waiter() {
-                        state.get_mut(waiter).unblock();
+                        if !state.get_mut(waiter).finished() {
+                            state.get_mut(waiter).unblock();
+                        }
                     }
                 });
 
