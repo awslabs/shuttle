@@ -1,8 +1,10 @@
-use futures::try_join;
+use futures::{try_join, Future};
 use shuttle::sync::Mutex;
 use shuttle::{asynch, check_dfs, check_random, scheduler::PctScheduler, thread, Runner};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use test_env_log::test;
 
 async fn add(a: u32, b: u32) -> u32 {
@@ -310,4 +312,57 @@ fn drop_shuttle_yield_future() {
     assert_eq!(3, orderings_clone.load(Ordering::SeqCst));
     assert_eq!(2, async_accesses_clone.load(Ordering::SeqCst));
     assert_eq!(1, post_yield_accesses_clone.load(Ordering::SeqCst));
+}
+
+// This test checks two behaviors. First, it checks that a future can be polled twice
+// without needing to wake up another task. Second, it checks that a waiter can finish
+// before the waitee task.
+#[test]
+fn wake_self_on_join_handle() {
+    check_dfs(
+        || {
+            let yielder = asynch::spawn(async move {
+                asynch::yield_now().await;
+            });
+
+            struct Timeout<F: Future> {
+                inner: Pin<Box<F>>,
+                counter: u8,
+            }
+
+            impl<F> Future for Timeout<F>
+            where
+                F: Future,
+            {
+                type Output = ();
+
+                fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                    if self.counter == 0 {
+                        return Poll::Ready(());
+                    }
+
+                    self.counter -= 1;
+
+                    match self.inner.as_mut().poll(cx) {
+                        Poll::Pending => {
+                            cx.waker().wake_by_ref();
+                            Poll::Pending
+                        }
+                        Poll::Ready(_) => Poll::Ready(()),
+                    }
+                }
+            }
+
+            let wait_on_yield = asynch::spawn(async move {
+                Timeout {
+                    inner: Box::pin(yielder),
+                    counter: 2,
+                }
+                .await
+            });
+
+            drop(wait_on_yield);
+        },
+        None,
+    );
 }
