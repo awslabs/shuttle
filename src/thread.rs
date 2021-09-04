@@ -222,6 +222,10 @@ pub struct LocalKey<T: 'static> {
     pub _p: PhantomData<T>,
 }
 
+// Safety: `LocalKey` implements thread-local storage; each thread sees its own value of the type T.
+unsafe impl<T> Send for LocalKey<T> {}
+unsafe impl<T> Sync for LocalKey<T> {}
+
 impl<T: 'static> std::fmt::Debug for LocalKey<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalKey").finish_non_exhaustive()

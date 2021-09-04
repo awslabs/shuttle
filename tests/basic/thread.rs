@@ -348,4 +348,31 @@ mod thread_local {
             None,
         );
     }
+
+    #[test]
+    fn multiple_accesses() {
+        shuttle::thread_local! {
+            static LOCAL: RefCell<usize> = RefCell::new(0);
+        }
+
+        fn increment() {
+            LOCAL.with(|local| {
+                *local.borrow_mut() += 1;
+            });
+        }
+
+        fn check() {
+            LOCAL.with(|local| {
+                assert_eq!(*local.borrow(), 1);
+            });
+        }
+
+        check_dfs(
+            || {
+                increment();
+                check();
+            },
+            None,
+        )
+    }
 }

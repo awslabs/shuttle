@@ -428,7 +428,7 @@ macro_rules! thread_local {
 #[macro_export]
 macro_rules! __thread_local_inner {
     ($(#[$attr:meta])* $vis:vis $name:ident, $t:ty, $init:expr) => {
-        $(#[$attr])* $vis const $name: $crate::thread::LocalKey<$t> =
+        $(#[$attr])* $vis static $name: $crate::thread::LocalKey<$t> =
             $crate::thread::LocalKey {
                 init: || { $init },
                 _p: std::marker::PhantomData,
