@@ -247,6 +247,12 @@ impl DerefMut for PooledContinuation {
     }
 }
 
+impl std::fmt::Debug for PooledContinuation {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("PooledContinuation").finish()
+    }
+}
+
 // Safety: these aren't sent across real threads
 unsafe impl Send for PooledContinuation {}
 

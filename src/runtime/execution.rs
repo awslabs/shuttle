@@ -1,7 +1,7 @@
 use crate::runtime::failure::{init_panic_hook, persist_failure, persist_task_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::{Task, TaskId, TaskState, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::{Config, MaxSteps};
@@ -62,7 +62,12 @@ impl Execution {
 
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
-            ExecutionState::spawn_thread(f, config.stack_size, None, Some(VectorClock::new()));
+            ExecutionState::spawn_thread(
+                f,
+                config.stack_size,
+                Some("main-thread".to_string()),
+                Some(VectorClock::new()),
+            );
 
             // Run the test to completion
             while self.step(config) {}
@@ -93,21 +98,29 @@ impl Execution {
                     NextStep::Task(Rc::clone(&task.continuation))
                 }
                 ScheduledTask::Finished => {
-                    let task_states = state
-                        .tasks
-                        .iter()
-                        .map(|t| (t.id, t.state, t.detached))
-                        .collect::<SmallVec<[_; DEFAULT_INLINE_TASKS]>>();
-                    if task_states
-                        .iter()
-                        .any(|(_, s, detached)| !detached && *s == TaskState::Blocked)
-                    {
+                    // The scheduler decided we're finished, so there are either no runnable tasks,
+                    // or all runnable tasks are detached and there are no unfinished attached
+                    // tasks. Therefore, it's a deadlock if there are unfinished attached tasks.
+                    if state.tasks.iter().any(|t| !t.finished() && !t.detached) {
+                        let blocked_tasks = state
+                            .tasks
+                            .iter()
+                            .filter(|t| !t.finished())
+                            .map(|t| {
+                                format!(
+                                    "{} (task {}{}{})",
+                                    t.name().unwrap_or_else(|| "<unknown>".to_string()),
+                                    t.id().0,
+                                    if t.detached { ", detached" } else { "" },
+                                    if t.sleeping() { ", pending future" } else { "" },
+                                )
+                            })
+                            .collect::<Vec<_>>();
                         NextStep::Failure(
-                            format!("deadlock! runnable tasks: {:?}", task_states),
+                            format!("deadlock! blocked tasks: [{}]", blocked_tasks.join(", ")),
                             state.current_schedule.clone(),
                         )
                     } else {
-                        debug_assert!(state.tasks.iter().all(|t| t.detached || t.finished()));
                         NextStep::Finished
                     }
                 }
@@ -502,21 +515,21 @@ impl ExecutionState {
             _ => {}
         }
 
-        let mut blocked_attached = false;
+        let mut unfinished_attached = false;
         let runnable = self
             .tasks
             .iter()
-            .inspect(|t| blocked_attached = blocked_attached || (t.blocked() && !t.detached))
+            .inspect(|t| unfinished_attached = unfinished_attached || (!t.finished() && !t.detached))
             .filter(|t| t.runnable())
             .map(|t| t.id)
             .collect::<SmallVec<[_; DEFAULT_INLINE_TASKS]>>();
 
         // We should finish execution when either
         // (1) There are no runnable tasks, or
-        // (2) All runnable tasks have been detached AND there are no blocked attached tasks
-        // If there are some blocked attached tasks and all runnable tasks are detached,
-        // we must run some detached task so that blocked attached tasks may become unblocked.
-        if runnable.is_empty() || (!blocked_attached && runnable.iter().all(|id| self.get(*id).detached)) {
+        // (2) All runnable tasks have been detached AND there are no unfinished attached tasks
+        // If there are some unfinished attached tasks and all runnable tasks are detached, we must
+        // run some detached task to give them a chance to unblock some unfinished attached task.
+        if runnable.is_empty() || (!unfinished_attached && runnable.iter().all(|id| self.get(*id).detached)) {
             self.next_task = ScheduledTask::Finished;
             return Ok(());
         }

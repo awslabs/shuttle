@@ -11,6 +11,7 @@ pub(crate) struct StorageKey(pub usize, pub usize); // (identifier, type)
 /// Values are Option<_> because we need to be able to incrementally destruct them, as it's valid
 /// for TLS destructors to initialize new TLS slots. When a slot is destructed, its key is removed
 /// from `order` and its value is replaced with None.
+#[derive(Debug)]
 pub(crate) struct StorageMap {
     locals: HashMap<StorageKey, Option<Box<dyn Any>>>,
     order: VecDeque<StorageKey>,

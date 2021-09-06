@@ -38,12 +38,7 @@ unsafe fn raw_waker_wake(data: *const ()) {
             return;
         }
 
-        waiter.unblock();
-
-        let current = state.current_mut();
-        if current.id() == task_id {
-            current.set_woken_by_self();
-        }
+        waiter.wake();
     });
 }
 
