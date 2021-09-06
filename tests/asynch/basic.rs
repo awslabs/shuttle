@@ -234,30 +234,6 @@ fn test_try_join() {
     );
 }
 
-// Check that when we block on a future, it gets executed in both executions
-// (block_on task finishing first and main task finishing first).
-#[test]
-fn block_shuttle_future() {
-    let orderings = Arc::new(AtomicUsize::new(0));
-    let async_accesses = Arc::new(AtomicUsize::new(0));
-    let orderings_clone = orderings.clone();
-    let async_accesses_clone = async_accesses.clone();
-
-    check_dfs(
-        move || {
-            orderings.fetch_add(1, Ordering::SeqCst);
-            let async_accesses = async_accesses.clone();
-            asynch::block_on(async move {
-                async_accesses.fetch_add(1, Ordering::SeqCst);
-            });
-        },
-        None,
-    );
-
-    assert_eq!(2, orderings_clone.load(Ordering::SeqCst));
-    assert_eq!(2, async_accesses_clone.load(Ordering::SeqCst));
-}
-
 // Check that a task may not run if its JoinHandle is dropped
 #[test]
 fn drop_shuttle_future() {

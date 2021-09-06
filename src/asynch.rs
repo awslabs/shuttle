@@ -137,29 +137,25 @@ where
 }
 
 /// Run a future to completion on the current thread.
-pub fn block_on<T, F>(future: F) -> T
-where
-    F: Future<Output = T> + Send + 'static,
-    T: Send + 'static,
-{
-    let handle = spawn(future);
+pub fn block_on<F: Future>(future: F) -> F::Output {
+    let mut future = Box::pin(future);
+    let waker = ExecutionState::with(|state| state.current_mut().waker());
+    let cx = &mut Context::from_waker(&waker);
 
-    // NOTE: A switch here is not necessary, since spawn calls thread::switch()
+    thread::switch();
 
-    ExecutionState::with(|state| {
-        let me = state.current().id();
-        let target = state.get_mut(handle.task_id);
-        if target.set_waiter(me) {
-            state.current_mut().block();
+    loop {
+        match future.as_mut().poll(cx) {
+            Poll::Ready(result) => break result,
+            Poll::Pending => {
+                ExecutionState::with(|state| {
+                    state.current_mut().block_unless_self_woken();
+                });
+            }
         }
-    });
 
-    thread::switch(); // Required in case the thread blocked
-
-    let result = handle.result.lock().unwrap().take();
-    result
-        .expect("result should be available to waiter")
-        .expect("task should not fail")
+        thread::switch();
+    }
 }
 
 /// Yields execution back to the scheduler.
