@@ -43,8 +43,6 @@ pub(crate) struct Task {
     pub(super) id: TaskId,
     pub(super) state: TaskState,
     pub(super) detached: bool,
-    // We use this to check `block_unless_self_woken` is only called from a Future task
-    task_type: TaskType,
 
     pub(super) continuation: Rc<RefCell<PooledContinuation>>,
 
@@ -63,14 +61,7 @@ pub(crate) struct Task {
 
 impl Task {
     /// Create a task from a continuation
-    fn new<F>(
-        f: F,
-        stack_size: usize,
-        id: TaskId,
-        task_type: TaskType,
-        name: Option<String>,
-        clock: VectorClock,
-    ) -> Self
+    fn new<F>(f: F, stack_size: usize, id: TaskId, name: Option<String>, clock: VectorClock) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
@@ -82,7 +73,6 @@ impl Task {
         Self {
             id,
             state: TaskState::Runnable,
-            task_type,
             continuation,
             clock,
             waiter: None,
@@ -98,7 +88,7 @@ impl Task {
     where
         F: FnOnce() + Send + 'static,
     {
-        Self::new(f, stack_size, id, TaskType::Thread, name, clock)
+        Self::new(f, stack_size, id, name, clock)
     }
 
     pub(crate) fn from_future<F>(
@@ -126,7 +116,6 @@ impl Task {
             },
             stack_size,
             id,
-            TaskType::Future,
             name,
             clock,
         )
@@ -180,7 +169,6 @@ impl Task {
     /// We also need to handle a special case where a task invoked its own waker, in which case
     /// we should not block the task.
     pub(crate) fn block_unless_self_woken(&mut self) {
-        assert!(self.task_type == TaskType::Future);
         let was_woken_by_self = std::mem::replace(&mut self.woken_by_self, false);
         if !was_woken_by_self {
             self.block();
@@ -256,12 +244,6 @@ pub(crate) enum TaskState {
     Runnable,
     Blocked,
     Finished,
-}
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub(crate) enum TaskType {
-    Thread,
-    Future,
 }
 
 /// A `TaskId` is a unique identifier for a task. `TaskId`s are never reused within a single
