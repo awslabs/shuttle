@@ -5,13 +5,12 @@ use crate::runtime::thread;
 use crate::runtime::thread::continuation::{ContinuationPool, PooledContinuation};
 use crate::thread::LocalKey;
 use bitvec::prelude::*;
-use bitvec::vec::BitVec;
-use futures::{task::Waker, Future};
 use std::any::Any;
 use std::cell::RefCell;
 use std::fmt::Debug;
+use std::future::Future;
 use std::rc::Rc;
-use std::task::Context;
+use std::task::{Context, Waker};
 
 pub(crate) mod clock;
 pub(crate) mod waker;
