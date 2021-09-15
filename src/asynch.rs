@@ -8,7 +8,7 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
-use futures::future::Future;
+use std::future::Future;
 use std::pin::Pin;
 use std::result::Result;
 use std::task::{Context, Poll};
