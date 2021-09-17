@@ -148,9 +148,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
         match future.as_mut().poll(cx) {
             Poll::Ready(result) => break result,
             Poll::Pending => {
-                ExecutionState::with(|state| {
-                    state.current_mut().block_unless_self_woken();
-                });
+                ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
             }
         }
 
