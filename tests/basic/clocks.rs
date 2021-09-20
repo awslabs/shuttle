@@ -1,7 +1,7 @@
 use shuttle::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use shuttle::sync::mpsc::{channel, sync_channel};
 use shuttle::sync::{Barrier, Condvar, Mutex, Once, RwLock};
-use shuttle::{check_dfs, check_pct, thread};
+use shuttle::{check_dfs, check_pct, current, thread};
 use std::collections::HashSet;
 use std::sync::Arc;
 use test_env_log::test;
@@ -12,11 +12,11 @@ pub fn me() -> usize {
 
 // TODO Maybe make this a macro so backtraces are more informative
 pub fn check_clock(f: impl Fn(usize, u32) -> bool) {
-    for (i, &c) in shuttle::my_clock().iter().enumerate() {
+    for (i, &c) in current::clock().iter().enumerate() {
         assert!(
             f(i, c),
             "clock {:?} doesn't satisfy predicate at {}",
-            shuttle::my_clock(),
+            current::clock(),
             i
         );
     }
@@ -298,7 +298,7 @@ fn clock_mpsc_unbounded() {
                 }
             });
             for _ in 0..NUM_MSG {
-                let c1 = shuttle::my_clock().get(1); // save clock of thread 1
+                let c1 = current::clock().get(1); // save clock of thread 1
                 let _ = rx.recv().unwrap();
                 check_clock(|i, c| (i != 1) || (c > c1)); // thread 1's clock increased
             }
@@ -322,11 +322,11 @@ fn clock_mpsc_bounded() {
                 check_clock(|i, c| (c > 0) == (i == 0 || i == 1));
                 tx.send(()).unwrap();
                 // Here, we know the receiver picked up the 1st message, so its clock is nonzero
-                let c1 = shuttle::my_clock().get(2);
+                let c1 = current::clock().get(2);
                 assert!(c1 > 0);
                 tx.send(()).unwrap();
                 // Here, we know that the receiver picked up the 2nd message, so its clock has increased
-                assert!(shuttle::my_clock().get(2) > c1);
+                assert!(current::clock().get(2) > c1);
             });
             thread::spawn(move || {
                 assert_eq!(me(), 2);
@@ -334,11 +334,11 @@ fn clock_mpsc_bounded() {
                 check_clock(|i, c| (c > 0) == (i == 0));
                 rx.recv().unwrap();
                 // The sender has sent a message, so its clock is nonzero
-                let c1 = shuttle::my_clock().get(1);
+                let c1 = current::clock().get(1);
                 assert!(c1 > 0);
                 let _ = rx.recv().unwrap();
                 // The sender has sent another message, so its clock has increased
-                assert!(shuttle::my_clock().get(2) > c1);
+                assert!(current::clock().get(2) > c1);
                 // Receive the remaining messages
                 for _ in 0..BOUND {
                     rx.recv().unwrap();
@@ -360,11 +360,11 @@ fn clock_mpsc_rendezvous() {
                 check_clock(|i, c| (c > 0) == (i == 0));
                 tx.send(()).unwrap();
                 // Since this is a rendezvous channel, and we successfully sent a message, we know about the receiver
-                let c1 = shuttle::my_clock().get(2);
+                let c1 = current::clock().get(2);
                 assert!(c1 > 0);
                 tx.send(()).unwrap();
                 // After the 2nd rendezvous, the receiver's clock has increased
-                assert!(shuttle::my_clock().get(2) > c1);
+                assert!(current::clock().get(2) > c1);
             });
             thread::spawn(move || {
                 assert_eq!(me(), 2);
@@ -372,11 +372,11 @@ fn clock_mpsc_rendezvous() {
                 check_clock(|i, c| (c > 0) == (i == 0));
                 rx.recv().unwrap();
                 // Since we received a message, we know about the sender
-                let c1 = shuttle::my_clock().get(1);
+                let c1 = current::clock().get(1);
                 assert!(c1 > 0);
                 rx.recv().unwrap();
                 // After the 2nd rendezvous, the sender's clock has increased
-                assert!(shuttle::my_clock().get(1) > c1);
+                assert!(current::clock().get(1) > c1);
             });
         },
         None,
