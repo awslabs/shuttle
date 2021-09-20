@@ -1,5 +1,5 @@
 use shuttle::scheduler::RandomScheduler;
-use shuttle::{check, check_dfs, thread, Config, MaxSteps, Runner};
+use shuttle::{check, check_dfs, current, thread, Config, MaxSteps, Runner};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use test_env_log::test;
 // Not actually trying to explore interleavings involving AtomicUsize, just using to smuggle a
@@ -162,7 +162,7 @@ fn max_steps_early_exit_scheduler() {
 #[test]
 #[should_panic]
 fn context_switches_outside_execution() {
-    shuttle::context_switches();
+    current::context_switches();
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn context_switches_atomic() {
             let mut threads = vec![];
             let counter = Arc::new(shuttle::sync::atomic::AtomicUsize::new(0));
 
-            assert_eq!(shuttle::context_switches(), 1);
+            assert_eq!(current::context_switches(), 1);
 
             for _ in 0..2 {
                 let counter = Arc::clone(&counter);
@@ -190,10 +190,10 @@ fn context_switches_atomic() {
 
                     // We saw the initial context switch, the spawn and first context switch for each `fetch_add`,
                     // and the second context switch after the `fetch_add` of this thread.
-                    assert!(shuttle::context_switches() >= 2 + 2 * count);
+                    assert!(current::context_switches() >= 2 + 2 * count);
 
                     // We did not see the last context switch of this thread.
-                    assert!(shuttle::context_switches() < EXPECTED_CONTEXT_SWITCHES);
+                    assert!(current::context_switches() < EXPECTED_CONTEXT_SWITCHES);
                 }));
             }
 
@@ -201,7 +201,7 @@ fn context_switches_atomic() {
                 thread.join().unwrap();
             }
 
-            assert_eq!(shuttle::context_switches(), EXPECTED_CONTEXT_SWITCHES);
+            assert_eq!(current::context_switches(), EXPECTED_CONTEXT_SWITCHES);
         },
         None,
     );
@@ -216,21 +216,21 @@ fn context_switches_mutex() {
             let mutex1 = Arc::new(Mutex::new(0));
             let mutex2 = Arc::new(Mutex::new(0));
 
-            assert_eq!(shuttle::context_switches(), 1);
+            assert_eq!(current::context_switches(), 1);
 
             {
                 let mutex1 = mutex1.lock().unwrap();
-                assert_eq!(shuttle::context_switches(), 2);
+                assert_eq!(current::context_switches(), 2);
                 {
                     let mutex2 = mutex2.lock().unwrap();
-                    assert_eq!(shuttle::context_switches(), 3);
+                    assert_eq!(current::context_switches(), 3);
                     drop(mutex2);
                 }
-                assert_eq!(shuttle::context_switches(), 4);
+                assert_eq!(current::context_switches(), 4);
                 drop(mutex1);
             }
 
-            assert_eq!(shuttle::context_switches(), 5);
+            assert_eq!(current::context_switches(), 5);
         },
         None,
     );

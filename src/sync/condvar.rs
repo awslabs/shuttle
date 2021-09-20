@@ -1,4 +1,4 @@
-use crate::my_clock;
+use crate::current;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
@@ -205,7 +205,7 @@ impl Condvar {
         for (tid, status) in state.waiters.iter_mut() {
             assert_ne!(*tid, me);
 
-            let clock = my_clock();
+            let clock = current::clock();
             match status {
                 CondvarWaitStatus::Waiting => {
                     let mut epochs = VecDeque::new();
@@ -240,7 +240,7 @@ impl Condvar {
 
         for (tid, status) in state.waiters.iter_mut() {
             assert_ne!(*tid, me);
-            *status = CondvarWaitStatus::Broadcast(my_clock());
+            *status = CondvarWaitStatus::Broadcast(current::clock());
             // Note: the task might have been unblocked by a previous signal
             ExecutionState::with(|s| s.get_mut(*tid).unblock());
         }

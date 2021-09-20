@@ -234,7 +234,7 @@ fn mpsc_bounded_sum() {
             let handle = thread::spawn(move || {
                 let mut sum = 0;
                 for _ in 0..5 {
-                    let c1 = shuttle::my_clock().get(1); // save knowledge of sender's clock
+                    let c1 = shuttle::current::clock().get(1); // save knowledge of sender's clock
                     sum += rx.recv().unwrap();
                     check_clock(|i, c| (i != 1) || (c > c1)); // sender's clock must have increased
                 }

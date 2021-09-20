@@ -185,6 +185,7 @@ pub mod rand;
 pub mod sync;
 pub mod thread;
 
+pub mod current;
 pub mod scheduler;
 
 mod runtime;
@@ -370,29 +371,6 @@ where
     let scheduler = ReplayScheduler::new_from_file(path).expect("could not load schedule from file");
     let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
-}
-
-/// The number of context switches that happened so far in the current Shuttle execution.
-///
-/// Note that this is the number of *possible* context switches, i.e., including times when the
-/// scheduler decided to continue with the same task.
-///
-/// Panics if called outside of a Shuttle execution.
-pub fn context_switches() -> usize {
-    crate::runtime::execution::ExecutionState::context_switches()
-}
-
-/// Gets the current thread's vector clock
-pub fn my_clock() -> crate::runtime::task::clock::VectorClock {
-    crate::runtime::execution::ExecutionState::with(|state| {
-        let me = state.current();
-        state.get_clock(me.id()).clone()
-    })
-}
-
-/// Gets the clock for the thread with the given task_id
-pub fn get_clock(task_id: crate::runtime::task::TaskId) -> crate::runtime::task::clock::VectorClock {
-    crate::runtime::execution::ExecutionState::with(|state| state.get_clock(task_id).clone())
 }
 
 /// Declare a new thread local storage key of type [`LocalKey`](crate::thread::LocalKey).
