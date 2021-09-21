@@ -1,3 +1,12 @@
+# 0.0.7 (September 21, 2021)
+
+* Fix a number of issues in support for async tasks (#50, #51, #52, #54)
+* Improve error messages when using Shuttle primitives outside a Shuttle test (#42)
+* Add support for thread local storage (the `thread_local!` macro) (#43, #53)
+* Add support for `Once` cells (#49)
+* Simplify some dependencies to improve build times (#55)
+* Move `context_switches` and `my_clock` functions into a new `current` module (#56)
+
 # 0.0.6 (July 8, 2021)
 
 * Add support for `std::sync::atomic` (#33)
