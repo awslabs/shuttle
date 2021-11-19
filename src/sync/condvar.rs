@@ -178,6 +178,18 @@ impl Condvar {
         mutex.lock()
     }
 
+    /// Blocks the current thread until this condition variable receives a notification and the
+    /// provided condition is false.
+    pub fn wait_while<'a, T, F>(&self, mut guard: MutexGuard<'a, T>, mut condition: F) -> LockResult<MutexGuard<'a, T>>
+    where
+        F: FnMut(&mut T) -> bool,
+    {
+        while condition(&mut *guard) {
+            guard = self.wait(guard)?;
+        }
+        Ok(guard)
+    }
+
     /// Waits on this condition variable for a notification, timing out after a specified duration.
     pub fn wait_timeout<'a, T>(
         &self,
@@ -186,6 +198,25 @@ impl Condvar {
     ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
         // TODO support the timeout case -- this method never times out
         self.wait(guard)
+            .map(|guard| (guard, WaitTimeoutResult(false)))
+            .map_err(|e| PoisonError::new((e.into_inner(), WaitTimeoutResult(false))))
+    }
+
+    /// Waits on this condition variable for a notification, timing out after a specified duration.
+    ///
+    /// The semantics of this function are equivalent to [`wait_while`](Self::wait_while) except
+    /// that the thread will be blocked for roughly no longer than `dur`.
+    pub fn wait_timeout_while<'a, T, F>(
+        &self,
+        guard: MutexGuard<'a, T>,
+        _dur: Duration,
+        condition: F,
+    ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)>
+    where
+        F: FnMut(&mut T) -> bool,
+    {
+        // TODO support the timeout case -- this method never times out
+        self.wait_while(guard, condition)
             .map(|guard| (guard, WaitTimeoutResult(false)))
             .map_err(|e| PoisonError::new((e.into_inner(), WaitTimeoutResult(false))))
     }

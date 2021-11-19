@@ -32,6 +32,31 @@ fn notify_one() {
     )
 }
 
+#[test]
+fn notify_one_while() {
+    check_dfs(
+        || {
+            let lock = Arc::new(Mutex::new(false));
+            let cond = Arc::new(Condvar::new());
+
+            {
+                let lock = Arc::clone(&lock);
+                let cond = Arc::clone(&cond);
+                thread::spawn(move || {
+                    let guard = lock.lock().unwrap();
+                    let guard = cond.wait_while(guard, |flag| !*flag).unwrap();
+                    assert!(*guard);
+                });
+            }
+
+            *lock.lock().unwrap() = true;
+            // Note: it's valid to signal a condvar while not holding the corresponding lock
+            cond.notify_one();
+        },
+        None,
+    )
+}
+
 fn two_workers<F>(signal_thread: F)
 where
     F: Fn(Arc<Condvar>),
@@ -444,6 +469,36 @@ fn notify_one_timeout() {
                     while !*guard {
                         guard = cond.wait_timeout(guard, Duration::from_secs(10)).unwrap().0;
                     }
+                });
+            }
+
+            *lock.lock().unwrap() = true;
+            // Note: it's valid to signal a condvar while not holding the corresponding lock
+            cond.notify_one();
+        },
+        None,
+    )
+}
+
+#[test]
+fn notify_one_while_timeout() {
+    // TODO we don't currently implement timeouts in `wait_timeout`, so this test is identical
+    // TODO to `notify_one_while`.
+    check_dfs(
+        || {
+            let lock = Arc::new(Mutex::new(false));
+            let cond = Arc::new(Condvar::new());
+
+            {
+                let lock = Arc::clone(&lock);
+                let cond = Arc::clone(&cond);
+                thread::spawn(move || {
+                    let guard = lock.lock().unwrap();
+                    let (guard, timeout) = cond
+                        .wait_timeout_while(guard, Duration::from_secs(10), |flag| !*flag)
+                        .unwrap();
+                    assert!(*guard);
+                    assert!(!timeout.timed_out());
                 });
             }
 
