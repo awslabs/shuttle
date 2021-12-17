@@ -4,7 +4,7 @@ use shuttle::{check_dfs, check_random, replay, thread};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use test_env_log::test;
+use test_log::test;
 
 #[test]
 fn notify_one() {

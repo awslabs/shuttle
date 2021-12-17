@@ -4,7 +4,7 @@ use shuttle::{check_dfs, thread, Config, Runner};
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, PoisonError};
-use test_env_log::test;
+use test_log::test;
 
 #[test]
 fn mutex_poison() {

@@ -4,7 +4,7 @@ use shuttle::sync::{Barrier, Condvar, Mutex, Once, RwLock};
 use shuttle::{check_dfs, check_pct, current, thread};
 use std::collections::HashSet;
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 pub fn me() -> usize {
     usize::from(thread::current().id())

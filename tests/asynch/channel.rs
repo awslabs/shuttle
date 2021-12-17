@@ -9,7 +9,7 @@ use futures::channel::{mpsc, oneshot};
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use shuttle::{asynch, check_dfs};
 use std::collections::HashSet;
-use test_env_log::test;
+use test_log::test;
 
 #[test]
 fn oneshot_once_blocking() {

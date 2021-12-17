@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::panic;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 fn basic<F>(num_threads: usize, checker: F)
 where

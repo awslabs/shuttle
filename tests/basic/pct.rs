@@ -5,7 +5,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use test_env_log::test;
+use test_log::test;
 
 const TEST_LENGTH: usize = 20;
 

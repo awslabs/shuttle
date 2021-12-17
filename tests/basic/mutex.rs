@@ -2,7 +2,7 @@ use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Mutex;
 use shuttle::{check, check_random, thread, Runner};
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 #[test]
 fn basic_lock_test() {

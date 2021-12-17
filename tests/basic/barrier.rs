@@ -2,7 +2,7 @@ use shuttle::sync::{mpsc::channel, Barrier};
 use shuttle::{check_dfs, thread};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 #[test]
 fn barrier_simple() {

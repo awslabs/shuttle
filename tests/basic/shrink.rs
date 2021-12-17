@@ -2,7 +2,7 @@ use shuttle::scheduler::{ReplayScheduler, Schedule};
 use shuttle::{thread, Runner};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 fn counter_test() {
     let counter = Arc::new(AtomicI32::new(0));

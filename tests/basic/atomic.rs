@@ -3,13 +3,13 @@ use shuttle::sync::atomic::*;
 use shuttle::{asynch, check_dfs, thread};
 use std::collections::HashSet;
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 macro_rules! int_tests {
     ($name:ident, $ty:ident) => {
         mod $name {
             use super::*;
-            use test_env_log::test;
+            use test_log::test;
 
             #[test]
             fn store_store_reordering() {
@@ -343,7 +343,7 @@ int_tests!(int_usize, AtomicUsize);
 
 mod bool {
     use super::*;
-    use test_env_log::test;
+    use test_log::test;
 
     #[test]
     fn fetch_update() {
@@ -428,7 +428,7 @@ mod bool {
 
 mod ptr {
     use super::*;
-    use test_env_log::test;
+    use test_log::test;
 
     #[test]
     fn fetch_update() {

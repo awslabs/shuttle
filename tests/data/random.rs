@@ -7,7 +7,7 @@ use shuttle::{scheduler::DfsScheduler, Runner};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 fn random_mod_10_equals_7() {
     let mut rng = thread_rng();
