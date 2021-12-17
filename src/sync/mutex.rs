@@ -64,16 +64,14 @@ impl<T> Mutex<T> {
         thread::switch();
 
         let mut state = self.state.borrow_mut();
-        // Once the scheduler has resumed this thread, we are clear to become its holder. We might
-        // not actually be in the waiters, though (if the lock was uncontended).
-        // TODO i think now we are guaranteed to be in the waiters?
+        // Once the scheduler has resumed this thread, we are clear to become its holder.
+        assert!(state.waiters.remove(me));
         assert!(state.holder.is_none());
         state.holder = Some(me);
-        state.waiters.remove(me);
+
         trace!(waiters=?state.waiters, "acquired mutex {:p}", self);
-        // Block all other threads, since we won the race to take this lock
-        // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
-        // TODO never become unblocked), but might need to track more state to avoid this.
+
+        // Re-block all other waiting threads, since we won the race to take this lock
         for tid in state.waiters.iter() {
             ExecutionState::with(|s| s.get_mut(tid).block());
         }
@@ -81,6 +79,7 @@ impl<T> Mutex<T> {
         ExecutionState::with(|s| s.update_clock(&state.clock));
         drop(state);
 
+        // Grab a `MutexGuard` from the inner lock, which we must be able to acquire here
         match self.inner.try_lock() {
             Ok(guard) => Ok(MutexGuard {
                 inner: Some(guard),
@@ -140,11 +139,10 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         self.inner = None;
 
         let mut state = self.mutex.state.borrow_mut();
-
         trace!(waiters=?state.waiters, "releasing mutex {:p}", self.mutex);
-
         state.holder = None;
 
+        // Bail out early if we're panicking so we don't try to touch `ExecutionState`
         if ExecutionState::should_stop() {
             return;
         }
@@ -152,13 +150,6 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
         let me = ExecutionState::me();
-
-        // Update the Mutex clock with the owning thread's clock
-        ExecutionState::with(|s| {
-            let clock = s.increment_clock();
-            state.clock.update(clock);
-        });
-
         state.holder = None;
         for tid in state.waiters.iter() {
             debug_assert_ne!(tid, me);
@@ -168,6 +159,12 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
                 t.unblock();
             });
         }
+
+        // Update the Mutex clock with the releasing thread's clock
+        ExecutionState::with(|s| {
+            let clock = s.increment_clock();
+            state.clock.update(clock);
+        });
 
         drop(state);
 

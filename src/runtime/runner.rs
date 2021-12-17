@@ -63,6 +63,9 @@ impl<S: Scheduler + 'static> Runner<S> {
 
                 let execution = Execution::new(self.scheduler.clone(), schedule);
                 let f = Arc::clone(&f);
+
+                #[allow(clippy::redundant_closure)]
+                // Clippy is wrong: https://github.com/rust-lang/rust-clippy/issues/8073
                 span!(Level::INFO, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
 
                 i += 1;
@@ -132,6 +135,8 @@ impl PortfolioRunner {
                     let runner = Runner::new(scheduler, config);
 
                     span!(Level::INFO, "job", i).in_scope(|| {
+                        #[allow(clippy::redundant_closure)]
+                        // Clippy is wrong: https://github.com/rust-lang/rust-clippy/issues/8073
                         let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| runner.run(move || f())));
 
                         match ret {
