@@ -3,7 +3,7 @@ use shuttle::sync::{mpsc::channel, RwLock};
 use shuttle::{check, check_random, thread, Runner};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 #[test]
 fn reader_concurrency() {

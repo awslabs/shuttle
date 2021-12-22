@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use test_env_log::test;
+use test_log::test;
 
 async fn add(a: u32, b: u32) -> u32 {
     a + b

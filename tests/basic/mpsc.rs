@@ -1,7 +1,7 @@
 use crate::basic::clocks::{check_clock, me};
 use shuttle::sync::mpsc::{channel, sync_channel, RecvError};
 use shuttle::{check_dfs, check_random, thread};
-use test_env_log::test;
+use test_log::test;
 
 // The following tests (prefixed with mpsc_loom) are from the
 // loom test suite; see https://github.com/tokio-rs/loom/blob/master/tests/mpsc.rs

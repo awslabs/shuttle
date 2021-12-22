@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use test_env_log::test;
+use test_log::test;
 
 pub(crate) struct CountdownTimerState<T> {
     remain: u32,

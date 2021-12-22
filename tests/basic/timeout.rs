@@ -4,7 +4,7 @@ use shuttle::Config;
 use shuttle::{thread, Runner};
 use std::sync::Arc;
 use std::time::Duration;
-use test_env_log::test;
+use test_log::test;
 
 /// A scheduler that sleeps between executions to test timeout behavior
 #[derive(Debug)]

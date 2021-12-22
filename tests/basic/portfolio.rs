@@ -3,7 +3,7 @@ use shuttle::sync::Mutex;
 use shuttle::{thread, PortfolioRunner, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 #[test]
 fn portfolio_success() {

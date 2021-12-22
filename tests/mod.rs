@@ -26,6 +26,7 @@ where
             let mut config = Config::new();
             config.failure_persistence = FailurePersistence::Print;
             let runner = Runner::new(scheduler, config);
+            #[allow(clippy::redundant_closure)] // Clippy is wrong: https://github.com/rust-lang/rust-clippy/issues/8073
             runner.run(move || test_func())
         })
         .expect_err("test should panic")
@@ -41,6 +42,8 @@ where
             config.failure_persistence = FailurePersistence::Print;
             let scheduler = ReplayScheduler::new_from_encoded(&schedule);
             let runner = Runner::new(scheduler, config);
+            #[allow(clippy::redundant_closure)]
+            // Clippy is wrong: https://github.com/rust-lang/rust-clippy/issues/8073
             runner.run(move || test_func());
         })
         .expect_err("replay should panic")
@@ -71,6 +74,7 @@ where
             let mut config = Config::new();
             config.failure_persistence = FailurePersistence::File(Some(tempdir_path));
             let runner = Runner::new(scheduler, config);
+            #[allow(clippy::redundant_closure)] // Clippy is wrong: https://github.com/rust-lang/rust-clippy/issues/8073
             runner.run(move || test_func())
         })
         .expect_err("test should panic")
@@ -82,6 +86,7 @@ where
     // to test the `replay_from_file` function directly, so this time we'll default to printing the
     // schedule to stdout.
     let result = {
+        #[allow(clippy::redundant_closure)] // Clippy is wrong: https://github.com/rust-lang/rust-clippy/issues/8073
         panic::catch_unwind(move || replay_from_file(move || test_func(), schedule_file))
             .expect_err("replay should panic")
     };

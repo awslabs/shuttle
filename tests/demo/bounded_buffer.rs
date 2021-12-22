@@ -6,7 +6,7 @@ use shuttle::rand::thread_rng;
 use shuttle::sync::{Condvar, Mutex};
 use shuttle::{check_random, replay, thread};
 use std::sync::Arc;
-use test_env_log::test;
+use test_log::test;
 
 /// This file implements the example from a blog post about Coyote (P#):
 ///   https://cloudblogs.microsoft.com/opensource/2020/07/14/extreme-programming-meets-systematic-testing-using-coyote/
