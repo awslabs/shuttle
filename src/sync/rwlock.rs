@@ -3,6 +3,7 @@ use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, TaskSet};
 use crate::runtime::thread;
 use std::cell::RefCell;
+use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
@@ -10,10 +11,9 @@ use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use tracing::trace;
 
 /// A reader-writer lock, the same as [`std::sync::RwLock`].
-#[derive(Debug)]
-pub struct RwLock<T> {
-    inner: std::sync::RwLock<T>,
+pub struct RwLock<T: ?Sized> {
     state: Rc<RefCell<RwLockState>>,
+    inner: std::sync::RwLock<T>,
 }
 
 #[derive(Debug)]
@@ -52,7 +52,9 @@ impl<T> RwLock<T> {
             state: Rc::new(RefCell::new(state)),
         }
     }
+}
 
+impl<T: ?Sized> RwLock<T> {
     /// Locks this rwlock with shared read access, blocking the current thread until it can be
     /// acquired.
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
@@ -110,7 +112,10 @@ impl<T> RwLock<T> {
     }
 
     /// Consumes this `RwLock`, returning the underlying data
-    pub fn into_inner(self) -> LockResult<T> {
+    pub fn into_inner(self) -> LockResult<T>
+    where
+        T: Sized,
+    {
         let state = self.state.borrow();
         assert_eq!(state.holder, RwLockHolder::None);
         // Update the receiver's clock with the RwLock clock
@@ -247,28 +252,33 @@ impl<T> RwLock<T> {
 // Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
 // TODO we shouldn't need to do this, but RefCell is not Send, and anything we put within a RwLock
 // TODO needs to be Send.
-unsafe impl<T: Send> Send for RwLock<T> {}
-unsafe impl<T: Send> Sync for RwLock<T> {}
+unsafe impl<T: Send + ?Sized> Send for RwLock<T> {}
+unsafe impl<T: Send + ?Sized> Sync for RwLock<T> {}
 
 // TODO this is the RefCell biting us again
-impl<T> UnwindSafe for RwLock<T> {}
-impl<T> RefUnwindSafe for RwLock<T> {}
+impl<T: ?Sized> UnwindSafe for RwLock<T> {}
+impl<T: ?Sized> RefUnwindSafe for RwLock<T> {}
 
-impl<T: Default> Default for RwLock<T> {
+impl<T: Default + ?Sized> Default for RwLock<T> {
     fn default() -> Self {
         Self::new(Default::default())
     }
 }
 
-/// RAII structure used to release the shared read access of a `RwLock` when dropped.
-#[derive(Debug)]
-pub struct RwLockReadGuard<'a, T> {
-    inner: Option<std::sync::RwLockReadGuard<'a, T>>,
-    state: Rc<RefCell<RwLockState>>,
-    me: TaskId,
+impl<T: ?Sized + Debug> Debug for RwLock<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.inner, f)
+    }
 }
 
-impl<T> Deref for RwLockReadGuard<'_, T> {
+/// RAII structure used to release the shared read access of a `RwLock` when dropped.
+pub struct RwLockReadGuard<'a, T: ?Sized> {
+    state: Rc<RefCell<RwLockState>>,
+    me: TaskId,
+    inner: Option<std::sync::RwLockReadGuard<'a, T>>,
+}
+
+impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -276,7 +286,19 @@ impl<T> Deref for RwLockReadGuard<'_, T> {
     }
 }
 
-impl<T> Drop for RwLockReadGuard<'_, T> {
+impl<T: Debug> Debug for RwLockReadGuard<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        Debug::fmt(&self.inner.as_ref().unwrap(), f)
+    }
+}
+
+impl<T: Display + ?Sized> Display for RwLockReadGuard<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
+impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
         self.inner = None;
 
@@ -317,14 +339,39 @@ impl<T> Drop for RwLockReadGuard<'_, T> {
 }
 
 /// RAII structure used to release the exclusive write access of a `RwLock` when dropped.
-#[derive(Debug)]
-pub struct RwLockWriteGuard<'a, T> {
+pub struct RwLockWriteGuard<'a, T: ?Sized> {
     inner: Option<std::sync::RwLockWriteGuard<'a, T>>,
     state: Rc<RefCell<RwLockState>>,
     me: TaskId,
 }
 
-impl<T> Drop for RwLockWriteGuard<'_, T> {
+impl<T: ?Sized> Deref for RwLockWriteGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner.as_ref().unwrap().deref()
+    }
+}
+
+impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.inner.as_mut().unwrap().deref_mut()
+    }
+}
+
+impl<T: Debug> Debug for RwLockWriteGuard<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.inner.as_ref().unwrap(), f)
+    }
+}
+
+impl<T: Display + ?Sized> Display for RwLockWriteGuard<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
+impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
         self.inner = None;
 
@@ -357,19 +404,5 @@ impl<T> Drop for RwLockWriteGuard<'_, T> {
 
         // Releasing a lock is a yield point
         thread::switch();
-    }
-}
-
-impl<T> Deref for RwLockWriteGuard<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.inner.as_ref().unwrap().deref()
-    }
-}
-
-impl<T> DerefMut for RwLockWriteGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.inner.as_mut().unwrap().deref_mut()
     }
 }
