@@ -159,7 +159,6 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 /// Yields execution back to the scheduler.
 ///
 /// Borrowed from the Tokio implementation.
-#[must_use = "yield_now does nothing unless polled/`await`-ed"]
 pub async fn yield_now() {
     /// Yield implementation
     struct YieldNow {
