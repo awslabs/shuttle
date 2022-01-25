@@ -3,21 +3,21 @@ use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, TaskSet};
 use crate::runtime::thread;
 use std::cell::RefCell;
+use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
+use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::rc::Rc;
 use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use tracing::trace;
 
 /// A mutex, the same as [`std::sync::Mutex`].
-#[derive(Debug)]
-pub struct Mutex<T> {
-    inner: std::sync::Mutex<T>,
+pub struct Mutex<T: ?Sized> {
     state: Rc<RefCell<MutexState>>,
+    inner: std::sync::Mutex<T>,
 }
 
 /// A mutex guard, the same as [`std::sync::MutexGuard`].
-#[derive(Debug)]
-pub struct MutexGuard<'a, T> {
+pub struct MutexGuard<'a, T: ?Sized> {
     inner: Option<std::sync::MutexGuard<'a, T>>,
     mutex: &'a Mutex<T>,
 }
@@ -43,7 +43,9 @@ impl<T> Mutex<T> {
             state: Rc::new(RefCell::new(state)),
         }
     }
+}
 
+impl<T: ?Sized> Mutex<T> {
     /// Acquires a mutex, blocking the current thread until it is able to do so.
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
         let me = ExecutionState::me();
@@ -102,7 +104,10 @@ impl<T> Mutex<T> {
     }
 
     /// Consumes this mutex, returning the underlying data.
-    pub fn into_inner(self) -> LockResult<T> {
+    pub fn into_inner(self) -> LockResult<T>
+    where
+        T: Sized,
+    {
         let state = self.state.borrow();
         assert!(state.holder.is_none());
         assert!(state.waiters.is_empty());
@@ -118,23 +123,33 @@ impl<T> Mutex<T> {
 // Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
 // TODO we shouldn't need to do this, but RefCell is not Send, and anything we put within a Mutex
 // TODO needs to be Send.
-unsafe impl<T: Send> Send for Mutex<T> {}
-unsafe impl<T: Send> Sync for Mutex<T> {}
+unsafe impl<T: Send + ?Sized> Send for Mutex<T> {}
+unsafe impl<T: Send + ?Sized> Sync for Mutex<T> {}
 
-impl<T: Default> Default for Mutex<T> {
+// TODO this is the RefCell biting us again
+impl<T: ?Sized> UnwindSafe for Mutex<T> {}
+impl<T: ?Sized> RefUnwindSafe for Mutex<T> {}
+
+impl<T: Default + ?Sized> Default for Mutex<T> {
     fn default() -> Self {
         Self::new(Default::default())
     }
 }
 
-impl<'a, T> MutexGuard<'a, T> {
+impl<T: ?Sized + Debug> Debug for Mutex<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.inner, f)
+    }
+}
+
+impl<'a, T: ?Sized> MutexGuard<'a, T> {
     /// Release the lock, but return a reference to it so it can be re-acquired later
     pub(super) fn unlock(self) -> &'a Mutex<T> {
         self.mutex
     }
 }
 
-impl<'a, T> Drop for MutexGuard<'a, T> {
+impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
         self.inner = None;
 
@@ -173,7 +188,7 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     }
 }
 
-impl<T> Deref for MutexGuard<'_, T> {
+impl<T: ?Sized> Deref for MutexGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -181,8 +196,20 @@ impl<T> Deref for MutexGuard<'_, T> {
     }
 }
 
-impl<T> DerefMut for MutexGuard<'_, T> {
+impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut **self.inner.as_mut().unwrap()
+    }
+}
+
+impl<T: Debug + ?Sized> Debug for MutexGuard<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.inner.as_ref().unwrap(), f)
+    }
+}
+
+impl<T: Display + ?Sized> Display for MutexGuard<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        (**self).fmt(f)
     }
 }
