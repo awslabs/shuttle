@@ -1,3 +1,9 @@
+# 0.1.0 (April 5, 2022)
+
+* Implement `Condvar::wait_while` and `Condvar::wait_timeout_while` (#59)
+* Remove implicit `Sized` bounds on `Mutex` and `RwLock` (#62)
+* Dependency updates (#58, #60)
+
 # 0.0.7 (September 21, 2021)
 
 * Fix a number of issues in support for async tasks (#50, #51, #52, #54)
