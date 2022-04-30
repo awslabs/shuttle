@@ -57,7 +57,9 @@ impl<T: ?Sized> Mutex<T> {
         state.waiters.insert(me);
         // If the lock is already held, then we are blocked
         if let Some(holder) = state.holder {
-            assert_ne!(holder, me);
+            if holder == me {
+                panic!("deadlock! task {:?} tried to acquire a Mutex it already holds", me);
+            }
             ExecutionState::with(|s| s.current_mut().block());
         }
         drop(state);

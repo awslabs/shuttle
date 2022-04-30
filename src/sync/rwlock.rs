@@ -147,11 +147,15 @@ impl<T: ?Sized> RwLock<T> {
         // Block if the lock is in a state where we can't acquire it immediately
         match &state.holder {
             RwLockHolder::Write(writer) => {
-                assert_ne!(*writer, me);
+                if *writer == me {
+                    panic!("deadlock! task {:?} tried to acquire a RwLock it already holds", me);
+                }
                 ExecutionState::with(|s| s.current_mut().block());
             }
             RwLockHolder::Read(readers) => {
-                assert!(!readers.contains(me));
+                if readers.contains(me) {
+                    panic!("deadlock! task {:?} tried to acquire a RwLock it already holds", me);
+                }
                 if typ == RwLockType::Write {
                     ExecutionState::with(|s| s.current_mut().block());
                 }
