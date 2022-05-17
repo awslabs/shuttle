@@ -4,25 +4,6 @@ use std::iter::FromIterator;
 use crate::runtime::task::TaskId;
 use crate::scheduler::{Schedule, Scheduler,ScheduleStep, ScheduleRecord};
 
-// #[derive(Clone, Debug, PartialEq, Eq)]
-// pub struct ScheduleRecordStep {
-//     step: ScheduleStep,
-//     options: HashSet<TaskId>
-// }
-
-// impl ScheduleRecordStep {
-//     /// Create a record step from the chosen task and options
-//     fn new(step: ScheduleStep, options_vec: &[TaskId]) -> Self {
-//         let mut new_record = Self { step, options: HashSet::new() };
-
-// 		for task_id in options_vec {
-// 			new_record.options.insert(task_id.clone());
-// 		}
-		
-// 		new_record
-//     }
-// }
-
 /// A `DeterminismCheckScheduler` wraps an inner `Scheduler`, and when given a program,
 /// decides whether the scheduling decisions can be deterministic or not.
 /// Inner scheduler can be RoundRobin, Random, or PCT
@@ -37,6 +18,7 @@ pub struct DeterminismCheckScheduler<S: ?Sized + Scheduler> {
 }
 
 impl<S: Scheduler> DeterminismCheckScheduler<S> {
+
     /// Create a new `DeterminismCheckScheduler` by wrapping the given `Scheduler` implementation.
     pub fn new(inner_iterations: usize,  inner: S) -> Self {
         Self {
@@ -48,12 +30,6 @@ impl<S: Scheduler> DeterminismCheckScheduler<S> {
 			current_step: 0
         }
     }
-
-	/// Record an instance of non-determinism
-	/// Should probably do something more informative here
-	pub fn log_error(&mut self, message: &str) {
-		assert!(false, "Found nondeterministic function! {}", message);
-	}
 }
 
 
@@ -65,6 +41,8 @@ impl<S: Scheduler> Scheduler for DeterminismCheckScheduler<S> {
 			self.recording = true;
 			self.original_schedule.clear();
 		} else {
+			// Create a new execution to test against prior recording
+			
 			if self.recording {
 				self.recording = false;
 			}
@@ -89,6 +67,7 @@ impl<S: Scheduler> Scheduler for DeterminismCheckScheduler<S> {
     ) -> Option<TaskId> {
 
 		if self.recording {
+
 			// Recording a schedule
 			let choice = self.inner.next_task(runnable_tasks, current_task, is_yielding).unwrap();
 			self.original_schedule.push(ScheduleRecord::new(ScheduleStep::Task(choice), runnable_tasks));
@@ -101,12 +80,11 @@ impl<S: Scheduler> Scheduler for DeterminismCheckScheduler<S> {
 			// Determine whether the state is the same
 
 			if self.current_step >= self.original_schedule.len() {
-				// Current run is longer than original recording
 				panic!("Current execution longer than expected. \n\tOriginal length: {}, acutal length: {}",
 															self.original_schedule.len(), self.current_step);
 			}
 
-			let expected = self.original_schedule.get(self.current_step).unwrap().clone();
+			let expected = self.original_schedule[self.current_step].clone();
 			let expected_step = expected.step;
 			let expected_options = expected.runnable_tasks;
 			let actual_options: HashSet<TaskId> = HashSet::from_iter(runnable_tasks.iter().cloned());
@@ -114,13 +92,13 @@ impl<S: Scheduler> Scheduler for DeterminismCheckScheduler<S> {
 			match expected_step {
 				ScheduleStep::Task(id) => { 
 					if !expected_options.contains(&id) {
-						panic!("\nTask chosen in recording is not currently runnable.\n\tExpected Task: {:?} \n\tActual options: {:?}\n",
-																		id, actual_options);
+						panic!("\nTask chosen in recording is not currently runnable.
+						\n\tExpected Task: {:?} \n\tActual options: {:?}\n", id, actual_options);
 					}
 
 					if expected_options != actual_options {
-						panic!("\nSet of runnable tasks is different than expected.\n\tExpected options: {:?} \n\tActual options: {:?}\n",
-																		expected_options, actual_options);
+						panic!("\nSet of runnable tasks is different than expected.
+						\n\tExpected options: {:?} \n\tActual options: {:?}\n", expected_options, actual_options);
 					}
 
 					self.current_step += 1;
@@ -146,6 +124,5 @@ impl<S: Scheduler> Scheduler for DeterminismCheckScheduler<S> {
 
 		self.current_step += 1;
 		self.inner.next_u64()
-
     }
 }
