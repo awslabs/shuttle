@@ -3,6 +3,7 @@ mod barrier;
 mod clocks;
 mod condvar;
 mod config;
+mod determinism_check;
 mod dfs;
 mod execution;
 mod metrics;

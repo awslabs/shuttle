@@ -334,6 +334,24 @@ where
     runner.run(f);
 }
 
+/// Run the given function under a scheduler that checks for determinism.
+/// iterations: total number of times to run the inner scheduler
+/// inner_iterations: number of times to test a recorded schedule
+pub fn check_determinism<F>(f: F, iterations: usize, inner_iterations: usize)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    use crate::scheduler::DeterminismCheckScheduler;
+    use crate::scheduler::RandomScheduler;
+
+    let inner = RandomScheduler::new(iterations);
+
+    let scheduler = DeterminismCheckScheduler::new(inner_iterations, inner);
+
+    let runner = Runner::new(scheduler, Default::default());
+    runner.run(f);
+}
+
 /// Run the given function according to a given encoded schedule, usually produced as the output of
 /// a failing Shuttle test case.
 ///
