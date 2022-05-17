@@ -1,5 +1,5 @@
 //! Implementations of different scheduling strategies for concurrency testing.
-use std::fmt::Debug;
+use std::{fmt::Debug, collections::HashSet};
 
 mod data;
 mod dfs;
@@ -7,6 +7,7 @@ mod pct;
 mod random;
 mod replay;
 mod round_robin;
+mod determinism_check;
 
 pub(crate) mod metrics;
 pub(crate) mod serialization;
@@ -18,6 +19,7 @@ pub use pct::PctScheduler;
 pub use random::RandomScheduler;
 pub use replay::ReplayScheduler;
 pub use round_robin::RoundRobinScheduler;
+pub use determinism_check::DeterminismCheckScheduler;
 
 /// A `Schedule` determines the order in which tasks are to be executed
 // TODO would be nice to make this generic in the type of `seed`, but for now all our seeds are u64s
@@ -27,10 +29,31 @@ pub struct Schedule {
     steps: Vec<ScheduleStep>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum ScheduleStep {
     Task(TaskId),
     Random,
+}
+
+/// A `ScheduleRecord` can be used to record both the step
+/// taken and all runnable tasks
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScheduleRecord {
+    step: ScheduleStep,
+    runnable_tasks: HashSet<TaskId>
+}
+
+impl ScheduleRecord {
+    /// Create a record step from the chosen task and options
+    fn new(step: ScheduleStep, options_vec: &[TaskId]) -> Self {
+        let mut new_record = Self { step, runnable_tasks: HashSet::new() };
+
+		for task_id in options_vec {
+			new_record.runnable_tasks.insert(task_id.clone());
+		}
+		
+		new_record
+    }
 }
 
 impl Schedule {
@@ -125,3 +148,4 @@ impl Scheduler for Box<dyn Scheduler + Send> {
         self.as_mut().next_u64()
     }
 }
+
