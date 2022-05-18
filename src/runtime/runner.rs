@@ -5,6 +5,7 @@ use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::Config;
 use std::cell::RefCell;
+use std::fmt;
 use std::panic;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,8 +65,6 @@ impl<S: Scheduler + 'static> Runner<S> {
                 let execution = Execution::new(self.scheduler.clone(), schedule);
                 let f = Arc::clone(&f);
 
-                #[allow(clippy::redundant_closure)]
-                // Clippy is wrong: https://github.com/rust-lang/rust-clippy/issues/8073
                 span!(Level::INFO, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
 
                 i += 1;
@@ -78,7 +77,6 @@ impl<S: Scheduler + 'static> Runner<S> {
 /// A `PortfolioRunner` is the same as a `Runner`, except that it can run multiple different
 /// schedulers (a "portfolio" of schedulers) in parallel. If any of the schedulers finds a failing
 /// execution of the test, the entire run fails.
-#[derive(Debug)]
 pub struct PortfolioRunner {
     schedulers: Vec<Box<dyn Scheduler + Send + 'static>>,
     stop_on_first_failure: bool,
@@ -135,8 +133,6 @@ impl PortfolioRunner {
                     let runner = Runner::new(scheduler, config);
 
                     span!(Level::INFO, "job", i).in_scope(|| {
-                        #[allow(clippy::redundant_closure)]
-                        // Clippy is wrong: https://github.com/rust-lang/rust-clippy/issues/8073
                         let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| runner.run(move || f())));
 
                         match ret {
@@ -171,6 +167,16 @@ impl PortfolioRunner {
         if let Some(e) = panic {
             std::panic::resume_unwind(e);
         }
+    }
+}
+
+impl fmt::Debug for PortfolioRunner {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("PortfolioRunner")
+            .field("schedulers", &self.schedulers.len())
+            .field("stop_on_first_failure", &self.stop_on_first_failure)
+            .field("config", &self.config)
+            .finish()
     }
 }
 

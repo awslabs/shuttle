@@ -79,7 +79,7 @@ impl Schedule {
 /// state and strategically explore different schedules. At the start of each test execution, the
 /// executor calls `new_execution()` to inform the scheduler that a new execution is starting. Then,
 /// for each scheduling decision, the executor calls `next_task` to determine which task to run.
-pub trait Scheduler: Debug {
+pub trait Scheduler {
     /// Inform the `Scheduler` that a new execution is about to begin. If this function returns
     /// None, the test will end rather than performing another execution. If it returns
     /// `Some(schedule)`, the returned `Schedule` can be used to initialize a `ReplayScheduler` for
