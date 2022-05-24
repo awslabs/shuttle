@@ -100,7 +100,7 @@ fn deadlock_3() {
 #[should_panic(expected = "deadlock")]
 fn replay_deadlock3_block() {
     // Reproduce deadlock
-    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 2, 1, 2, 0, 0]);
+    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 2, 0, 0, 1, 2]);
     let scheduler = ReplayScheduler::new_from_schedule(schedule);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock_3);
