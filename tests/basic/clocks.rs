@@ -1,7 +1,7 @@
 use shuttle::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use shuttle::sync::mpsc::{channel, sync_channel};
 use shuttle::sync::{Barrier, Condvar, Mutex, Once, RwLock};
-use shuttle::{check_dfs, check_pct, current, thread};
+use shuttle::{check_dfs, check_pct, check_random, current, thread};
 use std::collections::HashSet;
 use std::sync::Arc;
 use test_log::test;
@@ -10,7 +10,7 @@ pub fn me() -> usize {
     usize::from(thread::current().id())
 }
 
-// TODO Maybe make this a macro so backtraces are more informative
+#[track_caller]
 pub fn check_clock(f: impl Fn(usize, u32) -> bool) {
     for (i, &c) in current::clock().iter().enumerate() {
         assert!(
@@ -76,32 +76,34 @@ fn clock_mutex_pct() {
 
 // RWLocks
 fn clock_rwlock(num_writers: usize, num_readers: usize) {
-    // This test checks that when a thread acquires a RwLock, it inherits the clocks
-    // of any writers that accessed the lock before it, but not the clocks from any readers.
+    // This test checks that when a thread acquires a RwLock, it inherits the clocks of writers that
+    // accessed the lock before it. It's the same as `clock_mutex`, except that readers don't update
+    // the set S, and aren't required to appear in the clock for future lock holders.
     //
-    // Test: create a rwlock-protected set, initialized with 0 (the id of the main thread)
-    // and spawn some writers and readers.  Each thread does the following:
-    //    (1) check that its own initial vector clock only has nonzero for the main thread (thread 0)
-    //    (2w) [for writers only] acquire a write lock on the set and add its own thread id to it
-    //    (2r) [for readers only] acquire a read lock on the set
-    //    (3) read its own clock again, call this C
-    //    (4) check that the only nonzero entries in C are for the threads in S and the current thread (for readers)
-    //
-    // Note: no dummy thread here since we're already checking that readers' clock entries are always zero
-    let mut set = HashSet::new();
-    set.insert(0);
-    let set = Arc::new(RwLock::new(set));
+    // TODO this test is pretty weak. Testing readers is hard because they race with each other; for
+    // example, a reader might see the clock update from another reader before that reader has a
+    // chance to update the set S. Causality is also pretty fuzzy for readers (see the TODOs in the
+    // RwLock implementation). So we don't test very much about them here.
+    let set = Arc::new(std::sync::Mutex::new(HashSet::from([0])));
+    let lock = Arc::new(RwLock::new(()));
+
+    // Create dummy thread (should have id 1)
+    thread::spawn(|| {
+        assert_eq!(me(), 1usize);
+    });
 
     // Spawn the writers
     let _thds = (0..num_writers)
         .map(|_| {
             let set = Arc::clone(&set);
+            let lock = Arc::clone(&lock);
             thread::spawn(move || {
                 check_clock(|i, c| (c > 0) == (i == 0));
-                let mut set = set.write().unwrap();
+                let _guard = lock.write().unwrap();
+                let mut set = set.lock().unwrap();
                 set.insert(me());
-                // Check that the only nonzero clock entries are for the threads in the set
-                check_clock(|i, c| (c > 0) == set.contains(&i));
+                assert!(!set.contains(&1)); // dummy thread is never in the set
+                check_clock(|i, c| !set.contains(&i) || (c > 0));
             })
         })
         .collect::<Vec<_>>();
@@ -110,11 +112,13 @@ fn clock_rwlock(num_writers: usize, num_readers: usize) {
     let _thds = (0..num_readers)
         .map(|_| {
             let set = Arc::clone(&set);
+            let lock = Arc::clone(&lock);
             thread::spawn(move || {
                 check_clock(|i, c| (c > 0) == (i == 0));
-                let set = set.read().unwrap();
-                // Check that the only nonzero clock entries are for threads in the set and the current thread
-                check_clock(|i, c| (c > 0) == (i == me() || set.contains(&i)));
+                let _guard = lock.read().unwrap();
+                let set = set.lock().unwrap();
+                assert!(!set.contains(&1)); // dummy thread is never in the set
+                check_clock(|i, c| !set.contains(&i) || (c > 0));
             })
         })
         .collect::<Vec<_>>();
@@ -122,14 +126,19 @@ fn clock_rwlock(num_writers: usize, num_readers: usize) {
 
 #[test]
 fn clock_rwlock_dfs() {
-    // TODO 2 writers + 2 readers takes too long right now; once we reduce context switching, it should be feasible
-    check_dfs(|| clock_rwlock(2, 1), None);
-    check_dfs(|| clock_rwlock(1, 2), None);
+    // Unfortunately anything larger than this takes > 500k iterations, too slow to be useful :(
+    // But the PCT and random tests below buy us a much bigger search.
+    check_dfs(|| clock_rwlock(1, 1), None);
 }
 
 #[test]
 fn clock_rwlock_pct() {
-    check_pct(|| clock_rwlock(10, 20), 10_000, 3);
+    check_pct(|| clock_rwlock(4, 4), 10_000, 3);
+}
+
+#[test]
+fn clock_rwlock_random() {
+    check_random(|| clock_rwlock(4, 4), 10_000);
 }
 
 // Barrier
@@ -336,7 +345,7 @@ fn clock_mpsc_bounded() {
                 // The sender has sent a message, so its clock is nonzero
                 let c1 = current::clock().get(1);
                 assert!(c1 > 0);
-                let _ = rx.recv().unwrap();
+                rx.recv().unwrap();
                 // The sender has sent another message, so its clock has increased
                 assert!(current::clock().get(2) > c1);
                 // Receive the remaining messages

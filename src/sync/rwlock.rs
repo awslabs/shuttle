@@ -11,6 +11,10 @@ use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use tracing::trace;
 
 /// A reader-writer lock, the same as [`std::sync::RwLock`].
+///
+/// Unlike [`std::sync::RwLock`], the same thread is never allowed to acquire the read side of a
+/// `RwLock` more than once. The `std` version is ambiguous about what behavior is allowed here, so
+/// we choose the most conservative one.
 pub struct RwLock<T: ?Sized> {
     state: Rc<RefCell<RwLockState>>,
     inner: std::sync::RwLock<T>,
@@ -99,8 +103,27 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// If the access could not be granted at this time, then Err is returned. This function does
     /// not block.
+    ///
+    /// Note that unlike [`std::sync::RwLock::try_read`], if the current thread already holds this
+    /// read lock, `try_read` will return Err.
     pub fn try_read(&self) -> TryLockResult<RwLockReadGuard<T>> {
-        unimplemented!()
+        if self.try_lock(RwLockType::Read) {
+            match self.inner.try_read() {
+                Ok(guard) => Ok(RwLockReadGuard {
+                    inner: Some(guard),
+                    state: Rc::clone(&self.state),
+                    me: ExecutionState::me(),
+                }),
+                Err(TryLockError::Poisoned(err)) => Err(TryLockError::Poisoned(PoisonError::new(RwLockReadGuard {
+                    inner: Some(err.into_inner()),
+                    state: Rc::clone(&self.state),
+                    me: ExecutionState::me(),
+                }))),
+                Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
+            }
+        } else {
+            Err(TryLockError::WouldBlock)
+        }
     }
 
     /// Attempts to acquire this rwlock with shared read access.
@@ -108,7 +131,23 @@ impl<T: ?Sized> RwLock<T> {
     /// If the access could not be granted at this time, then Err is returned. This function does
     /// not block.
     pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<T>> {
-        unimplemented!()
+        if self.try_lock(RwLockType::Write) {
+            match self.inner.try_write() {
+                Ok(guard) => Ok(RwLockWriteGuard {
+                    inner: Some(guard),
+                    state: Rc::clone(&self.state),
+                    me: ExecutionState::me(),
+                }),
+                Err(TryLockError::Poisoned(err)) => Err(TryLockError::Poisoned(PoisonError::new(RwLockWriteGuard {
+                    inner: Some(err.into_inner()),
+                    state: Rc::clone(&self.state),
+                    me: ExecutionState::me(),
+                }))),
+                Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
+            }
+        } else {
+            Err(TryLockError::WouldBlock)
+        }
     }
 
     /// Consumes this `RwLock`, returning the underlying data
@@ -125,6 +164,7 @@ impl<T: ?Sized> RwLock<T> {
         self.inner.into_inner()
     }
 
+    /// Acquire the lock in the provided mode, blocking this thread until it succeeds.
     fn lock(&self, typ: RwLockType) {
         let me = ExecutionState::me();
 
@@ -133,7 +173,7 @@ impl<T: ?Sized> RwLock<T> {
             holder = ?state.holder,
             waiting_readers = ?state.waiting_readers,
             waiting_writers = ?state.waiting_writers,
-            "waiting to acquire {:?} lock on rwlock {:p}",
+            "acquiring {:?} lock on rwlock {:p}",
             typ,
             self.state,
         );
@@ -144,13 +184,18 @@ impl<T: ?Sized> RwLock<T> {
         } else {
             state.waiting_readers.insert(me);
         }
-        // Block if the lock is in a state where we can't acquire it immediately
-        match &state.holder {
+        // Block if the lock is in a state where we can't acquire it immediately. Note that we only
+        // need to context switch here if we can't acquire the lock. If it's available for us to
+        // acquire, but there is also another thread `t` that wants to acquire it, then `t` must
+        // have been runnable when this thread was chosen to execute and could have been chosen
+        // instead.
+        let should_switch = match &state.holder {
             RwLockHolder::Write(writer) => {
                 if *writer == me {
                     panic!("deadlock! task {:?} tried to acquire a RwLock it already holds", me);
                 }
                 ExecutionState::with(|s| s.current_mut().block());
+                true
             }
             RwLockHolder::Read(readers) => {
                 if readers.contains(me) {
@@ -158,14 +203,18 @@ impl<T: ?Sized> RwLock<T> {
                 }
                 if typ == RwLockType::Write {
                     ExecutionState::with(|s| s.current_mut().block());
+                    true
+                } else {
+                    false
                 }
             }
-            _ => {}
-        }
+            RwLockHolder::None => false,
+        };
         drop(state);
 
-        // Acquiring a lock is a yield point
-        thread::switch();
+        if should_switch {
+            thread::switch();
+        }
 
         let mut state = self.state.borrow_mut();
         // Once the scheduler has resumed this thread, we are clear to take the lock. We might
@@ -203,14 +252,91 @@ impl<T: ?Sized> RwLock<T> {
             typ,
             self.state
         );
-        // Update acquiring thread's clock with the clock stored in the RwLock
-        ExecutionState::with(|s| s.update_clock(&state.clock));
+
+        // Increment the current thread's clock and update this RwLock's clock to match.
+        // TODO we can likely do better here: there is no causality between multiple readers holding
+        // the lock at the same time.
+        ExecutionState::with(|s| {
+            s.update_clock(&state.clock);
+            state.clock.update(s.get_clock(me));
+        });
 
         // Block all other waiters, since we won the race to take this lock
-        // TODO a bit of a bummer that we have to do this (it would be cleaner if those threads
-        // TODO never become unblocked), but might need to track more state to avoid this.
         Self::block_waiters(&*state, me, typ);
         drop(state);
+
+        // We need to let other threads in here so they may fail a `try_read` or `try_write`. This
+        // is the case because the current thread holding the lock might not have any further
+        // context switches until after releasing the lock.
+        thread::switch();
+    }
+
+    /// Attempt to acquire this lock in the provided mode, but without blocking. Returns `true` if
+    /// the lock was able to be acquired without blocking, or `false` otherwise.
+    fn try_lock(&self, typ: RwLockType) -> bool {
+        let me = ExecutionState::me();
+
+        let mut state = self.state.borrow_mut();
+        trace!(
+            holder = ?state.holder,
+            waiting_readers = ?state.waiting_readers,
+            waiting_writers = ?state.waiting_writers,
+            "trying to acquire {:?} lock on rwlock {:p}",
+            typ,
+            self.state,
+        );
+
+        let acquired = match (typ, &mut state.holder) {
+            (RwLockType::Write, RwLockHolder::None) => {
+                state.holder = RwLockHolder::Write(me);
+                true
+            }
+            (RwLockType::Read, RwLockHolder::None) => {
+                let mut readers = TaskSet::new();
+                readers.insert(me);
+                state.holder = RwLockHolder::Read(readers);
+                true
+            }
+            (RwLockType::Read, RwLockHolder::Read(readers)) => {
+                // If we already hold the read lock, `insert` returns false, which will cause this
+                // acquisition to fail with `WouldBlock` so we can diagnose potential deadlocks.
+                readers.insert(me)
+            }
+            _ => false,
+        };
+
+        trace!(
+            "{} {:?} lock on rwlock {:p}",
+            if acquired { "acquired" } else { "failed to acquire" },
+            typ,
+            self.state,
+        );
+
+        // Update this thread's clock with the clock stored in the RwLock.
+        // We need to do the vector clock update even in the failing case, because there's a causal
+        // dependency: if the `try_lock` fails, the current thread `t1` knows that the thread `t2`
+        // that owns the lock is not in the right state to be read/written, and therefore `t1` has a
+        // causal dependency on everything that happened before in `t2` (which is recorded in the
+        // RwLock's clock).
+        // TODO we can likely do better here: there is no causality between successful `try_read`s
+        // and other concurrent readers, and there's no need to update the clock on failed
+        // `try_read`s.
+        ExecutionState::with(|s| {
+            s.update_clock(&state.clock);
+            state.clock.update(s.get_clock(me));
+        });
+
+        // Block all other waiters, since we won the race to take this lock
+        Self::block_waiters(&*state, me, typ);
+        drop(state);
+
+        // We need to let other threads in here so they
+        // (a) may fail a `try_lock` (in case we acquired), or
+        // (b) may release the lock (in case we failed to acquire) so we can succeed in a subsequent
+        //     `try_lock`.
+        thread::switch();
+
+        acquired
     }
 
     fn block_waiters(state: &RwLockState, me: TaskId, typ: RwLockType) {
@@ -324,7 +450,7 @@ impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
                     state.holder = RwLockHolder::None;
                 }
             }
-            _ => panic!("exiting a reader but rwlock is in the wrong state"),
+            _ => panic!("exiting a reader but rwlock is in the wrong state {:?}", state.holder),
         }
 
         if ExecutionState::should_stop() {
