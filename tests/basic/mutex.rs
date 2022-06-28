@@ -1,24 +1,27 @@
 use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Mutex;
-use shuttle::{check, check_dfs, check_random, thread, Runner};
+use shuttle::{check_dfs, check_random, thread, Runner};
 use std::collections::HashSet;
 use std::sync::{Arc, TryLockError};
 use test_log::test;
 
 #[test]
 fn basic_lock_test() {
-    check(move || {
-        let lock = Arc::new(Mutex::new(0usize));
-        let lock_clone = Arc::clone(&lock);
+    check_dfs(
+        move || {
+            let lock = Arc::new(Mutex::new(0usize));
+            let lock_clone = Arc::clone(&lock);
 
-        thread::spawn(move || {
-            let mut counter = lock_clone.lock().unwrap();
+            thread::spawn(move || {
+                let mut counter = lock_clone.lock().unwrap();
+                *counter += 1;
+            });
+
+            let mut counter = lock.lock().unwrap();
             *counter += 1;
-        });
-
-        let mut counter = lock.lock().unwrap();
-        *counter += 1;
-    });
+        },
+        None,
+    );
 
     // TODO would be cool if we were allowed to smuggle the lock out of the run,
     // TODO so we can assert invariants about it *after* execution ends
@@ -44,8 +47,7 @@ fn deadlock() {
 #[test]
 #[should_panic(expected = "deadlock")]
 fn deadlock_default() {
-    // Round-robin should always fail this deadlock test
-    check(deadlock);
+    check_dfs(deadlock, None);
 }
 
 #[test]
@@ -147,7 +149,7 @@ fn unlock_yields() {
             add_thread.join().unwrap();
             mul_thread.join().unwrap();
 
-            let value = *lock.try_lock().unwrap();
+            let value = Arc::try_unwrap(lock).unwrap().into_inner().unwrap();
             observed_values_clone.lock().unwrap().insert(value);
         },
         None,
@@ -250,7 +252,7 @@ fn concurrent_try_increment() {
                 thd.join().unwrap();
             }
 
-            let value = *lock.try_lock().unwrap();
+            let value = Arc::try_unwrap(lock).unwrap().into_inner().unwrap();
             observed_values_clone.lock().unwrap().insert(value);
         },
         None,
@@ -301,7 +303,7 @@ fn concurrent_lock_try_lock() {
             lock_thread.join().unwrap();
             try_lock_thread.join().unwrap();
 
-            let value = *lock.try_lock().unwrap();
+            let value = Arc::try_unwrap(lock).unwrap().into_inner().unwrap();
             observed_values_clone.lock().unwrap().insert(value);
         },
         None,
@@ -314,36 +316,45 @@ fn concurrent_lock_try_lock() {
 #[test]
 #[should_panic(expected = "tried to acquire a Mutex it already holds")]
 fn double_lock() {
-    check(|| {
-        let mutex = Mutex::new(());
-        let _guard_1 = mutex.lock().unwrap();
-        let _guard_2 = mutex.lock();
-    })
+    check_dfs(
+        || {
+            let mutex = Mutex::new(());
+            let _guard_1 = mutex.lock().unwrap();
+            let _guard_2 = mutex.lock();
+        },
+        None,
+    )
 }
 
 #[test]
 fn double_try_lock() {
-    check(|| {
-        let mutex = Mutex::new(());
-        let _guard_1 = mutex.try_lock().unwrap();
-        assert!(matches!(mutex.try_lock(), Err(TryLockError::WouldBlock)));
-    })
+    check_dfs(
+        || {
+            let mutex = Mutex::new(());
+            let _guard_1 = mutex.try_lock().unwrap();
+            assert!(matches!(mutex.try_lock(), Err(TryLockError::WouldBlock)));
+        },
+        None,
+    )
 }
 
 // Check that we can safely execute the Drop handler of a Mutex without double-panicking
 #[test]
 #[should_panic(expected = "expected panic")]
 fn panic_drop() {
-    check(|| {
-        let lock = Mutex::new(0);
-        let _l = lock.lock().unwrap();
-        panic!("expected panic");
-    })
+    check_dfs(
+        || {
+            let lock = Mutex::new(0);
+            let _l = lock.lock().unwrap();
+            panic!("expected panic");
+        },
+        None,
+    )
 }
 
 #[test]
 fn mutex_into_inner() {
-    shuttle::check_dfs(
+    check_dfs(
         || {
             let lock = Arc::new(Mutex::new(0u64));
 

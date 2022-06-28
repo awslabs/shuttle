@@ -279,7 +279,7 @@ fn check_producer_consumer_broken1() {
 
 #[test]
 #[should_panic(expected = "nothing to get")]
-fn replay_roducer_consumer_broken1() {
+fn replay_producer_consumer_broken1() {
     replay(
         producer_consumer_broken1,
         "910219ccf2ead7a59dee9e4590000282249100208904",
@@ -337,7 +337,7 @@ fn check_producer_consumer_broken2() {
 
 #[test]
 #[should_panic(expected = "deadlock")]
-fn replay_roducer_consumer_broken2() {
+fn replay_producer_consumer_broken2() {
     replay(producer_consumer_broken2, "91021499a0ee829bee85922b104410200052a404")
 }
 

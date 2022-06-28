@@ -53,42 +53,48 @@ impl<T: ?Sized> Mutex<T> {
         let mut state = self.state.borrow_mut();
         trace!(holder=?state.holder, waiters=?state.waiters, "waiting to acquire mutex {:p}", self);
 
-        // We are waiting for the lock
-        state.waiters.insert(me);
         // If the lock is already held, then we are blocked
         if let Some(holder) = state.holder {
             if holder == me {
                 panic!("deadlock! task {:?} tried to acquire a Mutex it already holds", me);
             }
-            ExecutionState::with(|s| s.current_mut().block());
+
+            state.waiters.insert(me);
             drop(state);
 
             // Note that we only need a context switch when we are blocked, but not if the lock is
             // available. Consider that there is another thread `t` that also wants to acquire the
             // lock. At the last context switch (where we were chosen), `t` must have been already
             // runnable and could have been chosen by the scheduler instead. Also, if we want to
-            // re-acquire the lock immediately after having it released, we know that the release
-            // had a context switch that allowed other threads to acquire in between.
+            // re-acquire the lock immediately after releasing it, we know that the release had a
+            // context switch that allowed other threads to acquire in between.
+            ExecutionState::with(|s| s.current_mut().block());
             thread::switch();
             state = self.state.borrow_mut();
+
+            // Once the scheduler has resumed this thread, we are clear to become its holder.
+            assert!(state.waiters.remove(me));
         }
 
-        // Once the scheduler has resumed this thread, we are clear to become its holder.
-        assert!(state.waiters.remove(me));
         assert!(state.holder.is_none());
         state.holder = Some(me);
 
         trace!(waiters=?state.waiters, "acquired mutex {:p}", self);
 
-        // Re-block all other waiting threads, since we won the race to take this lock
-        for tid in state.waiters.iter() {
-            ExecutionState::with(|s| s.get_mut(tid).block());
-        }
-        // Update acquiring thread's clock with the clock stored in the Mutex
-        ExecutionState::with(|s| s.update_clock(&state.clock));
-        // Update the vector clock stored in the Mutex with this threads clock.
-        // Future threads that fail a `try_lock` have a causal dependency on this thread's acquire.
-        ExecutionState::with(|s| state.clock.update(s.get_clock(me)));
+        ExecutionState::with(|s| {
+            // Re-block all other waiting threads, since we won the race to take this lock
+            for tid in state.waiters.iter() {
+                s.get_mut(tid).block();
+            }
+
+            // Update acquiring thread's clock with the clock stored in the Mutex
+            s.update_clock(&state.clock);
+
+            // Update the vector clock stored in the Mutex with this threads clock.
+            // Future threads that fail a `try_lock` have a causal dependency on this thread's acquire.
+            state.clock.update(s.get_clock(me));
+        });
+
         drop(state);
 
         // Grab a `MutexGuard` from the inner lock, which we must be able to acquire here
@@ -135,17 +141,19 @@ impl<T: ?Sized> Mutex<T> {
         //   Then `t`'s release has a context switch that allows us to acquire the lock.
 
         let result = if let Some(holder) = state.holder {
-            trace!("`try_lock` failed to acquire mutex {:p} held by {:?}", self, holder);
+            trace!("try_lock failed for mutex {:p} held by {:?}", self, holder);
             Err(TryLockError::WouldBlock)
         } else {
             state.holder = Some(me);
 
-            trace!("acquired mutex {:p}", self);
+            trace!("try_lock acquired mutex {:p}", self);
 
             // Re-block all other waiting threads, since we won the race to take this lock
-            for tid in state.waiters.iter() {
-                ExecutionState::with(|s| s.get_mut(tid).block());
-            }
+            ExecutionState::with(|s| {
+                for tid in state.waiters.iter() {
+                    s.get_mut(tid).block();
+                }
+            });
 
             // Grab a `MutexGuard` from the inner lock, which we must be able to acquire here
             match self.inner.try_lock() {
@@ -161,17 +169,20 @@ impl<T: ?Sized> Mutex<T> {
             }
         };
 
-        // Update the vector clock stored in the Mutex with this threads clock.
-        // Future threads that manage to acquire have a causal dependency on this thread's failed `try_lock`.
-        // Future threads that fail a `try_lock` have a causal dependency on this thread's successful `try_lock`.
-        ExecutionState::with(|s| state.clock.update(s.get_clock(me)));
+        ExecutionState::with(|s| {
+            // Update the vector clock stored in the Mutex with this threads clock.
+            // Future threads that manage to acquire have a causal dependency on this thread's failed `try_lock`.
+            // Future threads that fail a `try_lock` have a causal dependency on this thread's successful `try_lock`.
+            state.clock.update(s.get_clock(me));
 
-        // Update this thread's clock with the clock stored in the Mutex.
-        // We need to do the vector clock update even in the failing case, because there's a causal
-        // dependency: if the `try_lock` fails, the current thread `t1` knows that the thread `t2`
-        // that owns the lock is in its critical section, and therefore `t1` has a causal dependency
-        // on everything that happened before in `t2` (which is recorded in the Mutex's clock).
-        ExecutionState::with(|s| s.update_clock(&state.clock));
+            // Update this thread's clock with the clock stored in the Mutex.
+            // We need to do the vector clock update even in the failing case, because there's a causal
+            // dependency: if the `try_lock` fails, the current thread `t1` knows that the thread `t2`
+            // that owns the lock is in its critical section, and therefore `t1` has a causal dependency
+            // on everything that happened before in `t2` (which is recorded in the Mutex's clock).
+            s.update_clock(&state.clock);
+        });
+
         drop(state);
 
         // We need to let other threads in here so they
