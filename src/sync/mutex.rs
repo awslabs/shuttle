@@ -53,38 +53,52 @@ impl<T: ?Sized> Mutex<T> {
         let mut state = self.state.borrow_mut();
         trace!(holder=?state.holder, waiters=?state.waiters, "waiting to acquire mutex {:p}", self);
 
-        // We are waiting for the lock
-        state.waiters.insert(me);
         // If the lock is already held, then we are blocked
         if let Some(holder) = state.holder {
             if holder == me {
                 panic!("deadlock! task {:?} tried to acquire a Mutex it already holds", me);
             }
+
+            state.waiters.insert(me);
+            drop(state);
+
+            // Note that we only need a context switch when we are blocked, but not if the lock is
+            // available. Consider that there is another thread `t` that also wants to acquire the
+            // lock. At the last context switch (where we were chosen), `t` must have been already
+            // runnable and could have been chosen by the scheduler instead. Also, if we want to
+            // re-acquire the lock immediately after releasing it, we know that the release had a
+            // context switch that allowed other threads to acquire in between.
             ExecutionState::with(|s| s.current_mut().block());
+            thread::switch();
+            state = self.state.borrow_mut();
+
+            // Once the scheduler has resumed this thread, we are clear to become its holder.
+            assert!(state.waiters.remove(me));
         }
-        drop(state);
 
-        // Acquiring a lock is a yield point
-        thread::switch();
-
-        let mut state = self.state.borrow_mut();
-        // Once the scheduler has resumed this thread, we are clear to become its holder.
-        assert!(state.waiters.remove(me));
         assert!(state.holder.is_none());
         state.holder = Some(me);
 
         trace!(waiters=?state.waiters, "acquired mutex {:p}", self);
 
-        // Re-block all other waiting threads, since we won the race to take this lock
-        for tid in state.waiters.iter() {
-            ExecutionState::with(|s| s.get_mut(tid).block());
-        }
-        // Update acquiring thread's clock with the clock stored in the Mutex
-        ExecutionState::with(|s| s.update_clock(&state.clock));
+        ExecutionState::with(|s| {
+            // Re-block all other waiting threads, since we won the race to take this lock
+            for tid in state.waiters.iter() {
+                s.get_mut(tid).block();
+            }
+
+            // Update acquiring thread's clock with the clock stored in the Mutex
+            s.update_clock(&state.clock);
+
+            // Update the vector clock stored in the Mutex with this threads clock.
+            // Future threads that fail a `try_lock` have a causal dependency on this thread's acquire.
+            state.clock.update(s.get_clock(me));
+        });
+
         drop(state);
 
         // Grab a `MutexGuard` from the inner lock, which we must be able to acquire here
-        match self.inner.try_lock() {
+        let result = match self.inner.try_lock() {
             Ok(guard) => Ok(MutexGuard {
                 inner: Some(guard),
                 mutex: self,
@@ -94,7 +108,15 @@ impl<T: ?Sized> Mutex<T> {
                 mutex: self,
             })),
             Err(TryLockError::WouldBlock) => panic!("mutex state out of sync"),
-        }
+        };
+
+        // We need to let other threads in here so they may fail a `try_lock`. This is the case
+        // because the current thread holding the lock might not have any further context switches
+        // until after releasing the lock. The `concurrent_lock_try_lock` test illustrates this
+        // scenario and would fail if this context switch is not here.
+        thread::switch();
+
+        result
     }
 
     /// Attempts to acquire this lock.
@@ -102,7 +124,73 @@ impl<T: ?Sized> Mutex<T> {
     /// If the lock could not be acquired at this time, then Err is returned. This function does not
     /// block.
     pub fn try_lock(&self) -> TryLockResult<MutexGuard<T>> {
-        unimplemented!()
+        let me = ExecutionState::me();
+
+        let mut state = self.state.borrow_mut();
+        trace!(holder=?state.holder, waiters=?state.waiters, "trying to acquire mutex {:p}", self);
+
+        // We don't need a context switch here. There are two cases to analyze.
+        // * Consider that `state.holder == None` so that we manage to acquire the lock, but that
+        //   there is another thread `t` that also wants to acquire. At the last context switch
+        //   (where we were chosen), `t` must have been already runnable and could have been chosen
+        //   by the scheduler instead. Then `t`'s acquire has a context switch that allows us to
+        //   run into the `WouldBlock` case.
+        // * Consider that `state.holder == Some(t)` so that we run into the `WouldBlock` case,
+        //   but that `t` wants to release. At the last context switch (where we were chosen), `t`
+        //   must have been already runnable and could have been chosen by the scheduler instead.
+        //   Then `t`'s release has a context switch that allows us to acquire the lock.
+
+        let result = if let Some(holder) = state.holder {
+            trace!("try_lock failed for mutex {:p} held by {:?}", self, holder);
+            Err(TryLockError::WouldBlock)
+        } else {
+            state.holder = Some(me);
+
+            trace!("try_lock acquired mutex {:p}", self);
+
+            // Re-block all other waiting threads, since we won the race to take this lock
+            ExecutionState::with(|s| {
+                for tid in state.waiters.iter() {
+                    s.get_mut(tid).block();
+                }
+            });
+
+            // Grab a `MutexGuard` from the inner lock, which we must be able to acquire here
+            match self.inner.try_lock() {
+                Ok(guard) => Ok(MutexGuard {
+                    inner: Some(guard),
+                    mutex: self,
+                }),
+                Err(TryLockError::Poisoned(guard)) => Err(TryLockError::Poisoned(PoisonError::new(MutexGuard {
+                    inner: Some(guard.into_inner()),
+                    mutex: self,
+                }))),
+                Err(TryLockError::WouldBlock) => panic!("mutex state out of sync"),
+            }
+        };
+
+        ExecutionState::with(|s| {
+            // Update the vector clock stored in the Mutex with this threads clock.
+            // Future threads that manage to acquire have a causal dependency on this thread's failed `try_lock`.
+            // Future threads that fail a `try_lock` have a causal dependency on this thread's successful `try_lock`.
+            state.clock.update(s.get_clock(me));
+
+            // Update this thread's clock with the clock stored in the Mutex.
+            // We need to do the vector clock update even in the failing case, because there's a causal
+            // dependency: if the `try_lock` fails, the current thread `t1` knows that the thread `t2`
+            // that owns the lock is in its critical section, and therefore `t1` has a causal dependency
+            // on everything that happened before in `t2` (which is recorded in the Mutex's clock).
+            s.update_clock(&state.clock);
+        });
+
+        drop(state);
+
+        // We need to let other threads in here so they
+        // (a) may fail a `try_lock` (in case we acquired), or
+        // (b) may release the lock (in case we failed to acquire) so we can succeed in a subsequent `try_lock`.
+        thread::switch();
+
+        result
     }
 
     /// Consumes this mutex, returning the underlying data.
@@ -153,6 +241,12 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 
 impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
+        // We don't need a context switch here *before* releasing the lock. There are two cases to analyze.
+        // * Other threads that want to `lock` are still blocked at this point.
+        // * Other threads that want to `try_lock` and would fail at this point (but not after we release)
+        //   were already runnable at the last context switch (which could have been right after we acquired)
+        //   and could have been scheduled then to fail the `try_lock`.
+
         self.inner = None;
 
         let mut state = self.mutex.state.borrow_mut();

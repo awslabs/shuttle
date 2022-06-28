@@ -48,6 +48,84 @@ fn trivial_two_threads() {
     assert_eq!(iterations.load(Ordering::SeqCst), 2);
 }
 
+/// We have two threads T0 and T1 with the following lifecycle (with letter denoting each step):
+/// * T0: spawns T1 (S), acquires lock (A), releases lock (R), finishes (F)
+/// * T1:                acquires lock (a), releases lock (r), finishes (f)
+///
+/// Additionally, T0 and T1 may block before acquiring the lock, which we denote by B and b,
+/// respectively.
+///
+/// We have a total of 16 interleavings: 8 where the critical sections do not overlap (4 where
+/// T0 goes first and 4 symmetric ones where T1 goes first), and 8 where the critical sections
+/// overlap (4 where T0 goes first and T1 blocks, and 4 symmetric ones where T1 goes first and
+/// T0 blocks). The following computation tree illustrates all interleavings.
+///
+/// ```
+/// digraph G {
+///   node[shape=point];
+///   "" -> "S" [label="S"];
+///   "S" -> "SA" [label="A"];
+///   "SA" -> "SAR" [label="R"];
+///   "SAR" -> "SARF" [label="F"];
+///   "SARF" -> "SARFa" [label="a"];
+///   "SARFa" -> "SARFar" [label="r"];
+///   "SARFar" -> "SARFarf" [label="f"];
+///   "SAR" -> "SARa" [label="a"];
+///   "SARa" -> "SARaF" [label="F"];
+///   "SARaF" -> "SARaFr" [label="r"];
+///   "SARaFr" -> "SARaFrf" [label="f"];
+///   "SARa" -> "SARar" [label="r"];
+///   "SARar" -> "SARarF" [label="F"];
+///   "SARarF" -> "SARarFf" [label="f"];
+///   "SARar" -> "SARarf" [label="f"];
+///   "SARarf" -> "SARarfF" [label="F"];
+///   "SA" -> "SAb" [label="b"];
+///   "SAb" -> "SAbR" [label="R"];
+///   "SAbR" -> "SAbRF" [label="F"];
+///   "SAbRF" -> "SAbRFa" [label="a"];
+///   "SAbRFa" -> "SAbRFar" [label="r"];
+///   "SAbRFar" -> "SAbRFarf" [label="f"];
+///   "SAbR" -> "SAbRa" [label="a"];
+///   "SAbRa" -> "SAbRaF" [label="F"];
+///   "SAbRaF" -> "SAbRaFr" [label="r"];
+///   "SAbRaFr" -> "SAbRaFrf" [label="f"];
+///   "SAbRa" -> "SAbRar" [label="r"];
+///   "SAbRar" -> "SAbRarF" [label="F"];
+///   "SAbRarF" -> "SAbRarFf" [label="f"];
+///   "SAbRar" -> "SAbRarf" [label="f"];
+///   "SAbRarf" -> "SAbRarfF" [label="F"];
+///   "S" -> "Sa" [label="a"];
+///   "Sa" -> "SaB" [label="B"];
+///   "SaB" -> "SaBr" [label="r"];
+///   "SaBr" -> "SaBrA" [label="A"];
+///   "SaBrA" -> "SaBrAR" [label="R"];
+///   "SaBrAR" -> "SaBrARF" [label="F"];
+///   "SaBrARF" -> "SaBrARFf" [label="f"];
+///   "SaBrAR" -> "SaBrARf" [label="f"];
+///   "SaBrARf" -> "SaBrARfF" [label="F"];
+///   "SaBrA" -> "SaBrAf" [label="f"];
+///   "SaBrAf" -> "SaBrAfR" [label="R"];
+///   "SaBrAfR" -> "SaBrAfRF" [label="F"];
+///   "SaBr" -> "SaBrf" [label="f"];
+///   "SaBrf" -> "SaBrfA" [label="A"];
+///   "SaBrfA" -> "SaBrfAR" [label="R"];
+///   "SaBrfAR" -> "SaBrfARF" [label="F"];
+///   "Sa" -> "Sar" [label="r"];
+///   "Sar" -> "SarA" [label="A"];
+///   "SarA" -> "SarAR" [label="R"];
+///   "SarAR" -> "SarARF" [label="F"];
+///   "SarARF" -> "SarARFf" [label="f"];
+///   "SarAR" -> "SarARf" [label="f"];
+///   "SarARf" -> "SarARfF" [label="F"];
+///   "SarA" -> "SarAf" [label="f"];
+///   "SarAf" -> "SarAfR" [label="R"];
+///   "SarAfR" -> "SarAfRF" [label="F"];
+///   "Sar" -> "Sarf" [label="f"];
+///   "Sarf" -> "SarfA" [label="A"];
+///   "SarfA" -> "SarfAR" [label="R"];
+///   "SarfAR" -> "SarfARF" [label="F"];
+/// }
+/// ```
 fn two_threads_work(counter: &Arc<AtomicUsize>) {
     counter.fetch_add(1, Ordering::SeqCst);
 
@@ -76,9 +154,8 @@ fn two_threads() {
         runner.run(move || two_threads_work(&counter));
     }
 
-    // 2 threads, 3 operations each (thread start, lock acq, lock rel)
-    // 2*3 choose 3 = 20
-    assert_eq!(iterations.load(Ordering::SeqCst), 20);
+    // See `two_threads_work` for an illustration of all 16 interleavings.
+    assert_eq!(iterations.load(Ordering::SeqCst), 16);
 }
 
 #[test]
@@ -92,18 +169,8 @@ fn two_threads_depth_4() {
         runner.run(move || two_threads_work(&counter));
     }
 
-    // We have two threads T0 and T1 with the following lifecycle (with letter denoting each step):
-    //    T0: spawns T1 (S), waits for lock (W), acquires + releases lock (L), finishes (F)
-    //    T1: waits for lock (w), acquires + releases lock (l), finishes (f)
-    //
-    // We have the following constraints:
-    //    operations in each thread are done in order
-    //    S happens before w
-    //
-    // The set of valid interleavings of depth 4 is therefore:
-    //    { SWLF, SWLw, SWwL, SWwl, SwWL, SwWl, SwlW, Swlf }
-    // for a total of 8 interleavings
-    assert_eq!(iterations.load(Ordering::SeqCst), 8);
+    // See `two_threads_work` for an illustration of all 6 interleavings up to depth 4.
+    assert_eq!(iterations.load(Ordering::SeqCst), 6);
 }
 
 #[test]
@@ -117,20 +184,8 @@ fn two_threads_depth_5() {
         runner.run(move || two_threads_work(&counter));
     }
 
-    // We have two threads T0 and T1 with the following lifecycle (with letter denoting each step):
-    //    T0: spawns T1 (S), waits for lock (W), acquires + releases lock (L), finishes (F)
-    //    T1: waits for lock (w), acquires + releases lock (l), finishes (f)
-    //
-    // We have the following constraints:
-    //    operations in each thread are done in order
-    //    S happens before w
-    //
-    // The set of valid interleavings of depth 5 is therefore:
-    //    { SWLFw, SWLwF, SWwLF, SwWLF,                // 4 ops by T0, 1 op  by T1
-    //      SWLwl, SWwLl, SWwlL, SwWLl, SwWlL, SwlWL,  // 3 ops by T0, 2 ops by T1
-    //      SWwlf, SwWlf, SwlWf, SwlfW }               // 2 ops by T0, 3 ops by T1
-    // for a total of 14 interleavings
-    assert_eq!(iterations.load(Ordering::SeqCst), 14);
+    // See `two_threads_work` for an illustration of all 10 interleavings up to depth 5.
+    assert_eq!(iterations.load(Ordering::SeqCst), 10);
 }
 
 #[test]

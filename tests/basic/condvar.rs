@@ -232,49 +232,57 @@ fn notify_one_order() {
 /// From "Operating Systems: Three Easy Pieces", Figure 30.8.
 /// Demonstrates why a waiter needs to check the condition in a `while` loop, not an if.
 /// http://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf
-#[test]
-#[should_panic(expected = "nothing to get")]
 fn producer_consumer_broken1() {
-    replay(
-        || {
-            let lock = Arc::new(Mutex::new(()));
-            let cond = Arc::new(Condvar::new());
-            let count = Arc::new(AtomicUsize::new(0));
+    let lock = Arc::new(Mutex::new(()));
+    let cond = Arc::new(Condvar::new());
+    let count = Arc::new(AtomicUsize::new(0));
 
-            // Two consumers
-            for _ in 0..2 {
-                let lock = Arc::clone(&lock);
-                let cond = Arc::clone(&cond);
-                let count = Arc::clone(&count);
-                thread::spawn(move || {
-                    for _ in 0..2 {
-                        let mut guard = lock.lock().unwrap();
-                        if count.load(Ordering::SeqCst) == 0 {
-                            guard = cond.wait(guard).unwrap();
-                        }
-                        // get()
-                        assert_eq!(count.load(Ordering::SeqCst), 1, "nothing to get");
-                        count.store(0, Ordering::SeqCst);
-                        cond.notify_one();
-                        drop(guard); // explicit unlock to match the book
-                    }
-                });
-            }
-
-            // One producer
+    // Two consumers
+    for _ in 0..2 {
+        let lock = Arc::clone(&lock);
+        let cond = Arc::clone(&cond);
+        let count = Arc::clone(&count);
+        thread::spawn(move || {
             for _ in 0..2 {
                 let mut guard = lock.lock().unwrap();
-                if count.load(Ordering::SeqCst) == 1 {
+                if count.load(Ordering::SeqCst) == 0 {
                     guard = cond.wait(guard).unwrap();
                 }
-                // put()
-                assert_eq!(count.load(Ordering::SeqCst), 0, "no space to put");
-                count.store(1, Ordering::SeqCst);
+                // get()
+                assert_eq!(count.load(Ordering::SeqCst), 1, "nothing to get");
+                count.store(0, Ordering::SeqCst);
                 cond.notify_one();
-                drop(guard);
+                drop(guard); // explicit unlock to match the book
             }
-        },
-        "910215000000408224002229",
+        });
+    }
+
+    // One producer
+    for _ in 0..2 {
+        let mut guard = lock.lock().unwrap();
+        if count.load(Ordering::SeqCst) == 1 {
+            guard = cond.wait(guard).unwrap();
+        }
+        // put()
+        assert_eq!(count.load(Ordering::SeqCst), 0, "no space to put");
+        count.store(1, Ordering::SeqCst);
+        cond.notify_one();
+        drop(guard);
+    }
+}
+
+#[test]
+#[should_panic]
+fn check_producer_consumer_broken1() {
+    check_random(producer_consumer_broken1, 5000)
+}
+
+#[test]
+#[should_panic(expected = "nothing to get")]
+fn replay_producer_consumer_broken1() {
+    replay(
+        producer_consumer_broken1,
+        "910219ccf2ead7a59dee9e4590000282249100208904",
     )
 }
 
@@ -282,50 +290,55 @@ fn producer_consumer_broken1() {
 /// with a while loop, not an if.
 /// Demonstrates why one condvar is not sufficient for a concurrent queue.
 /// http://pages.cs.wisc.edu/~remzi/OSTEP/threads-cv.pdf
-#[test]
-#[should_panic(expected = "deadlock")]
 fn producer_consumer_broken2() {
-    replay(
-        || {
-            let lock = Arc::new(Mutex::new(()));
-            let cond = Arc::new(Condvar::new());
-            let count = Arc::new(AtomicUsize::new(0));
+    let lock = Arc::new(Mutex::new(()));
+    let cond = Arc::new(Condvar::new());
+    let count = Arc::new(AtomicUsize::new(0));
 
-            // Two consumers
-            for _ in 0..2 {
-                let lock = Arc::clone(&lock);
-                let cond = Arc::clone(&cond);
-                let count = Arc::clone(&count);
-                thread::spawn(move || {
-                    for _ in 0..1 {
-                        let mut guard = lock.lock().unwrap();
-                        while count.load(Ordering::SeqCst) == 0 {
-                            guard = cond.wait(guard).unwrap();
-                        }
-                        // get()
-                        assert_eq!(count.load(Ordering::SeqCst), 1, "nothing to get");
-                        count.store(0, Ordering::SeqCst);
-                        cond.notify_one();
-                        drop(guard);
-                    }
-                });
-            }
-
-            // One producer
-            for _ in 0..2 {
+    // Two consumers
+    for _ in 0..2 {
+        let lock = Arc::clone(&lock);
+        let cond = Arc::clone(&cond);
+        let count = Arc::clone(&count);
+        thread::spawn(move || {
+            for _ in 0..1 {
                 let mut guard = lock.lock().unwrap();
-                while count.load(Ordering::SeqCst) == 1 {
+                while count.load(Ordering::SeqCst) == 0 {
                     guard = cond.wait(guard).unwrap();
                 }
-                // put()
-                assert_eq!(count.load(Ordering::SeqCst), 0, "no space to put");
-                count.store(1, Ordering::SeqCst);
+                // get()
+                assert_eq!(count.load(Ordering::SeqCst), 1, "nothing to get");
+                count.store(0, Ordering::SeqCst);
                 cond.notify_one();
                 drop(guard);
             }
-        },
-        "9102110090401004405202",
-    )
+        });
+    }
+
+    // One producer
+    for _ in 0..2 {
+        let mut guard = lock.lock().unwrap();
+        while count.load(Ordering::SeqCst) == 1 {
+            guard = cond.wait(guard).unwrap();
+        }
+        // put()
+        assert_eq!(count.load(Ordering::SeqCst), 0, "no space to put");
+        count.store(1, Ordering::SeqCst);
+        cond.notify_one();
+        drop(guard);
+    }
+}
+
+#[test]
+#[should_panic]
+fn check_producer_consumer_broken2() {
+    check_random(producer_consumer_broken2, 5000)
+}
+
+#[test]
+#[should_panic(expected = "deadlock")]
+fn replay_producer_consumer_broken2() {
+    replay(producer_consumer_broken2, "91021499a0ee829bee85922b104410200052a404")
 }
 
 /// From "Operating Systems: Three Easy Pieces", Figure 30.12. Like `producer_consumer_broken2`, but
