@@ -1,3 +1,14 @@
+# 0.2.0 (July 7, 2022)
+
+Note that failing test schedules created by versions of Shuttle before 0.2.0 will not successfully
+`replay` on version 0.2.0, and vice versa, as the changes below affect `Mutex` and `RwLock`
+scheduling decisions.
+
+* Implement `Mutex::try_lock` (#71)
+* Implement `RwLock::{try_read, try_write}` (#72)
+* Export a version of `std::sync::Weak` (#69)
+* Provide better error messages for deadlocks caused by non-reentrant locking (#66)
+
 # 0.1.0 (April 5, 2022)
 
 * Implement `Condvar::wait_while` and `Condvar::wait_timeout_while` (#59)
