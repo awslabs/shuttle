@@ -299,14 +299,20 @@ impl TaskSet {
         self.tasks.iter().all(|b| !*b)
     }
 
-    pub fn insert(&mut self, tid: TaskId) {
+    /// Add a task to the set. If the set did not have this value present, `true` is returned. If
+    /// the set did have this value present, `false` is returned.
+    pub fn insert(&mut self, tid: TaskId) -> bool {
         if tid.0 >= self.tasks.len() {
             self.tasks.resize(1 + tid.0, false);
         }
-        *self.tasks.get_mut(tid.0).unwrap() = true;
+        !std::mem::replace(&mut *self.tasks.get_mut(tid.0).unwrap(), true)
     }
 
+    /// Removes a value from the set. Returns whether the value was present in the set.
     pub fn remove(&mut self, tid: TaskId) -> bool {
+        if tid.0 >= self.tasks.len() {
+            return false;
+        }
         std::mem::replace(&mut self.tasks.get_mut(tid.0).unwrap(), false)
     }
 
