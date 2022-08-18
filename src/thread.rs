@@ -36,6 +36,16 @@ impl Thread {
     pub fn id(&self) -> ThreadId {
         self.id
     }
+
+    /// Atomically makes the handle's token available if it is not already.
+    pub fn unpark(&self) {
+        ExecutionState::with(|s| {
+            s.get_mut(self.id.task_id).unpark();
+        });
+
+        // Making the token available is a yield point
+        thread::switch();
+    }
 }
 
 /// Spawn a new thread, returning a JoinHandle for it.
@@ -170,7 +180,27 @@ pub fn current() -> Thread {
     }
 }
 
-// TODO: Implement park(), unpark()
+/// Blocks unless or until the current thread's token is made available.
+pub fn park() {
+    let switch = ExecutionState::with(|s| s.current_mut().park());
+
+    // We only need to context switch if the park token was unavailable. If it was available, then
+    // any execution reachable by context switching here would also be reachable by having not
+    // chosen this thread at the last context switch, because the park state of a thread is only
+    // observable by the thread itself.
+    if switch {
+        thread::switch();
+    }
+}
+
+/// Blocks unless or until the current thread's token is made available or the specified duration
+/// has been reached (may wake spuriously).
+///
+/// Note that Shuttle does not module time, so this behaves identically to `park`. It cannot
+/// spuriously wake.
+pub fn park_timeout(_dur: Duration) {
+    park();
+}
 
 /// Thread factory, which can be used in order to configure the properties of a new thread.
 #[derive(Debug, Default)]

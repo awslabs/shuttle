@@ -1,5 +1,6 @@
-use shuttle::sync::Mutex;
+use shuttle::sync::{Condvar, Mutex};
 use shuttle::{check_dfs, check_random, thread};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use test_log::test;
@@ -375,4 +376,120 @@ mod thread_local {
             None,
         )
     }
+}
+
+#[test]
+fn thread_park() {
+    check_dfs(
+        || {
+            let flag = Arc::new(AtomicBool::new(false));
+            let thd = {
+                let flag = Arc::clone(&flag);
+                thread::spawn(move || {
+                    thread::park();
+                    assert!(flag.load(Ordering::SeqCst));
+                })
+            };
+
+            flag.store(true, Ordering::SeqCst);
+            thd.thread().unpark();
+            thd.join().unwrap();
+        },
+        None,
+    )
+}
+
+#[test]
+#[should_panic(expected = "deadlock")]
+fn thread_park_deadlock() {
+    check_dfs(
+        || {
+            thread::park();
+        },
+        None,
+    )
+}
+
+// From the docs: "Because the token is initially absent, `unpark` followed by `park` will result in
+// the second call returning immediately"
+#[test]
+fn thread_unpark_park() {
+    check_dfs(
+        || {
+            thread::current().unpark();
+            thread::park();
+        },
+        None,
+    )
+}
+
+// Unparking a thread should not unconditionally unblock it (e.g., if it's blocked waiting on a lock
+// rather than parked)
+#[test]
+fn thread_unpark_unblock() {
+    check_dfs(
+        || {
+            let lock = Arc::new(Mutex::new(false));
+            let condvar = Arc::new(Condvar::new());
+
+            let reader = {
+                let lock = Arc::clone(&lock);
+                let condvar = Arc::clone(&condvar);
+                thread::spawn(move || {
+                    let mut guard = lock.lock().unwrap();
+                    while !*guard {
+                        guard = condvar.wait(guard).unwrap();
+                    }
+                })
+            };
+
+            let _writer = {
+                let lock = Arc::clone(&lock);
+                let condvar = Arc::clone(&condvar);
+                thread::spawn(move || {
+                    let mut guard = lock.lock().unwrap();
+                    *guard = true;
+                    condvar.notify_one();
+                })
+            };
+
+            reader.thread().unpark();
+        },
+        None,
+    )
+}
+
+// Calling `unpark` on a thread that has already been unparked should be a no-op
+#[test]
+fn thread_double_unpark() {
+    let seen_unparks = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    let seen_unparks_clone = Arc::clone(&seen_unparks);
+
+    check_dfs(
+        move || {
+            let unpark_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let parkee = {
+                let seen_unparks = Arc::clone(&seen_unparks);
+                let unpark_count = Arc::clone(&unpark_count);
+                thread::spawn(move || {
+                    thread::park();
+                    let unpark_count = unpark_count.load(Ordering::SeqCst);
+                    seen_unparks.lock().unwrap().insert(unpark_count);
+                    // If this is 1 we know `unpark` will be uncalled again, so this won't deadlock
+                    if unpark_count == 1 {
+                        thread::park();
+                    }
+                })
+            };
+
+            unpark_count.fetch_add(1, Ordering::SeqCst);
+            parkee.thread().unpark();
+            unpark_count.fetch_add(1, Ordering::SeqCst);
+            parkee.thread().unpark();
+        },
+        None,
+    );
+
+    let seen_unparks = Arc::try_unwrap(seen_unparks_clone).unwrap().into_inner().unwrap();
+    assert_eq!(seen_unparks, HashSet::from([1, 2]));
 }
