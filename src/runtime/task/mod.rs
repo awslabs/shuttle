@@ -43,6 +43,7 @@ pub(crate) struct Task {
     pub(super) id: TaskId,
     pub(super) state: TaskState,
     pub(super) detached: bool,
+    park_state: ParkState,
 
     pub(super) continuation: Rc<RefCell<PooledContinuation>>,
 
@@ -79,6 +80,7 @@ impl Task {
             waker,
             woken: false,
             detached: false,
+            park_state: ParkState::Unavailable,
             name,
             local_storage: StorageMap::new(),
         }
@@ -245,6 +247,30 @@ impl Task {
     pub(crate) fn pop_local(&mut self) -> Option<Box<dyn Any>> {
         self.local_storage.pop()
     }
+
+    /// Park the task if its park token is unavailable. Returns true if the token was unavailable.
+    pub(crate) fn park(&mut self) -> bool {
+        match self.park_state {
+            ParkState::Unparked => {
+                self.park_state = ParkState::Unavailable;
+                false
+            }
+            ParkState::Unavailable => {
+                self.park_state = ParkState::Parked;
+                self.block();
+                true
+            }
+            ParkState::Parked => unreachable!("cannot park a task that's already parked"),
+        }
+    }
+
+    /// Make the task's park token available, and unblock the task if it was parked.
+    pub(crate) fn unpark(&mut self) {
+        if std::mem::replace(&mut self.park_state, ParkState::Unparked) == ParkState::Parked {
+            assert!(self.blocked());
+            self.unblock();
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -257,6 +283,17 @@ pub(crate) enum TaskState {
     Sleeping,
     /// Task has finished
     Finished,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+pub(crate) enum ParkState {
+    /// The task has parked itself and not yet been unparked, so the park token is unavailable.
+    /// Invariant: if ParkState is Parked, the task is Blocked
+    Parked,
+    /// Another task has unparked this one, so the park token is available.
+    Unparked,
+    /// The park token is not available. The task should enter Parked state on the next `park` call.
+    Unavailable,
 }
 
 /// A `TaskId` is a unique identifier for a task. `TaskId`s are never reused within a single
