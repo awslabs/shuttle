@@ -30,7 +30,7 @@ pub(crate) fn serialize_schedule(schedule: &Schedule) -> String {
     let task_id_bits = std::mem::size_of_val(&max_task_id) * 8 - usize::from(max_task_id).leading_zeros() as usize;
     let task_id_bits = task_id_bits.max(1);
 
-    let mut encoded = bitvec![Lsb0, u8; 0; schedule.steps.len() * (1 + task_id_bits)];
+    let mut encoded = bitvec![u8, Lsb0; 0; schedule.steps.len() * (1 + task_id_bits)];
     let mut offset = 0usize;
     for step in &schedule.steps {
         match step {
@@ -73,7 +73,7 @@ pub(crate) fn deserialize_schedule(str: &str) -> Option<Schedule> {
     let schedule_len = bytes.read_usize_varint().ok()?;
     let seed = bytes.read_u64_varint().ok()?;
 
-    let encoded = BitSlice::<Lsb0, _>::from_slice(bytes).unwrap();
+    let encoded = BitSlice::<_, Lsb0>::from_slice(bytes);
     let mut offset = 0usize;
     let mut steps = Vec::with_capacity(schedule_len);
     while steps.len() < schedule_len {
