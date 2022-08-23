@@ -181,6 +181,7 @@
 //! [pct]: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf
 
 pub mod asynch;
+pub mod hint;
 pub mod rand;
 pub mod sync;
 pub mod thread;
