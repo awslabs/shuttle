@@ -70,6 +70,9 @@ impl Continuation {
             let function = function.clone();
 
             Gn::new_opt(stack_size, move || {
+                // Move the whole `ContinuationFunction`, not just its field (Rust 2021 thing)
+                let _ = &function;
+
                 loop {
                     // Tell the caller we've finished the previous user function (or if this is our
                     // first time around the loop, the caller below expects us to pretend we've
