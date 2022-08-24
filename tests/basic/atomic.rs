@@ -1,6 +1,6 @@
 use crate::basic::clocks::{check_clock, me};
 use shuttle::sync::atomic::*;
-use shuttle::{asynch, check_dfs, thread};
+use shuttle::{check_dfs, future, thread};
 use std::collections::HashSet;
 use std::sync::Arc;
 use test_log::test;
@@ -545,10 +545,10 @@ fn atomics_futures() {
 
             let future = {
                 let flag = Arc::clone(&flag);
-                asynch::spawn(async move { flag.fetch_add(1, Ordering::SeqCst) })
+                future::spawn(async move { flag.fetch_add(1, Ordering::SeqCst) })
             };
 
-            let old = asynch::block_on(future).unwrap();
+            let old = future::block_on(future).unwrap();
 
             assert_eq!(old, 0);
             assert_eq!(flag.load(Ordering::SeqCst), 1);

@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::sync::atomic::{AtomicUsize, Ordering};
-use shuttle::{asynch, thread, Runner};
+use shuttle::{future, thread, Runner};
 use std::sync::Arc;
 
 const NUM_TASKS: usize = 10;
@@ -16,13 +16,13 @@ fn counter_async(scheduler: impl Scheduler + 'static) {
         let tasks: Vec<_> = (0..NUM_TASKS)
             .map(|_| {
                 let counter = Arc::clone(&counter);
-                asynch::spawn(async move {
+                future::spawn(async move {
                     counter.fetch_add(1, Ordering::SeqCst);
                 })
             })
             .collect();
 
-        asynch::block_on(async move {
+        future::block_on(async move {
             for t in tasks {
                 t.await.unwrap();
             }

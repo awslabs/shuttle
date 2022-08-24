@@ -1,5 +1,5 @@
 use futures::{future::FutureExt, join, pin_mut, select};
-use shuttle::{asynch, check_dfs};
+use shuttle::{check_dfs, future};
 use std::{
     cell::RefCell,
     fmt::Debug,
@@ -53,11 +53,11 @@ fn timer_simple() {
             let timera = CountdownTimer::new(1, 10);
             let timerb = CountdownTimer::new(2, 20);
             let timerc = CountdownTimer::new(3, 40);
-            let v1 = asynch::spawn(timera); // no need for async block
-            let v2 = asynch::spawn(async move { timerb.await });
-            let v3 = asynch::spawn(async move { timerc.await });
+            let v1 = future::spawn(timera); // no need for async block
+            let v2 = future::spawn(async move { timerb.await });
+            let v3 = future::spawn(async move { timerc.await });
             // Spawn another task that waits for the timers and checks the return values
-            asynch::block_on(async move {
+            future::block_on(async move {
                 let sum = v1.await.unwrap() + v2.await.unwrap() + v3.await.unwrap();
                 assert_eq!(sum, 10 + 20 + 40);
             });
@@ -72,8 +72,8 @@ fn timer_block_on() {
         || {
             let timer_1 = CountdownTimer::new(1, 10);
             let timer_2 = CountdownTimer::new(5, 20);
-            let v1 = asynch::block_on(timer_1);
-            let v2 = asynch::block_on(timer_2);
+            let v1 = future::block_on(timer_1);
+            let v2 = future::block_on(timer_2);
             assert_eq!(v1 + v2, 10 + 20);
         },
         None,
@@ -87,7 +87,7 @@ fn timer_select() {
             let timer1 = CountdownTimer::new(10, 10).fuse();
             let timer2 = CountdownTimer::new(20, 20).fuse();
             let timer3 = CountdownTimer::new(30, 30).fuse();
-            let r = asynch::block_on(async {
+            let r = future::block_on(async {
                 pin_mut!(timer1, timer2, timer3);
                 select! {
                     v1 = timer1 => v1,
@@ -108,7 +108,7 @@ fn timer_join() {
             let timer1 = CountdownTimer::new(10, 10);
             let timer2 = CountdownTimer::new(20, 20);
             let timer3 = CountdownTimer::new(30, 30);
-            let (v1, v2, v3) = asynch::block_on(async { join!(timer1, timer2, timer3) });
+            let (v1, v2, v3) = future::block_on(async { join!(timer1, timer2, timer3) });
             assert_eq!(v1 + v2 + v3, 60);
         },
         None,

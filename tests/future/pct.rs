@@ -5,9 +5,9 @@ use std::task::{Context, Poll};
 
 use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Arc;
-use shuttle::{asynch, Config, MaxSteps, Runner};
+use shuttle::{future, Config, MaxSteps, Runner};
 
-/// Like [`shuttle::asynch::yield_now`] but doesn't request a yield from the scheduler
+/// Like [`shuttle::future::yield_now`] but doesn't request a yield from the scheduler
 struct UnfairYieldNow {
     yielded: bool,
 }
@@ -42,16 +42,16 @@ fn yield_spin_loop(use_yield: bool) {
         let _thds = (0..NUM_TASKS)
             .map(|_| {
                 let count = count.clone();
-                asynch::spawn(async move {
+                future::spawn(async move {
                     count.fetch_add(1, Ordering::SeqCst);
                 })
             })
             .collect::<Vec<_>>();
 
-        asynch::block_on(async move {
+        future::block_on(async move {
             while count.load(Ordering::SeqCst) < NUM_TASKS {
                 if use_yield {
-                    asynch::yield_now().await;
+                    future::yield_now().await;
                 } else {
                     let yielder = UnfairYieldNow { yielded: false };
                     yielder.await;
