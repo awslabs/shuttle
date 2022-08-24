@@ -1,3 +1,13 @@
+# 0.3.0 (August 29, 2022)
+
+Note that clients using async primitives provided by Shuttle (task `spawn`, `block_on`, `yield_now`) will
+need to be updated due to the renaming of the `asynch` module to `future` in this release.
+
+* Rust 2021 conversion and dependency bumps (#76)
+* Implement `thread::park` and `thread::unpark` (#77)
+* Implement `std::hint` (#78)
+* Rename the `asynch` module to `future` (#79)
+
 # 0.2.0 (July 7, 2022)
 
 Note that failing test schedules created by versions of Shuttle before 0.2.0 will not successfully
