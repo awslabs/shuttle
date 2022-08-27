@@ -7,7 +7,7 @@
 
 use futures::channel::{mpsc, oneshot};
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use shuttle::{asynch, check_dfs};
+use shuttle::{check_dfs, future};
 use std::collections::HashSet;
 use test_log::test;
 
@@ -17,11 +17,11 @@ fn oneshot_once_blocking() {
         || {
             let (tx, rx) = oneshot::channel();
 
-            let _ = asynch::spawn(async move {
+            let _ = future::spawn(async move {
                 tx.send(42u32).unwrap();
             });
 
-            asynch::block_on(async {
+            future::block_on(async {
                 let x = rx.await.unwrap();
                 assert_eq!(x, 42u32);
             });
@@ -36,11 +36,11 @@ fn oneshot_once() {
         || {
             let (tx, rx) = oneshot::channel();
 
-            asynch::spawn(async move {
+            future::spawn(async move {
                 tx.send(42u32).unwrap();
             });
 
-            asynch::spawn(async {
+            future::spawn(async {
                 let x = rx.await.unwrap();
                 assert_eq!(x, 42u32);
             });
@@ -56,13 +56,13 @@ fn oneshot_ping_pong() {
             let (tx1, rx1) = oneshot::channel();
             let (tx2, rx2) = oneshot::channel();
 
-            let _ = asynch::spawn(async move {
+            let _ = future::spawn(async move {
                 tx1.send(0u32).unwrap();
                 let x = rx2.await.unwrap();
                 assert_eq!(x, 1);
             });
 
-            asynch::block_on(async {
+            future::block_on(async {
                 let x = rx1.await.unwrap();
                 assert_eq!(x, 0);
                 tx2.send(1u32).unwrap();
@@ -79,11 +79,11 @@ fn oneshot_deadlock() {
         || {
             let (tx, rx) = oneshot::channel();
 
-            let task = asynch::spawn(async move {
+            let task = future::spawn(async move {
                 let _ = rx.await;
             });
 
-            asynch::block_on(async move {
+            future::block_on(async move {
                 task.await.unwrap();
                 tx.send(0u32).unwrap();
             })
@@ -103,7 +103,7 @@ where
 
     for i in 0..num_tasks {
         let mut tx = tx.clone();
-        asynch::spawn(async move {
+        future::spawn(async move {
             tx.send(i).await.expect("send should succeed");
         });
     }
@@ -112,7 +112,7 @@ where
     // the sender, so we need to drop the original one.
     drop(tx);
 
-    asynch::block_on(async move {
+    future::block_on(async move {
         let stream = rx.fold(0, |acc, x| async move { acc + x });
         let result = stream.await;
         assert_eq!(result, num_tasks * (num_tasks - 1) / 2);
@@ -156,7 +156,7 @@ where
 
             for i in 0..num_tasks {
                 let mut tx = tx.clone();
-                asynch::spawn(async move {
+                future::spawn(async move {
                     tx.send(i).await.expect("send should succeed");
                 });
             }
@@ -166,7 +166,7 @@ where
             drop(tx);
 
             let permutations = permutations_clone.clone();
-            asynch::block_on(async move {
+            future::block_on(async move {
                 let result = rx.collect::<Vec<_>>().await;
                 let mut p = permutations.lock().unwrap();
                 p.insert(result);
@@ -204,7 +204,7 @@ fn mpsc_stream_sender_maybe_deadlock(should_drop_sender: bool) {
     let (tx, rx) = mpsc::unbounded::<usize>();
     {
         let mut tx = tx.clone();
-        asynch::spawn(async move {
+        future::spawn(async move {
             tx.send(42usize).await.unwrap();
         })
     };
@@ -213,7 +213,7 @@ fn mpsc_stream_sender_maybe_deadlock(should_drop_sender: bool) {
         drop(tx);
     }
 
-    asynch::block_on(async move {
+    future::block_on(async move {
         // This will only complete if we dropped the sender above
         let ret = rx.collect::<Vec<_>>().await;
         assert_eq!(ret, vec![42]);

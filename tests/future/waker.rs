@@ -1,7 +1,7 @@
 use futures::future::poll_fn;
 use shuttle::sync::atomic::{AtomicBool, Ordering};
 use shuttle::sync::Mutex;
-use shuttle::{asynch, check_dfs, thread};
+use shuttle::{check_dfs, future, thread};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -40,7 +40,7 @@ fn wake_after_finish() {
             // Convert `future1` into an `async fn`, which is not allowed to be polled again after
             // returning `Ready`
             let future1_clone = future1.clone();
-            asynch::block_on(async move {
+            future::block_on(async move {
                 future1_clone.await;
             });
 
@@ -73,7 +73,7 @@ fn wake_during_poll() {
                 }
             });
 
-            asynch::block_on(poll_fn(move |cx| {
+            future::block_on(poll_fn(move |cx| {
                 *waker.lock().unwrap() = Some(cx.waker().clone());
 
                 if signal.load(Ordering::SeqCst) {
@@ -117,7 +117,7 @@ fn wake_during_blocked_poll() {
                 }
             });
 
-            asynch::block_on(poll_fn(move |cx| {
+            future::block_on(poll_fn(move |cx| {
                 *waker.lock().unwrap() = Some(cx.waker().clone());
 
                 let mut counter = counter.lock().unwrap();

@@ -1,9 +1,9 @@
 #![deny(warnings)]
 
-mod asynch;
 mod basic;
 mod data;
 mod demo;
+mod future;
 
 use shuttle::scheduler::{ReplayScheduler, Scheduler};
 use shuttle::{replay_from_file, Config, FailurePersistence, Runner};

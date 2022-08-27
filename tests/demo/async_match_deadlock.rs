@@ -4,14 +4,14 @@
 //! Drawn from https://fasterthanli.me/articles/a-rust-match-made-in-hell with slight changes to
 //! switch from `parking_lot` to `std` and from `tokio` to our futures executor.
 
-use shuttle::asynch as tokio;
+use shuttle::future as tokio;
 use shuttle::sync::{Arc, RwLock};
 use std::time::Duration;
 use test_log::test;
 
 /// We don't have an equivalent of `tokio::time::sleep`, but yielding has basically the same effect
 async fn sleep(_duration: Duration) {
-    shuttle::asynch::yield_now().await;
+    shuttle::future::yield_now().await;
 }
 
 #[derive(Default)]
@@ -71,7 +71,7 @@ fn async_match_deadlock() {
 
 #[test]
 #[should_panic(expected = "tried to acquire a RwLock it already holds")]
-fn asynch_match_deadlock_replay() {
+fn async_match_deadlock_replay() {
     // Deterministically replay a deadlocking execution so we can, for example, single-step through
     // it in a debugger.
     shuttle::replay(|| tokio::block_on(main()), "91010cbbc0daf8c5a5a9b162a08a08")
