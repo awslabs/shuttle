@@ -88,7 +88,7 @@ impl AtomicBool {
         success: Ordering,
         failure: Ordering,
     ) -> Result<bool, bool> {
-        self.fetch_update(success, failure, |val| (val == current).then(|| new))
+        self.fetch_update(success, failure, |val| (val == current).then_some(new))
     }
 
     /// Stores a value into the atomic boolean if the current value is the same as the
