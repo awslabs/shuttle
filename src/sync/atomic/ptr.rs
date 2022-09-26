@@ -93,7 +93,7 @@ impl<T> AtomicPtr<T> {
         success: Ordering,
         failure: Ordering,
     ) -> Result<*mut T, *mut T> {
-        self.fetch_update(success, failure, |val| (val == current).then(|| new))
+        self.fetch_update(success, failure, |val| (val == current).then_some(new))
     }
 
     /// Stores a value into the atomic pointer if the current value is the same as the
