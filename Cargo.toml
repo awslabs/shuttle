@@ -1,6 +1,6 @@
 [package]
 name = "shuttle"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "A library for testing concurrent Rust code"
@@ -9,10 +9,10 @@ keywords = ["concurrency", "lock", "thread", "async"]
 categories = ["asynchronous", "concurrency", "development-tools::testing"]
 
 [dependencies]
-ansi_term = "0.12.1"
 bitvec = "1.0.1"
 generator = "0.7.1"
 hex = "0.4.2"
+owo-colors = "3.5.0"
 rand_core = "0.5.1"
 rand = "0.7.3"
 rand_pcg = "0.2.1"

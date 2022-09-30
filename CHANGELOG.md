@@ -1,3 +1,7 @@
+# 0.4.0 (September 30, 2022)
+
+* Depdendency updates
+
 # 0.3.0 (August 29, 2022)
 
 Note that clients using async primitives provided by Shuttle (task `spawn`, `block_on`, `yield_now`) will
