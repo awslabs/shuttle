@@ -69,7 +69,7 @@ static PRINTED_ORDERING_WARNING: std::sync::atomic::AtomicBool = std::sync::atom
 
 #[inline]
 fn maybe_warn_about_ordering(order: Ordering) {
-    use ansi_term::Colour;
+    use owo_colors::OwoColorize;
 
     #[allow(clippy::collapsible_if)]
     if order != Ordering::SeqCst {
@@ -90,7 +90,7 @@ fn maybe_warn_about_ordering(order: Ordering) {
                 as if they were SeqCst. Bugs caused by weaker orderings like {:?} may be missed. \
                 See https://docs.rs/shuttle/*/shuttle/sync/atomic/index.html#warning-about-relaxed-behaviors \
                 for details or to disable this warning.",
-                Colour::Yellow.normal().paint("WARNING"),
+                "WARNING".yellow(),
                 order
             );
         }
