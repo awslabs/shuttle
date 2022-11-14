@@ -261,7 +261,7 @@ impl ExecutionState {
         if EXECUTION_STATE.is_set() {
             EXECUTION_STATE.with(|cell| {
                 if let Ok(mut state) = cell.try_borrow_mut() {
-                    Some(f(&mut *state))
+                    Some(f(&mut state))
                 } else {
                     None
                 }

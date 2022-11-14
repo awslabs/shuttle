@@ -262,7 +262,7 @@ impl<T: ?Sized> RwLock<T> {
         });
 
         // Block all other waiters, since we won the race to take this lock
-        Self::block_waiters(&*state, me, typ);
+        Self::block_waiters(&state, me, typ);
         drop(state);
 
         // We need to let other threads in here so they may fail a `try_read` or `try_write`. This
@@ -327,7 +327,7 @@ impl<T: ?Sized> RwLock<T> {
         });
 
         // Block all other waiters, since we won the race to take this lock
-        Self::block_waiters(&*state, me, typ);
+        Self::block_waiters(&state, me, typ);
         drop(state);
 
         // We need to let other threads in here so they
@@ -459,7 +459,7 @@ impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
 
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
-        RwLock::<T>::unblock_waiters(&*state, self.me, RwLockType::Read);
+        RwLock::<T>::unblock_waiters(&state, self.me, RwLockType::Read);
 
         drop(state);
 
@@ -529,7 +529,7 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
 
         // Unblock every thread waiting on this lock. The scheduler will choose one of them to win
         // the race to this lock, and that thread will re-block all the losers.
-        RwLock::<T>::unblock_waiters(&*state, self.me, RwLockType::Write);
+        RwLock::<T>::unblock_waiters(&state, self.me, RwLockType::Write);
         drop(state);
 
         // Releasing a lock is a yield point
