@@ -1,5 +1,6 @@
 use futures::{try_join, Future};
 use shuttle::sync::Mutex;
+use shuttle::thread::park;
 use shuttle::{check_dfs, check_random, future, scheduler::PctScheduler, thread, Runner};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -177,6 +178,26 @@ fn async_yield() {
         },
         None,
     )
+}
+
+#[test]
+fn join_handle_abort() {
+    check_dfs(
+        || {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let t1 = future::spawn({
+                let counter = Arc::clone(&counter);
+                async move {
+                    park();
+                    counter.fetch_add(1, Ordering::SeqCst)
+                }
+            });
+            t1.abort();
+            t1.abort(); // should be safe to call it twice
+            assert_eq!(0, counter.load(Ordering::SeqCst));
+        },
+        None,
+    );
 }
 
 fn async_counter() {
