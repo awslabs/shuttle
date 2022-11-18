@@ -37,9 +37,13 @@ pub struct JoinHandle<T> {
 
 impl<T> JoinHandle<T> {
     /// Abort the task associated with the handle.
-    // TODO implement (only tokio provides this)
     pub fn abort(&self) {
-        unimplemented!();
+        ExecutionState::try_with(|state| {
+            if !state.is_finished() {
+                let task = state.get_mut(self.task_id);
+                task.detach();
+            }
+        });
     }
 }
 
@@ -53,12 +57,7 @@ pub enum JoinError {
 
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
-        ExecutionState::try_with(|state| {
-            if !state.is_finished() {
-                let task = state.get_mut(self.task_id);
-                task.detach();
-            }
-        });
+        self.abort();
     }
 }
 
