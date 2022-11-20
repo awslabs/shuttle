@@ -73,28 +73,7 @@ where
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
     let task_id = {
         let result = std::sync::Arc::clone(&result);
-        let f = move || {
-            let ret = f();
-
-            // Run thread-local destructors before publishing the result, because
-            // [`JoinHandle::join`] says join "waits for the associated thread to finish", but
-            // destructors must be run on the thread, so it can't be considered "finished" if the
-            // destructors haven't run yet.
-            // See `pop_local` for details on why this loop looks this slightly funky way.
-            while let Some(local) = ExecutionState::with(|state| state.current_mut().pop_local()) {
-                drop(local);
-            }
-
-            // Publish the result and unblock the waiter. We need to do this now, because once this
-            // closure completes, the Execution will consider this task Finished and invoke the
-            // scheduler.
-            *result.lock().unwrap() = Some(Ok(ret));
-            ExecutionState::with(|state| {
-                if let Some(waiter) = state.current_mut().take_waiter() {
-                    state.get_mut(waiter).unblock();
-                }
-            });
-        };
+        let f = move || thread_fn(f, result);
         ExecutionState::spawn_thread(f, stack_size, name.clone(), None)
     };
 
@@ -110,6 +89,41 @@ where
         thread,
         result,
     }
+}
+
+/// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
+/// stores the result of the thread in the given lock.
+pub(crate) fn thread_fn<F, T>(f: F, result: std::sync::Arc<std::sync::Mutex<Option<std::thread::Result<T>>>>)
+where
+    F: FnOnce() -> T,
+    F: Send + 'static,
+    T: Send + 'static,
+{
+    let ret = f();
+
+    tracing::trace!("thread finished, dropping thread locals");
+
+    // Run thread-local destructors before publishing the result, because
+    // [`JoinHandle::join`] says join "waits for the associated thread to finish", but
+    // destructors must be run on the thread, so it can't be considered "finished" if the
+    // destructors haven't run yet.
+    // See `pop_local` for details on why this loop looks this slightly funky way.
+    while let Some(local) = ExecutionState::with(|state| state.current_mut().pop_local()) {
+        tracing::trace!("dropping thread local {:p}", local);
+        drop(local);
+    }
+
+    tracing::trace!("done dropping thread locals");
+
+    // Publish the result and unblock the waiter. We need to do this now, because once this
+    // closure completes, the Execution will consider this task Finished and invoke the
+    // scheduler.
+    *result.lock().unwrap() = Some(Ok(ret));
+    ExecutionState::with(|state| {
+        if let Some(waiter) = state.current_mut().take_waiter() {
+            state.get_mut(waiter).unblock();
+        }
+    });
 }
 
 /// An owned permission to join on a thread (block on its termination).

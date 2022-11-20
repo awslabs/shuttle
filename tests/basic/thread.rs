@@ -247,6 +247,40 @@ mod thread_local {
         assert_eq!(DROPS.load(Ordering::SeqCst), 3);
     }
 
+    #[test]
+    fn drop_main_thread() {
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+        shuttle::thread_local! {
+            static DROPPED_LOCAL: CountDrops = CountDrops::new(&DROPS);
+        }
+        let seen_drop_counters = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let seen_drop_counters_clone = seen_drop_counters.clone();
+
+        check_dfs(
+            move || {
+                DROPS.store(0, Ordering::SeqCst);
+                let seen_drop_counters = seen_drop_counters.clone();
+                let _thd = thread::spawn(move || {
+                    // force access to the thread local so that it's initialized
+                    DROPPED_LOCAL.with(|local| assert!(local.dummy));
+                    // record the current drop counter
+                    seen_drop_counters.lock().unwrap().insert(DROPS.load(Ordering::SeqCst));
+                });
+
+                // force access to the thread local so that it's initialized
+                DROPPED_LOCAL.with(|local| assert!(local.dummy));
+            },
+            None,
+        );
+
+        // We should have seen both orderings. In particular, it should be possible for the main
+        // thread to drop its thread local before the spawned thread.
+        assert_eq!(
+            Arc::try_unwrap(seen_drop_counters_clone).unwrap().into_inner().unwrap(),
+            HashSet::from([0, 1])
+        );
+    }
+
     // Like `drop`, but the destructor for one thread local initializes another thread local, and so
     // both destructors must be run (which Loom doesn't do)
     #[test]
@@ -375,6 +409,27 @@ mod thread_local {
             },
             None,
         )
+    }
+
+    /// Thread-local destructors weren't being run for the main thread
+    /// https://github.com/awslabs/shuttle/issues/86
+    #[test]
+    fn regression_86() {
+        use core::cell::Cell;
+        use shuttle::sync::*;
+        let mu: &'static mut Mutex<usize> = Box::leak(Box::new(Mutex::new(0))); // a static_local here instead also works
+        shuttle::thread_local! {
+            static STASH: Cell<Option<MutexGuard<'_, usize>>> = Cell::new(None);
+        }
+        shuttle::check_random(
+            || {
+                shuttle::thread::spawn(|| {
+                    STASH.with(|s| s.set(Some(mu.lock().unwrap())));
+                });
+                STASH.with(|s| s.set(Some(mu.lock().unwrap())));
+            },
+            100,
+        );
     }
 }
 

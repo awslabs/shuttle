@@ -4,6 +4,7 @@ use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
@@ -63,7 +64,7 @@ impl Execution {
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
             ExecutionState::spawn_thread(
-                f,
+                move || thread_fn(f, Default::default()),
                 config.stack_size,
                 Some("main-thread".to_string()),
                 Some(VectorClock::new()),
