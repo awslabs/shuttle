@@ -149,10 +149,10 @@ fn test_bounded_buffer_find_deadlock_configuration() {
         move || {
             let mut rng = thread_rng();
 
-            let buffer_size = rng.gen_range(0usize, 5) + 1;
-            let readers = rng.gen_range(0usize, 5) + 1;
-            let writers = rng.gen_range(0usize, 5) + 1;
-            let iterations = rng.gen_range(0usize, 10) + 1;
+            let buffer_size = rng.gen_range(0usize..5) + 1;
+            let readers = rng.gen_range(0usize..5) + 1;
+            let writers = rng.gen_range(0usize..5) + 1;
+            let iterations = rng.gen_range(0usize..10) + 1;
             let total_iterations = iterations * readers;
             let writer_iterations = total_iterations / writers;
             let remainder = total_iterations % writers;
