@@ -112,7 +112,7 @@ impl Scheduler for PctScheduler {
         for new_task_id in max_known_task..1 + max_new_task {
             let new_task_id = TaskId::from(new_task_id);
             // Make sure there's a chance to give the new task the lowest priority
-            let target_task_id = TaskId::from(self.rng.gen_range(0, self.priorities.len()) + 1);
+            let target_task_id = TaskId::from(self.rng.gen_range(0..self.priorities.len()) + 1);
             let new_task_priority = if target_task_id == new_task_id {
                 self.next_priority
             } else {

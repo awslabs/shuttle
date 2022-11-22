@@ -115,7 +115,7 @@ fn broken_atomic_counter_stress() {
     let counter = Arc::new(BrokenAtomicCounter::new());
     let truth = Arc::new(AtomicUsize::new(0));
 
-    let num_threads = thread_rng().gen_range(1usize, 4);
+    let num_threads = thread_rng().gen_range(1usize..4);
     let threads = (0..num_threads)
         .map(|_| {
             let counter = counter.clone();
@@ -123,7 +123,7 @@ fn broken_atomic_counter_stress() {
 
             thread::spawn(move || {
                 let mut rng = thread_rng();
-                let num_steps = rng.gen_range(1, 10);
+                let num_steps = rng.gen_range(1..10);
                 for _ in 0..num_steps {
                     if rng.gen::<bool>() {
                         counter.inc();
