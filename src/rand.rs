@@ -1,9 +1,9 @@
-//! Shuttle's implementation of the [`rand`] crate, v0.7.
+//! Shuttle's implementation of the [`rand`] crate, v0.8.
 //!
 //! Shuttle captures and controls the nondeterminism introduced by randomness and allows it to be
 //! replayed deterministically.
 //!
-//! [`rand`]: https://docs.rs/rand/0.7.3/rand/index.html
+//! [`rand`]: https://docs.rs/rand/0.8.5/rand/index.html
 
 /// Random number generators and adapters
 pub mod rngs {
