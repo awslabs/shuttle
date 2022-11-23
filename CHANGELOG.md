@@ -1,3 +1,17 @@
+# 0.5.0 (November 22, 2022)
+
+This version updates the embedded `rand` library to v0.8.
+Tests that use `shuttle::rand` will need to [update to the v0.8 interface of `rand`](https://github.com/rust-random/rand/blob/master/CHANGELOG.md#080---2020-12-18),
+which included some breaking changes.
+
+* Update `rand` and other dependencies (#89)
+* Implement abort for `future::JoinHandle` (#87)
+* Correctly handle the main thread's thread-local storage destructors (#88)
+
+# 0.4.1 (November 14, 2022)
+
+* Make PCT scheduling not linear in max number of tasks (#84)
+
 # 0.4.0 (September 30, 2022)
 
 * Depdendency updates
