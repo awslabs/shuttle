@@ -1,6 +1,6 @@
 use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Mutex;
-use shuttle::{check_random, thread, Config, MaxSteps, Runner};
+use shuttle::{check_pct, check_random, thread, Config, MaxSteps, Runner};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -244,4 +244,10 @@ fn figure_1c() {
             assert_eq!(*a + *b, 0);
         });
     });
+}
+
+#[test]
+#[should_panic(expected = "test closure did not exercise any concurrency")]
+fn no_concurrency() {
+    check_pct(|| {}, 10, 2);
 }
