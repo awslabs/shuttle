@@ -68,9 +68,10 @@ impl Scheduler for PctScheduler {
         self.steps = 0;
 
         // On the first iteration, we run a simple oldest-task-first scheduler to determine a
-        // bound on the maximum number of steps. Once we have that, we can initialize PCT.
+        // lower bound on the maximum number of steps. Once we have that, we can initialize PCT.
+        // Note that we dynamically update the bound if we discover an execution with more steps.
         if self.iterations > 0 {
-            assert!(self.max_steps > 0);
+            assert!(self.max_steps > 0, "test closure did not exercise any concurrency");
 
             // Priorities are always distinct
             debug_assert_eq!(
