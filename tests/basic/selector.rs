@@ -1,7 +1,6 @@
 use std::time::Duration;
 
-use shuttle::sync::mpsc::{channel};
-use shuttle::sync::selector::Select;
+use shuttle::sync::mpsc::{Select, channel};
 use shuttle::{check_dfs};
 use test_log::test;
 use shuttle::thread;

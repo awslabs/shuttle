@@ -4,7 +4,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
-use crate::sync::selector::Selectable;
+use crate::sync::mpsc::selector::Selectable;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -14,6 +14,9 @@ pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::trace;
+
+mod selector;
+pub use self::selector::{Select};
 
 // TODO
 // * Add support for try_recv() and try_send()
