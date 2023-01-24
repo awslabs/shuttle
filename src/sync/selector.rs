@@ -20,17 +20,17 @@ impl<'a> Debug for dyn Selectable + 'a {
     }
 }
 
-fn try_select(handles: &mut [(&dyn Selectable, usize, *const u8)]) -> Option<(usize, *const u8)> {
+fn try_select(handles: &mut [(&dyn Selectable, usize)]) -> Option<usize> {
     for handle in handles {
         if handle.0.try_select() {
-            return Some((handle.1, handle.2))
+            return Some(handle.1)
         }
     }
     None
 }
 
-fn select(handles: &mut [(&dyn Selectable, usize, *const u8)]) -> usize {
-    if let Some((idx, _)) = try_select(handles) {
+fn select(handles: &mut [(&dyn Selectable, usize)]) -> usize {
+    if let Some(idx) = try_select(handles) {
         return idx
     }
 
@@ -46,7 +46,7 @@ fn select(handles: &mut [(&dyn Selectable, usize, *const u8)]) -> usize {
         });
         thread::switch();
 
-        if let Some((idx, _)) = try_select(handles) {
+        if let Some(idx) = try_select(handles) {
             for handle in &mut *handles {
                 handle.0.delete_waiting_receiver(id);
             }
@@ -58,7 +58,7 @@ fn select(handles: &mut [(&dyn Selectable, usize, *const u8)]) -> usize {
 /// A selector.
 #[derive(Debug)]
 pub struct Select<'a> {
-    handles: Vec<(&'a dyn Selectable, usize, *const u8)>,
+    handles: Vec<(&'a dyn Selectable, usize)>,
 }
 
 impl<'a> Select<'a> {
@@ -69,13 +69,12 @@ impl<'a> Select<'a> {
 
     /// Adds a new receiving selectable which the selector will wait on.
     pub fn recv<T>(&mut self, r: &'a Receiver<T>) {
-        let ptr = r as *const Receiver<_> as *const u8;
-        self.handles.push((r, self.handles.len(), ptr))
+        self.handles.push((r, self.handles.len()))
     }
 
     /// Attempts to receive from one of the added selectables, returning the index of the given channel if possible.
     pub fn try_select(&mut self) -> Option<usize> {
-        try_select(&mut self.handles).map(|(idx, _)| idx)
+        try_select(&mut self.handles)
     }
 
     /// Blocks until a value can be retrieved from one of the given selectables.
