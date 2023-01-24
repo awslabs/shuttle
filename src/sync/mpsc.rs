@@ -383,11 +383,11 @@ impl<T> Selectable for Receiver<T> {
         self.inner.state.borrow().messages.len() > 0
     }
 
-    fn add_waiting_receiver(&mut self, task: TaskId) {
+    fn add_waiting_receiver(&self, task: TaskId) {
         self.inner.state.borrow_mut().waiting_receivers.push(task);
     }
 
-    fn delete_waiting_receiver(&mut self, task: TaskId) {
+    fn delete_waiting_receiver(&self, task: TaskId) {
         self.inner.state.borrow_mut().waiting_receivers.retain(|v| *v != task)
     }
 }

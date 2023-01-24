@@ -7,10 +7,10 @@ use test_log::test;
 fn selector_one_channel() {
     check_dfs(
         move || {
-            let (s, mut r) = channel();
+            let (s, r) = channel();
 
             let mut selector = Select::new();
-            selector.recv(&mut r);
+            selector.recv(&r);
 
             s.send(5).unwrap();
 
@@ -28,12 +28,12 @@ fn selector_one_channel() {
 fn selector_multi_channel() {
     check_dfs(
         move || {
-            let (_, mut r1) = channel::<i32>();
-            let (s2, mut r2) = channel();
+            let (_, r1) = channel::<i32>();
+            let (s2, r2) = channel();
 
             let mut selector = Select::new();
-            selector.recv(&mut r1);
-            selector.recv(&mut r2);
+            selector.recv(&r1);
+            selector.recv(&r2);
 
             s2.send(81).unwrap();
 

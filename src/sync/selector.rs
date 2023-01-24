@@ -9,9 +9,9 @@ pub trait Selectable {
     /// Attempts to select from the selectable, returning true if anything is present and false otherwise.
     fn try_select(&self) -> bool;
     /// Adds a queued receiver to the selectable (used when the receiver is about to block).
-    fn add_waiting_receiver(&mut self, task: TaskId);
+    fn add_waiting_receiver(&self, task: TaskId);
     /// Removes all instances of a queued receiver from the selectable (used after the receiver has been unblocked).
-    fn delete_waiting_receiver(&mut self, task: TaskId);
+    fn delete_waiting_receiver(&self, task: TaskId);
 }
 
 impl<'a> Debug for dyn Selectable + 'a {
@@ -20,7 +20,7 @@ impl<'a> Debug for dyn Selectable + 'a {
     }
 }
 
-fn try_select(handles: &mut [(&mut dyn Selectable, usize, *const u8)]) -> Option<(usize, *const u8)> {
+fn try_select(handles: &mut [(&dyn Selectable, usize, *const u8)]) -> Option<(usize, *const u8)> {
     for handle in handles {
         if handle.0.try_select() {
             return Some((handle.1, handle.2))
@@ -29,7 +29,7 @@ fn try_select(handles: &mut [(&mut dyn Selectable, usize, *const u8)]) -> Option
     None
 }
 
-fn select(handles: &mut [(&mut dyn Selectable, usize, *const u8)]) -> usize {
+fn select(handles: &mut [(&dyn Selectable, usize, *const u8)]) -> usize {
     if let Some((idx, _)) = try_select(handles) {
         return idx
     }
@@ -49,7 +49,7 @@ fn select(handles: &mut [(&mut dyn Selectable, usize, *const u8)]) -> usize {
             for handle in &mut *handles {
                 handle.0.delete_waiting_receiver(id);
             }
-            return idx
+            break idx;
         }
     }
 }
@@ -57,7 +57,7 @@ fn select(handles: &mut [(&mut dyn Selectable, usize, *const u8)]) -> usize {
 /// A selector.
 #[derive(Debug)]
 pub struct Select<'a> {
-    handles: Vec<(&'a mut dyn Selectable, usize, *const u8)>,
+    handles: Vec<(&'a dyn Selectable, usize, *const u8)>,
 }
 
 impl<'a> Select<'a> {
@@ -67,7 +67,7 @@ impl<'a> Select<'a> {
     }
 
     /// Adds a new receiving selectable which the selector will wait on.
-    pub fn recv<T>(&mut self, r: &'a mut Receiver<T>) {
+    pub fn recv<T>(&mut self, r: &'a Receiver<T>) {
         let ptr = r as *const Receiver<_> as *const u8;
         self.handles.push((r, self.handles.len(), ptr))
     }
