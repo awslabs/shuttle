@@ -1,6 +1,6 @@
 //! Selector implementation for multi-producer, single-consumer channels.
 
-use crate::{sync::mpsc::Receiver, runtime::execution::ExecutionState};
+use crate::{sync::mpsc::Receiver, runtime::{execution::ExecutionState, thread}};
 use core::fmt::Debug;
 use crate::runtime::task::TaskId;
 
@@ -44,6 +44,7 @@ fn select(handles: &mut [(&dyn Selectable, usize, *const u8)]) -> usize {
         ExecutionState::with(|state| {
             state.get_mut(id).block()
         });
+        thread::switch();
 
         if let Some((idx, _)) = try_select(handles) {
             for handle in &mut *handles {

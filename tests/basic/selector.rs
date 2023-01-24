@@ -1,7 +1,10 @@
+use std::time::Duration;
+
 use shuttle::sync::mpsc::{channel};
 use shuttle::sync::selector::Select;
 use shuttle::{check_dfs};
 use test_log::test;
+use shuttle::thread;
 
 #[test]
 fn selector_one_channel() {
@@ -79,6 +82,32 @@ fn select_unused_channel_functional() {
             s1.send(198).unwrap();
             let val = r1.recv().unwrap();
             assert_eq!(val, 198);
+        },
+        None,
+    );
+}
+
+#[test]
+fn select_multi_threaded() {
+    check_dfs(
+        move || {
+            let (_, r1) = channel::<i32>();
+            let (s2, r2) = channel();
+
+            let mut selector = Select::new();
+            selector.recv(&r1);
+            selector.recv(&r2);
+
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(15));
+                s2.send(5).unwrap();
+            });
+
+            let idx = selector.select();
+            assert_eq!(idx, 1);
+
+            let val = r2.recv().unwrap();
+            assert_eq!(val, 5);
         },
         None,
     );
