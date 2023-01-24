@@ -4,6 +4,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
+use crate::sync::selector::Selectable;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -372,6 +373,22 @@ impl<T> Receiver<T> {
     pub fn recv_timeout(&self, _timeout: Duration) -> Result<T, RecvTimeoutError> {
         // TODO support the timeout case -- this method never times out
         self.inner.recv().map_err(|_| RecvTimeoutError::Disconnected)
+    }
+}
+
+impl<T> Selectable for Receiver<T> {
+    // Determines whether the channel has anything to be received.
+    // TODO (Finn) is this sufficient?
+    fn try_select(&self) -> bool {
+        self.inner.state.borrow().messages.len() > 0
+    }
+
+    fn add_waiting_receiver(&mut self, task: TaskId) {
+        self.inner.state.borrow_mut().waiting_receivers.push(task);
+    }
+
+    fn delete_waiting_receiver(&mut self, task: TaskId) {
+        self.inner.state.borrow_mut().waiting_receivers.retain(|v| *v != task)
     }
 }
 
