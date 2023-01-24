@@ -1,8 +1,9 @@
 //! Selector implementation for multi-producer, single-consumer channels.
 
 use crate::{sync::mpsc::Receiver, runtime::{execution::ExecutionState, thread}};
-use crossbeam_channel::{TrySelectError};
+use crossbeam_channel::{TrySelectError, SelectTimeoutError, RecvError};
 use core::fmt::Debug;
+use std::time::Duration;
 use crate::runtime::task::TaskId;
 
 /// Represents the return value of a selector; contains an index representing which of the selectables was ready.
@@ -10,6 +11,18 @@ use crate::runtime::task::TaskId;
 pub struct SelectedOperation {
     /// the index representing which selectable became ready
     pub index: usize,
+}
+
+impl SelectedOperation {
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Performs a receive on an arbitrary receiver which had been given to the selector that returned this SelectedOperation.
+    /// TODO: in crossbeam, this method panics if the receiver does not match the one added to the selector -- is this necessary?
+    pub fn recv<T>(&self, r: &Receiver<T>) -> Result<T, RecvError> {
+        r.recv().map_err(|_| RecvError)
+    }
 }
 
 /// Any object which is selectable -- typically used for a receiver.
@@ -93,5 +106,12 @@ impl<'a> Select<'a> {
     /// Blocks until a value can be retrieved from one of the given selectables.
     pub fn select(&mut self) -> SelectedOperation {
         select(&mut self.handles)
+    }
+
+    /// Blocks until a value can be retrieved from one of the given selectables, returning an error if no value is received
+    /// before the timeout.
+    /// TODO: actually enforce timeout
+    pub fn select_timeout(&mut self, _: Duration) -> Result<SelectedOperation, SelectTimeoutError>  {
+        Ok(self.select())
     }
 }

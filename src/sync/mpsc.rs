@@ -16,7 +16,7 @@ use std::time::Duration;
 use tracing::trace;
 
 mod selector;
-pub use self::selector::{Select};
+pub use self::selector::Select;
 
 // TODO
 // * Add support for try_recv() and try_send()
@@ -34,6 +34,11 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
         inner: Arc::clone(&channel),
     };
     (sender, receiver)
+}
+
+/// Create an unbounded channel -- alias for channel<T>() to conform to crossbeam standards
+pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
+    channel()
 }
 
 /// Create a bounded channel
@@ -359,7 +364,7 @@ unsafe impl<T: Send> Sync for Channel<T> {}
 
 /// The receiving half of Rust's [`channel`] (or [`sync_channel`]) type.
 /// This half can only be owned by one thread.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Receiver<T> {
     inner: Arc<Channel<T>>,
 }
@@ -424,6 +429,13 @@ impl<T> Sender<T> {
     /// not be sent.
     pub fn send(&self, t: T) -> Result<(), SendError<T>> {
         self.inner.send(t)
+    }
+
+    /// Attempts to send a value on this channel, returning it back if it could
+    /// not be sent.
+    /// TODO: incorporate timeout
+    pub fn send_timeout(&self, t: T, _: Duration) -> Result<(), SendError<T>> {
+        self.send(t)
     }
 }
 
