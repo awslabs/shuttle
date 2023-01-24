@@ -56,3 +56,30 @@ fn try_select_empty_selector() {
         None,
     );
 }
+
+#[test]
+fn select_unused_channel_functional() {
+    check_dfs(
+        move || {
+            let (s1, r1) = channel();
+            let (s2, r2) = channel();
+
+            let mut selector = Select::new();
+            selector.recv(&r1);
+            selector.recv(&r2);
+
+            s2.send(81).unwrap();
+
+            let idx = selector.select();
+            assert_eq!(idx, 1);
+
+            let val = r2.recv().unwrap();
+            assert_eq!(val, 81);
+
+            s1.send(198).unwrap();
+            let val = r1.recv().unwrap();
+            assert_eq!(val, 198);
+        },
+        None,
+    );
+}
