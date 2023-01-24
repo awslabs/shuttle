@@ -19,6 +19,7 @@ rand_pcg = "0.3.1"
 scoped-tls = "1.0.0"
 smallvec = "1.6.1"
 tracing = { version = "0.1.21", default-features = false, features = ["std"] }
+crossbeam-channel = "0.5.6"
 
 [dev-dependencies]
 criterion = { version = "0.4.0", features = ["html_reports"] }

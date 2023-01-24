@@ -17,8 +17,8 @@ fn selector_one_channel() {
 
             s.send(5).unwrap();
 
-            let idx = selector.select();
-            assert_eq!(idx, 0);
+            let op = selector.select();
+            assert_eq!(op.index, 0);
 
             let val = r.recv().unwrap();
             assert_eq!(val, 5);
@@ -40,8 +40,8 @@ fn selector_multi_channel() {
 
             s2.send(81).unwrap();
 
-            let idx = selector.select();
-            assert_eq!(idx, 1);
+            let op = selector.select();
+            assert_eq!(op.index, 1);
 
             let val = r2.recv().unwrap();
             assert_eq!(val, 81);
@@ -54,7 +54,7 @@ fn selector_multi_channel() {
 fn try_select_empty_selector() {
     check_dfs(
         move || {
-            assert_eq!(Select::new().try_select(), None)
+            assert!(Select::new().try_select().is_err())
         },
         None,
     );
@@ -73,8 +73,8 @@ fn select_unused_channel_functional() {
 
             s2.send(81).unwrap();
 
-            let idx = selector.select();
-            assert_eq!(idx, 1);
+            let op = selector.select();
+            assert_eq!(op.index, 1);
 
             let val = r2.recv().unwrap();
             assert_eq!(val, 81);
@@ -103,8 +103,8 @@ fn select_multi_threaded() {
                 s2.send(5).unwrap();
             });
 
-            let idx = selector.select();
-            assert_eq!(idx, 1);
+            let op = selector.select();
+            assert_eq!(op.index, 1);
 
             let val = r2.recv().unwrap();
             assert_eq!(val, 5);

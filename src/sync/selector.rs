@@ -1,16 +1,24 @@
 //! Selector implementation for multi-producer, single-consumer channels.
 
 use crate::{sync::mpsc::Receiver, runtime::{execution::ExecutionState, thread}};
+use crossbeam_channel::{TrySelectError};
 use core::fmt::Debug;
 use crate::runtime::task::TaskId;
+
+/// Represents the return value of a selector; contains an index representing which of the selectables was ready.
+#[derive(Debug)]
+pub struct SelectedOperation {
+    /// the index representing which selectable became ready
+    pub index: usize,
+}
 
 /// Any object which is selectable -- typically used for a receiver.
 pub trait Selectable {
     /// Attempts to select from the selectable, returning true if anything is present and false otherwise.
     fn try_select(&self) -> bool;
-    /// Adds a queued receiver to the selectable (used when the receiver is about to block).
+    /// Adds a queued receiver to the selectable (used when the selector containing the selectable is about to block).
     fn add_waiting_receiver(&self, task: TaskId);
-    /// Removes all instances of a queued receiver from the selectable (used after the receiver has been unblocked).
+    /// Removes all instances of a queued receiver from the selectable (used after the selector has been unblocked).
     fn delete_waiting_receiver(&self, task: TaskId);
 }
 
@@ -20,38 +28,42 @@ impl<'a> Debug for dyn Selectable + 'a {
     }
 }
 
-fn try_select(handles: &mut [(&dyn Selectable, usize)]) -> Option<usize> {
+fn try_select(handles: &mut [(&dyn Selectable, usize)]) -> Result<SelectedOperation, TrySelectError> {
     for handle in handles {
         if handle.0.try_select() {
-            return Some(handle.1)
+            return Ok(SelectedOperation{index: handle.1})
         }
     }
-    None
+    Err(TrySelectError{})
 }
 
-fn select(handles: &mut [(&dyn Selectable, usize)]) -> usize {
-    if let Some(idx) = try_select(handles) {
-        return idx
-    }
+fn select(handles: &mut [(&dyn Selectable, usize)]) -> SelectedOperation {
+    SelectedOperation {
+        index: {
+            if let Ok(SelectedOperation{index: idx}) = try_select(handles) {
+                idx
+            } else {
+                let id = ExecutionState::me();
 
-    let id = ExecutionState::me();
+                loop {
+                    for handle in &mut *handles {
+                        handle.0.add_waiting_receiver(id);
+                    }
 
-    loop {
-        for handle in &mut *handles {
-            handle.0.add_waiting_receiver(id);
-        }
+                    ExecutionState::with(|state| {
+                        state.get_mut(id).block()
+                    });
+                    thread::switch();
 
-        ExecutionState::with(|state| {
-            state.get_mut(id).block()
-        });
-        thread::switch();
-
-        if let Some(idx) = try_select(handles) {
-            for handle in &mut *handles {
-                handle.0.delete_waiting_receiver(id);
+                    if let Ok(SelectedOperation{index: idx}) = try_select(handles) {
+                        for handle in &mut *handles {
+                            handle.0.delete_waiting_receiver(id);
+                        }
+                        break idx;
+                    }
+                }
             }
-            break idx;
-        }
+        },
     }
 }
 
@@ -68,17 +80,18 @@ impl<'a> Select<'a> {
     }
 
     /// Adds a new receiving selectable which the selector will wait on.
-    pub fn recv<T>(&mut self, r: &'a Receiver<T>) {
-        self.handles.push((r, self.handles.len()))
+    pub fn recv<T>(&mut self, r: &'a Receiver<T>) -> usize {
+        self.handles.push((r, self.handles.len()));
+        self.handles.len() - 1
     }
 
     /// Attempts to receive from one of the added selectables, returning the index of the given channel if possible.
-    pub fn try_select(&mut self) -> Option<usize> {
+    pub fn try_select(&mut self) -> Result<SelectedOperation, TrySelectError> {
         try_select(&mut self.handles)
     }
 
     /// Blocks until a value can be retrieved from one of the given selectables.
-    pub fn select(&mut self) -> usize {
+    pub fn select(&mut self) -> SelectedOperation {
         select(&mut self.handles)
     }
 }
