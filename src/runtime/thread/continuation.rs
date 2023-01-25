@@ -178,14 +178,9 @@ impl ContinuationPool {
         }
     }
 
-    /// Acquire a new continuation from the pool, allocating one if the pool is empty.
+    /// Acquire a new continuation from the global pool. Panics if that pool was not yet initialized.
     pub fn acquire(stack_size: usize) -> PooledContinuation {
-        if CONTINUATION_POOL.is_set() {
-            CONTINUATION_POOL.with(|p| p.acquire_inner(stack_size))
-        } else {
-            let p = Self::new();
-            p.acquire_inner(stack_size)
-        }
+        CONTINUATION_POOL.with(|p| p.acquire_inner(stack_size))
     }
 
     fn acquire_inner(&self, stack_size: usize) -> PooledContinuation {
