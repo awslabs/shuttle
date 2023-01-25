@@ -44,9 +44,8 @@
 //! correctness, the [Loom] crate provides support for reasoning about Acquire and Release orderings
 //! and partial support for Relaxed orderings.
 //!
-//! To disable the warning printed about this issue, set the `SHUTTLE_SILENCE_ORDERING_WARNING`
-//! environment variable to any value, or set the
-//! [`silence_atomic_ordering_warning`](crate::Config::silence_atomic_ordering_warning) field of
+//! To disable the warning printed about this issue, set the `SHUTTLE_SILENCE_WARNINGS` environment
+//! variable to any value, or set the [`silence_warnings`](crate::Config::silence_warnings) field of
 //! [`Config`](crate::Config) to true.
 //!
 //! [Loom]: https://crates.io/crates/loom
@@ -81,7 +80,7 @@ fn maybe_warn_about_ordering(order: Ordering) {
                 return;
             }
 
-            if ExecutionState::with(|state| state.config.silence_atomic_ordering_warning) {
+            if ExecutionState::with(|state| state.config.silence_warnings) {
                 return;
             }
 
