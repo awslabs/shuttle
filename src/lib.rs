@@ -214,9 +214,12 @@ pub struct Config {
     /// not abort a currently running test iteration; the limit is only checked between iterations.
     pub max_time: Option<std::time::Duration>,
 
-    /// Whether to enable warnings about [Shuttle's unsound implementation of
-    /// `atomic`](crate::sync::atomic#warning-about-relaxed-behaviors).
-    pub silence_atomic_ordering_warning: bool,
+    /// Whether to silence warnings about Shuttle behaviors that may miss bugs or introduce false
+    /// positives:
+    /// 1. [Unsound implementation of `atomic`](crate::sync::atomic#warning-about-relaxed-behaviors)
+    ///    may miss bugs
+    /// 2. [`lazy_static` values are dropped](mod@crate::lazy_static) at the end of an execution
+    pub silence_warnings: bool,
 }
 
 impl Config {
@@ -227,7 +230,7 @@ impl Config {
             failure_persistence: FailurePersistence::Print,
             max_steps: MaxSteps::FailAfter(1_000_000),
             max_time: None,
-            silence_atomic_ordering_warning: false,
+            silence_warnings: false,
         }
     }
 }
@@ -461,6 +464,11 @@ macro_rules! __lazy_static_internal {
                     LAZY.get()
                 }
                 __stability()
+            }
+        }
+        impl $crate::lazy_static::LazyStatic for $N {
+            fn initialize(lazy: &Self) {
+                let _ = &**lazy;
             }
         }
     };

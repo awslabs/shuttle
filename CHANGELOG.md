@@ -1,3 +1,9 @@
+# 0.6.0 (January 24, 2023)
+
+This version renames the [`silence_atomic_ordering_warning` configuration option](https://docs.rs/shuttle/0.5.0/shuttle/struct.Config.html#structfield.silence_atomic_ordering_warning) to `silence_warnings`, as well as the corresponding environment variables, to enable future warnings to be controlled by the same mechanism.
+
+* Implement `lazy_static` support (#93)
+
 # 0.5.0 (November 22, 2022)
 
 This version updates the embedded `rand` library to v0.8.

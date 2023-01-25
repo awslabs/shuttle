@@ -4,6 +4,16 @@
 //! runtime in order to be initialized. Lazy statics should be created with the
 //! [`lazy_static!`](crate::lazy_static!) macro.
 //!
+//! # Warning about drop behavior
+//!
+//! Shuttle's implementation of `lazy_static` will drop the static value at the end of an execution,
+//! and so run the value's [`Drop`] implementation. The actual `lazy_static` crate does not drop the
+//! static values, so this difference may cause false positives.
+//!
+//! To disable the warning printed about this issue, set the `SHUTTLE_SILENCE_WARNINGS` environment
+//! variable to any value, or set the [`silence_warnings`](crate::Config::silence_warnings) field of
+//! [`Config`](crate::Config) to true.
+//!
 //! [`lazy_static`]: https://crates.io/crates/lazy_static
 
 use crate::runtime::execution::ExecutionState;
@@ -44,19 +54,19 @@ impl<T: Sync> Lazy<T> {
         // it's initialized, all future accesses can bypass the `Once` entirely and just access the
         // storage cell.
 
-        let initialize = ExecutionState::with(|state| state.get_storage::<_, T>(self).is_none());
+        let initialize = ExecutionState::with(|state| state.get_storage::<_, DropGuard<T>>(self).is_none());
 
         if initialize {
             // There's not yet a value for this static, so try to initialize it (possibly racing)
             self.cell.call_once(|| {
                 let value = (self.init)();
-                ExecutionState::with(|state| state.init_storage(self, value));
+                ExecutionState::with(|state| state.init_storage(self, DropGuard(value)));
             });
         }
 
         // At this point we're guaranteed that a value exists for this static, so read it
         ExecutionState::with(|state| {
-            let value = state.get_storage(self).expect("should be initialized");
+            let value: &DropGuard<T> = state.get_storage(self).expect("should be initialized");
             // Safety: this *isn't* safe. We are promoting to a `'static` lifetime here, but this
             // object does not actually live that long. It would be possible for this reference to
             // escape the client code and be used after it becomes invalid when the execution ends.
@@ -70,7 +80,7 @@ impl<T: Sync> Lazy<T> {
             // with real-world code as possible and so needs to preserve the semantics of statics.
             //
             // See also https://github.com/tokio-rs/loom/pull/125
-            unsafe { extend_lt(value) }
+            unsafe { extend_lt(&value.0) }
         })
     }
 }
@@ -78,5 +88,59 @@ impl<T: Sync> Lazy<T> {
 impl<T: Sync> From<&Lazy<T>> for StorageKey {
     fn from(lazy: &Lazy<T>) -> Self {
         StorageKey(lazy as *const _ as usize, 0x3)
+    }
+}
+
+/// Support trait for enabling a few common operation on lazy static values.
+///
+/// This is implemented by each defined lazy static, and used by the free functions in this crate.
+pub trait LazyStatic {
+    #[doc(hidden)]
+    fn initialize(lazy: &Self);
+}
+
+/// Takes a shared reference to a lazy static and initializes it if it has not been already.
+///
+/// This can be used to control the initialization point of a lazy static.
+pub fn initialize<T: LazyStatic>(lazy: &T) {
+    LazyStatic::initialize(lazy);
+}
+
+static PRINTED_DROP_WARNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn maybe_warn_about_drop() {
+    use owo_colors::OwoColorize;
+    use std::sync::atomic::Ordering;
+
+    if PRINTED_DROP_WARNING
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        if std::env::var("SHUTTLE_SILENCE_WARNINGS").is_ok() {
+            return;
+        }
+
+        if ExecutionState::with(|state| state.config.silence_warnings) {
+            return;
+        }
+
+        eprintln!(
+            "{}: Shuttle runs the `Drop` method of `lazy_static` values at the end of an execution, \
+                unlike the actual `lazy_static` implementation. This difference may cause false positives. \
+                See https://docs.rs/shuttle/*/shuttle/lazy_static/index.html#warning-about-drop-behavior \
+                for details or to disable this warning.",
+            "WARNING".yellow(),
+        );
+    }
+}
+
+/// Small wrapper to trigger the warning about drop behavior when a `lazy_static` value drops for
+/// the first time.
+#[derive(Debug)]
+struct DropGuard<T>(T);
+
+impl<T> Drop for DropGuard<T> {
+    fn drop(&mut self) {
+        maybe_warn_about_drop();
     }
 }

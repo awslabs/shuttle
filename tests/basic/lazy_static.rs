@@ -1,6 +1,6 @@
 use shuttle::scheduler::DfsScheduler;
 use shuttle::thread::ThreadId;
-use shuttle::{check_dfs, check_random, thread, Runner};
+use shuttle::{check_dfs, check_random, lazy_static, thread, Runner};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use test_log::test;
@@ -53,6 +53,43 @@ fn racing_init() {
     );
 }
 
+// Same as `racing_init` but each thread first tries to manually initialize the static
+#[test]
+fn racing_init_explicit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    shuttle::lazy_static! {
+        static ref HASH_MAP: HashMap<u32, u32> = {
+            let mut m = HashMap::new();
+            m.insert(1, 1);
+            COUNTER.fetch_add(1, Ordering::SeqCst);
+            m
+        };
+    }
+
+    check_dfs(
+        || {
+            let thds = (0..2)
+                .map(|_| {
+                    thread::spawn(move || {
+                        lazy_static::initialize(&HASH_MAP);
+                        assert_eq!(HASH_MAP.get(&1), Some(&1));
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            for thd in thds {
+                thd.join().unwrap();
+            }
+
+            assert_eq!(COUNTER.swap(0, Ordering::SeqCst), 1);
+        },
+        None,
+    );
+}
+
 #[test]
 fn init_with_yield() {
     shuttle::lazy_static! {
@@ -77,11 +114,12 @@ fn init_with_yield() {
     );
 }
 
-#[test]
-fn mutex_dfs() {
+// Run N threads racing to acquire a Mutex and record the order they resolved the race in. Check
+// that we saw all N! possible orderings to make sure `lazy_static` allows any thread to win the
+// initialization race.
+#[track_caller]
+fn run_mutex_test(num_threads: usize, tester: impl FnOnce(Box<dyn Fn() + Send + Sync>)) {
     use std::sync::Mutex;
-
-    const NUM_THREADS: usize = 2;
 
     shuttle::lazy_static! {
         static ref THREADS: Mutex<Vec<ThreadId>> = Mutex::new(Vec::new());
@@ -90,68 +128,39 @@ fn mutex_dfs() {
     let initializers = Arc::new(Mutex::new(HashSet::new()));
     let initializers_clone = Arc::clone(&initializers);
 
-    check_dfs(
-        move || {
-            let thds = (0..NUM_THREADS)
-                .map(|_| {
-                    thread::spawn(|| {
-                        THREADS.lock().unwrap().push(thread::current().id());
-                    })
+    tester(Box::new(move || {
+        let thds = (0..num_threads)
+            .map(|_| {
+                thread::spawn(|| {
+                    THREADS.lock().unwrap().push(thread::current().id());
                 })
-                .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
 
-            for thd in thds {
-                thd.join().unwrap();
-            }
+        for thd in thds {
+            thd.join().unwrap();
+        }
 
-            assert_eq!(THREADS.lock().unwrap().len(), NUM_THREADS);
-            initializers.lock().unwrap().insert(THREADS.lock().unwrap().clone());
-        },
-        None,
-    );
+        assert_eq!(THREADS.lock().unwrap().len(), num_threads);
+        initializers.lock().unwrap().insert(THREADS.lock().unwrap().clone());
+    }));
 
     let initializers = Arc::try_unwrap(initializers_clone).unwrap().into_inner().unwrap();
-    assert_eq!(initializers.len(), (1..NUM_THREADS + 1).product::<usize>());
+    assert_eq!(initializers.len(), (1..num_threads + 1).product::<usize>());
 }
 
-// Like `mutex_dfs` but with more threads, making it too expensive to do DFS
+// Check all the interleavings of two racing threads trying to acquire a static Mutex.
+#[test]
+fn mutex_dfs() {
+    run_mutex_test(2, |f| check_dfs(f, None));
+}
+
+// Like `mutex_dfs` but with more threads, making it too expensive to do DFS.
 #[test]
 fn mutex_random() {
-    use std::sync::Mutex;
-
-    const NUM_THREADS: usize = 4;
-
-    shuttle::lazy_static! {
-        static ref THREADS: Mutex<Vec<ThreadId>> = Mutex::new(Vec::new());
-    }
-
-    let initializers = Arc::new(Mutex::new(HashSet::new()));
-    let initializers_clone = Arc::clone(&initializers);
-
-    check_random(
-        move || {
-            let thds = (0..NUM_THREADS)
-                .map(|_| {
-                    thread::spawn(|| {
-                        THREADS.lock().unwrap().push(thread::current().id());
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            for thd in thds {
-                thd.join().unwrap();
-            }
-
-            assert_eq!(THREADS.lock().unwrap().len(), NUM_THREADS);
-            initializers.lock().unwrap().insert(THREADS.lock().unwrap().clone());
-        },
-        10000,
-    );
-
-    let initializers = Arc::try_unwrap(initializers_clone).unwrap().into_inner().unwrap();
-    // Not guaranteed, but should be pretty likely for 4 threads to see all 24 interleavings in
-    // 10000 iterations of a random scheduler
-    assert_eq!(initializers.len(), (1..NUM_THREADS + 1).product::<usize>());
+    // Not guaranteed to pass, but should be pretty likely for 4 threads to see all 24 interleavings
+    // in 10,000 iterations of a random scheduler
+    run_mutex_test(4, |f| check_random(f, 10_000));
 }
 
 #[test]
