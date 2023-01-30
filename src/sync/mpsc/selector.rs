@@ -58,11 +58,11 @@ fn select(handles: &mut [(&dyn Selectable, usize)]) -> SelectedOperation {
             } else {
                 let id = ExecutionState::me();
 
+                for handle in &mut *handles {
+                    handle.0.add_waiting_receiver(id);
+                }
+                
                 loop {
-                    for handle in &mut *handles {
-                        handle.0.add_waiting_receiver(id);
-                    }
-
                     ExecutionState::with(|state| {
                         state.get_mut(id).block()
                     });
