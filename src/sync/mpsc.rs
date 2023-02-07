@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::result::Result;
+use std::sync::mpsc::{TrySendError, TryRecvError};
 pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +17,6 @@ use tracing::trace;
 
 
 // TODO
-// * Add support for try_recv() and try_send()
 // * Add support for iter() for receivers
 
 const MAX_INLINE_MESSAGES: usize = 32;
@@ -248,6 +248,31 @@ impl<T> Channel<T> {
         Ok(())
     }
 
+    pub(crate) fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
+        let state = self.state.borrow();
+        let (is_rendezvous, is_full) = if let Some(bound) = self.bound {
+            // For a rendezvous channel (bound = 0), "is_full" holds when there is a message in the channel.
+            // For a non-rendezvous channel (bound > 0), "is_full" holds when the capacity is reached.
+            // We cover both these cases at once using max(bound, 1) below.
+            (bound == 0, state.messages.len() >= std::cmp::max(bound, 1))
+        } else {
+            (false, false)
+        };
+
+        // The send cannot complete without blocking in any of the following situations:
+        //    the channel is full (as defined above)
+        //    there are already waiting senders
+        //    this is a rendezvous channel and there are no waiting receivers
+        let sender_should_block =
+            is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty());
+
+        if !sender_should_block {
+            self.send(message).map_err(|e| TrySendError::Disconnected(e.0))
+        } else {
+            Err(TrySendError::Full(message))
+        }
+    }
+
     pub(crate) fn recv(&self) -> Result<T, RecvError> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
@@ -360,6 +385,30 @@ impl<T> Channel<T> {
             }
         });
         Ok(value)
+    }
+
+    pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
+        let state = self.state.borrow();
+        
+        // If this is a rendezvous channel, and the channel is empty, and there are waiting senders,
+        // notify the first waiting sender
+        if self.bound == Some(0) && state.messages.is_empty() {
+            if let Some(&tid) = state.waiting_senders.first() {
+                // Note: another receiver may have unblocked the sender already
+                ExecutionState::with(|s| s.get_mut(tid).unblock());
+            }
+        }
+
+        // The receiver cannot proceed without blocking in any of the following situations:
+        //    the channel is empty
+        //    there are waiting receivers
+        let should_block = state.messages.is_empty() || !state.waiting_receivers.is_empty();
+
+        if !should_block {
+            self.recv().map_err(|_| TryRecvError::Disconnected)
+        } else {
+            Err(TryRecvError::Empty)
+        }
     }
 
     pub(crate) fn drop_receiver(&self) {
