@@ -4,7 +4,6 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
-use crate::sync::mpsc::selector::Selectable;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -15,8 +14,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::trace;
 
-mod selector;
-pub use self::selector::Select;
 
 // TODO
 // * Add support for try_recv() and try_send()
@@ -36,11 +33,6 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     (sender, receiver)
 }
 
-/// Create an unbounded channel -- alias for channel<T>() to conform to crossbeam standards
-pub fn unbounded<T>() -> (Sender<T>, Receiver<T>) {
-    channel()
-}
-
 /// Create a bounded channel
 pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
     let channel = Arc::new(Channel::new(Some(bound)));
@@ -53,10 +45,11 @@ pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
     (sender, receiver)
 }
 
+// TODO: move outside of mpsc.rs -- this is a more general channel primitive than simply mpsc.
 #[derive(Debug)]
-struct Channel<T> {
-    bound: Option<usize>, // None for an unbounded channel, Some(k) for a bounded channel of size k
-    state: Rc<RefCell<ChannelState<T>>>,
+pub(crate) struct Channel<T> {
+    pub(crate) bound: Option<usize>, // None for an unbounded channel, Some(k) for a bounded channel of size k
+    pub(crate) state: Rc<RefCell<ChannelState<T>>>,
 }
 
 // For tracking causality on channels, we timestamp each message with the clock of the sender.
@@ -92,13 +85,27 @@ impl<T> TimestampedValue<T> {
 // Note: The channels in std::sync::mpsc only support a single Receiver (which cannot be
 // cloned).  The state below admits a more general use case, where multiple Senders
 // and Receivers can share a single channel.
-struct ChannelState<T> {
+pub(crate) struct ChannelState<T> {
     messages: SmallVec<[TimestampedValue<T>; MAX_INLINE_MESSAGES]>, // messages in the channel
     receiver_clock: Option<SmallVec<[VectorClock; MAX_INLINE_MESSAGES]>>, // receiver vector clocks for bounded case
     known_senders: usize,                                           // number of senders referencing this channel
     known_receivers: usize,                                         // number or receivers referencing this channel
     waiting_senders: SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>,      // list of currently blocked senders
     waiting_receivers: SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>,    // list of currently blocked receivers
+}
+
+impl<T> ChannelState<T> {
+    pub(crate) fn has_messages(&self) -> bool {
+        self.messages.len() > 0
+    }
+
+    pub(crate) fn add_waiting_receiver(&mut self, task: TaskId) {
+        self.waiting_receivers.push(task)
+    }
+
+    pub(crate) fn delete_waiting_receiver(&mut self, task: TaskId) {
+        self.waiting_receivers.retain(|v| *v != task)
+    }
 }
 
 impl<T> Debug for ChannelState<T> {
@@ -117,7 +124,7 @@ impl<T> Debug for ChannelState<T> {
 }
 
 impl<T> Channel<T> {
-    fn new(bound: Option<usize>) -> Self {
+    pub(crate) fn new(bound: Option<usize>) -> Self {
         let receiver_clock = if let Some(bound) = bound {
             let mut s = SmallVec::with_capacity(bound);
             for _ in 0..bound {
@@ -140,7 +147,7 @@ impl<T> Channel<T> {
         }
     }
 
-    fn send(&self, message: T) -> Result<(), SendError<T>> {
+    pub(crate) fn send(&self, message: T) -> Result<(), SendError<T>> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
 
@@ -241,7 +248,7 @@ impl<T> Channel<T> {
         Ok(())
     }
 
-    fn recv(&self) -> Result<T, RecvError> {
+    pub(crate) fn recv(&self) -> Result<T, RecvError> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
 
@@ -354,6 +361,48 @@ impl<T> Channel<T> {
         });
         Ok(value)
     }
+
+    pub(crate) fn drop_receiver(&self) {
+        if ExecutionState::should_stop() {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        assert!(state.known_receivers > 0);
+        state.known_receivers -= 1;
+        if state.known_receivers == 0 {
+            // Last receiver was dropped; wake up all senders
+            for &tid in state.waiting_senders.iter() {
+                ExecutionState::with(|s| s.get_mut(tid).unblock());
+            }
+        }
+    }
+
+    pub(crate) fn drop_sender(&self) {
+        if ExecutionState::should_stop() {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        assert!(state.known_senders > 0);
+        state.known_senders -= 1;
+        if state.known_senders == 0 {
+            // Last sender was dropped; wake up all receivers
+            for &tid in state.waiting_receivers.iter() {
+                ExecutionState::with(|s| s.get_mut(tid).unblock());
+            }
+        }
+    }
+
+    pub(crate) fn inc_sender_count(&self) {
+        let mut state = self.state.borrow_mut();
+        state.known_senders += 1;
+        drop(state);
+    }
+
+    pub(crate) fn inc_receiver_count(&self) {
+        let mut state = self.state.borrow_mut();
+        state.known_receivers += 1;
+        drop(state);
+    }
 }
 
 // Safety: A Channel is never actually passed across true threads, only across continuations. The
@@ -364,7 +413,7 @@ unsafe impl<T: Send> Sync for Channel<T> {}
 
 /// The receiving half of Rust's [`channel`] (or [`sync_channel`]) type.
 /// This half can only be owned by one thread.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Receiver<T> {
     inner: Arc<Channel<T>>,
 }
@@ -384,36 +433,9 @@ impl<T> Receiver<T> {
     }
 }
 
-impl<T> Selectable for Receiver<T> {
-    // Determines whether the channel has anything to be received.
-    // TODO (Finn) is this sufficient?
-    fn try_select(&self) -> bool {
-        self.inner.state.borrow().messages.len() > 0
-    }
-
-    fn add_waiting_receiver(&self, task: TaskId) {
-        self.inner.state.borrow_mut().waiting_receivers.push(task);
-    }
-
-    fn delete_waiting_receiver(&self, task: TaskId) {
-        self.inner.state.borrow_mut().waiting_receivers.retain(|v| *v != task)
-    }
-}
-
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        if ExecutionState::should_stop() {
-            return;
-        }
-        let mut state = self.inner.state.borrow_mut();
-        assert!(state.known_receivers > 0);
-        state.known_receivers -= 1;
-        if state.known_receivers == 0 {
-            // Last receiver was dropped; wake up all senders
-            for &tid in state.waiting_senders.iter() {
-                ExecutionState::with(|s| s.get_mut(tid).unblock());
-            }
-        }
+        self.inner.drop_receiver()
     }
 }
 
@@ -441,9 +463,7 @@ impl<T> Sender<T> {
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
-        let mut state = self.inner.state.borrow_mut();
-        state.known_senders += 1;
-        drop(state);
+        self.inner.inc_sender_count();
         Self {
             inner: self.inner.clone(),
         }
@@ -452,18 +472,7 @@ impl<T> Clone for Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        if ExecutionState::should_stop() {
-            return;
-        }
-        let mut state = self.inner.state.borrow_mut();
-        assert!(state.known_senders > 0);
-        state.known_senders -= 1;
-        if state.known_senders == 0 {
-            // Last sender was dropped; wake up all receivers
-            for &tid in state.waiting_receivers.iter() {
-                ExecutionState::with(|s| s.get_mut(tid).unblock());
-            }
-        }
+        self.inner.drop_sender()
     }
 }
 
@@ -489,9 +498,7 @@ impl<T> SyncSender<T> {
 
 impl<T> Clone for SyncSender<T> {
     fn clone(&self) -> Self {
-        let mut state = self.inner.state.borrow_mut();
-        state.known_senders += 1;
-        drop(state);
+        self.inner.inc_sender_count();
         Self {
             inner: self.inner.clone(),
         }
@@ -500,17 +507,6 @@ impl<T> Clone for SyncSender<T> {
 
 impl<T> Drop for SyncSender<T> {
     fn drop(&mut self) {
-        if ExecutionState::should_stop() {
-            return;
-        }
-        let mut state = self.inner.state.borrow_mut();
-        assert!(state.known_senders > 0);
-        state.known_senders -= 1;
-        if state.known_senders == 0 {
-            // Last sender was dropped; wake up any receivers
-            for &tid in state.waiting_receivers.iter() {
-                ExecutionState::with(|s| s.get_mut(tid).unblock());
-            }
-        }
+        self.inner.drop_sender()
     }
 }
