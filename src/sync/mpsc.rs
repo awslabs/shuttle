@@ -265,6 +265,7 @@ impl<T> Channel<T> {
         //    this is a rendezvous channel and there are no waiting receivers
         let sender_should_block =
             is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty());
+        drop(state);
 
         if !sender_should_block {
             self.send(message).map_err(|e| TrySendError::Disconnected(e.0))
@@ -404,6 +405,7 @@ impl<T> Channel<T> {
         //    there are waiting receivers
         let should_block = state.messages.is_empty() || !state.waiting_receivers.is_empty();
 
+        drop(state);
         if !should_block {
             self.recv().map_err(|_| TryRecvError::Disconnected)
         } else {
