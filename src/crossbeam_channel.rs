@@ -1,7 +1,8 @@
 //! Selector implementation for multi-producer, multi-consumer channels.
 
 use crate::{sync::{Arc, mpsc}, runtime::{execution::ExecutionState, thread}};
-use crossbeam_channel::{TrySelectError, SelectTimeoutError, RecvError, RecvTimeoutError, SendError};
+use crossbeam_channel::{TrySelectError, SelectTimeoutError, RecvError, RecvTimeoutError, SendError, SendTimeoutError};
+use rand::Rng;
 use core::fmt::Debug;
 use std::time::Duration;
 use crate::runtime::task::TaskId;
@@ -123,9 +124,13 @@ impl<'a> Select<'a> {
 
     /// Blocks until a value can be retrieved from one of the given selectables, returning an error if no value is received
     /// before the timeout.
-    /// TODO: actually enforce timeout
-    pub fn select_timeout(&mut self, _: Duration) -> Result<SelectedOperation, SelectTimeoutError>  {
-        Ok(self.select())
+    pub fn select_timeout(&mut self, d: Duration) -> Result<SelectedOperation, SelectTimeoutError>  {
+        let mut rng = rand::thread_rng();
+        if rng.gen::<f64>() < timeout_duration_to_success_probability(d) {
+            Ok(self.select())
+        } else {
+           Err(SelectTimeoutError)
+        }
     }
 }
 
@@ -144,9 +149,13 @@ impl<T> Receiver<T> {
 
     /// Attempts to wait for a value on this receiver, returning an error if the
     /// corresponding channel has hung up, or if it waits more than timeout.
-    pub fn recv_timeout(&self, _timeout: Duration) -> Result<T, RecvTimeoutError> {
-        // TODO support the timeout case -- this method never times out
-        self.inner.recv().map_err(|_| RecvTimeoutError::Disconnected)
+    pub fn recv_timeout(&self, d: Duration) -> Result<T, RecvTimeoutError> {
+        let mut rng = rand::thread_rng();
+        if rng.gen::<f64>() < timeout_duration_to_success_probability(d) {
+            self.inner.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+           Err(RecvTimeoutError::Timeout)
+        }
     }
 }
 
@@ -175,6 +184,11 @@ impl<T> Selectable for Receiver<T> {
     }
 }
 
+// Returns a probability that a message will succeed based on the given timeout duration.
+fn timeout_duration_to_success_probability(_: Duration) -> f64 {
+    0.8 // TODO: mathematical expression such that success probability increases with timeout
+}
+
 #[derive(Debug)]
 /// Represents the producer portion of a Crossbeam multi-producer, multi-consumer channel.
 pub struct Sender<T> {
@@ -190,9 +204,13 @@ impl<T> Sender<T> {
 
     /// Attempts to send a value on this channel, returning it back if it could
     /// not be sent.
-    /// TODO: incorporate timeout
-    pub fn send_timeout(&self, t: T, _: Duration) -> Result<(), SendError<T>> {
-        self.send(t).map_err(|e| SendError(e.0))
+    pub fn send_timeout(&self, t: T, d: Duration) -> Result<(), SendTimeoutError<T>> {
+        let mut rng = rand::thread_rng();
+        if rng.gen::<f64>() < timeout_duration_to_success_probability(d) {
+            self.send(t).map_err(|e| SendTimeoutError::Timeout(e.0))
+        } else {
+           Err(SendTimeoutError::Timeout(t))
+        }
     }
 }
 
