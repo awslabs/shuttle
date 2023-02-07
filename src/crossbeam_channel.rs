@@ -1,7 +1,7 @@
 //! Selector implementation for multi-producer, multi-consumer channels.
 
 use crate::{sync::{Arc, mpsc}, runtime::{execution::ExecutionState, thread}};
-use crossbeam_channel::{TrySelectError, SelectTimeoutError, RecvError, RecvTimeoutError, SendError, SendTimeoutError};
+use crossbeam_channel::{TrySelectError, SelectTimeoutError, RecvError, RecvTimeoutError, SendError, SendTimeoutError, TrySendError, TryRecvError};
 use rand::Rng;
 use core::fmt::Debug;
 use std::time::Duration;
@@ -125,11 +125,16 @@ impl<'a> Select<'a> {
     /// Blocks until a value can be retrieved from one of the given selectables, returning an error if no value is received
     /// before the timeout.
     pub fn select_timeout(&mut self, d: Duration) -> Result<SelectedOperation, SelectTimeoutError>  {
-        let mut rng = rand::thread_rng();
-        if rng.gen::<f64>() < timeout_duration_to_success_probability(d) {
-            Ok(self.select())
-        } else {
-           Err(SelectTimeoutError)
+        match self.try_select() {
+            Ok(v) => Ok(v),
+            Err(TrySelectError) => {
+                let mut rng = rand::thread_rng();
+                if rng.gen::<f64>() < timeout_duration_to_success_probability(d) {
+                    Ok(self.select())
+                } else {
+                Err(SelectTimeoutError)
+                }
+            }
         }
     }
 }
@@ -141,6 +146,16 @@ pub struct Receiver<T> {
 }
 
 impl<T> Receiver<T> {
+    /// Tries to receive; returns an error if the receive cannot take place.
+    pub fn try_recv(&self) -> Result<T, TryRecvError> {
+        match self.inner.try_recv() {
+            Ok(res) => {
+                Ok(res)
+            },
+            Err(std::sync::mpsc::TryRecvError::Empty) => Err(TryRecvError::Empty),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(TryRecvError::Disconnected),
+        }
+    }
     /// Attempts to wait for a value on this receiver, returning an error if the
     /// corresponding channel has hung up.
     pub fn recv(&self) -> Result<T, RecvError> {
@@ -150,11 +165,21 @@ impl<T> Receiver<T> {
     /// Attempts to wait for a value on this receiver, returning an error if the
     /// corresponding channel has hung up, or if it waits more than timeout.
     pub fn recv_timeout(&self, d: Duration) -> Result<T, RecvTimeoutError> {
-        let mut rng = rand::thread_rng();
-        if rng.gen::<f64>() < timeout_duration_to_success_probability(d) {
-            self.inner.recv().map_err(|_| RecvTimeoutError::Disconnected)
-        } else {
-           Err(RecvTimeoutError::Timeout)
+        match self.inner.try_recv() {
+            Ok(res) => {
+                Ok(res)
+            },
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                let mut rng = rand::thread_rng();
+                if rng.gen::<f64>() < timeout_duration_to_success_probability(d) {
+                    self.inner.recv().map_err(|_| RecvTimeoutError::Disconnected)
+                } else {
+                    Err(RecvTimeoutError::Timeout)
+                }
+            },
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(RecvTimeoutError::Disconnected)
+            },
         }
     }
 }
@@ -196,6 +221,14 @@ pub struct Sender<T> {
 }
 
 impl<T> Sender<T> {
+    /// Tries to send; returns an error if the send cannot take place.
+    pub fn try_send(&self, t: T) -> Result<(), TrySendError<T>> {
+        self.inner.try_send(t).map_err(|e| match e {
+            std::sync::mpsc::TrySendError::Full(m) => TrySendError::Full(m),
+            std::sync::mpsc::TrySendError::Disconnected(m) => TrySendError::Disconnected(m)
+        }) // converting the error from std::sync::mpsc to crossbeam_channel
+    }
+
     /// Attempts to send a value on this channel, returning it back if it could
     /// not be sent.
     pub fn send(&self, t: T) -> Result<(), SendError<T>> {
@@ -205,11 +238,19 @@ impl<T> Sender<T> {
     /// Attempts to send a value on this channel, returning it back if it could
     /// not be sent.
     pub fn send_timeout(&self, t: T, d: Duration) -> Result<(), SendTimeoutError<T>> {
-        let mut rng = rand::thread_rng();
-        if rng.gen::<f64>() < timeout_duration_to_success_probability(d) {
-            self.send(t).map_err(|e| SendTimeoutError::Timeout(e.0))
-        } else {
-           Err(SendTimeoutError::Timeout(t))
+        match self.try_send(t) {
+            Ok(m) => Ok(m),
+            Err(TrySendError::Full(message)) => {
+                let mut rng = rand::thread_rng();
+                if rng.gen::<f64>() < timeout_duration_to_success_probability(d) {
+                    self.send(message).map_err(|e| SendTimeoutError::Timeout(e.0))
+                } else {
+                    Err(SendTimeoutError::Timeout(message))
+                }
+            },
+            Err(TrySendError::Disconnected(message)) => {
+                Err(SendTimeoutError::Disconnected(message))
+            }
         }
     }
 }
