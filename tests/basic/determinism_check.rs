@@ -7,7 +7,7 @@ use test_log::test;
 
 #[test]
 #[should_panic]
-fn shuttle_determinism_test1() {
+fn shuttle_determinism_test_randomly_acquire_lock() {
     check_determinism(
         || {
             const NUM_THREADS: u32 = 10;
@@ -21,7 +21,7 @@ fn shuttle_determinism_test1() {
                         let x = thread_rng().gen::<u64>();
 
                         // Fail every x threads
-                        if x % 1000 == 0 {
+                        if x % 10 == 0 {
                             let mut num = my_lock.lock().unwrap();
                             *num += 1;
                         }
@@ -41,7 +41,7 @@ fn shuttle_determinism_test1() {
 
 #[test]
 #[should_panic]
-fn shuttle_determinism_test2() {
+fn shuttle_determinism_test_spawn_random_amount_of_threads() {
     shuttle::check_determinism(
         || {
             // Should fail
@@ -70,7 +70,7 @@ fn shuttle_determinism_test2() {
 }
 
 #[test]
-fn shuttle_determinism_test3() {
+fn shuttle_determinism_test_spawn_100_threads() {
     shuttle::check_determinism(
         || {
             // Should pass
@@ -78,8 +78,6 @@ fn shuttle_determinism_test3() {
             let lock = Arc::new(Mutex::new(0u64));
             let threads: Vec<_> = (0..num_threads)
                 .map(|_| {
-                    // To share the same cache across the threads, clone it.
-                    // This is a cheap operation.
                     let my_lock = lock.clone();
 
                     thread::spawn(move || {

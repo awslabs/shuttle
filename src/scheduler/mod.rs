@@ -1,5 +1,5 @@
 //! Implementations of different scheduling strategies for concurrency testing.
-use std::{collections::HashSet, fmt::Debug};
+use std::fmt::Debug;
 
 mod data;
 mod determinism_check;
@@ -33,30 +33,6 @@ pub struct Schedule {
 enum ScheduleStep {
     Task(TaskId),
     Random,
-}
-
-/// A `ScheduleRecord` can be used to record both the step
-/// taken and all runnable tasks
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ScheduleRecord {
-    step: ScheduleStep,
-    runnable_tasks: HashSet<TaskId>,
-}
-
-impl ScheduleRecord {
-    /// Create a record step from the chosen task and options
-    fn new(step: ScheduleStep, options_vec: &[TaskId]) -> Self {
-        let mut new_record = Self {
-            step,
-            runnable_tasks: HashSet::new(),
-        };
-
-        for task_id in options_vec {
-            new_record.runnable_tasks.insert(task_id.clone());
-        }
-
-        new_record
-    }
 }
 
 impl Schedule {

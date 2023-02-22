@@ -339,9 +339,9 @@ where
     runner.run(f);
 }
 
-/// Run the given function under a scheduler that checks for determinism.
-/// iterations: total number of times to run the inner scheduler
-/// inner_iterations: number of times to test a recorded schedule
+/// Run the given function under a scheduler that checks whether the function is deterministic.
+/// Each `iteration` will check a different random schedule and replay that schedule
+/// `inner_iterations` times to validate determinism.
 pub fn check_determinism<F>(f: F, iterations: usize, inner_iterations: usize)
 where
     F: Fn() + Send + Sync + 'static,
