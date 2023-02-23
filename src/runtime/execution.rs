@@ -572,7 +572,7 @@ impl ExecutionState {
 
 // Safety: see the use in `advance_to_next_task` above. We lift this out of that function so we can
 // give fixed concrete types for the transmute.
-unsafe fn extend_span_entered_lt<'a>(entered: Entered<'a>) -> Entered<'static> {
+unsafe fn extend_span_entered_lt(entered: Entered) -> Entered<'static> {
     std::mem::transmute(entered)
 }
 

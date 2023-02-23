@@ -314,7 +314,7 @@ impl<T: 'static> LocalKey<T> {
 
     fn get(&'static self) -> Option<Result<&T, AccessError>> {
         // Safety: see the usage below
-        unsafe fn extend_lt<'a, 'b, T>(t: &'a T) -> &'b T {
+        unsafe fn extend_lt<'b, T>(t: &'_ T) -> &'b T {
             std::mem::transmute(t)
         }
 
