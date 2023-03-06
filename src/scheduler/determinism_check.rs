@@ -131,7 +131,7 @@ impl<S: Scheduler> Scheduler for DeterminismCheckScheduler<S> {
         } else {
             // Check that random step is recorded here
             if let ScheduleStep::Task(_) = self.original_schedule[self.current_step].step {
-                panic!("Found random generation, but recording expected context switch");
+                panic!("possible nondeterminism: next step was random number generation, but recording expected context switch");
             }
         }
 
