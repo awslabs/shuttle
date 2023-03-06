@@ -117,7 +117,7 @@ impl<S: Scheduler> Scheduler for DeterminismCheckScheduler<S> {
                     Some(id)
                 }
                 ScheduleStep::Random => {
-                    panic!("Found context switch, but recording expected random number generation")
+                    panic!("possible nondeterminism: next step was context switch, but recording expected random number generation")
                 }
             }
         }
