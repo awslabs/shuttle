@@ -38,6 +38,7 @@ pub struct DeterminismCheckScheduler<S: ?Sized + Scheduler> {
 impl<S: Scheduler> DeterminismCheckScheduler<S> {
     /// Create a new `DeterminismCheckScheduler` by wrapping the given `Scheduler` implementation.
     pub fn new(inner_iterations: usize, inner: S) -> Self {
+        assert!(inner_iterations > 0);
         Self {
             inner: Box::new(inner),
             iterations: 0,
@@ -57,10 +58,7 @@ impl<S: Scheduler> Scheduler for DeterminismCheckScheduler<S> {
             self.original_schedule.clear();
         } else {
             // Create a new execution to test against prior recording
-
-            if self.recording {
-                self.recording = false;
-            }
+            self.recording = false;
 
             if self.current_step != self.original_schedule.len() {
                 panic!("possible nondeterminism: current execution ended earlier than expected (expected length {} but ended after {})", self.original_schedule.len(), self.current_step);
