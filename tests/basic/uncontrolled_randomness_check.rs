@@ -1,12 +1,11 @@
 use shuttle::rand::{thread_rng, Rng};
 use shuttle::sync::{Arc, Mutex};
-use shuttle::{check_determinism, thread};
+use shuttle::{check_uncontrolled_randomness, thread};
 use test_log::test;
 
 #[test]
-#[should_panic]
-fn randomly_acquire_lock() {
-    check_determinism(
+fn randomly_acquire_lock_shuttle_rand() {
+    check_uncontrolled_randomness(
         || {
             const NUM_THREADS: u32 = 10;
 
@@ -30,44 +29,43 @@ fn randomly_acquire_lock() {
             threads.into_iter().for_each(|t| t.join().expect("Failed"));
         },
         1000,
-        10,
     );
 }
 
 #[test]
-#[should_panic(expected = "possible nondeterminism: set of runnable tasks is different than expected")]
-fn spawn_random_amount_of_threads() {
-    shuttle::check_determinism(
+#[should_panic = "possible nondeterminism"]
+fn randomly_acquire_lock_regular_rand() {
+    check_uncontrolled_randomness(
         || {
-            // Should fail
-            let num_threads: u64 = thread_rng().gen::<u64>() % 100;
+            const NUM_THREADS: u32 = 10;
+
             let lock = Arc::new(Mutex::new(0u64));
-            let threads: Vec<_> = (0..num_threads)
+            let threads: Vec<_> = (0..NUM_THREADS)
                 .map(|_| {
                     let my_lock = lock.clone();
 
                     thread::spawn(move || {
-                        let mut num = my_lock.lock().unwrap();
-                        *num += 1;
+                        let x = rand::thread_rng().gen::<u64>();
+
+                        // Fail every x threads
+                        if x % 10 == 0 {
+                            let mut num = my_lock.lock().unwrap();
+                            *num += 1;
+                        }
                     })
                 })
                 .collect();
 
             threads.into_iter().for_each(|t| t.join().expect("Failed"));
-
-            let num = lock.lock().unwrap();
-            assert!(*num == num_threads);
         },
-        100,
-        10,
+        1000,
     );
 }
 
 #[test]
 fn spawn_100_threads() {
-    shuttle::check_determinism(
+    shuttle::check_uncontrolled_randomness(
         || {
-            // Should pass
             let num_threads: u64 = 100;
             let lock = Arc::new(Mutex::new(0u64));
             let threads: Vec<_> = (0..num_threads)
@@ -87,29 +85,58 @@ fn spawn_100_threads() {
             assert!(*num == num_threads);
         },
         100,
-        10,
     );
 }
 
 #[test]
-fn spawn_random_amount_of_threads2() {
-    shuttle::check_determinism(
+#[should_panic = "possible nondeterminism"]
+fn spawn_random_amount_of_threads_regular_rand() {
+    shuttle::check_uncontrolled_randomness(
         || {
-            let num_threads = shuttle::rand::thread_rng().gen_range(1..10);
+            let num_threads: u64 = rand::thread_rng().gen::<u64>() % 10;
             let lock = Arc::new(Mutex::new(0u64));
             let threads: Vec<_> = (0..num_threads)
                 .map(|_| {
                     let my_lock = lock.clone();
+
                     thread::spawn(move || {
-                        *my_lock.lock().unwrap() += 1;
+                        let mut num = my_lock.lock().unwrap();
+                        *num += 1;
                     })
                 })
                 .collect();
+
             threads.into_iter().for_each(|t| t.join().expect("Failed"));
+
             let num = lock.lock().unwrap();
             assert!(*num == num_threads);
         },
         100,
-        10,
+    );
+}
+
+#[test]
+fn spawn_random_amount_of_threads_shuttle_rand() {
+    shuttle::check_uncontrolled_randomness(
+        || {
+            let num_threads: u64 = thread_rng().gen::<u64>() % 10;
+            let lock = Arc::new(Mutex::new(0u64));
+            let threads: Vec<_> = (0..num_threads)
+                .map(|_| {
+                    let my_lock = lock.clone();
+
+                    thread::spawn(move || {
+                        let mut num = my_lock.lock().unwrap();
+                        *num += 1;
+                    })
+                })
+                .collect();
+
+            threads.into_iter().for_each(|t| t.join().expect("Failed"));
+
+            let num = lock.lock().unwrap();
+            assert!(*num == num_threads);
+        },
+        100,
     );
 }

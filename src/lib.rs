@@ -339,19 +339,17 @@ where
     runner.run(f);
 }
 
-/// Run the given function under a scheduler that checks whether the function is deterministic.
-/// Each `iteration` will check a different random schedule and replay that schedule
-/// `inner_iterations` times to validate determinism.
-pub fn check_determinism<F>(f: F, iterations: usize, inner_iterations: usize)
+/// Run the given function under a scheduler that checks whether the function
+/// contains randomness which is not controlled by Shuttle.
+/// Each iteration will check a different random schedule and replay that schedule once.
+pub fn check_uncontrolled_randomness<F>(f: F, max_iterations: usize)
 where
     F: Fn() + Send + Sync + 'static,
 {
-    use crate::scheduler::DeterminismCheckScheduler;
     use crate::scheduler::RandomScheduler;
+    use crate::scheduler::UncontrolledRandomnessCheckScheduler;
 
-    let inner = RandomScheduler::new(iterations);
-
-    let scheduler = DeterminismCheckScheduler::new(inner_iterations, inner);
+    let scheduler = UncontrolledRandomnessCheckScheduler::new(RandomScheduler::new(max_iterations));
 
     let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
