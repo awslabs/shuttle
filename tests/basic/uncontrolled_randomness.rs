@@ -1,7 +1,24 @@
 use shuttle::rand::{thread_rng, Rng};
+use shuttle::scheduler::{DfsScheduler, Scheduler};
 use shuttle::sync::{Arc, Mutex};
 use shuttle::{check_uncontrolled_randomness, thread};
 use test_log::test;
+
+fn check_uncontrolled_randomness_custom_scheduler_and_config<F, S>(f: F, scheduler: S)
+where
+    F: Fn() + Send + Sync + 'static,
+    S: Scheduler + 'static,
+{
+    use shuttle::scheduler::UncontrolledRandomnessCheckScheduler;
+    use shuttle::Config;
+
+    let config = Config::default();
+
+    let scheduler = UncontrolledRandomnessCheckScheduler::new(scheduler);
+
+    let runner = shuttle::Runner::new(scheduler, config);
+    runner.run(f);
+}
 
 #[test]
 fn randomly_acquire_lock_shuttle_rand() {
@@ -138,5 +155,62 @@ fn spawn_random_amount_of_threads_shuttle_rand() {
             assert!(*num == num_threads);
         },
         100,
+    );
+}
+
+#[test]
+fn spawn_random_amount_of_threads_dfs_shuttle_rand() {
+    let scheduler = DfsScheduler::new(None, true);
+    check_uncontrolled_randomness_custom_scheduler_and_config(
+        || {
+            let num_threads: u64 = thread_rng().gen::<u64>() % 2;
+            let lock = Arc::new(Mutex::new(0u64));
+            let threads: Vec<_> = (0..num_threads)
+                .map(|_| {
+                    let my_lock = lock.clone();
+
+                    thread::spawn(move || {
+                        let mut num = my_lock.lock().unwrap();
+                        *num += 1;
+                    })
+                })
+                .collect();
+
+            threads.into_iter().for_each(|t| t.join().expect("Failed"));
+
+            let num = lock.lock().unwrap();
+            assert!(*num == num_threads);
+        },
+        scheduler,
+    );
+}
+
+// TODO The following schedule: "910103f8acd1910100" gives panic: "target should have finished"
+// TODO rather than "possible nondeterminism"
+#[test]
+#[should_panic]
+fn spawn_random_amount_of_threads_dfs_regular_rand() {
+    let scheduler = DfsScheduler::new(None, true);
+    check_uncontrolled_randomness_custom_scheduler_and_config(
+        || {
+            let num_threads: u64 = rand::thread_rng().gen::<u64>() % 10;
+            let lock = Arc::new(Mutex::new(0u64));
+            let threads: Vec<_> = (0..num_threads)
+                .map(|_| {
+                    let my_lock = lock.clone();
+
+                    thread::spawn(move || {
+                        let mut num = my_lock.lock().unwrap();
+                        *num += 1;
+                    })
+                })
+                .collect();
+
+            threads.into_iter().for_each(|t| t.join().expect("Failed"));
+
+            let num = lock.lock().unwrap();
+            assert!(*num == num_threads);
+        },
+        scheduler,
     );
 }

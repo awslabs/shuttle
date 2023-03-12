@@ -12,19 +12,9 @@ pub struct RoundRobinScheduler {
 }
 
 impl RoundRobinScheduler {
-    /// Construct a new `RoundRobinScheduler` that will execute the test only once, scheduling its
-    /// tasks in a round-robin fashion.
-    pub fn new() -> Self {
-        Self {
-            iterations: 0,
-            max_iterations: 1,
-            data_source: RandomDataSource::initialize(0),
-        }
-    }
-
     /// Construct a new `RoundRobinScheduler` that will execute the test up to max_iteration times, scheduling its
     /// tasks in a round-robin fashion.
-    pub fn new_multi_run(max_iterations: usize) -> Self {
+    pub fn new(max_iterations: usize) -> Self {
         Self {
             iterations: 0,
             max_iterations,
@@ -64,6 +54,6 @@ impl Scheduler for RoundRobinScheduler {
 
 impl Default for RoundRobinScheduler {
     fn default() -> Self {
-        Self::new()
+        Self::new(1)
     }
 }

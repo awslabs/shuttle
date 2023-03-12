@@ -296,7 +296,7 @@ where
 {
     use crate::scheduler::RoundRobinScheduler;
 
-    let runner = Runner::new(RoundRobinScheduler::new(), Default::default());
+    let runner = Runner::new(RoundRobinScheduler::new(1), Default::default());
     runner.run(f);
 }
 
@@ -351,7 +351,7 @@ where
 
     let scheduler = UncontrolledRandomnessCheckScheduler::new(RandomScheduler::new(max_iterations));
 
-    let runner = Runner::new(scheduler, Default::default());
+    let runner = Runner::new(scheduler, Config::default());
     runner.run(f);
 }
 
