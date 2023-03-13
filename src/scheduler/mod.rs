@@ -29,7 +29,7 @@ pub struct Schedule {
     steps: Vec<ScheduleStep>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ScheduleStep {
     Task(TaskId),
     Random,
