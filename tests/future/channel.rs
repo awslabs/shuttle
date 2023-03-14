@@ -17,7 +17,7 @@ fn oneshot_once_blocking() {
         || {
             let (tx, rx) = oneshot::channel();
 
-            let _ = future::spawn(async move {
+            future::spawn(async move {
                 tx.send(42u32).unwrap();
             });
 
