@@ -1,9 +1,10 @@
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::scheduler::{Schedule, Scheduler};
+use smallvec::SmallVec;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ScheduleRecord {
-    Task(Option<TaskId>, Vec<TaskId>, bool),
+    Task(Option<TaskId>, SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>, bool),
     Random(u64),
 }
 
@@ -14,14 +15,14 @@ enum ScheduleRecord {
 /// Violations of these checks means that the program exhibits randomness which is not
 /// under Shuttle's control.
 #[derive(Debug)]
-pub struct UncontrolledRandomnessCheckScheduler<S: Scheduler> {
+pub struct UncontrolledNondeterminismCheckScheduler<S: Scheduler> {
     scheduler: Box<S>,
     recording: bool,
     previous_schedule: Vec<ScheduleRecord>,
     current_step: usize,
 }
 
-impl<S: Scheduler> UncontrolledRandomnessCheckScheduler<S> {
+impl<S: Scheduler> UncontrolledNondeterminismCheckScheduler<S> {
     /// Create a new `UncontrolledRandomnessCheckScheduler` by wrapping the given `Scheduler` implementation.
     pub fn new(scheduler: S) -> Self {
         Self {
@@ -33,7 +34,7 @@ impl<S: Scheduler> UncontrolledRandomnessCheckScheduler<S> {
     }
 }
 
-impl<S: Scheduler> Scheduler for UncontrolledRandomnessCheckScheduler<S> {
+impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
     fn new_execution(&mut self) -> Option<Schedule> {
         // Dummy schedule. We do this instead of doing `self.scheduler.new_execution`
         // as that would cause the schedule to be ran half as many times as intended.
@@ -64,7 +65,7 @@ impl<S: Scheduler> Scheduler for UncontrolledRandomnessCheckScheduler<S> {
         if self.recording {
             let choice = self.scheduler.next_task(runnable_tasks, current_task, is_yielding);
             self.previous_schedule
-                .push(ScheduleRecord::Task(choice, runnable_tasks.to_vec(), is_yielding));
+                .push(ScheduleRecord::Task(choice, runnable_tasks.into(), is_yielding));
 
             choice
         } else {
@@ -78,7 +79,7 @@ impl<S: Scheduler> Scheduler for UncontrolledRandomnessCheckScheduler<S> {
 
             match &self.previous_schedule[self.current_step] {
                 ScheduleRecord::Task(maybe_id, runnables, was_yielding) => {
-                    if runnables != runnable_tasks {
+                    if runnables.as_slice() != runnable_tasks {
                         panic!("possible nondeterminism: set of runnable tasks is different than expected (expected {runnables:?} but got {runnable_tasks:?})");
                     }
 

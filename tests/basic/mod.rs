@@ -18,4 +18,4 @@ mod rwlock;
 mod shrink;
 mod thread;
 mod timeout;
-mod uncontrolled_randomness;
+mod uncontrolled_nondeterminism;

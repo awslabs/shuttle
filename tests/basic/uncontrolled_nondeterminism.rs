@@ -2,20 +2,20 @@ use rand::{rngs::StdRng, SeedableRng};
 use shuttle::rand::Rng;
 use shuttle::scheduler::{DfsScheduler, Scheduler};
 use shuttle::sync::{Arc, Mutex};
-use shuttle::{check_uncontrolled_randomness, thread};
+use shuttle::{check_uncontrolled_nondeterminism, thread};
 use test_log::test;
 
-fn check_uncontrolled_randomness_custom_scheduler_and_config<F, S>(f: F, scheduler: S)
+fn check_uncontrolled_nondeterminism_custom_scheduler_and_config<F, S>(f: F, scheduler: S)
 where
     F: Fn() + Send + Sync + 'static,
     S: Scheduler + 'static,
 {
-    use shuttle::scheduler::UncontrolledRandomnessCheckScheduler;
+    use shuttle::scheduler::UncontrolledNondeterminismCheckScheduler;
     use shuttle::Config;
 
     let config = Config::default();
 
-    let scheduler = UncontrolledRandomnessCheckScheduler::new(scheduler);
+    let scheduler = UncontrolledNondeterminismCheckScheduler::new(scheduler);
 
     let runner = shuttle::Runner::new(scheduler, config);
     runner.run(f);
@@ -59,7 +59,7 @@ fn have_n_threads_acquire_mutex(num_threads: u64) {
     threads.into_iter().for_each(|t| t.join().expect("Failed"));
 }
 
-fn spawn_random_amount_of_threads<F: (Fn() -> Box<dyn rand::RngCore>) + Send + Sync>(
+fn spawn_random_amount_of_threads<R: rand::RngCore, F: (Fn() -> R) + Send + Sync>(
     thread_rng: &'static F,
     max_threads: u64,
 ) {
@@ -92,40 +92,31 @@ fn make_random_numbers() {
 
 #[test]
 fn randomly_acquire_lock_shuttle_rand() {
-    check_uncontrolled_randomness(
-        || randomly_acquire_lock(&|| Box::new(shuttle::rand::thread_rng())),
-        1000,
-    );
+    check_uncontrolled_nondeterminism(|| randomly_acquire_lock(&shuttle::rand::thread_rng), 1000);
 }
 
 #[test]
 #[should_panic = "possible nondeterminism"]
 fn randomly_acquire_lock_regular_rand_new() {
-    check_uncontrolled_randomness(|| randomly_acquire_lock(&|| Box::new(rand::thread_rng())), 1000);
+    check_uncontrolled_nondeterminism(|| randomly_acquire_lock(&rand::thread_rng), 1000);
 }
 
 #[test]
 fn spawn_random_amount_of_threads_shuttle_rand() {
-    check_uncontrolled_randomness(
-        || spawn_random_amount_of_threads(&|| Box::new(shuttle::rand::thread_rng()), 10),
-        1000,
-    );
+    check_uncontrolled_nondeterminism(|| spawn_random_amount_of_threads(&shuttle::rand::thread_rng, 10), 1000);
 }
 
 #[test]
 #[should_panic = "possible nondeterminism"]
 fn spawn_random_amount_of_threads_regular_rand() {
-    check_uncontrolled_randomness(
-        || spawn_random_amount_of_threads(&|| Box::new(rand::thread_rng()), 10),
-        1000,
-    );
+    check_uncontrolled_nondeterminism(|| spawn_random_amount_of_threads(&rand::thread_rng, 10), 1000);
 }
 
 #[test]
 fn spawn_random_amount_of_threads_dfs_shuttle_rand() {
     let scheduler = DfsScheduler::new(None, true);
-    check_uncontrolled_randomness_custom_scheduler_and_config(
-        || spawn_random_amount_of_threads(&|| Box::new(shuttle::rand::thread_rng()), 2),
+    check_uncontrolled_nondeterminism_custom_scheduler_and_config(
+        || spawn_random_amount_of_threads(&shuttle::rand::thread_rng, 2),
         scheduler,
     );
 }
@@ -134,8 +125,8 @@ fn spawn_random_amount_of_threads_dfs_shuttle_rand() {
 #[should_panic]
 fn spawn_random_amount_of_threads_dfs_regular_rand() {
     let scheduler = DfsScheduler::new(None, true);
-    check_uncontrolled_randomness_custom_scheduler_and_config(
-        || spawn_random_amount_of_threads(&|| Box::new(rand::thread_rng()), 10),
+    check_uncontrolled_nondeterminism_custom_scheduler_and_config(
+        || spawn_random_amount_of_threads(&rand::thread_rng, 10),
         scheduler,
     );
 }
@@ -145,7 +136,7 @@ fn spawn_random_amount_of_threads_dfs_regular_rand() {
 fn panic_should_have_ended() {
     let scheduler = DfsScheduler::new(None, true);
     let rng = Mutex::new(StdRng::seed_from_u64(123));
-    check_uncontrolled_randomness_custom_scheduler_and_config(
+    check_uncontrolled_nondeterminism_custom_scheduler_and_config(
         move || spawn_random_amount_of_threads_mutex_rng(&rng, 2),
         scheduler,
     );
@@ -156,7 +147,7 @@ fn panic_should_have_ended() {
 fn panic_ended_earlier() {
     let scheduler = DfsScheduler::new(None, true);
     let rng = Mutex::new(StdRng::seed_from_u64(123));
-    check_uncontrolled_randomness_custom_scheduler_and_config(
+    check_uncontrolled_nondeterminism_custom_scheduler_and_config(
         move || spawn_random_amount_of_threads_mutex_rng(&rng, 3),
         scheduler,
     );
@@ -167,7 +158,7 @@ fn panic_ended_earlier() {
 fn panic_set_of_runnable() {
     let scheduler = DfsScheduler::new(None, true);
     let rng = Mutex::new(StdRng::seed_from_u64(123));
-    check_uncontrolled_randomness_custom_scheduler_and_config(
+    check_uncontrolled_nondeterminism_custom_scheduler_and_config(
         move || spawn_random_amount_of_threads_mutex_rng(&rng, 15),
         scheduler,
     );
@@ -179,7 +170,7 @@ fn panic_context_switch_when_expecting_rng() {
     let scheduler = DfsScheduler::new(None, true);
     let rng = Mutex::new(StdRng::seed_from_u64(123));
     let modulo = 3;
-    check_uncontrolled_randomness_custom_scheduler_and_config(
+    check_uncontrolled_nondeterminism_custom_scheduler_and_config(
         move || {
             let test = rng.lock().unwrap().gen::<u64>() % modulo == 0;
             if test {
@@ -198,7 +189,7 @@ fn panic_rng_when_expecting_context_switch() {
     let scheduler = DfsScheduler::new(None, true);
     let rng = Mutex::new(StdRng::seed_from_u64(123));
     let modulo = 5;
-    check_uncontrolled_randomness_custom_scheduler_and_config(
+    check_uncontrolled_nondeterminism_custom_scheduler_and_config(
         move || {
             let test = rng.lock().unwrap().gen::<u64>() % modulo == 0;
             if test {
@@ -217,7 +208,7 @@ fn panic_is_yielding() {
     let scheduler = DfsScheduler::new(None, true);
     let rng = Mutex::new(StdRng::seed_from_u64(123));
     let modulo = 5;
-    check_uncontrolled_randomness_custom_scheduler_and_config(
+    check_uncontrolled_nondeterminism_custom_scheduler_and_config(
         move || {
             let test = rng.lock().unwrap().gen::<u64>() % modulo == 0;
             if test {
