@@ -21,18 +21,20 @@ where
     runner.run(f);
 }
 
-fn randomly_acquire_lock<R: rand::RngCore, F: (Fn() -> R) + Send + Sync>(thread_rng: &'static F) {
-    const NUM_THREADS: u32 = 10;
-
+fn have_n_threads_acquire_mutex<R: rand::RngCore, F: (Fn() -> R) + Send + Sync>(
+    thread_rng: &'static F,
+    num_threads: u64,
+    modulus: u64,
+) {
     let lock = Arc::new(Mutex::new(0u64));
-    let threads: Vec<_> = (0..NUM_THREADS)
+    let threads: Vec<_> = (0..num_threads)
         .map(|_| {
             let my_lock = lock.clone();
 
             thread::spawn(move || {
                 let x = thread_rng().gen::<u64>();
 
-                if x % 10 == 0 {
+                if x % modulus == 0 {
                     let mut num = my_lock.lock().unwrap();
                     *num += 1;
                 }
@@ -43,20 +45,18 @@ fn randomly_acquire_lock<R: rand::RngCore, F: (Fn() -> R) + Send + Sync>(thread_
     threads.into_iter().for_each(|t| t.join().expect("Failed"));
 }
 
-fn have_n_threads_acquire_mutex(num_threads: u64) {
-    let lock = Arc::new(Mutex::new(0u64));
-    let threads: Vec<_> = (0..num_threads)
-        .map(|_| {
-            let my_lock = lock.clone();
+#[test]
+fn randomly_acquire_lock_shuttle_rand() {
+    check_uncontrolled_nondeterminism(
+        || have_n_threads_acquire_mutex(&shuttle::rand::thread_rng, 10, 10),
+        1000,
+    );
+}
 
-            thread::spawn(move || {
-                let mut num = my_lock.lock().unwrap();
-                *num += 1;
-            })
-        })
-        .collect();
-
-    threads.into_iter().for_each(|t| t.join().expect("Failed"));
+#[test]
+#[should_panic = "possible nondeterminism"]
+fn randomly_acquire_lock_regular_rand() {
+    check_uncontrolled_nondeterminism(|| have_n_threads_acquire_mutex(&rand::thread_rng, 10, 10), 1000);
 }
 
 fn spawn_random_amount_of_threads<R: rand::RngCore, F: (Fn() -> R) + Send + Sync>(
@@ -64,41 +64,7 @@ fn spawn_random_amount_of_threads<R: rand::RngCore, F: (Fn() -> R) + Send + Sync
     max_threads: u64,
 ) {
     let num_threads: u64 = thread_rng().gen::<u64>() % max_threads;
-    have_n_threads_acquire_mutex(num_threads);
-}
-
-fn spawn_random_amount_of_threads_mutex_rng(rng: &Mutex<StdRng>, max_threads: u64) {
-    let num_threads = rng.lock().unwrap().gen::<u64>() % max_threads;
-    have_n_threads_acquire_mutex(num_threads);
-}
-
-fn have_n_threads_yield(num_threads: u64) {
-    let threads: Vec<_> = (0..num_threads)
-        .map(|_| {
-            thread::spawn(move || {
-                thread::yield_now();
-            })
-        })
-        .collect();
-
-    threads.into_iter().for_each(|t| t.join().expect("Failed"));
-}
-
-fn make_random_numbers() {
-    for _ in 0..10 {
-        shuttle::rand::thread_rng().gen::<u64>();
-    }
-}
-
-#[test]
-fn randomly_acquire_lock_shuttle_rand() {
-    check_uncontrolled_nondeterminism(|| randomly_acquire_lock(&shuttle::rand::thread_rng), 1000);
-}
-
-#[test]
-#[should_panic = "possible nondeterminism"]
-fn randomly_acquire_lock_regular_rand_new() {
-    check_uncontrolled_nondeterminism(|| randomly_acquire_lock(&rand::thread_rng), 1000);
+    have_n_threads_acquire_mutex(&rand::thread_rng, num_threads, 1);
 }
 
 #[test]
@@ -129,6 +95,11 @@ fn spawn_random_amount_of_threads_dfs_regular_rand() {
         || spawn_random_amount_of_threads(&rand::thread_rng, 10),
         scheduler,
     );
+}
+
+fn spawn_random_amount_of_threads_mutex_rng(rng: &Mutex<StdRng>, max_threads: u64) {
+    let num_threads = rng.lock().unwrap().gen::<u64>() % max_threads;
+    have_n_threads_acquire_mutex(&rand::thread_rng, num_threads, 1);
 }
 
 #[test]
@@ -164,6 +135,12 @@ fn panic_set_of_runnable() {
     );
 }
 
+fn make_random_numbers() {
+    for _ in 0..10 {
+        shuttle::rand::thread_rng().gen::<u64>();
+    }
+}
+
 #[test]
 #[should_panic = "possible nondeterminism: next step was context switch, but recording expected random number generation"]
 fn panic_context_switch_when_expecting_rng() {
@@ -174,7 +151,7 @@ fn panic_context_switch_when_expecting_rng() {
         move || {
             let test = rng.lock().unwrap().gen::<u64>() % modulo == 0;
             if test {
-                have_n_threads_acquire_mutex(10);
+                have_n_threads_acquire_mutex(&rand::thread_rng, 10, 1);
             } else {
                 make_random_numbers();
             }
@@ -193,13 +170,25 @@ fn panic_rng_when_expecting_context_switch() {
         move || {
             let test = rng.lock().unwrap().gen::<u64>() % modulo == 0;
             if test {
-                have_n_threads_acquire_mutex(10);
+                have_n_threads_acquire_mutex(&rand::thread_rng, 10, 1);
             } else {
                 make_random_numbers();
             }
         },
         scheduler,
     );
+}
+
+fn have_n_threads_yield(num_threads: u64) {
+    let threads: Vec<_> = (0..num_threads)
+        .map(|_| {
+            thread::spawn(move || {
+                thread::yield_now();
+            })
+        })
+        .collect();
+
+    threads.into_iter().for_each(|t| t.join().expect("Failed"));
 }
 
 #[test]
@@ -212,7 +201,7 @@ fn panic_is_yielding() {
         move || {
             let test = rng.lock().unwrap().gen::<u64>() % modulo == 0;
             if test {
-                have_n_threads_acquire_mutex(10);
+                have_n_threads_acquire_mutex(&rand::thread_rng, 10, 1);
             } else {
                 have_n_threads_yield(10);
             }
