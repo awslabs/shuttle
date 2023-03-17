@@ -21,7 +21,7 @@ where
     runner.run(f);
 }
 
-fn randomly_acquire_lock<F: (Fn() -> Box<dyn rand::RngCore>) + Send + Sync>(thread_rng: &'static F) {
+fn randomly_acquire_lock<R: rand::RngCore, F: (Fn() -> R) + Send + Sync>(thread_rng: &'static F) {
     const NUM_THREADS: u32 = 10;
 
     let lock = Arc::new(Mutex::new(0u64));
