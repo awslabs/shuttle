@@ -37,7 +37,7 @@ impl<S: Scheduler> Scheduler for UncontrolledRandomnessCheckScheduler<S> {
     fn new_execution(&mut self) -> Option<Schedule> {
         // Dummy schedule. We do this instead of doing `self.scheduler.new_execution`
         // as that would cause the schedule to be ran half as many times as intended.
-        let mut out = Some(Schedule::new(12345));
+        let mut out = Some(Schedule::new(0));
 
         if !self.recording {
             // Start a new recording
