@@ -17,7 +17,7 @@ fn oneshot_once_blocking() {
         || {
             let (tx, rx) = oneshot::channel();
 
-            let _ = future::spawn(async move {
+            future::spawn(async move {
                 tx.send(42u32).unwrap();
             });
 
@@ -56,7 +56,7 @@ fn oneshot_ping_pong() {
             let (tx1, rx1) = oneshot::channel();
             let (tx2, rx2) = oneshot::channel();
 
-            let _ = future::spawn(async move {
+            future::spawn(async move {
                 tx1.send(0u32).unwrap();
                 let x = rx2.await.unwrap();
                 assert_eq!(x, 1);

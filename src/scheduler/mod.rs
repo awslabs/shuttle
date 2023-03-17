@@ -7,6 +7,7 @@ mod pct;
 mod random;
 mod replay;
 mod round_robin;
+mod uncontrolled_nondeterminism;
 
 pub(crate) mod metrics;
 pub(crate) mod serialization;
@@ -18,6 +19,7 @@ pub use pct::PctScheduler;
 pub use random::RandomScheduler;
 pub use replay::ReplayScheduler;
 pub use round_robin::RoundRobinScheduler;
+pub use uncontrolled_nondeterminism::UncontrolledNondeterminismCheckScheduler;
 
 /// A `Schedule` determines the order in which tasks are to be executed
 // TODO would be nice to make this generic in the type of `seed`, but for now all our seeds are u64s

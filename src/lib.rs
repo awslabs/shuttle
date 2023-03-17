@@ -296,7 +296,7 @@ where
 {
     use crate::scheduler::RoundRobinScheduler;
 
-    let runner = Runner::new(RoundRobinScheduler::new(), Default::default());
+    let runner = Runner::new(RoundRobinScheduler::new(1), Default::default());
     runner.run(f);
 }
 
@@ -336,6 +336,22 @@ where
 
     let scheduler = DfsScheduler::new(max_iterations, false);
     let runner = Runner::new(scheduler, Default::default());
+    runner.run(f);
+}
+
+/// Run the given function under a scheduler that checks whether the function
+/// contains randomness which is not controlled by Shuttle.
+/// Each iteration will check a different random schedule and replay that schedule once.
+pub fn check_uncontrolled_nondeterminism<F>(f: F, max_iterations: usize)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    use crate::scheduler::RandomScheduler;
+    use crate::scheduler::UncontrolledNondeterminismCheckScheduler;
+
+    let scheduler = UncontrolledNondeterminismCheckScheduler::new(RandomScheduler::new(max_iterations));
+
+    let runner = Runner::new(scheduler, Config::default());
     runner.run(f);
 }
 
