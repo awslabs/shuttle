@@ -209,3 +209,21 @@ fn panic_is_yielding() {
         scheduler,
     );
 }
+
+fn iterate_over_hash_set(num_entries: u64) {
+    use std::collections::HashSet;
+    let hash_set: HashSet<u64> = HashSet::from_iter(0..num_entries);
+    for e in hash_set {
+        if e % 2 == 0 {
+            let _ = shuttle::rand::thread_rng().gen::<u64>();
+        } else {
+            let _ = thread::spawn(|| {}).join();
+        }
+    }
+}
+
+#[test]
+#[should_panic = "possible nondeterminism: next step was"]
+fn hashset_without_set_seed() {
+    check_uncontrolled_nondeterminism(|| iterate_over_hash_set(10), 1000);
+}
