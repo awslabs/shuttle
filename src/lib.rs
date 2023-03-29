@@ -395,13 +395,13 @@ where
 }
 
 /// Sets the `tag` field of the current task.
-pub fn set_tag(tag: i64) {
+pub fn set_tag(tag: u64) {
     use runtime::execution::ExecutionState;
     ExecutionState::set_tag(tag);
 }
 
 /// Gets the `tag` field of the current task.
-pub fn get_tag() -> i64 {
+pub fn get_tag() -> u64 {
     use runtime::execution::ExecutionState;
     ExecutionState::get_tag()
 }

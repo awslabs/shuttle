@@ -608,24 +608,24 @@ impl ExecutionState {
         });
     }
 
-    fn set_tag_internal(&mut self, tag: i64) {
+    fn set_tag_internal(&mut self, tag: u64) {
         self.current_mut().set_tag(tag);
     }
 
-    pub(crate) fn set_tag(tag: i64) {
+    pub(crate) fn set_tag(tag: u64) {
         ExecutionState::with(|s| {
             s.set_tag_internal(tag);
         });
     }
 
-    fn get_tag_internal(&self) -> i64 {
+    fn get_tag_internal(&self) -> u64 {
         match self.try_current() {
             Some(current) => current.get_tag(),
             None => 0,
         }
     }
 
-    pub(crate) fn get_tag() -> i64 {
+    pub(crate) fn get_tag() -> u64 {
         ExecutionState::with(|s| s.get_tag_internal())
     }
 

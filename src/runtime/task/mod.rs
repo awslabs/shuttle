@@ -61,7 +61,7 @@ pub(crate) struct Task {
     pub(super) span: tracing::Span,
 
     // Arbitrarily settable tag which is inherited from the parent.
-    tag: i64,
+    tag: u64,
 }
 
 impl Task {
@@ -74,7 +74,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: i64,
+        tag: u64,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -116,7 +116,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: i64,
+        tag: u64,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -132,7 +132,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: i64,
+        tag: u64,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -344,11 +344,11 @@ impl Task {
         }
     }
 
-    pub(crate) fn get_tag(&self) -> i64 {
+    pub(crate) fn get_tag(&self) -> u64 {
         self.tag
     }
 
-    pub(crate) fn set_tag(&mut self, tag: i64) {
+    pub(crate) fn set_tag(&mut self, tag: u64) {
         self.tag = tag;
     }
 }
