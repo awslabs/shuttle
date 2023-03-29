@@ -59,6 +59,9 @@ pub(crate) struct Task {
 
     local_storage: StorageMap,
     pub(super) span: tracing::Span,
+
+    // Arbitrarily settable tag which is inherited from the parent.
+    tag: i64,
 }
 
 impl Task {
@@ -71,6 +74,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
+        tag: i64,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -100,6 +104,7 @@ impl Task {
             name,
             span,
             local_storage: StorageMap::new(),
+            tag,
         }
     }
 
@@ -111,11 +116,12 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
+        tag: i64,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
-        Self::new(f, stack_size, id, name, clock, parent_span, schedule_len)
+        Self::new(f, stack_size, id, name, clock, parent_span, schedule_len, tag)
     }
 
     pub(crate) fn from_future<F>(
@@ -126,6 +132,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
+        tag: i64,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -147,6 +154,7 @@ impl Task {
             clock,
             parent_span,
             schedule_len,
+            tag,
         )
     }
 
@@ -334,6 +342,14 @@ impl Task {
             // the token already is available, then this does nothing.
             self.park_state.token_available = true;
         }
+    }
+
+    pub(crate) fn get_tag(&self) -> i64 {
+        self.tag
+    }
+
+    pub(crate) fn set_tag(&mut self, tag: i64) {
+        self.tag = tag;
     }
 }
 
