@@ -10,7 +10,6 @@ use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::future::Future;
 use std::panic;
 use std::rc::Rc;
@@ -190,9 +189,7 @@ pub(crate) struct ExecutionState {
     storage: StorageMap,
 
     scheduler: Rc<RefCell<dyn Scheduler>>,
-    current_schedule: Schedule,
-
-    task_id_to_span: HashMap<TaskId, tracing::Span>,
+    pub(super) current_schedule: Schedule,
 
     #[cfg(debug_assertions)]
     has_cleaned_up: bool,
@@ -231,7 +228,6 @@ impl ExecutionState {
             storage: StorageMap::new(),
             scheduler,
             current_schedule: initial_schedule,
-            task_id_to_span: HashMap::new(),
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
         }
@@ -280,10 +276,13 @@ impl ExecutionState {
         F: Future<Output = ()> + Send + 'static,
     {
         Self::with(|state| {
+            // TODO: It has not been tested whether this span scheme works with futures
+
             let task_id = TaskId(state.tasks.len());
             let clock = state.increment_clock_mut(); // Increment the parent's clock
             clock.extend(task_id); // and extend it with an entry for the new task
-            let task = Task::from_future(future, stack_size, task_id, name, clock.clone());
+
+            let task = Task::from_future(future, stack_size, task_id, name, clock.clone(), &state.current().span);
             state.tasks.push(task);
             task_id
         })
@@ -307,7 +306,23 @@ impl ExecutionState {
                 state.increment_clock_mut()
             };
             clock.extend(task_id); // and extend it with an entry for the new thread
-            let task = Task::from_closure(f, stack_size, task_id, name, clock.clone());
+            let clock = clock.clone();
+
+            // TODO: Check if we can always bind `span` to `current()` and then do the test or if we can merge the two tests.
+            let span = if name == Some("main-thread".to_string()) {
+                tracing::Span::current()
+            } else {
+                tracing::Span::none()
+            };
+            let span = if state.try_current().is_some() {
+                &state.current().span
+            } else {
+                &span
+            };
+
+            let schedule_len = state.current_schedule.len();
+
+            let task = Task::from_closure(f, stack_size, task_id, name, clock, span, schedule_len);
             state.tasks.push(task);
             task_id
         })
@@ -550,26 +565,21 @@ impl ExecutionState {
         debug_assert_ne!(self.next_task, ScheduledTask::None);
         let previous_task = self.current_task;
         self.current_task = self.next_task.take();
-        if let ScheduledTask::Some(tid) = self.current_task {
-            self.current_schedule.push_task(tid);
-            let span = tracing::Span::current();
-            if let Some(span_id) = span.id() {
-                if let ScheduledTask::Some(previous) = previous_task {
-                    self.task_id_to_span.insert(previous, span);
-                    tracing::dispatcher::get_default(|subscriber| {
-                        subscriber.exit(&span_id);
-                    });
+
+        tracing::dispatcher::get_default(|subscriber| {
+            if let ScheduledTask::Some(previous) = previous_task {
+                if let Some(span_id) = self.get(previous).span.id() {
+                    subscriber.exit(&span_id)
                 }
             }
 
-            if let Some(span) = self.task_id_to_span.get(&tid) {
-                if let Some(span_id) = span.id() {
-                    tracing::dispatcher::get_default(|subscriber| {
-                        subscriber.enter(&span_id);
-                    });
+            if let ScheduledTask::Some(tid) = self.current_task {
+                if let Some(span_id) = self.get(tid).span.id() {
+                    subscriber.enter(&span_id);
                 }
+                self.current_schedule.push_task(tid);
             }
-        }
+        });
     }
 }
 

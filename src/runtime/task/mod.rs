@@ -58,11 +58,20 @@ pub(crate) struct Task {
     name: Option<String>,
 
     local_storage: StorageMap,
+    pub(super) span: tracing::Span,
 }
 
 impl Task {
     /// Create a task from a continuation
-    fn new<F>(f: F, stack_size: usize, id: TaskId, name: Option<String>, clock: VectorClock) -> Self
+    fn new<F>(
+        f: F,
+        stack_size: usize,
+        id: TaskId,
+        name: Option<String>,
+        clock: VectorClock,
+        parent_span: &tracing::Span,
+        schedule_len: usize,
+    ) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
@@ -71,6 +80,13 @@ impl Task {
         continuation.initialize(Box::new(f));
         let waker = make_waker(id);
         let continuation = Rc::new(RefCell::new(continuation));
+
+        let span = if name == Some("main-thread".to_string()) {
+            parent_span.clone()
+        } else {
+            tracing::info_span!(parent: parent_span.id(), "step", i = schedule_len, task = id.0)
+        };
+
         Self {
             id,
             state: TaskState::Runnable,
@@ -82,15 +98,24 @@ impl Task {
             detached: false,
             park_state: ParkState::Unavailable,
             name,
+            span,
             local_storage: StorageMap::new(),
         }
     }
 
-    pub(crate) fn from_closure<F>(f: F, stack_size: usize, id: TaskId, name: Option<String>, clock: VectorClock) -> Self
+    pub(crate) fn from_closure<F>(
+        f: F,
+        stack_size: usize,
+        id: TaskId,
+        name: Option<String>,
+        clock: VectorClock,
+        parent_span: &tracing::Span,
+        schedule_len: usize,
+    ) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
-        Self::new(f, stack_size, id, name, clock)
+        Self::new(f, stack_size, id, name, clock, parent_span, schedule_len)
     }
 
     pub(crate) fn from_future<F>(
@@ -99,11 +124,14 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
+        parent_span: &tracing::Span,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
     {
         let mut future = Box::pin(future);
+        let schedule_len = ExecutionState::with(|state| state.current_schedule.len());
+
         Self::new(
             move || {
                 let waker = ExecutionState::with(|state| state.current_mut().waker());
@@ -117,6 +145,8 @@ impl Task {
             id,
             name,
             clock,
+            parent_span,
+            schedule_len,
         )
     }
 
