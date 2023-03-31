@@ -61,7 +61,7 @@ pub(crate) struct Task {
     pub(super) span: tracing::Span,
 
     // Arbitrarily settable tag which is inherited from the parent.
-    tag: u64,
+    tag: Tag,
 }
 
 impl Task {
@@ -74,7 +74,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: u64,
+        tag: Tag,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -116,7 +116,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: u64,
+        tag: Tag,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -132,7 +132,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: u64,
+        tag: Tag,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -344,12 +344,28 @@ impl Task {
         }
     }
 
-    pub(crate) fn get_tag(&self) -> u64 {
+    pub(crate) fn get_tag(&self) -> Tag {
         self.tag
     }
 
-    pub(crate) fn set_tag(&mut self, tag: u64) {
+    pub(crate) fn set_tag(&mut self, tag: Tag) {
         self.tag = tag;
+    }
+}
+
+/// A `Tag` is an arbitrarily settable value for each task.
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Hash, PartialOrd, Ord)]
+pub struct Tag(u64);
+
+impl From<u64> for Tag {
+    fn from(tag: u64) -> Self {
+        Tag(tag)
+    }
+}
+
+impl From<Tag> for u64 {
+    fn from(tag: Tag) -> u64 {
+        tag.0
     }
 }
 

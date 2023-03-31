@@ -7,7 +7,7 @@
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::TaskId;
+pub use crate::runtime::task::{Tag, TaskId};
 
 /// The number of context switches that happened so far in the current Shuttle execution.
 ///
@@ -31,4 +31,19 @@ pub fn clock() -> VectorClock {
 /// Gets the clock for the thread with the given task ID
 pub fn clock_for(task_id: TaskId) -> VectorClock {
     ExecutionState::with(|state| state.get_clock(task_id).clone())
+}
+
+/// Sets the `tag` field of the current task.
+pub fn set_tag_for_current_task(tag: Tag) {
+    ExecutionState::set_tag_for_current_task(tag);
+}
+
+/// Gets the `tag` field of the current task.
+pub fn get_tag_for_current_task() -> Tag {
+    ExecutionState::get_tag_for_current_task()
+}
+
+/// Gets the `TaskId` of the current task
+pub fn get_current_task() -> TaskId {
+    ExecutionState::me()
 }

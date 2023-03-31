@@ -394,30 +394,6 @@ where
     runner.run(f);
 }
 
-/// Sets the `tag` field of the current task.
-pub fn set_tag(tag: u64) {
-    use runtime::execution::ExecutionState;
-    ExecutionState::set_tag(tag);
-}
-
-/// Gets the `tag` field of the current task.
-pub fn get_tag() -> u64 {
-    use runtime::execution::ExecutionState;
-    ExecutionState::get_tag()
-}
-
-/// Gets the current step count.
-pub fn step_cnt() -> usize {
-    use runtime::execution::ExecutionState;
-    ExecutionState::step_cnt()
-}
-
-/// Gets the current step count.
-pub fn current_task_as_string() -> String {
-    use runtime::execution::ExecutionState;
-    ExecutionState::current_task_as_string()
-}
-
 /// Declare a new thread local storage key of type [`LocalKey`](crate::thread::LocalKey).
 #[macro_export]
 macro_rules! thread_local {
