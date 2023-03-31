@@ -125,12 +125,12 @@ impl Task {
         name: Option<String>,
         clock: VectorClock,
         parent_span: &tracing::Span,
+        schedule_len: usize,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
     {
         let mut future = Box::pin(future);
-        let schedule_len = ExecutionState::with(|state| state.current_schedule.len());
 
         Self::new(
             move || {
