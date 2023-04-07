@@ -1,6 +1,5 @@
 use futures::{try_join, Future};
-use shuttle::sync::Mutex;
-use shuttle::thread::park;
+use shuttle::sync::{Barrier, Mutex};
 use shuttle::{check_dfs, check_random, future, scheduler::PctScheduler, thread, Runner};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -188,7 +187,7 @@ fn join_handle_abort() {
             let t1 = future::spawn({
                 let counter = Arc::clone(&counter);
                 async move {
-                    park();
+                    Barrier::new(2).wait();
                     counter.fetch_add(1, Ordering::SeqCst)
                 }
             });

@@ -1,4 +1,4 @@
-use shuttle::sync::{Condvar, Mutex};
+use shuttle::sync::{Barrier, Condvar, Mutex};
 use shuttle::{check_dfs, check_random, thread};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -433,8 +433,39 @@ mod thread_local {
     }
 }
 
+/// Test the common usage of park where a thread calls park in a loop waiting for a flag to be set.
 #[test]
 fn thread_park() {
+    check_dfs(
+        || {
+            let shared_state = Arc::new(AtomicU8::new(0));
+            let wakeup = Arc::new(AtomicBool::new(false));
+            let thd = {
+                let shared_state = Arc::clone(&shared_state);
+                let wakeup = Arc::clone(&wakeup);
+                thread::spawn(move || {
+                    while !wakeup.load(Ordering::SeqCst) {
+                        thread::park();
+                    }
+                    assert_eq!(shared_state.load(Ordering::SeqCst), 42);
+                })
+            };
+
+            shared_state.store(42, Ordering::SeqCst);
+
+            wakeup.store(true, Ordering::SeqCst);
+            thd.thread().unpark();
+            thd.join().unwrap();
+        },
+        Some(150), // We can't exhaust all orderings because of the infinite loop in the thread.
+    )
+}
+
+// Test that shuttle explores schedulings where parked threads can be spuriously woken up.
+// Threads should not rely on using park to accomplish synchronization.
+#[test]
+#[should_panic(expected = "spurious")]
+fn thread_park_spuriously_wakeup() {
     check_dfs(
         || {
             let flag = Arc::new(AtomicBool::new(false));
@@ -442,7 +473,7 @@ fn thread_park() {
                 let flag = Arc::clone(&flag);
                 thread::spawn(move || {
                     thread::park();
-                    assert!(flag.load(Ordering::SeqCst));
+                    assert!(flag.load(Ordering::SeqCst), "may not be true due to spurious wakeup");
                 })
             };
 
@@ -454,12 +485,17 @@ fn thread_park() {
     )
 }
 
+// Test that Shuttle will detect a deadlock and panic if all threads are blocked in `park`, even
+// though `park` can spuriously wake, since spurious wakeups aren't guaranteed and programs should
+// not rely on them in order to make forward progress.
 #[test]
 #[should_panic(expected = "deadlock")]
 fn thread_park_deadlock() {
     check_dfs(
         || {
+            let thd = thread::spawn(thread::park);
             thread::park();
+            thd.join().unwrap();
         },
         None,
     )
@@ -472,6 +508,22 @@ fn thread_unpark_park() {
     check_dfs(
         || {
             thread::current().unpark();
+            thread::park();
+        },
+        None,
+    )
+}
+
+// Test that `unpark` is not cumulative: multiple calls to `unpark` will still only unblock the very
+// next call to `park`.
+#[test]
+#[should_panic(expected = "deadlock")]
+fn thread_unpark_not_cumulative() {
+    check_dfs(
+        || {
+            thread::current().unpark();
+            thread::current().unpark();
+            thread::park();
             thread::park();
         },
         None,
@@ -546,5 +598,44 @@ fn thread_double_unpark() {
     );
 
     let seen_unparks = Arc::try_unwrap(seen_unparks_clone).unwrap().into_inner().unwrap();
-    assert_eq!(seen_unparks, HashSet::from([1, 2]));
+    // It's possible for a thread to see 0 unparks, if it spuriously wakes up from a call to `park`.
+    assert_eq!(seen_unparks, HashSet::from([0, 1, 2]));
+}
+
+// Test that `unpark` won't unblock a thread for resons other than `park`, even if the blocked
+// thread had called `park` before (and possible spuriously woke up).
+#[test]
+fn thread_unpark_after_spurious_wakeup() {
+    check_dfs(
+        || {
+            let shared_state = Arc::new(AtomicU8::new(0));
+            let barrier = Arc::new(Barrier::new(2));
+
+            let thd = {
+                let shared_state = Arc::clone(&shared_state);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    // Call `park`, which could possibly spuriously wake up.
+                    thread::park();
+
+                    // Wait on the barrier. If the main thread calls `unpark` after we've spuriously
+                    // woken up from the `park` and starting waiting on the barrier, that shouldn't
+                    // unblock this thread.
+                    barrier.wait();
+                    shared_state.store(1, Ordering::SeqCst);
+                })
+            };
+
+            // It shouldn't be possible for this `unpark` to allow the thread to bypass waiting
+            // on the barrier.
+            thd.thread().unpark();
+            assert_eq!(shared_state.load(Ordering::SeqCst), 0);
+
+            barrier.wait();
+            thd.join().unwrap();
+
+            assert_eq!(shared_state.load(Ordering::SeqCst), 1);
+        },
+        None,
+    )
 }

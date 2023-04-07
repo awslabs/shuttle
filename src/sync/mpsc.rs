@@ -170,7 +170,7 @@ impl<T> Channel<T> {
                 me,
                 self,
             );
-            ExecutionState::with(|s| s.current_mut().block());
+            ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
             thread::switch();
@@ -283,7 +283,7 @@ impl<T> Channel<T> {
                 me,
                 self,
             );
-            ExecutionState::with(|s| s.current_mut().block());
+            ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
             thread::switch();

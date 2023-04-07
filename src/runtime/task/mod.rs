@@ -80,7 +80,7 @@ impl Task {
             waker,
             woken: false,
             detached: false,
-            park_state: ParkState::Unavailable,
+            park_state: ParkState::default(),
             name,
             local_storage: StorageMap::new(),
         }
@@ -129,7 +129,14 @@ impl Task {
     }
 
     pub(crate) fn blocked(&self) -> bool {
-        self.state == TaskState::Blocked
+        matches!(self.state, TaskState::Blocked { .. })
+    }
+
+    pub(crate) fn can_spuriously_wakeup(&self) -> bool {
+        match self.state {
+            TaskState::Blocked { allow_spurious_wakeups } => allow_spurious_wakeups,
+            _ => false,
+        }
     }
 
     pub(crate) fn sleeping(&self) -> bool {
@@ -148,9 +155,12 @@ impl Task {
         self.waker.clone()
     }
 
-    pub(crate) fn block(&mut self) {
+    /// Block the current thread. If `allow_spurious_wakeups` is true, then the scheduler is
+    /// permitted to spuriously wake up the thread (though it will still not count as a live thread
+    /// for deadlock detection purposes for as long as it remains blocked).
+    pub(crate) fn block(&mut self, allow_spurious_wakeups: bool) {
         assert!(self.state != TaskState::Finished);
-        self.state = TaskState::Blocked;
+        self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
 
     pub(crate) fn sleep(&mut self) {
@@ -163,6 +173,12 @@ impl Task {
         // will not be blocked when this is called.
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Runnable;
+
+        // When a task gets unblocked, it's definitely no longer blocked in a call to `park`. This
+        // is necessary to do here because a parked task could be spuriously woken up outside of the
+        // `unpark` path. If it later becomes blocked by something else, we don't want a later
+        // `unpark` to be able to unblock the task.
+        self.park_state.blocked_in_park = false;
     }
 
     pub(crate) fn finish(&mut self) {
@@ -248,27 +264,45 @@ impl Task {
         self.local_storage.pop()
     }
 
-    /// Park the task if its park token is unavailable. Returns true if the token was unavailable.
+    /// Park the task if its park token is unavailable. If the task blocks, then it will be woken up
+    /// when the token becomes available or spuriously without consuming the token (see the
+    /// documentation for [`std::thread::park`], which says that "it may also return spuriously,
+    /// without consuming the token"). Returns true if the execution should switch to a different
+    /// task (e.g., if the token was unavailable).
     pub(crate) fn park(&mut self) -> bool {
-        match self.park_state {
-            ParkState::Unparked => {
-                self.park_state = ParkState::Unavailable;
-                false
-            }
-            ParkState::Unavailable => {
-                self.park_state = ParkState::Parked;
-                self.block();
-                true
-            }
-            ParkState::Parked => unreachable!("cannot park a task that's already parked"),
+        assert!(
+            !self.park_state.blocked_in_park,
+            "task cannot park while already parked"
+        );
+        assert!(!self.blocked(), "task cannot park while blocked by something else");
+
+        if self.park_state.token_available {
+            self.park_state.token_available = false;
+            false
+        } else {
+            self.park_state.blocked_in_park = true;
+            self.block(true);
+            true
         }
     }
 
     /// Make the task's park token available, and unblock the task if it was parked.
     pub(crate) fn unpark(&mut self) {
-        if std::mem::replace(&mut self.park_state, ParkState::Unparked) == ParkState::Parked {
-            assert!(self.blocked());
+        if self.park_state.blocked_in_park {
+            assert!(
+                self.blocked() && self.can_spuriously_wakeup(),
+                "parked tasks should be blocked"
+            );
+            assert!(
+                !self.park_state.token_available,
+                "token shouldn't be available for parked task"
+            );
+
             self.unblock();
+        } else {
+            // If the thread isn't currently blocked in `park`, then make the token available. If
+            // the token already is available, then this does nothing.
+            self.park_state.token_available = true;
         }
     }
 }
@@ -278,22 +312,27 @@ pub(crate) enum TaskState {
     /// Available to be scheduled
     Runnable,
     /// Blocked in a synchronization operation
-    Blocked,
+    Blocked { allow_spurious_wakeups: bool },
     /// A `Future` that returned `Pending` is waiting to be woken up
     Sleeping,
     /// Task has finished
     Finished,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub(crate) enum ParkState {
-    /// The task has parked itself and not yet been unparked, so the park token is unavailable.
-    /// Invariant: if ParkState is Parked, the task is Blocked
-    Parked,
-    /// Another task has unparked this one, so the park token is available.
-    Unparked,
-    /// The park token is not available. The task should enter Parked state on the next `park` call.
-    Unavailable,
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+pub(crate) struct ParkState {
+    /// Whether the task's park token is curently available. If it's available, then the next time
+    /// the task calls `park`, the token will be atomically consumed and the task will continue
+    /// executing. If it's not available, then the task will block until either another task makes
+    /// it available with `unpark`, or a spurious wakeup occurs.
+    token_available: bool,
+
+    /// Whether the task is currently blocked in a call to `park`.
+    /// Invariant: `!(token_available && blocked_in_park)`. If the token is available, then the task
+    /// shouldn't be blocked in a call to `park`---the task should either have been woken up when
+    /// the token became available, or never have blocked in the first place if the token was
+    /// available before the call to `park`.
+    blocked_in_park: bool,
 }
 
 /// A `TaskId` is a unique identifier for a task. `TaskId`s are never reused within a single

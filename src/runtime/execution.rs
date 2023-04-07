@@ -517,7 +517,7 @@ impl ExecutionState {
         }
 
         let mut unfinished_attached = false;
-        let runnable = self
+        let mut runnable = self
             .tasks
             .iter()
             .inspect(|t| unfinished_attached = unfinished_attached || (!t.finished() && !t.detached))
@@ -535,6 +535,13 @@ impl ExecutionState {
             return Ok(());
         }
 
+        // Some blocked tasks can be woken up spuriously, even though the condition the task is
+        // blocked on hasn't happened yet. We'll add such tasks to the list of runnable tasks, but
+        // they won't contribute to the check on `runnable.is_empty()` if the only runnable tasks
+        // are ones that are waiting for a potential spurious wakeup, it should still be treated as
+        // a deadlock since there's no guarantee that spurious wakeups will ever occur.
+        runnable.extend(self.tasks.iter().filter(|t| t.can_spuriously_wakeup()).map(|t| t.id));
+
         let is_yielding = std::mem::replace(&mut self.has_yielded, false);
 
         self.next_task = self
@@ -543,6 +550,17 @@ impl ExecutionState {
             .next_task(&runnable, self.current_task.id(), is_yielding)
             .map(ScheduledTask::Some)
             .unwrap_or(ScheduledTask::Stopped);
+
+        // If the task chosen by the scheduler is blocked, then it should be one that can be
+        // spuriously woken up, and we need to unblock it here so that it can execute.
+        if let Some(tid) = self.next_task.id() {
+            let task = self.get_mut(tid);
+            assert!(task.runnable() || task.blocked());
+            if task.blocked() {
+                assert!(task.can_spuriously_wakeup());
+                task.unblock();
+            }
+        }
 
         trace!(?runnable, next_task=?self.next_task);
 
