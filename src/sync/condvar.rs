@@ -134,7 +134,8 @@ impl Condvar {
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "waiting on condvar {:p}", self);
 
         assert!(state.waiters.insert(me, CondvarWaitStatus::Waiting).is_none());
-        ExecutionState::with(|s| s.current_mut().block());
+        // TODO: Condvar::wait should allow for spurious wakeups.
+        ExecutionState::with(|s| s.current_mut().block(false));
         drop(state);
 
         // Release the lock, which triggers a context switch now that we are blocked
@@ -160,7 +161,8 @@ impl Condvar {
                                 *status = CondvarWaitStatus::Waiting;
                                 // Make the task unrunnable if there are no pending signals that
                                 // could unblock it
-                                ExecutionState::with(|s| s.get_mut(*tid).block());
+                                // TODO: Condvar::wait should allow for spurious wakeups.
+                                ExecutionState::with(|s| s.get_mut(*tid).block(false));
                             }
                         }
                     }

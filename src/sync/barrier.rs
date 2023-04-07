@@ -76,7 +76,7 @@ impl Barrier {
         if state.waiters.len() + 1 < state.bound {
             // Block current thread
             assert!(state.waiters.insert(me)); // current thread shouldn't already be in the set
-            ExecutionState::with(|s| s.current_mut().block());
+            ExecutionState::with(|s| s.current_mut().block(false));
             trace!(leader=?state.leader, waiters=?state.waiters, "blocked on barrier {:?}", self);
         } else {
             trace!(leader=?state.leader, waiters=?state.waiters, "releasing waiters on barrier {:?}", self);

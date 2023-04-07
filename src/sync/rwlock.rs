@@ -194,7 +194,7 @@ impl<T: ?Sized> RwLock<T> {
                 if *writer == me {
                     panic!("deadlock! task {:?} tried to acquire a RwLock it already holds", me);
                 }
-                ExecutionState::with(|s| s.current_mut().block());
+                ExecutionState::with(|s| s.current_mut().block(false));
                 true
             }
             RwLockHolder::Read(readers) => {
@@ -202,7 +202,7 @@ impl<T: ?Sized> RwLock<T> {
                     panic!("deadlock! task {:?} tried to acquire a RwLock it already holds", me);
                 }
                 if typ == RwLockType::Write {
-                    ExecutionState::with(|s| s.current_mut().block());
+                    ExecutionState::with(|s| s.current_mut().block(false));
                     true
                 } else {
                     false
@@ -344,13 +344,13 @@ impl<T: ?Sized> RwLock<T> {
         if typ == RwLockType::Write {
             for tid in state.waiting_readers.iter() {
                 assert_ne!(tid, me);
-                ExecutionState::with(|s| s.get_mut(tid).block());
+                ExecutionState::with(|s| s.get_mut(tid).block(false));
             }
         }
         // Always block any waiting writers
         for tid in state.waiting_writers.iter() {
             assert_ne!(tid, me);
-            ExecutionState::with(|s| s.get_mut(tid).block());
+            ExecutionState::with(|s| s.get_mut(tid).block(false));
         }
     }
 

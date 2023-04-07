@@ -141,7 +141,7 @@ impl<T> JoinHandle<T> {
             let me = state.current().id();
             let target = state.get_mut(self.task_id);
             if target.set_waiter(me) {
-                state.current_mut().block();
+                state.current_mut().block(false);
             }
         });
 
@@ -194,15 +194,18 @@ pub fn current() -> Thread {
     }
 }
 
-/// Blocks unless or until the current thread's token is made available.
+/// Blocks unless or until the current thread's token is made available (may wake spuriously).
 pub fn park() {
     let switch = ExecutionState::with(|s| s.current_mut().park());
 
     // We only need to context switch if the park token was unavailable. If it was available, then
     // any execution reachable by context switching here would also be reachable by having not
     // chosen this thread at the last context switch, because the park state of a thread is only
-    // observable by the thread itself.
+    // observable by the thread itself. We also mark it as an explicit yield request by the task,
+    // since otherwise some schedulers might prefer to to reschedule the current task, which in this
+    // context would result in spurious wakeups triggering nearly every time.
     if switch {
+        ExecutionState::request_yield();
         thread::switch();
     }
 }
@@ -210,8 +213,9 @@ pub fn park() {
 /// Blocks unless or until the current thread's token is made available or the specified duration
 /// has been reached (may wake spuriously).
 ///
-/// Note that Shuttle does not module time, so this behaves identically to `park`. It cannot
-/// spuriously wake.
+/// Note that Shuttle does not model time, so this behaves identically to `park`. In particular,
+/// Shuttle does not assume that the timeout will ever fire, so if all threads are blocked in a call
+/// to `park_timeout` it will be treated as a deadlock.
 pub fn park_timeout(_dur: Duration) {
     park();
 }

@@ -68,7 +68,7 @@ impl<T: ?Sized> Mutex<T> {
             // runnable and could have been chosen by the scheduler instead. Also, if we want to
             // re-acquire the lock immediately after releasing it, we know that the release had a
             // context switch that allowed other threads to acquire in between.
-            ExecutionState::with(|s| s.current_mut().block());
+            ExecutionState::with(|s| s.current_mut().block(false));
             thread::switch();
             state = self.state.borrow_mut();
 
@@ -84,7 +84,7 @@ impl<T: ?Sized> Mutex<T> {
         ExecutionState::with(|s| {
             // Re-block all other waiting threads, since we won the race to take this lock
             for tid in state.waiters.iter() {
-                s.get_mut(tid).block();
+                s.get_mut(tid).block(false);
             }
 
             // Update acquiring thread's clock with the clock stored in the Mutex
@@ -151,7 +151,7 @@ impl<T: ?Sized> Mutex<T> {
             // Re-block all other waiting threads, since we won the race to take this lock
             ExecutionState::with(|s| {
                 for tid in state.waiters.iter() {
-                    s.get_mut(tid).block();
+                    s.get_mut(tid).block(false);
                 }
             });
 
