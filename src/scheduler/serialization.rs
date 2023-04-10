@@ -86,6 +86,8 @@ mod varint {
 
 const SCHEDULE_MAGIC_V2: u8 = 0x91;
 
+const LINE_WIDTH: usize = 76;
+
 pub(crate) fn serialize_schedule(schedule: &Schedule) -> String {
     use self::varint::{space_needed, WriteVarInt};
 
@@ -128,12 +130,17 @@ pub(crate) fn serialize_schedule(schedule: &Schedule) -> String {
     buf.write_u64_varint(schedule.len() as u64).unwrap();
     buf.write_u64_varint(schedule.seed).unwrap();
     buf.extend(encoded.as_raw_slice());
-    hex::encode(buf)
+
+    let serialized = hex::encode(buf);
+    let lines = serialized.as_bytes().chunks(LINE_WIDTH).collect::<Vec<_>>();
+    let wrapped = lines.join(&[b'\n'][..]);
+    String::from_utf8(wrapped).unwrap()
 }
 
 pub(crate) fn deserialize_schedule(str: &str) -> Option<Schedule> {
     use self::varint::ReadVarInt;
 
+    let str: String = str.chars().filter(|c| !c.is_whitespace()).collect();
     let bytes = hex::decode(str).ok()?;
 
     let version = bytes[0];

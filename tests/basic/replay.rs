@@ -1,5 +1,5 @@
 use crate::{check_replay_roundtrip, check_replay_roundtrip_file, Config, FailurePersistence};
-use shuttle::scheduler::{PctScheduler, ReplayScheduler, Schedule};
+use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler, Schedule};
 use shuttle::sync::Mutex;
 use shuttle::{replay, thread, Runner};
 use std::panic;
@@ -134,6 +134,32 @@ fn replay_deadlock3_drop_mutex() {
     scheduler.set_allow_incomplete();
     let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock_3);
+}
+
+fn long_schedule() {
+    let mut threads = vec![];
+    for _ in 0..100 {
+        threads.push(shuttle::thread::spawn(|| {
+            for _ in 0..100 {
+                shuttle::thread::yield_now();
+            }
+        }));
+    }
+    for t in threads {
+        t.join().unwrap();
+    }
+    // If this would be a `panic!`, downcasting the `catch_unwind` error to `String` fails.
+    assert_eq!(1, 2, "so much work, and all for nothing");
+}
+
+#[test]
+fn replay_long_schedule() {
+    check_replay_roundtrip(long_schedule, RandomScheduler::new(1));
+}
+
+#[test]
+fn replay_long_schedule_file() {
+    check_replay_roundtrip_file(long_schedule, RandomScheduler::new(1));
 }
 
 // Check that FailurePersistence::None does not print a schedule
