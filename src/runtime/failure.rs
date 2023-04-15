@@ -72,7 +72,7 @@ fn persist_failure_inner(schedule: &Schedule, message: String, config: &Config) 
         }
     }
     format!(
-        "{}\nfailing schedule: \"{}\"\npass that string to `shuttle::replay` to replay the failure",
+        "{}\nfailing schedule:\n\"\n{}\n\"\npass that string to `shuttle::replay` to replay the failure",
         message, serialized_schedule
     )
 }

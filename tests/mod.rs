@@ -111,8 +111,22 @@ mod parse_schedule {
     }
 
     pub(super) fn from_stdout<S: AsRef<String>>(output: S) -> Option<String> {
-        let string_regex = Regex::new("failing schedule: \"([0-9a-f]+)\"").unwrap();
-        let captures = string_regex.captures(output.as_ref().as_str())?;
-        Some(captures.get(1)?.as_str().to_string())
+        let mut schedule = String::new();
+        let mut lines = output.as_ref().lines();
+        for line in &mut lines {
+            if line.eq("failing schedule:") {
+                break;
+            }
+        }
+        assert_eq!(lines.next().unwrap(), "\"");
+        for line in lines {
+            if line.eq("\"") {
+                schedule.pop(); // trailing newline, if any
+                return Some(schedule);
+            }
+            schedule.push_str(line);
+            schedule.push('\n');
+        }
+        None
     }
 }
