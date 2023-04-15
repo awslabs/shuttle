@@ -20,11 +20,38 @@ impl BarrierWaitResult {
     }
 }
 
+/// We implement [Barrier] by keeping track of a list of [TaskId]s of threads that have called
+/// `wait`. When the numbers of waiters gets to the barrier's `bound`, they all become unblocked.
+/// Whichever task wakes up first after becoming unblocked will be designated as the "leader" via
+/// the return value of `wait`.
+///
+/// Because barriers can be reused, it does not suffice to designate a single, permanent thread as
+/// the leader in the [BarrierState], since if a different batch of threads waits on the same
+/// barrier, one of those new threads should be the leader of that batch.
+///
+/// For example, if there's a barrier where the bound is 2 and there are 6 threads all concurrently
+/// calling `wait`, then all threads will become unblocked in 3 batches of 2 threads each, with
+/// each batch having its own leader, resulting in 3 (unique) leaders.
+///
+/// We implement this by tracking an `epoch` counter that gets incremented whenever a batch of
+/// threads is released by `wait`. When that happens, we make a "leader token_" available for that
+/// batch. The first thread of a batch to get scheduled after becoming unblocked takes the leader
+/// token (without affecting any threads that are part of a different batch).
 #[derive(Debug)]
 struct BarrierState {
+    /// The number of tasks that must call `wait` before they all get unblocked (and one gets
+    /// chosen as the leader).
     bound: usize,
-    leader: Option<TaskId>,
+    /// A counter of the number of "batches" of threads that have been released by the barrier,
+    /// needed in order to keep track of the leaders of each batch separately.
+    epoch: u64,
+    /// The set of waiting tasks for the current epoch. Then the size of this set becomes equal to
+    /// the bound, all waiters are unblocked and one of them becomes the leader.
     waiters: HashSet<TaskId>,
+    /// The set of epochs of this [Barrier] that have reached the number of waiters to be
+    /// unblocked, but haven't had a leader selected yet. The first thread to wake up after wait
+    /// will take the token (by removing the epoch from the set) and become the leader.
+    leader_tokens: HashSet<u64>,
     clock: VectorClock,
 }
 
@@ -41,8 +68,9 @@ impl Barrier {
     pub fn new(n: usize) -> Self {
         let state = BarrierState {
             bound: n,
-            leader: None,
+            epoch: 0,
             waiters: HashSet::new(),
+            leader_tokens: HashSet::new(),
             clock: VectorClock::new(),
         };
 
@@ -53,19 +81,10 @@ impl Barrier {
 
     /// Blocks the current thread until all threads have rendezvoused here.
     pub fn wait(&self) -> BarrierWaitResult {
-        let me = ExecutionState::me();
-
         let mut state = self.state.borrow_mut();
-        trace!(leader=?state.leader, waiters=?state.waiters, "waiting on barrier {:p}", self);
+        let my_epoch = state.epoch;
 
-        // TODO The documentation for `Barrier` states that
-        // TODO    A single (arbitrary) thread will receive a `BarrierWaitResult` that returns true
-        // TODO    from `BarrierWaitResult::is_leader()` when returning from this function
-        // TODO Currently, the first waiter becomes the leader.  We should use Shuttle's nondeterministic
-        // TODO choice to generalize this so that _any_ participant could become the leader.
-        if state.leader.is_none() {
-            state.leader = Some(me);
-        }
+        trace!(waiters=?state.waiters, epoch=my_epoch, "waiting on barrier {:p}", self);
 
         // Update the barrier's clock with the clock of this thread
         ExecutionState::with(|s| {
@@ -73,40 +92,56 @@ impl Barrier {
             state.clock.update(clock);
         });
 
-        if state.waiters.len() + 1 < state.bound {
-            // Block current thread
-            assert!(state.waiters.insert(me)); // current thread shouldn't already be in the set
+        // Add the current thread to `waiters`. It shouldn't already be present.
+        assert!(state.waiters.insert(ExecutionState::me()));
+
+        if state.waiters.len() < state.bound {
+            trace!(waiters=?state.waiters, epoch=my_epoch, "blocked on barrier {:?}", self);
             ExecutionState::with(|s| s.current_mut().block(false));
-            trace!(leader=?state.leader, waiters=?state.waiters, "blocked on barrier {:?}", self);
         } else {
-            trace!(leader=?state.leader, waiters=?state.waiters, "releasing waiters on barrier {:?}", self);
-            // Unblock each waiter, updating its clock with the barrier's clock
+            trace!(waiters=?state.waiters, epoch=my_epoch, "releasing waiters on barrier {:?}", self);
+
+            debug_assert!(state.waiters.len() == state.bound || state.bound == 0);
+
+            // Make the leader token available for this epoch. The first task to wake up will
+            // take it and become the leader. The token shouldn't already be available.
+            assert!(state.leader_tokens.insert(my_epoch));
+
+            // Drain the set of waiters and increment the barrier's epoch, so any other task that
+            // calls `wait` from now on becomes part of a separate group with its own leader.
+            let waiters = state.waiters.drain().collect::<Vec<_>>();
+            state.epoch += 1;
+
+            trace!(
+                waiters=?state.waiters,
+                epoch=state.epoch,
+                "releasing waiters on barrier {:?}",
+                self,
+            );
+
             let clock = state.clock.clone();
             ExecutionState::with(|s| {
-                for tid in state.waiters.drain() {
-                    debug_assert_ne!(tid, me);
+                // `waiters` includes the current task.
+                for tid in waiters {
                     let t = s.get_mut(tid);
-                    debug_assert!(t.blocked());
                     t.clock.increment(tid);
                     t.clock.update(&clock);
                     t.unblock();
                 }
-                // Update the leader's clock
-                let t = s.current_mut();
-                t.clock.increment(me);
-                t.clock.update(&clock);
             });
-        }
-
-        let result = BarrierWaitResult {
-            is_leader: state.leader.unwrap() == me,
         };
 
         drop(state);
 
         thread::switch();
 
-        result
+        // Try to remove the leader token for this epoch. If true, then the token was present and
+        // we are the leader. Any future attempts to remove the token will return false.
+        let is_leader = self.state.borrow_mut().leader_tokens.remove(&my_epoch);
+
+        trace!(epoch=?my_epoch, is_leader, "returning from barrier {:?}", self);
+
+        BarrierWaitResult { is_leader }
     }
 }
 
