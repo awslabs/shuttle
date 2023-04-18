@@ -276,17 +276,9 @@ impl ExecutionState {
         F: Future<Output = ()> + Send + 'static,
     {
         Self::with(|state| {
-            // TODO: It has not been tested whether this span scheme works with futures
-            // TODO: Also it became ugly
-
             let schedule_len = state.current_schedule.len();
 
             let is_some = state.try_current().is_some();
-            let span = if name == Some("main-thread".to_string()) {
-                tracing::Span::current()
-            } else {
-                tracing::Span::none()
-            };
 
             let task_id = TaskId(state.tasks.len());
             let clock = state.increment_clock_mut(); // Increment the parent's clock
@@ -303,7 +295,15 @@ impl ExecutionState {
                     schedule_len,
                 )
             } else {
-                Task::from_future(future, stack_size, task_id, name, clock.clone(), &span, schedule_len)
+                Task::from_future(
+                    future,
+                    stack_size,
+                    task_id,
+                    name,
+                    clock.clone(),
+                    &tracing::Span::current(),
+                    schedule_len,
+                )
             };
 
             state.tasks.push(task);
@@ -322,6 +322,8 @@ impl ExecutionState {
     {
         Self::with(|state| {
             let task_id = TaskId(state.tasks.len());
+            let is_some = state.try_current().is_some();
+
             let clock = if let Some(ref mut clock) = initial_clock {
                 clock
             } else {
@@ -331,17 +333,8 @@ impl ExecutionState {
             clock.extend(task_id); // and extend it with an entry for the new thread
             let clock = clock.clone();
 
-            // TODO: Check if we can always bind `span` to `current()` and then do the test or if we can merge the two tests.
-            let span = if name == Some("main-thread".to_string()) {
-                tracing::Span::current()
-            } else {
-                tracing::Span::none()
-            };
-            let span = if state.try_current().is_some() {
-                &state.current().span
-            } else {
-                &span
-            };
+            let current_span = tracing::Span::current();
+            let span = if is_some { &state.current().span } else { &current_span };
 
             let schedule_len = state.current_schedule.len();
 
