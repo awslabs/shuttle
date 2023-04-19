@@ -4,6 +4,7 @@ use shuttle::{
     current::{get_tag_for_current_task, set_tag_for_current_task, Tag},
     future::block_on,
     thread,
+    thread::JoinHandle,
 };
 use test_log::test;
 
@@ -108,4 +109,27 @@ fn spawn_threads_which_spawn_more_threads(
 #[test]
 fn threads_which_spawn_threads_which_spawn_threads() {
     check_random(|| spawn_threads_which_spawn_more_threads(Tag::default(), 15, 10), 10)
+}
+
+fn spawn_thread_and_set_tag(tag_on_entry: Tag, new_tag: Tag) -> JoinHandle<u64> {
+    thread::spawn(move || {
+        assert_eq!(get_tag_for_current_task(), tag_on_entry);
+        set_tag_for_current_task(new_tag);
+        assert_eq!(get_tag_for_current_task(), new_tag);
+        new_tag.into()
+    })
+}
+
+fn spawn_and_join() {
+    set_tag_for_current_task(42.into());
+    let h1 = spawn_thread_and_set_tag(42.into(), 84.into());
+    set_tag_for_current_task(50.into());
+    let h2 = spawn_thread_and_set_tag(50.into(), 100.into());
+    let results = [h1.join().unwrap(), h2.join().unwrap()];
+    assert_eq!(results, [84, 100]);
+}
+
+#[test]
+fn test_spawn_and_join() {
+    check_random(spawn_and_join, 20)
 }
