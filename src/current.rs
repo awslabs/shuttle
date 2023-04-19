@@ -44,6 +44,7 @@ pub fn get_tag_for_current_task() -> Tag {
 }
 
 /// Gets the `TaskId` of the current task
+/// NOTE: Will panic if there is no current task.
 pub fn get_current_task() -> TaskId {
     ExecutionState::me()
 }
