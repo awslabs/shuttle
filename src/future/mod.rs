@@ -13,26 +13,35 @@ use std::pin::Pin;
 use std::result::Result;
 use std::task::{Context, Poll};
 
+type ResultAndWaker<T> = std::sync::Arc<std::sync::Mutex<(Option<Result<T, JoinError>>, Option<std::task::Waker>)>>;
+
 /// Spawn a new async task that the executor will run to completion.
 pub fn spawn<T, F>(fut: F) -> JoinHandle<T>
 where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let result_and_waker = std::sync::Arc::new(std::sync::Mutex::new((None, None)));
     let stack_size = ExecutionState::with(|s| s.config.stack_size);
-    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, std::sync::Arc::clone(&result)), stack_size, None);
+    let task_id = ExecutionState::spawn_future(
+        Wrapper::new(fut, std::sync::Arc::clone(&result_and_waker)),
+        stack_size,
+        None,
+    );
 
     thread::switch();
 
-    JoinHandle { task_id, result }
+    JoinHandle {
+        task_id,
+        result_and_waker,
+    }
 }
 
 /// An owned permission to join on an async task (await its termination).
 #[derive(Debug)]
 pub struct JoinHandle<T> {
     task_id: TaskId,
-    result: std::sync::Arc<std::sync::Mutex<Option<Result<T, JoinError>>>>,
+    result_and_waker: ResultAndWaker<T>,
 }
 
 impl<T> JoinHandle<T> {
@@ -64,8 +73,9 @@ impl<T> Drop for JoinHandle<T> {
 impl<T> Future for JoinHandle<T> {
     type Output = Result<T, JoinError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(result) = self.result.lock().unwrap().take() {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut lock = self.result_and_waker.lock().unwrap();
+        if let Some(result) = lock.0.take() {
             Poll::Ready(result)
         } else {
             ExecutionState::with(|state| {
@@ -73,6 +83,7 @@ impl<T> Future for JoinHandle<T> {
                 let r = state.get_mut(self.task_id).set_waiter(me);
                 assert!(r, "task shouldn't be finished if no result is present");
             });
+            *lock = (None, Some(cx.waker().clone()));
             Poll::Pending
         }
     }
@@ -83,17 +94,17 @@ impl<T> Future for JoinHandle<T> {
 // waiting on the join handle.
 struct Wrapper<T, F> {
     future: Pin<Box<F>>,
-    result: std::sync::Arc<std::sync::Mutex<Option<Result<T, JoinError>>>>,
+    result_and_waker: ResultAndWaker<T>,
 }
 
 impl<T, F> Wrapper<T, F>
 where
     F: Future<Output = T> + Send + 'static,
 {
-    fn new(future: F, result: std::sync::Arc<std::sync::Mutex<Option<Result<T, JoinError>>>>) -> Self {
+    fn new(future: F, result_and_waker: ResultAndWaker<T>) -> Self {
         Self {
             future: Box::pin(future),
-            result,
+            result_and_waker,
         }
     }
 }
@@ -117,7 +128,7 @@ where
                     drop(local);
                 }
 
-                *self.result.lock().unwrap() = Some(Ok(result));
+                self.result_and_waker.lock().unwrap().0 = Some(Ok(result));
 
                 // Unblock our waiter if we have one and it's still alive
                 ExecutionState::with(|state| {
@@ -127,6 +138,10 @@ where
                         }
                     }
                 });
+
+                if let Some(waker) = &self.result_and_waker.lock().unwrap().1 {
+                    waker.wake_by_ref();
+                }
 
                 Poll::Ready(())
             }
