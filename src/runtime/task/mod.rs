@@ -69,7 +69,7 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_span: &tracing::Span,
+        parent_span: tracing::Span,
         schedule_len: usize,
     ) -> Self
     where
@@ -82,7 +82,7 @@ impl Task {
         let continuation = Rc::new(RefCell::new(continuation));
 
         let span = if name == Some("main-thread".to_string()) {
-            parent_span.clone()
+            parent_span
         } else {
             tracing::info_span!(parent: parent_span.id(), "step", i = schedule_len, task = id.0)
         };
@@ -109,7 +109,7 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_span: &tracing::Span,
+        parent_span: tracing::Span,
         schedule_len: usize,
     ) -> Self
     where
@@ -124,7 +124,7 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_span: &tracing::Span,
+        parent_span: tracing::Span,
         schedule_len: usize,
     ) -> Self
     where

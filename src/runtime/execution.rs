@@ -278,33 +278,23 @@ impl ExecutionState {
         Self::with(|state| {
             let schedule_len = state.current_schedule.len();
 
-            let is_some = state.try_current().is_some();
-
+            let parent_span = state
+                .try_current()
+                .map(|t| t.span.clone())
+                .unwrap_or_else(tracing::Span::current);
             let task_id = TaskId(state.tasks.len());
             let clock = state.increment_clock_mut(); // Increment the parent's clock
             clock.extend(task_id); // and extend it with an entry for the new task
 
-            let task = if is_some {
-                Task::from_future(
-                    future,
-                    stack_size,
-                    task_id,
-                    name,
-                    clock.clone(),
-                    &state.current().span,
-                    schedule_len,
-                )
-            } else {
-                Task::from_future(
-                    future,
-                    stack_size,
-                    task_id,
-                    name,
-                    clock.clone(),
-                    &tracing::Span::current(),
-                    schedule_len,
-                )
-            };
+            let task = Task::from_future(
+                future,
+                stack_size,
+                task_id,
+                name,
+                clock.clone(),
+                parent_span,
+                schedule_len,
+            );
 
             state.tasks.push(task);
             task_id
@@ -322,7 +312,6 @@ impl ExecutionState {
     {
         Self::with(|state| {
             let task_id = TaskId(state.tasks.len());
-            let is_some = state.try_current().is_some();
 
             let clock = if let Some(ref mut clock) = initial_clock {
                 clock
@@ -333,12 +322,13 @@ impl ExecutionState {
             clock.extend(task_id); // and extend it with an entry for the new thread
             let clock = clock.clone();
 
-            let current_span = tracing::Span::current();
-            let span = if is_some { &state.current().span } else { &current_span };
-
             let schedule_len = state.current_schedule.len();
 
-            let task = Task::from_closure(f, stack_size, task_id, name, clock, span, schedule_len);
+            let parent_span = state
+                .try_current()
+                .map(|t| t.span.clone())
+                .unwrap_or_else(tracing::Span::current);
+            let task = Task::from_closure(f, stack_size, task_id, name, clock, parent_span, schedule_len);
             state.tasks.push(task);
             task_id
         })
