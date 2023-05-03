@@ -34,8 +34,11 @@ pub fn clock_for(task_id: TaskId) -> VectorClock {
 }
 
 /// Sets the `tag` field of the current task.
-pub fn set_tag_for_current_task(tag: Tag) {
+/// Returns the `tag` which was there previously.
+pub fn set_tag_for_current_task(tag: Tag) -> Tag {
+    let old_tag = get_tag_for_current_task();
     ExecutionState::set_tag_for_current_task(tag);
+    old_tag
 }
 
 /// Gets the `tag` field of the current task.

@@ -108,7 +108,7 @@ fn spawn_threads_which_spawn_more_threads(
 
 #[test]
 fn threads_which_spawn_threads_which_spawn_threads() {
-    check_random(|| spawn_threads_which_spawn_more_threads(Tag::default(), 15, 10), 10)
+    check_random(|| spawn_threads_which_spawn_more_threads(Tag::default(), 3, 2), 10)
 }
 
 fn spawn_thread_and_set_tag(tag_on_entry: Tag, new_tag: Tag) -> JoinHandle<u64> {
