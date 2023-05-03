@@ -22,7 +22,7 @@ pub fn context_switches() -> usize {
 
 /// Get the current thread's vector clock
 pub fn clock() -> VectorClock {
-    crate::runtime::execution::ExecutionState::with(|state| {
+    ExecutionState::with(|state| {
         let me = state.current();
         state.get_clock(me.id()).clone()
     })
@@ -36,9 +36,7 @@ pub fn clock_for(task_id: TaskId) -> VectorClock {
 /// Sets the `tag` field of the current task.
 /// Returns the `tag` which was there previously.
 pub fn set_tag_for_current_task(tag: Tag) -> Tag {
-    let old_tag = get_tag_for_current_task();
-    ExecutionState::set_tag_for_current_task(tag);
-    old_tag
+    ExecutionState::set_tag_for_current_task(tag)
 }
 
 /// Gets the `tag` field of the current task.
@@ -46,8 +44,7 @@ pub fn get_tag_for_current_task() -> Tag {
     ExecutionState::get_tag_for_current_task()
 }
 
-/// Gets the `TaskId` of the current task
-/// NOTE: Will panic if there is no current task.
-pub fn get_current_task() -> TaskId {
-    ExecutionState::me()
+/// Gets the `TaskId` of the current task, or `None` if there is no current task.
+pub fn get_current_task() -> Option<TaskId> {
+    ExecutionState::with(|s| Some(s.try_current()?.id()))
 }

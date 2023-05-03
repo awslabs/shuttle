@@ -609,14 +609,14 @@ impl ExecutionState {
         });
     }
 
-    fn set_tag_for_current_task_internal(&mut self, tag: Tag) {
-        self.current_mut().set_tag(tag);
+    // Sets the `tag` field of the current task.
+    // Returns the `tag` which was there previously.
+    fn set_tag_for_current_task_internal(&mut self, tag: Tag) -> Tag {
+        self.current_mut().set_tag(tag)
     }
 
-    pub(crate) fn set_tag_for_current_task(tag: Tag) {
-        ExecutionState::with(|s| {
-            s.set_tag_for_current_task_internal(tag);
-        });
+    pub(crate) fn set_tag_for_current_task(tag: Tag) -> Tag {
+        ExecutionState::with(|s| s.set_tag_for_current_task_internal(tag))
     }
 
     fn get_tag_or_default_for_current_task(&self) -> Tag {

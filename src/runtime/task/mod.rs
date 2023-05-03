@@ -351,8 +351,10 @@ impl Task {
         self.tag
     }
 
-    pub(crate) fn set_tag(&mut self, tag: Tag) {
-        self.tag = tag;
+    /// Sets the `tag` field of the current task.
+    /// Returns the `tag` which was there previously.
+    pub(crate) fn set_tag(&mut self, tag: Tag) -> Tag {
+        std::mem::replace(&mut self.tag, tag)
     }
 }
 

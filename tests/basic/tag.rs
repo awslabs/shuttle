@@ -1,6 +1,6 @@
 use futures::future::join_all;
 use shuttle::{
-    check_random,
+    check_dfs, check_random,
     current::{get_tag_for_current_task, set_tag_for_current_task, Tag},
     future::block_on,
     thread,
@@ -114,7 +114,7 @@ fn threads_which_spawn_threads_which_spawn_threads() {
 fn spawn_thread_and_set_tag(tag_on_entry: Tag, new_tag: Tag) -> JoinHandle<u64> {
     thread::spawn(move || {
         assert_eq!(get_tag_for_current_task(), tag_on_entry);
-        set_tag_for_current_task(new_tag);
+        assert_eq!(set_tag_for_current_task(new_tag), tag_on_entry); // NOTE: Assertion with side effect
         assert_eq!(get_tag_for_current_task(), new_tag);
         new_tag.into()
     })
@@ -131,5 +131,5 @@ fn spawn_and_join() {
 
 #[test]
 fn test_spawn_and_join() {
-    check_random(spawn_and_join, 20)
+    check_dfs(spawn_and_join, None);
 }
