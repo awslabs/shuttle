@@ -13,8 +13,7 @@ use std::cell::RefCell;
 use std::future::Future;
 use std::panic;
 use std::rc::Rc;
-use tracing::span::Entered;
-use tracing::{span, trace, Level, Span};
+use tracing::trace;
 
 // We use this scoped TLS to smuggle the ExecutionState, which is not 'static, across tasks that
 // need access to it (to spawn new tasks, interrogate task status, etc).
@@ -190,12 +189,7 @@ pub(crate) struct ExecutionState {
     storage: StorageMap,
 
     scheduler: Rc<RefCell<dyn Scheduler>>,
-    current_schedule: Schedule,
-
-    // For `tracing`, we track the current task's Span here and manage it in `schedule_next_task`.
-    // Drop order is significant here; see the unsafe code in `schedule_next_task` for why.
-    current_span_entered: Option<Entered<'static>>,
-    current_span: Span,
+    pub(super) current_schedule: Schedule,
 
     #[cfg(debug_assertions)]
     has_cleaned_up: bool,
@@ -234,8 +228,6 @@ impl ExecutionState {
             storage: StorageMap::new(),
             scheduler,
             current_schedule: initial_schedule,
-            current_span_entered: None,
-            current_span: Span::none(),
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
         }
@@ -284,10 +276,26 @@ impl ExecutionState {
         F: Future<Output = ()> + Send + 'static,
     {
         Self::with(|state| {
+            let schedule_len = state.current_schedule.len();
+
+            let parent_span = state
+                .try_current()
+                .map(|t| t.span.clone())
+                .unwrap_or_else(tracing::Span::current);
             let task_id = TaskId(state.tasks.len());
             let clock = state.increment_clock_mut(); // Increment the parent's clock
             clock.extend(task_id); // and extend it with an entry for the new task
-            let task = Task::from_future(future, stack_size, task_id, name, clock.clone());
+
+            let task = Task::from_future(
+                future,
+                stack_size,
+                task_id,
+                name,
+                clock.clone(),
+                parent_span,
+                schedule_len,
+            );
+
             state.tasks.push(task);
             task_id
         })
@@ -304,6 +312,7 @@ impl ExecutionState {
     {
         Self::with(|state| {
             let task_id = TaskId(state.tasks.len());
+
             let clock = if let Some(ref mut clock) = initial_clock {
                 clock
             } else {
@@ -311,7 +320,15 @@ impl ExecutionState {
                 state.increment_clock_mut()
             };
             clock.extend(task_id); // and extend it with an entry for the new thread
-            let task = Task::from_closure(f, stack_size, task_id, name, clock.clone());
+            let clock = clock.clone();
+
+            let schedule_len = state.current_schedule.len();
+
+            let parent_span = state
+                .try_current()
+                .map(|t| t.span.clone())
+                .unwrap_or_else(tracing::Span::current);
+            let task = Task::from_closure(f, stack_size, task_id, name, clock, parent_span, schedule_len);
             state.tasks.push(task);
             task_id
         })
@@ -570,28 +587,24 @@ impl ExecutionState {
     /// Set the next task as the current task, and update our tracing span
     fn advance_to_next_task(&mut self) {
         debug_assert_ne!(self.next_task, ScheduledTask::None);
+        let previous_task = self.current_task;
         self.current_task = self.next_task.take();
-        if let ScheduledTask::Some(tid) = self.current_task {
-            self.current_schedule.push_task(tid);
-        }
 
-        // Safety: Unfortunately `ExecutionState` is a static, but `Entered<'a>` is tied to the
-        // lifetime 'a of its corresponding Span, so we can't stash the `Entered` into
-        // `self.current_span_entered` directly. Instead, we transmute `Entered<'a>` into
-        // `Entered<'static>`. We make sure that it can never outlive 'a by dropping
-        // `self.current_span_entered` before dropping the `self.current_span` it points to.
-        self.current_span_entered.take();
-        if let ScheduledTask::Some(tid) = self.current_task {
-            self.current_span = span!(Level::INFO, "step", i = self.current_schedule.len() - 1, task = tid.0);
-            self.current_span_entered = Some(unsafe { extend_span_entered_lt(self.current_span.enter()) });
-        }
+        tracing::dispatcher::get_default(|subscriber| {
+            if let ScheduledTask::Some(previous) = previous_task {
+                if let Some(span_id) = self.get(previous).span.id() {
+                    subscriber.exit(&span_id)
+                }
+            }
+
+            if let ScheduledTask::Some(tid) = self.current_task {
+                if let Some(span_id) = self.get(tid).span.id() {
+                    subscriber.enter(&span_id);
+                }
+                self.current_schedule.push_task(tid);
+            }
+        });
     }
-}
-
-// Safety: see the use in `advance_to_next_task` above. We lift this out of that function so we can
-// give fixed concrete types for the transmute.
-unsafe fn extend_span_entered_lt(entered: Entered) -> Entered<'static> {
-    std::mem::transmute(entered)
 }
 
 #[cfg(debug_assertions)]

@@ -52,6 +52,7 @@ impl<S: Scheduler + 'static> Runner<S> {
             let start = Instant::now();
 
             let mut i = 0;
+
             loop {
                 if self.config.max_time.map(|t| start.elapsed() > t).unwrap_or(false) {
                     break;
