@@ -66,6 +66,7 @@ pub(crate) struct Task {
 
 impl Task {
     /// Create a task from a continuation
+    #[allow(clippy::too_many_arguments)]
     fn new<F>(
         f: F,
         stack_size: usize,
@@ -108,6 +109,7 @@ impl Task {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_closure<F>(
         f: F,
         stack_size: usize,
@@ -124,6 +126,7 @@ impl Task {
         Self::new(f, stack_size, id, name, clock, parent_span, schedule_len, tag)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_future<F>(
         future: F,
         stack_size: usize,
