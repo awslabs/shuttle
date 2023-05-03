@@ -131,9 +131,10 @@ where
                     drop(local);
                 }
 
-                self.inner.lock().unwrap().result = Some(Ok(result));
+                let mut lock = self.inner.lock().unwrap();
+                lock.result = Some(Ok(result));
 
-                if let Some(waker) = self.inner.lock().unwrap().waker.take() {
+                if let Some(waker) = lock.waker.take() {
                     waker.wake();
                 }
 
