@@ -11,7 +11,8 @@ use crate::runtime::thread;
 use std::future::Future;
 use std::pin::Pin;
 use std::result::Result;
-use std::task::{Context, Poll};
+use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 
 /// Spawn a new async task that the executor will run to completion.
 pub fn spawn<T, F>(fut: F) -> JoinHandle<T>
@@ -19,20 +20,35 @@ where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    let result = std::sync::Arc::new(std::sync::Mutex::new(None));
     let stack_size = ExecutionState::with(|s| s.config.stack_size);
-    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, std::sync::Arc::clone(&result)), stack_size, None);
+    let inner = Arc::new(std::sync::Mutex::new(JoinHandleInner::default()));
+    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, inner.clone()), stack_size, None);
 
     thread::switch();
 
-    JoinHandle { task_id, result }
+    JoinHandle { task_id, inner }
 }
 
 /// An owned permission to join on an async task (await its termination).
 #[derive(Debug)]
 pub struct JoinHandle<T> {
     task_id: TaskId,
-    result: std::sync::Arc<std::sync::Mutex<Option<Result<T, JoinError>>>>,
+    inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<T>>>,
+}
+
+#[derive(Debug)]
+struct JoinHandleInner<T> {
+    result: Option<Result<T, JoinError>>,
+    waker: Option<Waker>,
+}
+
+impl<T> Default for JoinHandleInner<T> {
+    fn default() -> Self {
+        JoinHandleInner {
+            result: None,
+            waker: None,
+        }
+    }
 }
 
 impl<T> JoinHandle<T> {
@@ -64,36 +80,34 @@ impl<T> Drop for JoinHandle<T> {
 impl<T> Future for JoinHandle<T> {
     type Output = Result<T, JoinError>;
 
-    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(result) = self.result.lock().unwrap().take() {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut lock = self.inner.lock().unwrap();
+        if let Some(result) = lock.result.take() {
             Poll::Ready(result)
         } else {
-            ExecutionState::with(|state| {
-                let me = state.current().id();
-                let r = state.get_mut(self.task_id).set_waiter(me);
-                assert!(r, "task shouldn't be finished if no result is present");
-            });
+            lock.waker = Some(cx.waker().clone());
             Poll::Pending
         }
     }
 }
 
-// We wrap a task returning a value inside a wrapper task that returns ().  The wrapper
-// contains a mutex-wrapped field that stores the value where it can be passed to a task
-// waiting on the join handle.
+// We wrap a task returning a value inside a wrapper task that returns (). The wrapper
+// contains a mutex-wrapped field that stores the value and the waker for the task
+// waiting on the join handle. When `poll` returns `Poll::Ready`, the `Wrapper` stores
+// the result in the `result` field and wakes the `waker`.
 struct Wrapper<T, F> {
     future: Pin<Box<F>>,
-    result: std::sync::Arc<std::sync::Mutex<Option<Result<T, JoinError>>>>,
+    inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<T>>>,
 }
 
 impl<T, F> Wrapper<T, F>
 where
     F: Future<Output = T> + Send + 'static,
 {
-    fn new(future: F, result: std::sync::Arc<std::sync::Mutex<Option<Result<T, JoinError>>>>) -> Self {
+    fn new(future: F, inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<T>>>) -> Self {
         Self {
             future: Box::pin(future),
-            result,
+            inner,
         }
     }
 }
@@ -117,16 +131,12 @@ where
                     drop(local);
                 }
 
-                *self.result.lock().unwrap() = Some(Ok(result));
+                let mut lock = self.inner.lock().unwrap();
+                lock.result = Some(Ok(result));
 
-                // Unblock our waiter if we have one and it's still alive
-                ExecutionState::with(|state| {
-                    if let Some(waiter) = state.current_mut().take_waiter() {
-                        if !state.get_mut(waiter).finished() {
-                            state.get_mut(waiter).unblock();
-                        }
-                    }
-                });
+                if let Some(waker) = lock.waker.take() {
+                    waker.wake();
+                }
 
                 Poll::Ready(())
             }
