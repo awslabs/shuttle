@@ -16,6 +16,7 @@ mod portfolio;
 mod replay;
 mod rwlock;
 mod shrink;
+mod tag;
 mod thread;
 mod timeout;
 mod uncontrolled_nondeterminism;

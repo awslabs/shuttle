@@ -59,10 +59,14 @@ pub(crate) struct Task {
 
     local_storage: StorageMap,
     pub(super) span: tracing::Span,
+
+    // Arbitrarily settable tag which is inherited from the parent.
+    tag: Tag,
 }
 
 impl Task {
     /// Create a task from a continuation
+    #[allow(clippy::too_many_arguments)]
     fn new<F>(
         f: F,
         stack_size: usize,
@@ -71,6 +75,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
+        tag: Tag,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -100,9 +105,11 @@ impl Task {
             name,
             span,
             local_storage: StorageMap::new(),
+            tag,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_closure<F>(
         f: F,
         stack_size: usize,
@@ -111,13 +118,15 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
+        tag: Tag,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
-        Self::new(f, stack_size, id, name, clock, parent_span, schedule_len)
+        Self::new(f, stack_size, id, name, clock, parent_span, schedule_len, tag)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_future<F>(
         future: F,
         stack_size: usize,
@@ -126,6 +135,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
+        tag: Tag,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -147,6 +157,7 @@ impl Task {
             clock,
             parent_span,
             schedule_len,
+            tag,
         )
     }
 
@@ -334,6 +345,32 @@ impl Task {
             // the token already is available, then this does nothing.
             self.park_state.token_available = true;
         }
+    }
+
+    pub(crate) fn get_tag(&self) -> Tag {
+        self.tag
+    }
+
+    /// Sets the `tag` field of the current task.
+    /// Returns the `tag` which was there previously.
+    pub(crate) fn set_tag(&mut self, tag: Tag) -> Tag {
+        std::mem::replace(&mut self.tag, tag)
+    }
+}
+
+/// A `Tag` is an arbitrarily settable value for each task.
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Hash, PartialOrd, Ord)]
+pub struct Tag(u64);
+
+impl From<u64> for Tag {
+    fn from(tag: u64) -> Self {
+        Tag(tag)
+    }
+}
+
+impl From<Tag> for u64 {
+    fn from(tag: Tag) -> u64 {
+        tag.0
     }
 }
 
