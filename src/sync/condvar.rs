@@ -4,9 +4,9 @@ use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use crate::sync::MutexGuard;
+use assoc::AssocExt;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
+use std::collections::VecDeque;
 use std::sync::{LockResult, PoisonError};
 use std::time::Duration;
 use tracing::trace;
@@ -15,12 +15,13 @@ use tracing::trace;
 /// waiting for an event to occur.
 #[derive(Debug)]
 pub struct Condvar {
-    state: Rc<RefCell<CondvarState>>,
+    state: RefCell<CondvarState>,
 }
 
 #[derive(Debug)]
 struct CondvarState {
-    waiters: HashMap<TaskId, CondvarWaitStatus>,
+    // TODO: this should be a HashMap but [HashMap::new] is not const
+    waiters: Vec<(TaskId, CondvarWaitStatus)>,
     next_epoch: usize,
 }
 
@@ -114,14 +115,14 @@ enum CondvarWaitStatus {
 // and can run in any order (because they are all contending on the same mutex).
 impl Condvar {
     /// Creates a new condition variable which is ready to be waited on and notified.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         let state = CondvarState {
-            waiters: HashMap::new(),
+            waiters: Vec::new(),
             next_epoch: 0,
         };
 
         Self {
-            state: Rc::new(RefCell::new(state)),
+            state: RefCell::new(state),
         }
     }
 
@@ -133,7 +134,8 @@ impl Condvar {
 
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "waiting on condvar {:p}", self);
 
-        assert!(state.waiters.insert(me, CondvarWaitStatus::Waiting).is_none());
+        debug_assert!(<_ as AssocExt<_, _>>::get(&state.waiters, &me).is_none());
+        state.waiters.push((me, CondvarWaitStatus::Waiting));
         // TODO: Condvar::wait should allow for spurious wakeups.
         ExecutionState::with(|s| s.current_mut().block(false));
         drop(state);
@@ -144,7 +146,7 @@ impl Condvar {
         // After the context switch, consume whichever signal that woke this thread
         let mut state = self.state.borrow_mut();
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "woken from condvar {:p}", self);
-        let my_status = state.waiters.remove(&me).expect("should be waiting");
+        let my_status = <_ as AssocExt<_, _>>::remove(&mut state.waiters, &me).expect("should be waiting");
         match my_status {
             CondvarWaitStatus::Broadcast(clock) => {
                 // Woken by a broadcast, so nothing to do except update the clock

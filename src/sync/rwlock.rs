@@ -6,7 +6,6 @@ use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::panic::{RefUnwindSafe, UnwindSafe};
-use std::rc::Rc;
 use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use tracing::trace;
 
@@ -16,7 +15,7 @@ use tracing::trace;
 /// `RwLock` more than once. The `std` version is ambiguous about what behavior is allowed here, so
 /// we choose the most conservative one.
 pub struct RwLock<T: ?Sized> {
-    state: Rc<RefCell<RwLockState>>,
+    state: RefCell<RwLockState>,
     inner: std::sync::RwLock<T>,
 }
 
@@ -43,7 +42,7 @@ enum RwLockType {
 
 impl<T> RwLock<T> {
     /// Create a new instance of an `RwLock<T>` which is unlocked.
-    pub fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         let state = RwLockState {
             holder: RwLockHolder::None,
             waiting_readers: TaskSet::new(),
@@ -53,7 +52,7 @@ impl<T> RwLock<T> {
 
         Self {
             inner: std::sync::RwLock::new(value),
-            state: Rc::new(RefCell::new(state)),
+            state: RefCell::new(state),
         }
     }
 }
@@ -67,12 +66,12 @@ impl<T: ?Sized> RwLock<T> {
         match self.inner.try_read() {
             Ok(guard) => Ok(RwLockReadGuard {
                 inner: Some(guard),
-                state: Rc::clone(&self.state),
+                rwlock: self,
                 me: ExecutionState::me(),
             }),
             Err(TryLockError::Poisoned(err)) => Err(PoisonError::new(RwLockReadGuard {
                 inner: Some(err.into_inner()),
-                state: Rc::clone(&self.state),
+                rwlock: self,
                 me: ExecutionState::me(),
             })),
             Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
@@ -87,12 +86,12 @@ impl<T: ?Sized> RwLock<T> {
         match self.inner.try_write() {
             Ok(guard) => Ok(RwLockWriteGuard {
                 inner: Some(guard),
-                state: Rc::clone(&self.state),
+                rwlock: self,
                 me: ExecutionState::me(),
             }),
             Err(TryLockError::Poisoned(err)) => Err(PoisonError::new(RwLockWriteGuard {
                 inner: Some(err.into_inner()),
-                state: Rc::clone(&self.state),
+                rwlock: self,
                 me: ExecutionState::me(),
             })),
             Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
@@ -111,12 +110,12 @@ impl<T: ?Sized> RwLock<T> {
             match self.inner.try_read() {
                 Ok(guard) => Ok(RwLockReadGuard {
                     inner: Some(guard),
-                    state: Rc::clone(&self.state),
+                    rwlock: self,
                     me: ExecutionState::me(),
                 }),
                 Err(TryLockError::Poisoned(err)) => Err(TryLockError::Poisoned(PoisonError::new(RwLockReadGuard {
                     inner: Some(err.into_inner()),
-                    state: Rc::clone(&self.state),
+                    rwlock: self,
                     me: ExecutionState::me(),
                 }))),
                 Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
@@ -135,12 +134,12 @@ impl<T: ?Sized> RwLock<T> {
             match self.inner.try_write() {
                 Ok(guard) => Ok(RwLockWriteGuard {
                     inner: Some(guard),
-                    state: Rc::clone(&self.state),
+                    rwlock: self,
                     me: ExecutionState::me(),
                 }),
                 Err(TryLockError::Poisoned(err)) => Err(TryLockError::Poisoned(PoisonError::new(RwLockWriteGuard {
                     inner: Some(err.into_inner()),
-                    state: Rc::clone(&self.state),
+                    rwlock: self,
                     me: ExecutionState::me(),
                 }))),
                 Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
@@ -175,7 +174,7 @@ impl<T: ?Sized> RwLock<T> {
             waiting_writers = ?state.waiting_writers,
             "acquiring {:?} lock on rwlock {:p}",
             typ,
-            self.state,
+            self,
         );
 
         // We are waiting for the lock
@@ -250,7 +249,7 @@ impl<T: ?Sized> RwLock<T> {
             waiting_writers = ?state.waiting_writers,
             "acquired {:?} lock on rwlock {:p}",
             typ,
-            self.state
+            self
         );
 
         // Increment the current thread's clock and update this RwLock's clock to match.
@@ -283,7 +282,7 @@ impl<T: ?Sized> RwLock<T> {
             waiting_writers = ?state.waiting_writers,
             "trying to acquire {:?} lock on rwlock {:p}",
             typ,
-            self.state,
+            self,
         );
 
         let acquired = match (typ, &mut state.holder) {
@@ -309,7 +308,7 @@ impl<T: ?Sized> RwLock<T> {
             "{} {:?} lock on rwlock {:p}",
             if acquired { "acquired" } else { "failed to acquire" },
             typ,
-            self.state,
+            self,
         );
 
         // Update this thread's clock with the clock stored in the RwLock.
@@ -403,9 +402,9 @@ impl<T: ?Sized + Debug> Debug for RwLock<T> {
 
 /// RAII structure used to release the shared read access of a `RwLock` when dropped.
 pub struct RwLockReadGuard<'a, T: ?Sized> {
-    state: Rc<RefCell<RwLockState>>,
-    me: TaskId,
     inner: Option<std::sync::RwLockReadGuard<'a, T>>,
+    rwlock: &'a RwLock<T>,
+    me: TaskId,
 }
 
 impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
@@ -432,14 +431,14 @@ impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
         self.inner = None;
 
-        let mut state = self.state.borrow_mut();
+        let mut state = self.rwlock.state.borrow_mut();
 
         trace!(
             holder = ?state.holder,
             waiting_readers = ?state.waiting_readers,
             waiting_writers = ?state.waiting_writers,
             "releasing Read lock on rwlock {:p}",
-            self.state
+            self.rwlock
         );
 
         match &mut state.holder {
@@ -471,7 +470,7 @@ impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
 /// RAII structure used to release the exclusive write access of a `RwLock` when dropped.
 pub struct RwLockWriteGuard<'a, T: ?Sized> {
     inner: Option<std::sync::RwLockWriteGuard<'a, T>>,
-    state: Rc<RefCell<RwLockState>>,
+    rwlock: &'a RwLock<T>,
     me: TaskId,
 }
 
@@ -505,13 +504,13 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
         self.inner = None;
 
-        let mut state = self.state.borrow_mut();
+        let mut state = self.rwlock.state.borrow_mut();
         trace!(
             holder = ?state.holder,
             waiting_readers = ?state.waiting_readers,
             waiting_writers = ?state.waiting_writers,
             "releasing Write lock on rwlock {:p}",
-            self.state
+            self.rwlock
         );
 
         assert_eq!(state.holder, RwLockHolder::Write(self.me));

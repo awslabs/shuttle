@@ -6,13 +6,12 @@ use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::panic::{RefUnwindSafe, UnwindSafe};
-use std::rc::Rc;
 use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use tracing::trace;
 
 /// A mutex, the same as [`std::sync::Mutex`].
 pub struct Mutex<T: ?Sized> {
-    state: Rc<RefCell<MutexState>>,
+    state: RefCell<MutexState>,
     inner: std::sync::Mutex<T>,
 }
 
@@ -31,7 +30,7 @@ struct MutexState {
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
-    pub fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         let state = MutexState {
             holder: None,
             waiters: TaskSet::new(),
@@ -40,7 +39,7 @@ impl<T> Mutex<T> {
 
         Self {
             inner: std::sync::Mutex::new(value),
-            state: Rc::new(RefCell::new(state)),
+            state: RefCell::new(state),
         }
     }
 }
