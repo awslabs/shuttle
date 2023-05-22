@@ -427,10 +427,8 @@ pub(crate) struct TaskSet {
 }
 
 impl TaskSet {
-    pub fn new() -> Self {
-        Self {
-            tasks: BitVec::from_bitslice(bits![0; DEFAULT_INLINE_TASKS]),
-        }
+    pub const fn new() -> Self {
+        Self { tasks: BitVec::EMPTY }
     }
 
     pub fn contains(&self, tid: TaskId) -> bool {
@@ -446,7 +444,7 @@ impl TaskSet {
     /// the set did have this value present, `false` is returned.
     pub fn insert(&mut self, tid: TaskId) -> bool {
         if tid.0 >= self.tasks.len() {
-            self.tasks.resize(1 + tid.0, false);
+            self.tasks.resize(DEFAULT_INLINE_TASKS.max(1 + tid.0), false);
         }
         !std::mem::replace(&mut *self.tasks.get_mut(tid.0).unwrap(), true)
     }

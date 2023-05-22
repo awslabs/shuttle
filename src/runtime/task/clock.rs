@@ -8,8 +8,10 @@ pub struct VectorClock {
 }
 
 impl VectorClock {
-    pub(crate) fn new() -> Self {
-        Self { time: SmallVec::new() }
+    pub(crate) const fn new() -> Self {
+        Self {
+            time: SmallVec::new_const(),
+        }
     }
 
     #[cfg(test)]
