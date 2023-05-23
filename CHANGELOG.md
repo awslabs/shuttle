@@ -1,3 +1,15 @@
+# 0.6.1 (May 23, 2023)
+
+* Add feature to tag tasks (#98)
+* Add scheduler to check for uncontrolled nondeterminism (#96, #97)
+* Support spurious wakeups for `thread::park` (#101)
+* Support different leaders when `sync::Barrier` is reused (#102)
+* Make `{Mutex, Condvar, RwLock}::new` const (#106)
+* Improve tracing spans (#99)
+* Fix spurious deadlocks with `FuturesUnordered` (#105)
+* Split schedule output over multiple lines (#103)
+* Bump `futures` dependency (#107)
+
 # 0.6.0 (January 24, 2023)
 
 This version renames the [`silence_atomic_ordering_warning` configuration option](https://docs.rs/shuttle/0.5.0/shuttle/struct.Config.html#structfield.silence_atomic_ordering_warning) to `silence_warnings`, as well as the corresponding environment variables, to enable future warnings to be controlled by the same mechanism.
