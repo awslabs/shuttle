@@ -8,9 +8,9 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
+use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
-use std::error::Error;
 use std::pin::Pin;
 use std::result::Result;
 use std::sync::Arc;
@@ -76,12 +76,12 @@ pub enum JoinError {
 impl Display for JoinError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            JoinError::Cancelled => write!(f, "task was cancelled")
+            JoinError::Cancelled => write!(f, "task was cancelled"),
         }
     }
 }
 
-impl Error for JoinError { }
+impl Error for JoinError {}
 
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
