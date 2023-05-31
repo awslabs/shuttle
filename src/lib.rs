@@ -192,6 +192,7 @@ pub mod scheduler;
 
 mod runtime;
 
+use current::{Tag, TaskId};
 pub use runtime::runner::{PortfolioRunner, Runner};
 
 /// Configuration parameters for Shuttle
@@ -220,6 +221,13 @@ pub struct Config {
     ///    may miss bugs
     /// 2. [`lazy_static` values are dropped](mod@crate::lazy_static) at the end of an execution
     pub silence_warnings: bool,
+
+    /// When Shuttle does calls to `trace!` or `panic!` on something which contains a `TaskId`, we
+    /// send the `TaskId` and the `Tag` of the associated `Task` through the closure. This enables
+    /// the user to both be able to print the `Tag` if they are utilizing tags, and to map the `Tag`
+    /// to something which is easier to read.
+    /// Defaults to returning the debug formatted version of the `TaskId`.
+    pub task_id_and_tag_to_string: fn(TaskId, Tag) -> String,
 }
 
 impl Config {
@@ -231,6 +239,7 @@ impl Config {
             max_steps: MaxSteps::FailAfter(1_000_000),
             max_time: None,
             silence_warnings: false,
+            task_id_and_tag_to_string: |task_id, _| format!("{task_id:?}"),
         }
     }
 }

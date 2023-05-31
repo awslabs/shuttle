@@ -5,12 +5,14 @@ use crate::runtime::task::Tag;
 use crate::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::sync::rwlock::RwLockHolder;
 use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::future::Future;
 use std::panic;
 use std::rc::Rc;
@@ -582,7 +584,7 @@ impl ExecutionState {
             }
         }
 
-        trace!(?runnable, next_task=?self.next_task);
+        trace!(runnable=%self.format_slice(&runnable), next_task=%self.format_scheduled_task(&self.next_task));
 
         Ok(())
     }
@@ -628,6 +630,81 @@ impl ExecutionState {
 
     pub(crate) fn get_tag_for_current_task() -> Tag {
         ExecutionState::with(|s| s.get_tag_or_default_for_current_task())
+    }
+
+    pub(crate) fn format_task_id(&self, task_id: TaskId) -> String {
+        if self.is_finished() {
+            format!("{:?}", task_id)
+        } else {
+            (self.config.task_id_and_tag_to_string)(task_id, self.tasks[task_id.0].get_tag())
+        }
+    }
+
+    pub(crate) fn format_vec_of_tuples<T: std::fmt::Debug>(&self, waiters: &Vec<(TaskId, T)>) -> String {
+        let mut new_vec = Vec::new();
+        for (w, o) in waiters {
+            let tag = self.tasks[w.0].get_tag();
+            new_vec.push(((self.config.task_id_and_tag_to_string)(*w, tag), o));
+        }
+        format!("{:?}", new_vec)
+    }
+
+    pub(crate) fn format_hash_set(&self, set: &HashSet<TaskId>) -> String {
+        let mut out_string = "{".to_string();
+        for (i, task_id) in set.iter().enumerate() {
+            if i > 0 {
+                out_string.push_str(", ");
+            }
+            out_string.push_str(&self.format_task_id(*task_id));
+        }
+        out_string.push('}');
+        out_string
+    }
+
+    fn format_slice(&self, slice: &[TaskId]) -> String {
+        let mut out_string = "[".to_string();
+        for (i, task_id) in slice.iter().enumerate() {
+            if i > 0 {
+                out_string.push_str(", ");
+            }
+            out_string.push_str(&self.format_task_id(*task_id));
+        }
+        out_string.push(']');
+        out_string
+    }
+
+    fn format_scheduled_task(&self, scheduled_task: &ScheduledTask) -> String {
+        match scheduled_task {
+            ScheduledTask::Some(task_id) => self.format_task_id(*task_id),
+            o => format!("{:?}", o),
+        }
+    }
+
+    pub(crate) fn format_option(&self, maybe_task_id: &Option<TaskId>) -> String {
+        match maybe_task_id {
+            Some(task_id) => self.format_task_id(*task_id),
+            None => "None".to_string(),
+        }
+    }
+
+    pub(crate) fn format_iter<I: Iterator<Item = TaskId>>(&self, iter: I) -> String {
+        let mut out_string = "[".to_string();
+        for (i, task_id) in iter.enumerate() {
+            if i > 0 {
+                out_string.push_str(", ");
+            }
+            out_string.push_str(&self.format_task_id(task_id));
+        }
+        out_string.push(']');
+        out_string
+    }
+
+    pub(crate) fn format_rwlock_holder(&self, rwlock_holder: &RwLockHolder) -> String {
+        match rwlock_holder {
+            RwLockHolder::Read(task_set) => format!("Read({})", self.format_iter(task_set.iter())),
+            RwLockHolder::Write(task_id) => format!("Write({})", self.format_task_id(*task_id)),
+            RwLockHolder::None => "None".to_string(),
+        }
     }
 }
 

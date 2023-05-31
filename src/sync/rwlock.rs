@@ -28,7 +28,7 @@ struct RwLockState {
 }
 
 #[derive(PartialEq, Eq, Debug)]
-enum RwLockHolder {
+pub(crate) enum RwLockHolder {
     Read(TaskSet),
     Write(TaskId),
     None,
@@ -168,14 +168,16 @@ impl<T: ?Sized> RwLock<T> {
         let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
-        trace!(
-            holder = ?state.holder,
-            waiting_readers = ?state.waiting_readers,
-            waiting_writers = ?state.waiting_writers,
-            "acquiring {:?} lock on rwlock {:p}",
-            typ,
-            self,
-        );
+        ExecutionState::with(|s| {
+            trace!(
+                holder=%s.format_rwlock_holder(&state.holder),
+                waiting_readers=%s.format_iter(state.waiting_readers.iter()),
+                waiting_writers=%s.format_iter(state.waiting_writers.iter()),
+                "acquiring {:?} lock on rwlock {:p}",
+                typ,
+                self,
+            );
+        });
 
         // We are waiting for the lock
         if typ == RwLockType::Write {
@@ -191,14 +193,22 @@ impl<T: ?Sized> RwLock<T> {
         let should_switch = match &state.holder {
             RwLockHolder::Write(writer) => {
                 if *writer == me {
-                    panic!("deadlock! task {:?} tried to acquire a RwLock it already holds", me);
+                    let formatted = ExecutionState::with(|s| s.format_task_id(me));
+                    panic!(
+                        "deadlock! task {} tried to acquire a RwLock it already holds",
+                        formatted
+                    );
                 }
                 ExecutionState::with(|s| s.current_mut().block(false));
                 true
             }
             RwLockHolder::Read(readers) => {
                 if readers.contains(me) {
-                    panic!("deadlock! task {:?} tried to acquire a RwLock it already holds", me);
+                    let formatted = ExecutionState::with(|s| s.format_task_id(me));
+                    panic!(
+                        "deadlock! task {} tried to acquire a RwLock it already holds",
+                        formatted
+                    );
                 }
                 if typ == RwLockType::Write {
                     ExecutionState::with(|s| s.current_mut().block(false));
@@ -243,14 +253,17 @@ impl<T: ?Sized> RwLock<T> {
         } else {
             state.waiting_readers.remove(me);
         }
-        trace!(
-            holder = ?state.holder,
-            waiting_readers = ?state.waiting_readers,
-            waiting_writers = ?state.waiting_writers,
-            "acquired {:?} lock on rwlock {:p}",
-            typ,
-            self
-        );
+
+        ExecutionState::with(|s| {
+            trace!(
+                holder=%s.format_rwlock_holder(&state.holder),
+                waiting_readers=%s.format_iter(state.waiting_readers.iter()),
+                waiting_writers=%s.format_iter(state.waiting_writers.iter()),
+                "acquired {:?} lock on rwlock {:p}",
+                typ,
+                self,
+            );
+        });
 
         // Increment the current thread's clock and update this RwLock's clock to match.
         // TODO we can likely do better here: there is no causality between multiple readers holding
@@ -276,14 +289,17 @@ impl<T: ?Sized> RwLock<T> {
         let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
-        trace!(
-            holder = ?state.holder,
-            waiting_readers = ?state.waiting_readers,
-            waiting_writers = ?state.waiting_writers,
-            "trying to acquire {:?} lock on rwlock {:p}",
-            typ,
-            self,
-        );
+
+        ExecutionState::with(|s| {
+            trace!(
+                holder=%s.format_rwlock_holder(&state.holder),
+                waiting_readers=%s.format_iter(state.waiting_readers.iter()),
+                waiting_writers=%s.format_iter(state.waiting_writers.iter()),
+                "trying to acquire {:?} lock on rwlock {:p}",
+                typ,
+                self,
+            );
+        });
 
         let acquired = match (typ, &mut state.holder) {
             (RwLockType::Write, RwLockHolder::None) => {
@@ -433,13 +449,15 @@ impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
 
         let mut state = self.rwlock.state.borrow_mut();
 
-        trace!(
-            holder = ?state.holder,
-            waiting_readers = ?state.waiting_readers,
-            waiting_writers = ?state.waiting_writers,
-            "releasing Read lock on rwlock {:p}",
-            self.rwlock
-        );
+        ExecutionState::with(|s| {
+            trace!(
+                holder=%s.format_rwlock_holder(&state.holder),
+                waiting_readers=%s.format_iter(state.waiting_readers.iter()),
+                waiting_writers=%s.format_iter(state.waiting_writers.iter()),
+                "releasing Read lock on rwlock {:p}",
+                self.rwlock,
+            );
+        });
 
         match &mut state.holder {
             RwLockHolder::Read(readers) => {
@@ -505,13 +523,16 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
         self.inner = None;
 
         let mut state = self.rwlock.state.borrow_mut();
-        trace!(
-            holder = ?state.holder,
-            waiting_readers = ?state.waiting_readers,
-            waiting_writers = ?state.waiting_writers,
-            "releasing Write lock on rwlock {:p}",
-            self.rwlock
-        );
+
+        ExecutionState::with(|s| {
+            trace!(
+                holder=%s.format_rwlock_holder(&state.holder),
+                waiting_readers=%s.format_iter(state.waiting_readers.iter()),
+                waiting_writers=%s.format_iter(state.waiting_writers.iter()),
+                "releasing Write lock on rwlock {:p}",
+                self.rwlock,
+            );
+        });
 
         assert_eq!(state.holder, RwLockHolder::Write(self.me));
         state.holder = RwLockHolder::None;

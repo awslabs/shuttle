@@ -132,7 +132,9 @@ impl Condvar {
 
         let mut state = self.state.borrow_mut();
 
-        trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "waiting on condvar {:p}", self);
+        ExecutionState::with(|s| {
+            trace!(waiters=%s.format_vec_of_tuples(&state.waiters), next_epoch=state.next_epoch, "waiting on condvar {:p}", self);
+        });
 
         debug_assert!(<_ as AssocExt<_, _>>::get(&state.waiters, &me).is_none());
         state.waiters.push((me, CondvarWaitStatus::Waiting));
@@ -145,7 +147,11 @@ impl Condvar {
 
         // After the context switch, consume whichever signal that woke this thread
         let mut state = self.state.borrow_mut();
-        trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "woken from condvar {:p}", self);
+
+        ExecutionState::with(|s| {
+            trace!(waiters=%s.format_vec_of_tuples(&state.waiters), next_epoch=state.next_epoch, "woken from condvar {:p}", self);
+        });
+
         let my_status = <_ as AssocExt<_, _>>::remove(&mut state.waiters, &me).expect("should be waiting");
         match my_status {
             CondvarWaitStatus::Broadcast(clock) => {
@@ -234,7 +240,9 @@ impl Condvar {
 
         let mut state = self.state.borrow_mut();
 
-        trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "notifying one on condvar {:p}", self);
+        ExecutionState::with(|s| {
+            trace!(waiters=%s.format_vec_of_tuples(&state.waiters), next_epoch=state.next_epoch, "notifying one on condvar {:p}", self);
+        });
 
         let epoch = state.next_epoch;
         for (tid, status) in state.waiters.iter_mut() {
@@ -271,7 +279,9 @@ impl Condvar {
 
         let mut state = self.state.borrow_mut();
 
-        trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "notifying all on condvar {:p}", self);
+        ExecutionState::with(|s| {
+            trace!(waiters=%s.format_vec_of_tuples(&state.waiters), next_epoch=state.next_epoch, "notifying all on condvar {:p}", self);
+        });
 
         for (tid, status) in state.waiters.iter_mut() {
             assert_ne!(*tid, me);

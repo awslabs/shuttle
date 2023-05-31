@@ -50,12 +50,16 @@ impl<T: ?Sized> Mutex<T> {
         let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
-        trace!(holder=?state.holder, waiters=?state.waiters, "waiting to acquire mutex {:p}", self);
+
+        ExecutionState::with(|s| {
+            trace!(holder=%s.format_option(&state.holder), waiters=s.format_iter(state.waiters.iter()), "waiting to acquire mutex {:p}", self);
+        });
 
         // If the lock is already held, then we are blocked
         if let Some(holder) = state.holder {
             if holder == me {
-                panic!("deadlock! task {:?} tried to acquire a Mutex it already holds", me);
+                let formatted = ExecutionState::with(|s| s.format_task_id(me));
+                panic!("deadlock! task {} tried to acquire a Mutex it already holds", formatted);
             }
 
             state.waiters.insert(me);
@@ -78,7 +82,9 @@ impl<T: ?Sized> Mutex<T> {
         assert!(state.holder.is_none());
         state.holder = Some(me);
 
-        trace!(waiters=?state.waiters, "acquired mutex {:p}", self);
+        ExecutionState::with(|s| {
+            trace!(waiters=%s.format_iter(state.waiters.iter()), "acquired mutex {:p}", self);
+        });
 
         ExecutionState::with(|s| {
             // Re-block all other waiting threads, since we won the race to take this lock
@@ -126,7 +132,10 @@ impl<T: ?Sized> Mutex<T> {
         let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
-        trace!(holder=?state.holder, waiters=?state.waiters, "trying to acquire mutex {:p}", self);
+
+        ExecutionState::with(|s| {
+            trace!(holder=%s.format_option(&state.holder), waiters=s.format_iter(state.waiters.iter()), "trying to acquire mutex {:p}", self);
+        });
 
         // We don't need a context switch here. There are two cases to analyze.
         // * Consider that `state.holder == None` so that we manage to acquire the lock, but that
@@ -140,7 +149,13 @@ impl<T: ?Sized> Mutex<T> {
         //   Then `t`'s release has a context switch that allows us to acquire the lock.
 
         let result = if let Some(holder) = state.holder {
-            trace!("try_lock failed for mutex {:p} held by {:?}", self, holder);
+            ExecutionState::with(|s| {
+                trace!(
+                    "try_lock failed for mutex {:p} held by {}",
+                    self,
+                    s.format_task_id(holder)
+                );
+            });
             Err(TryLockError::WouldBlock)
         } else {
             state.holder = Some(me);
@@ -249,7 +264,11 @@ impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
         self.inner = None;
 
         let mut state = self.mutex.state.borrow_mut();
-        trace!(waiters=?state.waiters, "releasing mutex {:p}", self.mutex);
+
+        ExecutionState::with(|s| {
+            trace!(waiters=%s.format_iter(state.waiters.iter()), "releasing mutex {:p}", self.mutex);
+        });
+
         state.holder = None;
 
         // Bail out early if we're panicking so we don't try to touch `ExecutionState`

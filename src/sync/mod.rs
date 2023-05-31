@@ -6,7 +6,7 @@ mod condvar;
 pub mod mpsc;
 mod mutex;
 mod once;
-mod rwlock;
+pub(crate) mod rwlock;
 
 pub use barrier::{Barrier, BarrierWaitResult};
 pub use condvar::{Condvar, WaitTimeoutResult};

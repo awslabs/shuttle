@@ -84,10 +84,10 @@ impl Barrier {
         let mut state = self.state.borrow_mut();
         let my_epoch = state.epoch;
 
-        trace!(waiters=?state.waiters, epoch=my_epoch, "waiting on barrier {:p}", self);
-
         // Update the barrier's clock with the clock of this thread
         ExecutionState::with(|s| {
+            trace!(waiters=%s.format_hash_set(&state.waiters), epoch=my_epoch, "waiting on barrier {:p}", self);
+
             let clock = s.increment_clock();
             state.clock.update(clock);
         });
@@ -96,10 +96,15 @@ impl Barrier {
         assert!(state.waiters.insert(ExecutionState::me()));
 
         if state.waiters.len() < state.bound {
-            trace!(waiters=?state.waiters, epoch=my_epoch, "blocked on barrier {:?}", self);
-            ExecutionState::with(|s| s.current_mut().block(false));
+            ExecutionState::with(|s| {
+                trace!(waiters=%s.format_hash_set(&state.waiters), epoch=my_epoch, "blocked on barrier {:?}", self);
+
+                s.current_mut().block(false)
+            });
         } else {
-            trace!(waiters=?state.waiters, epoch=my_epoch, "releasing waiters on barrier {:?}", self);
+            ExecutionState::with(
+                |s| trace!(waiters=%s.format_hash_set(&state.waiters), epoch=my_epoch, "releasing waiters on barrier {:?}", self),
+            );
 
             debug_assert!(state.waiters.len() == state.bound || state.bound == 0);
 
@@ -112,12 +117,14 @@ impl Barrier {
             let waiters = state.waiters.drain().collect::<Vec<_>>();
             state.epoch += 1;
 
-            trace!(
-                waiters=?state.waiters,
-                epoch=state.epoch,
-                "releasing waiters on barrier {:?}",
-                self,
-            );
+            ExecutionState::with(|s| {
+                trace!(
+                    waiters = s.format_hash_set(&state.waiters),
+                    epoch = state.epoch,
+                    "releasing waiters on barrier {:?}",
+                    self,
+                );
+            });
 
             let clock = state.clock.clone();
             ExecutionState::with(|s| {
