@@ -16,6 +16,8 @@ pub(crate) mod clock;
 pub(crate) mod waker;
 use waker::make_waker;
 
+use super::execution::{TASK_ID_AND_TAG_TO_STRING, TASK_ID_TO_TAGS};
+
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
 // * A "thread" is a user-level unit of concurrency. User code creates threads, passes data
@@ -354,6 +356,11 @@ impl Task {
     /// Sets the `tag` field of the current task.
     /// Returns the `tag` which was there previously.
     pub(crate) fn set_tag(&mut self, tag: Tag) -> Tag {
+        TASK_ID_AND_TAG_TO_STRING.with(|cell| {
+            if cell.borrow().is_some() {
+                TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().insert(self.id(), tag));
+            }
+        });
         std::mem::replace(&mut self.tag, tag)
     }
 }
@@ -404,8 +411,22 @@ pub(crate) struct ParkState {
 
 /// A `TaskId` is a unique identifier for a task. `TaskId`s are never reused within a single
 /// execution.
-#[derive(PartialEq, Eq, Hash, Clone, Copy, PartialOrd, Ord, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, PartialOrd, Ord)]
 pub struct TaskId(pub(super) usize);
+
+impl Debug for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        TASK_ID_AND_TAG_TO_STRING.with(|cell| match *cell.borrow() {
+            Some(closure) => TASK_ID_TO_TAGS.with(|cell| {
+                let default = Tag::default();
+                let map = cell.borrow_mut();
+                let tag = map.get(self).unwrap_or(&default);
+                f.write_str(&(closure)(*self, *tag))
+            }),
+            None => f.debug_tuple("TaskId").field(&self.0).finish(),
+        })
+    }
+}
 
 impl From<usize> for TaskId {
     fn from(id: usize) -> Self {
@@ -469,10 +490,13 @@ impl TaskSet {
 impl Debug for TaskSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TaskSet {{ ")?;
-        for t in self.iter() {
-            write!(f, "{} ", t.0)?;
+        for (i, t) in self.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{t:?}")?;
         }
-        write!(f, "}}")
+        write!(f, " }}")
     }
 }
 

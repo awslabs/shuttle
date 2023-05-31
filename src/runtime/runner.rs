@@ -15,6 +15,8 @@ use std::thread;
 use std::time::Instant;
 use tracing::{span, Level};
 
+use super::execution::TASK_ID_AND_TAG_TO_STRING;
+
 /// A `Runner` is the entry-point for testing concurrent code.
 ///
 /// It takes as input a function to test and a `Scheduler` to run it under. It then executes that
@@ -52,6 +54,8 @@ impl<S: Scheduler + 'static> Runner<S> {
             let start = Instant::now();
 
             let mut i = 0;
+
+            TASK_ID_AND_TAG_TO_STRING.with(|cell| *cell.borrow_mut() = self.config.task_id_and_tag_to_string);
 
             loop {
                 if self.config.max_time.map(|t| start.elapsed() > t).unwrap_or(false) {

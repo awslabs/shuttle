@@ -11,6 +11,7 @@ use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::future::Future;
 use std::panic;
 use std::rc::Rc;
@@ -20,6 +21,12 @@ use tracing::trace;
 // need access to it (to spawn new tasks, interrogate task status, etc).
 scoped_thread_local! {
     static EXECUTION_STATE: RefCell<ExecutionState>
+}
+
+thread_local! {
+    pub(crate) static TASK_ID_TO_TAGS: RefCell<HashMap<TaskId, Tag>> = RefCell::new(HashMap::new());
+    #[allow(clippy::complexity)]
+    pub(crate) static TASK_ID_AND_TAG_TO_STRING: RefCell<Option<fn(TaskId, Tag) -> String>> = RefCell::new(None);
 }
 
 /// An `Execution` encapsulates a single run of a function under test against a chosen scheduler.
@@ -360,6 +367,12 @@ impl ExecutionState {
         }
 
         while Self::with(|state| state.storage.pop()).is_some() {}
+
+        Self::with(|state| {
+            if state.config.task_id_and_tag_to_string.is_some() {
+                TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().clear())
+            }
+        });
 
         #[cfg(debug_assertions)]
         Self::with(|state| state.has_cleaned_up = true);

@@ -3,10 +3,16 @@ use shuttle::{
     check_dfs, check_random,
     current::{get_tag_for_current_task, set_tag_for_current_task, Tag},
     future::block_on,
+    sync::Mutex,
     thread,
     thread::JoinHandle,
+    Config,
 };
+use std::sync::Arc;
 use test_log::test;
+use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Record};
+use tracing::{Event, Id, Metadata, Subscriber};
 
 fn spawn_some_futures_and_set_tag<F: (Fn(Tag, u64) -> Tag) + Send + Sync>(
     tag_on_entry: Tag,
@@ -132,4 +138,107 @@ fn spawn_and_join() {
 #[test]
 fn test_spawn_and_join() {
     check_dfs(spawn_and_join, None);
+}
+
+fn basic_lock_test() {
+    let lock = Arc::new(Mutex::new(0usize));
+
+    let threads = (0..6)
+        .map(|i| {
+            let lock = lock.clone();
+            thread::spawn(move || {
+                set_tag_for_current_task((i + 1).into());
+                *lock.lock().unwrap() += 1;
+            })
+        })
+        .collect::<Vec<_>>();
+
+    for thread in threads {
+        thread.join().unwrap();
+    }
+}
+
+// Simple `Subscriber` that just checks whether the `runnable` contains `Unset`, `Low`, `Mid` or `Rest`,
+// and that they don't contain `TaskId`.
+struct RunnableSubscriber {}
+
+impl RunnableSubscriber {
+    fn new() -> Self {
+        Self {}
+    }
+}
+
+impl Subscriber for RunnableSubscriber {
+    fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _span: &Attributes<'_>) -> Id {
+        // We don't care about span equality so just use the same identity for everything
+        Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &Id, _values: &Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+    fn event(&self, event: &Event<'_>) {
+        let metadata = event.metadata();
+        if metadata.target() == "shuttle::runtime::execution" {
+            struct CheckRunnableSubscriber();
+            impl Visit for CheckRunnableSubscriber {
+                fn record_debug(&mut self, _field: &Field, value: &dyn std::fmt::Debug) {
+                    assert!(!format!("{value:?}").contains("TaskId"));
+                    let f = format!("{value:?}");
+                    assert!(f.contains("Unset") || f.contains("Low") || f.contains("Mid") || f.contains("Rest"));
+                }
+            }
+            let mut visitor = CheckRunnableSubscriber();
+            event.record(&mut visitor);
+        }
+    }
+
+    fn enter(&self, _span: &Id) {}
+
+    fn exit(&self, _span: &Id) {}
+}
+
+fn check_with_config<F>(f: F, config: Config, max_iterations: usize)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    use shuttle::{scheduler::RandomScheduler, Runner};
+
+    let scheduler = RandomScheduler::new(max_iterations);
+
+    let runner = Runner::new(scheduler, config);
+    runner.run(f);
+}
+
+#[test]
+fn tracing_tags() {
+    let metrics = RunnableSubscriber::new();
+    let _guard = tracing::subscriber::set_default(metrics);
+
+    let mut config = Config::default();
+
+    #[derive(Debug)]
+    enum TaskType {
+        Unset,
+        Low,
+        Mid,
+        Rest(u64),
+    }
+
+    config.task_id_and_tag_to_string = Some(|_task_id, tag| {
+        let as_enum = match tag.into() {
+            x if x == 0 => TaskType::Unset,
+            x if x < 3 => TaskType::Low,
+            x if x < 5 => TaskType::Mid,
+            x => TaskType::Rest(x),
+        };
+        format!("{as_enum:?}")
+    });
+
+    check_with_config(basic_lock_test, config, 10);
 }
