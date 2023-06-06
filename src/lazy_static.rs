@@ -60,13 +60,15 @@ impl<T: Sync> Lazy<T> {
             // There's not yet a value for this static, so try to initialize it (possibly racing)
             self.cell.call_once(|| {
                 let value = (self.init)();
-                ExecutionState::with(|state| state.init_storage(self, DropGuard(value)));
+                ExecutionState::with(|state| {
+                    state.init_storage(self, DropGuard::new(value, state.config.silence_warnings))
+                });
             });
         }
 
         // At this point we're guaranteed that a value exists for this static, so read it
         ExecutionState::with(|state| {
-            let value: &DropGuard<T> = state.get_storage(self).expect("should be initialized");
+            let drop_guard: &DropGuard<T> = state.get_storage(self).expect("should be initialized");
             // Safety: this *isn't* safe. We are promoting to a `'static` lifetime here, but this
             // object does not actually live that long. It would be possible for this reference to
             // escape the client code and be used after it becomes invalid when the execution ends.
@@ -80,7 +82,7 @@ impl<T: Sync> Lazy<T> {
             // with real-world code as possible and so needs to preserve the semantics of statics.
             //
             // See also https://github.com/tokio-rs/loom/pull/125
-            unsafe { extend_lt(&value.0) }
+            unsafe { extend_lt(&drop_guard.value) }
         })
     }
 }
@@ -108,7 +110,7 @@ pub fn initialize<T: LazyStatic>(lazy: &T) {
 
 static PRINTED_DROP_WARNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn maybe_warn_about_drop() {
+fn maybe_warn_about_drop(silence_warnings: bool) {
     use owo_colors::OwoColorize;
     use std::sync::atomic::Ordering;
 
@@ -116,11 +118,7 @@ fn maybe_warn_about_drop() {
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
-        if std::env::var("SHUTTLE_SILENCE_WARNINGS").is_ok() {
-            return;
-        }
-
-        if ExecutionState::with(|state| state.config.silence_warnings) {
+        if silence_warnings || std::env::var("SHUTTLE_SILENCE_WARNINGS").is_ok() {
             return;
         }
 
@@ -137,10 +135,23 @@ fn maybe_warn_about_drop() {
 /// Small wrapper to trigger the warning about drop behavior when a `lazy_static` value drops for
 /// the first time.
 #[derive(Debug)]
-struct DropGuard<T>(T);
+struct DropGuard<T> {
+    value: T,
+    // We need to stash this config here, because we cannot get it from `ExecutionState` while panicking.
+    silence_warnings: bool,
+}
+
+impl<T> DropGuard<T> {
+    fn new(value: T, silence_warnings: bool) -> Self {
+        Self {
+            value,
+            silence_warnings,
+        }
+    }
+}
 
 impl<T> Drop for DropGuard<T> {
     fn drop(&mut self) {
-        maybe_warn_about_drop();
+        maybe_warn_about_drop(self.silence_warnings);
     }
 }
