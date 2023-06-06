@@ -233,3 +233,22 @@ fn shared_static() {
     // incorrectly sharing state
     assert_eq!(total_executions, COUNTER.load(Ordering::SeqCst));
 }
+
+/// Check that the drop handler does not panic if executed while panicking.
+#[test]
+#[should_panic(expected = "the only panic")]
+fn panic() {
+    shuttle::lazy_static! {
+        static ref S: usize = {
+             42
+        };
+    }
+
+    check_dfs(
+        || {
+            assert_eq!(*S, 42);
+            panic!("the only panic");
+        },
+        None,
+    );
+}
