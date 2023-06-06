@@ -54,8 +54,8 @@ fn timer_simple() {
             let timerb = CountdownTimer::new(2, 20);
             let timerc = CountdownTimer::new(3, 40);
             let v1 = future::spawn(timera); // no need for async block
-            let v2 = future::spawn(async move { timerb.await });
-            let v3 = future::spawn(async move { timerc.await });
+            let v2 = future::spawn(timerb);
+            let v3 = future::spawn(timerc);
             // Spawn another task that waits for the timers and checks the return values
             future::block_on(async move {
                 let sum = v1.await.unwrap() + v2.await.unwrap() + v3.await.unwrap();

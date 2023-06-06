@@ -349,12 +349,9 @@ fn wake_self_on_join_handle() {
                 }
             }
 
-            let wait_on_yield = future::spawn(async move {
-                Timeout {
-                    inner: Box::pin(yielder),
-                    counter: 2,
-                }
-                .await
+            let wait_on_yield = future::spawn(Timeout {
+                inner: Box::pin(yielder),
+                counter: 2,
             });
 
             drop(wait_on_yield);
