@@ -10,13 +10,14 @@ use std::cell::RefCell;
 use std::fmt::Debug;
 use std::future::Future;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::task::{Context, Waker};
 
 pub(crate) mod clock;
 pub(crate) mod waker;
 use waker::make_waker;
 
-use super::execution::{TASK_ID_AND_TAG_TO_STRING, TASK_ID_TO_TAGS};
+use super::execution::TASK_ID_TO_TAGS;
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
@@ -63,7 +64,7 @@ pub(crate) struct Task {
     pub(super) span: tracing::Span,
 
     // Arbitrarily settable tag which is inherited from the parent.
-    tag: Tag,
+    tag: Option<Arc<dyn Debug>>,
 }
 
 impl Task {
@@ -77,7 +78,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: Tag,
+        tag: Option<Arc<dyn Debug>>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -94,7 +95,7 @@ impl Task {
             tracing::info_span!(parent: parent_span.id(), "step", i = schedule_len, task = id.0)
         };
 
-        Self {
+        let mut task = Self {
             id,
             state: TaskState::Runnable,
             continuation,
@@ -107,8 +108,14 @@ impl Task {
             name,
             span,
             local_storage: StorageMap::new(),
-            tag,
+            tag: tag.clone(),
+        };
+
+        if let Some(tag) = tag {
+            task.set_tag(tag);
         }
+
+        task
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -120,7 +127,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: Tag,
+        tag: Option<Arc<dyn Debug>>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -137,7 +144,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: Tag,
+        tag: Option<Arc<dyn Debug>>,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -349,35 +356,15 @@ impl Task {
         }
     }
 
-    pub(crate) fn get_tag(&self) -> Tag {
-        self.tag
+    pub(crate) fn get_tag(&self) -> Option<Arc<dyn Debug>> {
+        self.tag.clone()
     }
 
     /// Sets the `tag` field of the current task.
     /// Returns the `tag` which was there previously.
-    pub(crate) fn set_tag(&mut self, tag: Tag) -> Tag {
-        TASK_ID_AND_TAG_TO_STRING.with(|cell| {
-            if cell.borrow().is_some() {
-                TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().insert(self.id(), tag));
-            }
-        });
-        std::mem::replace(&mut self.tag, tag)
-    }
-}
-
-/// A `Tag` is an arbitrarily settable value for each task.
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Hash, PartialOrd, Ord)]
-pub struct Tag(u64);
-
-impl From<u64> for Tag {
-    fn from(tag: u64) -> Self {
-        Tag(tag)
-    }
-}
-
-impl From<Tag> for u64 {
-    fn from(tag: Tag) -> u64 {
-        tag.0
+    pub(crate) fn set_tag(&mut self, tag: Arc<dyn Debug>) -> Option<Arc<dyn Debug>> {
+        TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().insert(self.id(), tag.clone()));
+        std::mem::replace(&mut self.tag, Some(tag))
     }
 }
 
@@ -416,14 +403,12 @@ pub struct TaskId(pub(super) usize);
 
 impl Debug for TaskId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        TASK_ID_AND_TAG_TO_STRING.with(|cell| match *cell.borrow() {
-            Some(closure) => TASK_ID_TO_TAGS.with(|cell| {
-                let default = Tag::default();
-                let map = cell.borrow_mut();
-                let tag = map.get(self).unwrap_or(&default);
-                f.write_str(&(closure)(*self, *tag))
-            }),
-            None => f.debug_tuple("TaskId").field(&self.0).finish(),
+        TASK_ID_TO_TAGS.with(|cell| {
+            let map = cell.borrow_mut();
+            match map.get(self) {
+                Some(tag) => f.write_str(&format!("{:?}", tag)),
+                None => f.debug_tuple("TaskId").field(&self.0).finish(),
+            }
         })
     }
 }
