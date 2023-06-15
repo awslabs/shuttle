@@ -207,7 +207,7 @@ fn basic_lock_test() {
 
 // Simple `Subscriber` that just checks whether the `runnable` contains `Unset`, `Low`, `Mid` or `Rest`,
 // and that they don't contain `TaskId`. All tests have a short "setup phase" before the user is able to
-// set the tags, during which traces will contain `TaskId`. Once the setup phase is over, no trace will 
+// set the tags, during which traces will contain `TaskId`. Once the setup phase is over, no trace will
 // contain `TaskId`.
 struct RunnableSubscriber {
     done_with_setup: AtomicBool,
