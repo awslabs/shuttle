@@ -108,7 +108,7 @@ impl Task {
             name,
             span,
             local_storage: StorageMap::new(),
-            tag: tag.clone(),
+            tag: None,
         };
 
         if let Some(tag) = tag {
@@ -404,7 +404,7 @@ pub struct TaskId(pub(super) usize);
 impl Debug for TaskId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         TASK_ID_TO_TAGS.with(|cell| {
-            let map = cell.borrow_mut();
+            let map = cell.borrow();
             match map.get(self) {
                 Some(tag) => f.write_str(&format!("{:?}", tag)),
                 None => f.debug_tuple("TaskId").field(&self.0).finish(),

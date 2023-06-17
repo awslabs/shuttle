@@ -629,10 +629,7 @@ impl ExecutionState {
     }
 
     fn get_tag_or_default_for_current_task(&self) -> Option<Arc<dyn Debug>> {
-        match self.try_current() {
-            Some(current) => current.get_tag(),
-            None => None,
-        }
+        self.try_current().and_then(|current| current.get_tag())
     }
 
     pub(crate) fn get_tag_for_current_task() -> Option<Arc<dyn Debug>> {
