@@ -7,8 +7,7 @@
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
-pub use crate::runtime::task::TaskId;
-use std::fmt::Debug;
+pub use crate::runtime::task::{Tag, TaskId};
 use std::sync::Arc;
 
 /// The number of context switches that happened so far in the current Shuttle execution.
@@ -37,12 +36,12 @@ pub fn clock_for(task_id: TaskId) -> VectorClock {
 
 /// Sets the `tag` field of the current task.
 /// Returns the `tag` which was there previously.
-pub fn set_tag_for_current_task(tag: Arc<dyn Debug>) -> Option<Arc<dyn Debug>> {
+pub fn set_tag_for_current_task(tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
     ExecutionState::set_tag_for_current_task(tag)
 }
 
 /// Gets the `tag` field of the current task.
-pub fn get_tag_for_current_task() -> Option<Arc<dyn Debug>> {
+pub fn get_tag_for_current_task() -> Option<Arc<dyn Tag>> {
     ExecutionState::get_tag_for_current_task()
 }
 

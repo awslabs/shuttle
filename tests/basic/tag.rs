@@ -7,8 +7,10 @@ use shuttle::{
     thread,
     thread::JoinHandle,
 };
-use std::sync::atomic::Ordering;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use test_log::test;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Record};
@@ -16,6 +18,8 @@ use tracing::{Event, Id, Metadata, Subscriber};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Hash, PartialOrd, Ord)]
 pub struct Tag(u64);
+
+impl shuttle::current::Tag for Tag {}
 
 impl From<u64> for Tag {
     fn from(tag: u64) -> Self {
@@ -71,10 +75,9 @@ fn spawn_some_threads_and_set_tag<F: (Fn(Tag, u64) -> Tag) + Send + Sync>(
     assert_eq!(curr_tag(), tag_on_entry);
 }
 
-fn convert_to_tag(tag: Arc<dyn std::fmt::Debug>) -> Tag {
+fn convert_to_tag(tag: Arc<dyn shuttle::current::Tag>) -> Tag {
     let ptr = Arc::into_raw(tag).cast::<Tag>();
-    let res = unsafe { Arc::from_raw(ptr) };
-    *res
+    *unsafe { Arc::from_raw(ptr) }
 }
 
 fn curr_tag() -> Tag {
@@ -143,10 +146,8 @@ fn threads_which_spawn_threads_which_spawn_threads() {
 fn spawn_thread_and_set_tag(tag_on_entry: Tag, new_tag: Tag) -> JoinHandle<u64> {
     thread::spawn(move || {
         assert_eq!(curr_tag(), tag_on_entry);
-        assert_eq!(
-            convert_to_tag(set_tag_for_current_task(Arc::new(new_tag)).unwrap()),
-            tag_on_entry
-        ); // NOTE: Assertion with side effect
+        let old_tag = set_tag_for_current_task(Arc::new(new_tag)).unwrap();
+        assert_eq!(convert_to_tag(old_tag), tag_on_entry);
         assert_eq!(curr_tag(), new_tag);
         new_tag.into()
     })
@@ -173,6 +174,8 @@ enum TaskType {
     Mid,
     Rest(u64),
 }
+
+impl shuttle::current::Tag for TaskType {}
 
 impl TaskType {
     fn new(i: u64) -> TaskType {

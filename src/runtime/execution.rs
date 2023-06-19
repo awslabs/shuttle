@@ -18,6 +18,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tracing::trace;
 
+use super::task::Tag;
+
 // We use this scoped TLS to smuggle the ExecutionState, which is not 'static, across tasks that
 // need access to it (to spawn new tasks, interrogate task status, etc).
 scoped_thread_local! {
@@ -26,7 +28,7 @@ scoped_thread_local! {
 
 thread_local! {
     #[allow(clippy::complexity)]
-    pub(crate) static TASK_ID_TO_TAGS: RefCell<HashMap<TaskId, Arc<dyn Debug>>> = RefCell::new(HashMap::new());
+    pub(crate) static TASK_ID_TO_TAGS: RefCell<HashMap<TaskId, Arc<dyn Tag>>> = RefCell::new(HashMap::new());
 }
 
 /// An `Execution` encapsulates a single run of a function under test against a chosen scheduler.
@@ -620,19 +622,15 @@ impl ExecutionState {
 
     // Sets the `tag` field of the current task.
     // Returns the `tag` which was there previously.
-    fn set_tag_for_current_task_internal(&mut self, tag: Arc<dyn Debug>) -> Option<Arc<dyn Debug>> {
-        self.current_mut().set_tag(tag)
+    pub(crate) fn set_tag_for_current_task(tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
+        ExecutionState::with(|s| s.current_mut().set_tag(tag))
     }
 
-    pub(crate) fn set_tag_for_current_task(tag: Arc<dyn Debug>) -> Option<Arc<dyn Debug>> {
-        ExecutionState::with(|s| s.set_tag_for_current_task_internal(tag))
-    }
-
-    fn get_tag_or_default_for_current_task(&self) -> Option<Arc<dyn Debug>> {
+    fn get_tag_or_default_for_current_task(&self) -> Option<Arc<dyn Tag>> {
         self.try_current().and_then(|current| current.get_tag())
     }
 
-    pub(crate) fn get_tag_for_current_task() -> Option<Arc<dyn Debug>> {
+    pub(crate) fn get_tag_for_current_task() -> Option<Arc<dyn Tag>> {
         ExecutionState::with(|s| s.get_tag_or_default_for_current_task())
     }
 }

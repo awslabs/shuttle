@@ -39,6 +39,10 @@ use super::execution::TASK_ID_TO_TAGS;
 
 pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 
+/// `Tag` can be set/gotten by the `set/get_tag_for_current_task` functions.
+/// When set, `Debug` will be overriden to print the `Tag` instead of the usual `TaskId`.
+pub trait Tag: Debug {}
+
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
 #[derive(Debug)]
@@ -64,7 +68,7 @@ pub(crate) struct Task {
     pub(super) span: tracing::Span,
 
     // Arbitrarily settable tag which is inherited from the parent.
-    tag: Option<Arc<dyn Debug>>,
+    tag: Option<Arc<dyn Tag>>,
 }
 
 impl Task {
@@ -78,7 +82,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: Option<Arc<dyn Debug>>,
+        tag: Option<Arc<dyn Tag>>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -127,7 +131,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: Option<Arc<dyn Debug>>,
+        tag: Option<Arc<dyn Tag>>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -144,7 +148,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: Option<Arc<dyn Debug>>,
+        tag: Option<Arc<dyn Tag>>,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -356,13 +360,13 @@ impl Task {
         }
     }
 
-    pub(crate) fn get_tag(&self) -> Option<Arc<dyn Debug>> {
+    pub(crate) fn get_tag(&self) -> Option<Arc<dyn Tag>> {
         self.tag.clone()
     }
 
     /// Sets the `tag` field of the current task.
     /// Returns the `tag` which was there previously.
-    pub(crate) fn set_tag(&mut self, tag: Arc<dyn Debug>) -> Option<Arc<dyn Debug>> {
+    pub(crate) fn set_tag(&mut self, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().insert(self.id(), tag.clone()));
         std::mem::replace(&mut self.tag, Some(tag))
     }
