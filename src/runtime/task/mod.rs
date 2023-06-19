@@ -419,8 +419,7 @@ impl From<TaskId> for usize {
     }
 }
 
-/// A `TaskSet` is a set of `TaskId`s but implemented efficiently as an array of bools.
-// TODO this probably won't work well with large numbers of tasks -- maybe a BitVec?
+/// A `TaskSet` is a set of `TaskId`s but implemented efficiently as a BitVec
 #[derive(PartialEq, Eq)]
 pub(crate) struct TaskSet {
     tasks: BitVec,
