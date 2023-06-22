@@ -410,7 +410,7 @@ impl Debug for TaskId {
         TASK_ID_TO_TAGS.with(|cell| {
             let map = cell.borrow();
             match map.get(self) {
-                Some(tag) => f.write_str(&format!("{:?}", tag)),
+                Some(tag) => f.write_str(&format!("{:?}({})", tag, self.0)),
                 None => f.debug_tuple("TaskId").field(&self.0).finish(),
             }
         })

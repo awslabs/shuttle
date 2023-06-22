@@ -229,7 +229,11 @@ impl Subscriber for RunnableSubscriber {
         true
     }
 
-    fn new_span(&self, _span: &Attributes<'_>) -> Id {
+    fn new_span(&self, span: &Attributes<'_>) -> Id {
+        if span.metadata().name() == "execution" {
+            self.done_with_setup.store(false, Ordering::SeqCst);
+        }
+
         // We don't care about span equality so just use the same identity for everything
         Id::from_u64(1)
     }
@@ -262,7 +266,7 @@ impl Subscriber for RunnableSubscriber {
             if visitor.contained_task_id {
                 assert!(!self.done_with_setup.load(Ordering::SeqCst));
             } else {
-                self.done_with_setup.store(false, Ordering::SeqCst)
+                self.done_with_setup.store(true, Ordering::SeqCst)
             }
         }
     }
