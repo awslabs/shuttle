@@ -1,4 +1,4 @@
-use crate::runtime::execution::ExecutionState;
+use crate::runtime::execution::{ExecutionState, TASK_ID_TO_TAGS};
 use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
@@ -16,8 +16,6 @@ use std::task::{Context, Waker};
 pub(crate) mod clock;
 pub(crate) mod waker;
 use waker::make_waker;
-
-use super::execution::TASK_ID_TO_TAGS;
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
@@ -39,8 +37,13 @@ use super::execution::TASK_ID_TO_TAGS;
 
 pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 
-/// `Tag` can be set/gotten by the `set/get_tag_for_current_task` functions.
-/// When set, `Debug` will be overriden to print the `Tag` instead of the usual `TaskId`.
+/// A `Tag` is an optional piece of metadata associated with a task (a thread or spawned future) to
+/// aid debugging.
+///
+/// When set, the tag will be included in the [Debug] representation of [TaskId]s, which can help
+/// identify tasks in failing Shuttle tests. A task's [Tag] can be set with the
+/// [set_tag_for_current_task](crate::current::set_tag_for_current_task) function. Newly spawned
+/// threads and futures inherit the tag of their parent at spawn time.
 pub trait Tag: Debug {}
 
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
