@@ -1,4 +1,4 @@
-use crate::runtime::execution::ExecutionState;
+use crate::runtime::execution::{ExecutionState, TASK_ID_TO_TAGS};
 use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::fmt::Debug;
 use std::future::Future;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::task::{Context, Waker};
 
 pub(crate) mod clock;
@@ -36,6 +37,15 @@ use waker::make_waker;
 
 pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 
+/// A `Tag` is an optional piece of metadata associated with a task (a thread or spawned future) to
+/// aid debugging.
+///
+/// When set, the tag will be included in the [Debug] representation of [TaskId]s, which can help
+/// identify tasks in failing Shuttle tests. A task's [Tag] can be set with the
+/// [set_tag_for_current_task](crate::current::set_tag_for_current_task) function. Newly spawned
+/// threads and futures inherit the tag of their parent at spawn time.
+pub trait Tag: Debug {}
+
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
 #[derive(Debug)]
@@ -61,7 +71,7 @@ pub(crate) struct Task {
     pub(super) span: tracing::Span,
 
     // Arbitrarily settable tag which is inherited from the parent.
-    tag: Tag,
+    tag: Option<Arc<dyn Tag>>,
 }
 
 impl Task {
@@ -75,7 +85,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: Tag,
+        tag: Option<Arc<dyn Tag>>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -92,7 +102,7 @@ impl Task {
             tracing::info_span!(parent: parent_span.id(), "step", i = schedule_len, task = id.0)
         };
 
-        Self {
+        let mut task = Self {
             id,
             state: TaskState::Runnable,
             continuation,
@@ -105,8 +115,14 @@ impl Task {
             name,
             span,
             local_storage: StorageMap::new(),
-            tag,
+            tag: None,
+        };
+
+        if let Some(tag) = tag {
+            task.set_tag(tag);
         }
+
+        task
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -118,7 +134,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: Tag,
+        tag: Option<Arc<dyn Tag>>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -135,7 +151,7 @@ impl Task {
         clock: VectorClock,
         parent_span: tracing::Span,
         schedule_len: usize,
-        tag: Tag,
+        tag: Option<Arc<dyn Tag>>,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -347,30 +363,15 @@ impl Task {
         }
     }
 
-    pub(crate) fn get_tag(&self) -> Tag {
-        self.tag
+    pub(crate) fn get_tag(&self) -> Option<Arc<dyn Tag>> {
+        self.tag.clone()
     }
 
     /// Sets the `tag` field of the current task.
     /// Returns the `tag` which was there previously.
-    pub(crate) fn set_tag(&mut self, tag: Tag) -> Tag {
-        std::mem::replace(&mut self.tag, tag)
-    }
-}
-
-/// A `Tag` is an arbitrarily settable value for each task.
-#[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Hash, PartialOrd, Ord)]
-pub struct Tag(u64);
-
-impl From<u64> for Tag {
-    fn from(tag: u64) -> Self {
-        Tag(tag)
-    }
-}
-
-impl From<Tag> for u64 {
-    fn from(tag: Tag) -> u64 {
-        tag.0
+    pub(crate) fn set_tag(&mut self, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
+        TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().insert(self.id(), tag.clone()));
+        std::mem::replace(&mut self.tag, Some(tag))
     }
 }
 
@@ -404,8 +405,20 @@ pub(crate) struct ParkState {
 
 /// A `TaskId` is a unique identifier for a task. `TaskId`s are never reused within a single
 /// execution.
-#[derive(PartialEq, Eq, Hash, Clone, Copy, PartialOrd, Ord, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy, PartialOrd, Ord)]
 pub struct TaskId(pub(super) usize);
+
+impl Debug for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        TASK_ID_TO_TAGS.with(|cell| {
+            let map = cell.borrow();
+            match map.get(self) {
+                Some(tag) => f.write_str(&format!("{:?}({})", tag, self.0)),
+                None => f.debug_tuple("TaskId").field(&self.0).finish(),
+            }
+        })
+    }
+}
 
 impl From<usize> for TaskId {
     fn from(id: usize) -> Self {
@@ -468,10 +481,13 @@ impl TaskSet {
 impl Debug for TaskSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TaskSet {{ ")?;
-        for t in self.iter() {
-            write!(f, "{} ", t.0)?;
+        for (i, t) in self.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{t:?}")?;
         }
-        write!(f, "}}")
+        write!(f, " }}")
     }
 }
 
