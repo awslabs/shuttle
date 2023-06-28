@@ -90,11 +90,13 @@ fn spawn_random_amount_of_threads_dfs_shuttle_rand() {
 #[test]
 #[should_panic]
 fn spawn_random_amount_of_threads_dfs_regular_rand() {
-    let scheduler = DfsScheduler::new(None, true);
-    check_uncontrolled_nondeterminism_custom_scheduler_and_config(
-        || spawn_random_amount_of_threads(&rand::thread_rng, 10),
-        scheduler,
-    );
+    for _ in 0..10 {
+        let scheduler = DfsScheduler::new(None, true);
+        check_uncontrolled_nondeterminism_custom_scheduler_and_config(
+            || spawn_random_amount_of_threads(&rand::thread_rng, 10),
+            scheduler,
+        );
+    }
 }
 
 fn spawn_random_amount_of_threads_mutex_rng(rng: &Mutex<StdRng>, max_threads: u64) {
