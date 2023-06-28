@@ -602,7 +602,7 @@ fn thread_double_unpark() {
     assert_eq!(seen_unparks, HashSet::from([0, 1, 2]));
 }
 
-// Test that `unpark` won't unblock a thread for resons other than `park`, even if the blocked
+// Test that `unpark` won't unblock a thread for reasons other than `park`, even if the blocked
 // thread had called `park` before (and possible spuriously woke up).
 #[test]
 fn thread_unpark_after_spurious_wakeup() {

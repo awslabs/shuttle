@@ -280,7 +280,7 @@ pub enum FailurePersistence {
 pub enum MaxSteps {
     /// Do not enforce any bound on the maximum number of steps
     None,
-    /// Fail the test (by panicing) after the given number of steps
+    /// Fail the test (by panicking) after the given number of steps
     FailAfter(usize),
     /// When the given number of steps is reached, stop the current iteration of the test and
     /// begin a new iteration
