@@ -9,7 +9,7 @@
 //! 1. If a panic occurs within `ExecutionState`, the panic hook might not be able to access the
 //!    execution state to retrieve the failing schedule, so we need to be careful about accessing it
 //!    and try to recover from this problem when the panic is later caught in
-//!    `ExecutionState::step`. We try wherever possible to avoid panicing in this state, but if it
+//!    `ExecutionState::step`. We try wherever possible to avoid panicking in this state, but if it
 //!    does happen we want to get useful output and not crash.
 //! 2. In addition to simply printing the failing schedule, we want to include it in the panic
 //!    payload wherever possible, so that we can parse it back out in tests (essentially we are

@@ -389,7 +389,7 @@ pub(crate) enum TaskState {
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 pub(crate) struct ParkState {
-    /// Whether the task's park token is curently available. If it's available, then the next time
+    /// Whether the task's park token is currently available. If it's available, then the next time
     /// the task calls `park`, the token will be atomically consumed and the task will continue
     /// executing. If it's not available, then the task will block until either another task makes
     /// it available with `unpark`, or a spurious wakeup occurs.

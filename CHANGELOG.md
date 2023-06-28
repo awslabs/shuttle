@@ -32,7 +32,7 @@ which included some breaking changes.
 
 # 0.4.0 (September 30, 2022)
 
-* Depdendency updates
+* Dependency updates
 
 # 0.3.0 (August 29, 2022)
 
