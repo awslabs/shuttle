@@ -63,6 +63,17 @@ impl<T> JoinHandle<T> {
             }
         });
     }
+
+    /// Returns `true` if this task is finished, otherwise returns `false`.
+    ///
+    /// ## Panics
+    /// Panics if called outside of shuttle context, i.e. if there is no execution context.
+    pub fn is_finished(&self) -> bool {
+        ExecutionState::with(|state| {
+            let task = state.get(self.task_id);
+            task.finished()
+        })
+    }
 }
 
 // TODO: need to work out all the error cases here
