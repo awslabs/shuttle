@@ -359,3 +359,29 @@ fn wake_self_on_join_handle() {
         None,
     );
 }
+
+#[test]
+fn is_finished_on_join_handle() {
+    check_dfs(
+        || {
+            let barrier = Arc::new(Barrier::new(2));
+            let t1 = future::spawn({
+                let barrier = Arc::clone(&barrier);
+                async move {
+                    barrier.wait();
+                }
+            });
+            assert!(!t1.is_finished());
+
+            future::block_on(future::spawn(async move {
+                assert!(!t1.is_finished());
+                barrier.wait();
+                futures::pin_mut!(t1);
+                t1.as_mut().await.unwrap();
+                assert!(t1.is_finished());
+            }))
+            .unwrap();
+        },
+        None,
+    );
+}
