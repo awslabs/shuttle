@@ -6,6 +6,8 @@ use crate::runtime::thread;
 use std::marker::PhantomData;
 use std::time::Duration;
 
+pub use std::thread::{Result, panicking};
+
 /// A unique identifier for a running thread
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ThreadId {
@@ -93,7 +95,7 @@ where
 
 /// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
 /// stores the result of the thread in the given lock.
-pub(crate) fn thread_fn<F, T>(f: F, result: std::sync::Arc<std::sync::Mutex<Option<std::thread::Result<T>>>>)
+pub(crate) fn thread_fn<F, T>(f: F, result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>)
 where
     F: FnOnce() -> T,
     F: Send + 'static,
@@ -131,12 +133,12 @@ where
 pub struct JoinHandle<T> {
     task_id: TaskId,
     thread: Thread,
-    result: std::sync::Arc<std::sync::Mutex<Option<std::thread::Result<T>>>>,
+    result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>,
 }
 
 impl<T> JoinHandle<T> {
     /// Waits for the associated thread to finish.
-    pub fn join(self) -> std::thread::Result<T> {
+    pub fn join(self) -> Result<T> {
         ExecutionState::with(|state| {
             let me = state.current().id();
             let target = state.get_mut(self.task_id);
@@ -299,7 +301,7 @@ impl<T: 'static> LocalKey<T> {
     /// This will lazily initialize the value if this thread has not referenced this key yet. If the
     /// key has been destroyed (which may happen if this is called in a destructor), this function
     /// will return an AccessError.
-    pub fn try_with<F, R>(&'static self, f: F) -> Result<R, AccessError>
+    pub fn try_with<F, R>(&'static self, f: F) -> std::result::Result<R, AccessError>
     where
         F: FnOnce(&T) -> R,
     {
@@ -316,7 +318,7 @@ impl<T: 'static> LocalKey<T> {
         Ok(f(value))
     }
 
-    fn get(&'static self) -> Option<Result<&T, AccessError>> {
+    fn get(&'static self) -> Option<std::result::Result<&T, AccessError>> {
         // Safety: see the usage below
         unsafe fn extend_lt<'b, T>(t: &'_ T) -> &'b T {
             std::mem::transmute(t)
