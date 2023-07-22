@@ -149,6 +149,15 @@ impl<T: ?Sized> RwLock<T> {
         }
     }
 
+    /// Returns a mutable reference to the underlying data.
+    ///
+    /// Since this call borrows the `RwLock` mutably, no actual locking needs to
+    /// take place---the mutable borrow statically guarantees no locks exist.
+    #[inline]
+    pub fn get_mut(&mut self) -> LockResult<&mut T> {
+        self.inner.get_mut()
+    }
+
     /// Consumes this `RwLock`, returning the underlying data
     pub fn into_inner(self) -> LockResult<T>
     where
