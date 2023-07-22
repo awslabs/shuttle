@@ -9,14 +9,10 @@ use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::result::Result;
-pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError};
+pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError, TrySendError};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::trace;
-
-// TODO
-// * Add support for try_recv() and try_send()
-// * Add support for iter() for receivers
 
 const MAX_INLINE_MESSAGES: usize = 32;
 
@@ -131,7 +127,18 @@ impl<T> Channel<T> {
         }
     }
 
+    fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
+        self.send_internal(message, false)
+    }
+
     fn send(&self, message: T) -> Result<(), SendError<T>> {
+        self.send_internal(message, true).map_err(|e| match e {
+            TrySendError::Full(_) => unreachable!(),
+            TrySendError::Disconnected(m) => SendError(m),
+        })
+    }
+
+    fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
 
@@ -143,7 +150,7 @@ impl<T> Channel<T> {
         );
         if state.known_receivers == 0 {
             // No receivers are left, so the channel is disconnected.  Stop and return failure.
-            return Err(SendError(message));
+            return Err(TrySendError::Disconnected(message));
         }
 
         let (is_rendezvous, is_full) = if let Some(bound) = self.bound {
@@ -162,8 +169,16 @@ impl<T> Channel<T> {
         let sender_should_block =
             is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty());
 
-        state.waiting_senders.push(me);
         if sender_should_block {
+            if !can_block {
+                return Err(if is_full {
+                    TrySendError::Full(message)
+                } else {
+                    TrySendError::Disconnected(message)
+                });
+            }
+
+            state.waiting_senders.push(me);
             trace!(
                 state = ?state,
                 "blocking sender {:?} on channel {:p}",
@@ -186,13 +201,14 @@ impl<T> Channel<T> {
             // Check again that we still have a receiver; if not, return with error.
             // We repeat this check because the receivers may have disconnected while the sender was blocked.
             if state.known_receivers == 0 {
+                state.waiting_receivers.retain(|t| *t != me);
                 // No receivers are left, so the channel is disconnected.  Stop and return failure.
-                return Err(SendError(message));
+                return Err(TrySendError::Disconnected(message));
             }
-        }
 
-        let head = state.waiting_senders.remove(0);
-        assert_eq!(head, me);
+            let head = state.waiting_senders.remove(0);
+            assert_eq!(head, me);
+        }
 
         ExecutionState::with(|s| {
             let clock = s.increment_clock();
@@ -233,6 +249,17 @@ impl<T> Channel<T> {
     }
 
     fn recv(&self) -> Result<T, RecvError> {
+        self.recv_internal(true).map_err(|e| match e {
+            TryRecvError::Disconnected => RecvError,
+            TryRecvError::Empty => unreachable!(),
+        })
+    }
+
+    fn try_recv(&self) -> Result<T, TryRecvError> {
+        self.recv_internal(false)
+    }
+
+    fn recv_internal(&self, can_block: bool) -> Result<T, TryRecvError> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
 
@@ -244,7 +271,7 @@ impl<T> Channel<T> {
         // Check if there are any senders left; if not, and the channel is empty, fail with error
         // (If there are no senders, but the channel is nonempty, the receiver can successfully consume that message.)
         if state.messages.is_empty() && state.known_senders == 0 {
-            return Err(RecvError);
+            return Err(TryRecvError::Disconnected);
         }
 
         // Pre-increment the receiver's clock before continuing
@@ -275,8 +302,16 @@ impl<T> Channel<T> {
         //    there are waiting receivers
         let should_block = state.messages.is_empty() || !state.waiting_receivers.is_empty();
 
-        state.waiting_receivers.push(me);
         if should_block {
+            if !can_block {
+                return Err(if state.messages.is_empty() {
+                    TryRecvError::Empty
+                } else {
+                    TryRecvError::Disconnected
+                });
+            }
+
+            state.waiting_receivers.push(me);
             trace!(
                 state = ?state,
                 "blocking receiver {:?} on channel {:p}",
@@ -300,12 +335,13 @@ impl<T> Channel<T> {
             // (If there are no senders, but the channel is nonempty, the receiver can successfully consume that message.)
             // We repeat this check because the senders may have disconnected while the receiver was blocked.
             if state.messages.is_empty() && state.known_senders == 0 {
-                return Err(RecvError);
+                state.waiting_receivers.retain(|t| *t != me);
+                return Err(TryRecvError::Disconnected);
             }
-        }
 
-        let head = state.waiting_receivers.remove(0);
-        assert_eq!(head, me);
+            let head = state.waiting_receivers.remove(0);
+            assert_eq!(head, me);
+        }
 
         let item = state.messages.remove(0);
         // The receiver has just removed an element from the channel.  Check if any waiting senders
@@ -368,10 +404,32 @@ impl<T> Receiver<T> {
     }
 
     /// Attempts to wait for a value on this receiver, returning an error if the
+    /// corresponding channel has hung up.
+    pub fn try_recv(&self) -> Result<T, TryRecvError> {
+        self.inner.try_recv()
+    }
+
+    /// Attempts to wait for a value on this receiver, returning an error if the
     /// corresponding channel has hung up, or if it waits more than timeout.
     pub fn recv_timeout(&self, _timeout: Duration) -> Result<T, RecvTimeoutError> {
         // TODO support the timeout case -- this method never times out
         self.inner.recv().map_err(|_| RecvTimeoutError::Disconnected)
+    }
+
+    /// Returns an iterator that will block waiting for messages, but never
+    /// [`panic!`]. It will return [`None`] when the channel has hung up.
+    /// ```
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter { rx: self }
+    }
+
+    /// Returns an iterator that will attempt to yield all pending values.
+    /// It will return `None` if there are no more pending values or if the
+    /// channel has hung up. The iterator will never [`panic!`] or block the
+    /// user by waiting for values.
+    /// ```
+    pub fn try_iter(&self) -> TryIter<'_, T> {
+        TryIter { rx: self }
     }
 }
 
@@ -389,6 +447,89 @@ impl<T> Drop for Receiver<T> {
                 ExecutionState::with(|s| s.get_mut(tid).unblock());
             }
         }
+    }
+}
+
+/// An iterator over messages on a [`Receiver`], created by [`iter`].
+///
+/// This iterator will block whenever [`next`] is called,
+/// waiting for a new message, and [`None`] will be returned
+/// when the corresponding channel has hung up.
+///
+/// [`iter`]: Receiver::iter
+/// [`next`]: Iterator::next
+#[derive(Debug)]
+pub struct Iter<'a, T: 'a> {
+    rx: &'a Receiver<T>,
+}
+
+/// An iterator that attempts to yield all pending values for a [`Receiver`],
+/// created by [`try_iter`].
+///
+/// [`None`] will be returned when there are no pending values remaining or
+/// if the corresponding channel has hung up.
+///
+/// This iterator will never block the caller in order to wait for data to
+/// become available. Instead, it will return [`None`].
+///
+/// [`try_iter`]: Receiver::try_iter
+#[derive(Debug)]
+pub struct TryIter<'a, T: 'a> {
+    rx: &'a Receiver<T>,
+}
+
+/// An owning iterator over messages on a [`Receiver`],
+/// created by [`into_iter`].
+///
+/// This iterator will block whenever [`next`]
+/// is called, waiting for a new message, and [`None`] will be
+/// returned if the corresponding channel has hung up.
+///
+/// [`into_iter`]: Receiver::into_iter
+/// [`next`]: Iterator::next
+#[derive(Debug)]
+pub struct IntoIter<T> {
+    rx: Receiver<T>,
+}
+
+impl<'a, T> Iterator for Iter<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.rx.recv().ok()
+    }
+}
+
+impl<'a, T> Iterator for TryIter<'a, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        self.rx.try_recv().ok()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Receiver<T> {
+    type Item = T;
+    type IntoIter = Iter<'a, T>;
+
+    fn into_iter(self) -> Iter<'a, T> {
+        self.iter()
+    }
+}
+
+impl<T> Iterator for IntoIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> {
+        self.rx.recv().ok()
+    }
+}
+
+impl<T> IntoIterator for Receiver<T> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+
+    fn into_iter(self) -> IntoIter<T> {
+        IntoIter { rx: self }
     }
 }
 
@@ -452,6 +593,14 @@ impl<T> SyncSender<T> {
     /// available or a receiver is available to hand off the message to.
     pub fn send(&self, t: T) -> Result<(), SendError<T>> {
         self.inner.send(t)
+    }
+
+    /// Sends a value on this synchronous channel.
+    ///
+    /// This function will *block* until space in the internal buffer becomes
+    /// available or a receiver is available to hand off the message to.
+    pub fn try_send(&self, t: T) -> Result<(), TrySendError<T>> {
+        self.inner.try_send(t)
     }
 }
 
