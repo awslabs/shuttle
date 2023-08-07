@@ -44,7 +44,19 @@ pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 /// identify tasks in failing Shuttle tests. A task's [Tag] can be set with the
 /// [set_tag_for_current_task](crate::current::set_tag_for_current_task) function. Newly spawned
 /// threads and futures inherit the tag of their parent at spawn time.
-pub trait Tag: Debug {}
+pub trait Tag: Debug {
+    /// Return the tag as `Any`, typically so that it can be downcast to a known concrete type
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T> Tag for T
+where
+    T: Debug + Any,
+{
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
