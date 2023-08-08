@@ -14,6 +14,7 @@ pub(crate) mod serialization;
 
 pub use crate::runtime::task::TaskId;
 
+pub use data::{DataSource, RandomDataSource};
 pub use dfs::DfsScheduler;
 pub use pct::PctScheduler;
 pub use random::RandomScheduler;
