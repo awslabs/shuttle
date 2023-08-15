@@ -718,5 +718,3 @@ fn mpsc_try_send_permutations_no_drop_rendezvous() {
 fn mpsc_try_send_permutations_drop_rendezvous() {
     mpsc_try_send_permutations(true, true);
 }
-
-// #[test]
