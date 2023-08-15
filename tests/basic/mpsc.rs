@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use crate::basic::clocks::{check_clock, me};
-use shuttle::sync::mpsc::{channel, sync_channel, RecvError};
+use shuttle::sync::mpsc::{channel, sync_channel, RecvError, TryRecvError, TrySendError};
 use shuttle::{check_dfs, check_random, thread};
 use test_log::test;
 
@@ -505,41 +507,216 @@ fn mpsc_many_senders_drop_receiver() {
     );
 }
 
-/*
-** TODO: We don't support iter() on receivers yet
-**
 #[test]
 fn test_nested_recv_iter() {
-    check_dfs(|| {
-        let (tx, rx) = sync_channel::<i32>(0);
-        let (total_tx, total_rx) = sync_channel::<i32>(0);
+    check_dfs(
+        || {
+            let (tx, rx) = sync_channel::<i32>(0);
+            let (total_tx, total_rx) = sync_channel::<i32>(0);
 
-        let _t = thread::spawn(move || {
-            let mut acc = 0;
-            for x in rx.iter() {
-                acc += x;
-            }
-            total_tx.send(acc).unwrap();
-        });
+            let _t = thread::spawn(move || {
+                let mut acc = 0;
+                for x in rx.iter() {
+                    acc += x;
+                }
+                total_tx.send(acc).unwrap();
+            });
 
-        tx.send(3).unwrap();
-        tx.send(1).unwrap();
-        tx.send(2).unwrap();
-        drop(tx);
-        assert_eq!(total_rx.recv().unwrap(), 6);
-    }, None, None);
+            tx.send(3).unwrap();
+            tx.send(1).unwrap();
+            tx.send(2).unwrap();
+            drop(tx);
+            assert_eq!(total_rx.recv().unwrap(), 6);
+        },
+        None,
+    );
 }
-*/
 
-/*
-** TODO: try_recv() not yet supported
+#[test]
+fn mpsc_try_recv_iter() {
+    check_dfs(
+        || {
+            let (tx, rx) = sync_channel::<i32>(0);
+            let (total_tx, total_rx) = sync_channel::<i32>(0);
+
+            let _t = thread::spawn(move || {
+                let mut acc = 0;
+                for x in rx.try_iter() {
+                    acc += x;
+                }
+                total_tx.send(acc).unwrap();
+            });
+
+            tx.send(3).unwrap();
+            tx.send(1).unwrap();
+            tx.send(2).unwrap();
+            drop(tx);
+            assert_eq!(total_rx.recv().unwrap(), 6);
+        },
+        None,
+    );
+}
+
 #[test]
 fn mpsc_oneshot_single_thread_peek_close() {
-    check_dfs(|| {
-        let (tx, rx) = channel::<i32>();
-        drop(tx);
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
-        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
-    }, None, None);
+    check_dfs(
+        || {
+            let (tx, rx) = channel::<i32>();
+            drop(tx);
+            assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+            assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+        },
+        None,
+    );
 }
-*/
+
+#[test]
+fn mpsc_try_recv() {
+    check_dfs(
+        || {
+            let (tx, rx) = channel::<i32>();
+            assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+            tx.send(1).unwrap();
+            assert_eq!(rx.try_recv(), Ok(1));
+            assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+        },
+        None,
+    );
+}
+
+fn mpsc_try_recv_permutations(drop_sender: bool) {
+    let observed_values = Arc::new(std::sync::Mutex::new(vec![]));
+    let observed_values_clone = Arc::clone(&observed_values);
+
+    check_dfs(
+        move || {
+            let (tx, rx) = channel::<i32>();
+
+            let thd = thread::spawn(move || {
+                if !drop_sender {
+                    tx.send(1).unwrap();
+                }
+            });
+
+            let result = rx.try_recv();
+            observed_values_clone.lock().unwrap().push(result);
+            // Should always fail the second time
+            assert!(rx.try_recv().is_err());
+
+            thd.join().unwrap();
+        },
+        None,
+    );
+
+    let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
+    assert_eq!(observed_values.len(), 2);
+    assert!(observed_values.contains(&Err(TryRecvError::Empty)));
+    if drop_sender {
+        assert!(observed_values.contains(&Err(TryRecvError::Disconnected)));
+    } else {
+        assert!(observed_values.contains(&Ok(1)));
+    }
+}
+
+#[test]
+fn mpsc_try_recv_permutations_no_drop() {
+    mpsc_try_recv_permutations(false);
+}
+
+#[test]
+fn mpsc_try_recv_permutations_drop() {
+    mpsc_try_recv_permutations(true);
+}
+
+#[test]
+fn mpsc_try_send_buffered() {
+    check_dfs(
+        || {
+            let (tx, rx) = sync_channel::<i32>(1);
+            assert_eq!(tx.try_send(1), Ok(()));
+            assert_eq!(rx.recv(), Ok(1));
+            assert_eq!(tx.try_send(2), Ok(()));
+            assert_eq!(rx.recv(), Ok(2));
+            drop(rx);
+            assert_eq!(tx.try_send(3), Err(TrySendError::Disconnected(3)));
+        },
+        None,
+    );
+}
+
+#[test]
+fn mpsc_try_send_rendezvous() {
+    check_dfs(
+        || {
+            let (tx, _rx) = sync_channel::<i32>(0);
+            assert_eq!(tx.try_send(1), Err(TrySendError::Disconnected(1)));
+        },
+        None,
+    );
+}
+
+fn mpsc_try_send_permutations(drop_receiver: bool, rendezvous: bool) {
+    let observed_values = Arc::new(std::sync::Mutex::new(vec![]));
+    let observed_values_clone = Arc::clone(&observed_values);
+
+    check_dfs(
+        move || {
+            let size = if rendezvous { 0 } else { 1 };
+            let (tx, rx) = sync_channel::<i32>(size);
+
+            let thd = thread::spawn(move || {
+                if !drop_receiver {
+                    let _ = rx.recv();
+                }
+            });
+
+            let result = tx.try_send(1);
+            observed_values_clone.lock().unwrap().push(result);
+            drop(tx);
+
+            thd.join().unwrap();
+        },
+        None,
+    );
+
+    let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
+    match (drop_receiver, rendezvous) {
+        (true, true) => assert_eq!(
+            observed_values,
+            vec![Err(TrySendError::Disconnected(1)), Err(TrySendError::Disconnected(1))]
+        ),
+        (true, false) => {
+            assert_eq!(observed_values.len(), 2);
+            assert!(observed_values.contains(&Err(TrySendError::Disconnected(1))));
+            assert!(observed_values.contains(&Ok(())));
+        }
+        (false, true) => {
+            assert_eq!(observed_values.len(), 2);
+            assert!(observed_values.contains(&Err(TrySendError::Disconnected(1))));
+            assert!(observed_values.contains(&Ok(())));
+        }
+        (false, false) => assert_eq!(observed_values, vec![Ok(()), Ok(())]),
+    }
+}
+
+#[test]
+fn mpsc_try_send_permutations_no_drop() {
+    mpsc_try_send_permutations(false, false);
+}
+
+#[test]
+fn mpsc_try_send_permutations_drop() {
+    mpsc_try_send_permutations(true, false);
+}
+
+#[test]
+fn mpsc_try_send_permutations_no_drop_rendezvous() {
+    mpsc_try_send_permutations(false, true);
+}
+
+#[test]
+fn mpsc_try_send_permutations_drop_rendezvous() {
+    mpsc_try_send_permutations(true, true);
+}
+
+// #[test]
