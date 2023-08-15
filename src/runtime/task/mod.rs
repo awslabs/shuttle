@@ -40,18 +40,27 @@ pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 /// A `Tag` is an optional piece of metadata associated with a task (a thread or spawned future) to
 /// aid debugging.
 ///
+/// It is automatically implemented for types which implement `Taggable` and are `Any`.
+///
 /// When set, the tag will be included in the [Debug] representation of [TaskId]s, which can help
 /// identify tasks in failing Shuttle tests. A task's [Tag] can be set with the
 /// [set_tag_for_current_task](crate::current::set_tag_for_current_task) function. Newly spawned
 /// threads and futures inherit the tag of their parent at spawn time.
-pub trait Tag: Debug {
+pub trait Tag: Taggable {
     /// Return the tag as `Any`, typically so that it can be downcast to a known concrete type
     fn as_any(&self) -> &dyn Any;
 }
 
+/// `Taggable` is a marker trait which types implementing `Tag` have to implement.
+/// It exists since we both want to provide a blanket implementation of `as_any`, and have users
+/// opt in to a type being able to be used as a tag. If we did not have this trait, then `Tag`
+/// would be automatically implemented for most types (as most types are `Debug + Any`), which
+/// opens up for accidentally using a type which was not intended to be used as a tag as a tag.
+pub trait Taggable: Debug {}
+
 impl<T> Tag for T
 where
-    T: Debug + Any,
+    T: Taggable + Any,
 {
     fn as_any(&self) -> &dyn Any {
         self

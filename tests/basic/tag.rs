@@ -19,6 +19,8 @@ use tracing::{Event, Id, Metadata, Subscriber};
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Hash, PartialOrd, Ord)]
 pub struct Tag(u64);
 
+impl shuttle::current::Taggable for Tag {}
+
 impl From<u64> for Tag {
     fn from(tag: u64) -> Self {
         Tag(tag)
@@ -175,6 +177,8 @@ enum TaskType {
     Mid,
     Rest(u64),
 }
+
+impl shuttle::current::Taggable for TaskType {}
 
 impl TaskType {
     fn new(i: u64) -> TaskType {
