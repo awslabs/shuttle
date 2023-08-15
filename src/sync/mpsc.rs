@@ -418,7 +418,6 @@ impl<T> Receiver<T> {
 
     /// Returns an iterator that will block waiting for messages, but never
     /// [`panic!`]. It will return [`None`] when the channel has hung up.
-    /// ```
     pub fn iter(&self) -> Iter<'_, T> {
         Iter { rx: self }
     }
@@ -427,7 +426,6 @@ impl<T> Receiver<T> {
     /// It will return `None` if there are no more pending values or if the
     /// channel has hung up. The iterator will never [`panic!`] or block the
     /// user by waiting for values.
-    /// ```
     pub fn try_iter(&self) -> TryIter<'_, T> {
         TryIter { rx: self }
     }

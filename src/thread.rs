@@ -6,7 +6,7 @@ use crate::runtime::thread;
 use std::marker::PhantomData;
 use std::time::Duration;
 
-pub use std::thread::{Result, panicking};
+pub use std::thread::{panicking, Result};
 
 /// A unique identifier for a running thread
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
