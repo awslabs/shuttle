@@ -49,3 +49,13 @@ pub fn get_tag_for_current_task() -> Option<Arc<dyn Tag>> {
 pub fn get_current_task() -> Option<TaskId> {
     ExecutionState::with(|s| Some(s.try_current()?.id()))
 }
+
+/// Gets the `tag` field of the specified task.
+pub fn get_tag_for_task(task: TaskId) -> Option<Arc<dyn Tag>> {
+    ExecutionState::get_tag_for_task(task)
+}
+
+/// Sets the `tag` field of the specified task.
+pub fn set_tag_for_task(task: TaskId, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
+    ExecutionState::set_tag_for_task(task, tag)
+}

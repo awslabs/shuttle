@@ -1,7 +1,7 @@
 use futures::future::join_all;
 use shuttle::{
     check_dfs, check_random,
-    current::{get_tag_for_current_task, set_tag_for_current_task},
+    current::{get_tag_for_current_task, get_tag_for_task, set_tag_for_current_task, set_tag_for_task},
     future::block_on,
     sync::Mutex,
     thread,
@@ -282,4 +282,27 @@ fn tracing_tags() {
     let _guard = tracing::subscriber::set_default(metrics);
 
     check_random(basic_lock_test, 10);
+}
+
+fn tag_modification_other_task_inner() {
+    // Start with a known tag for current task
+    set_tag_for_current_task(Arc::new(Tag::from(10)));
+
+    let t1 = thread::spawn(move || {
+        // Set the tag for the other thread
+        set_tag_for_task(0.into(), Arc::new(Tag::from(42)));
+    });
+
+    t1.join().unwrap();
+
+    let my_tag = convert_to_tag(get_tag_for_task(0.into()).unwrap());
+    let curr_tag = convert_to_tag(get_tag_for_current_task().unwrap());
+    // All tags for task 0 should agree, and be the new value
+    assert_eq!(my_tag, curr_tag);
+    assert_eq!(curr_tag, Tag::from(42));
+}
+
+#[test]
+fn test_tag_modification_other_task() {
+    check_dfs(tag_modification_other_task_inner, None)
 }
