@@ -5,7 +5,7 @@ use rand_pcg::Pcg64Mcg;
 /// A `RandomDataSource` generates non-deterministic data from a random number generator, and
 /// arranges to re-seed that RNG on each new execution to enable deterministic replay.
 #[derive(Debug)]
-pub(crate) struct RandomDataSource {
+pub struct RandomDataSource {
     rng: Pcg64Mcg,
     next_seed: Option<u64>,
 }
