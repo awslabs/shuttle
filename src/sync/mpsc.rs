@@ -227,8 +227,6 @@ impl<T> Channel<T> {
                     s.update_clock(&recv_clock);
                 }
             });
-        } else {
-            assert!(!is_rendezvous); // Sender on a rendezvous channel is only unblocked if there's a waiting receiver
         }
         // Check and unblock the next the waiting sender, if eligible
         if let Some(&tid) = state.waiting_senders.first() {

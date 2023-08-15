@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::basic::clocks::{check_clock, me};
@@ -533,10 +534,10 @@ fn test_nested_recv_iter() {
 }
 
 #[test]
-fn mpsc_try_recv_iter() {
+fn mpsc_try_recv_iter_sync() {
     check_dfs(
         || {
-            let (tx, rx) = sync_channel::<i32>(0);
+            let (tx, rx) = sync_channel::<i32>(1);
             let (total_tx, total_rx) = sync_channel::<i32>(0);
 
             let _t = thread::spawn(move || {
@@ -555,6 +556,65 @@ fn mpsc_try_recv_iter() {
         },
         None,
     );
+}
+
+#[test]
+fn mpsc_try_recv_iter_rendezvous() {
+    let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    let observed_values_clone = Arc::clone(&observed_values);
+    check_dfs(
+        move || {
+            let (tx, rx) = sync_channel::<i32>(0);
+            let (total_tx, total_rx) = sync_channel::<i32>(0);
+
+            let _t = thread::spawn(move || {
+                let mut acc = 0;
+                for x in rx.try_iter() {
+                    acc += x;
+                }
+                drop(rx);
+                total_tx.send(acc).unwrap();
+            });
+
+            let _ = tx.send(3);
+            let _ = tx.send(1);
+            let _ = tx.send(2);
+            drop(tx);
+            let result = total_rx.recv().unwrap();
+            observed_values_clone.lock().unwrap().insert(result);
+        },
+        None,
+    );
+
+    let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
+    // Could fail to rendezvous at any step of the sequence
+    assert_eq!(observed_values, HashSet::from([0, 3, 4, 6]));
+}
+
+#[test]
+fn try_recv_send_rendezvous() {
+    let success = Arc::new(std::sync::Mutex::new(false));
+    let success_clone = Arc::clone(&success);
+
+    check_dfs(
+        move || {
+            let (tx, rx) = sync_channel::<i32>(0);
+
+            let success_clone = Arc::clone(&success_clone);
+            thread::spawn(move || {
+                let result = rx.try_recv();
+                if result.is_ok() {
+                    *success_clone.lock().unwrap() = true;
+                }
+            });
+
+            let _ = tx.send(1);
+        },
+        None,
+    );
+
+    let success = Arc::try_unwrap(success).unwrap().into_inner().unwrap();
+    assert!(success);
 }
 
 #[test]
