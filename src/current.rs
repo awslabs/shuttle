@@ -7,7 +7,7 @@
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
-pub use crate::runtime::task::{Tag, TaskId};
+pub use crate::runtime::task::{Tag, Taggable, TaskId};
 use std::sync::Arc;
 
 /// The number of context switches that happened so far in the current Shuttle execution.

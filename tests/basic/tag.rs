@@ -19,7 +19,7 @@ use tracing::{Event, Id, Metadata, Subscriber};
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default, Hash, PartialOrd, Ord)]
 pub struct Tag(u64);
 
-impl shuttle::current::Tag for Tag {}
+impl shuttle::current::Taggable for Tag {}
 
 impl From<u64> for Tag {
     fn from(tag: u64) -> Self {
@@ -76,12 +76,15 @@ fn spawn_some_threads_and_set_tag<F: (Fn(Tag, u64) -> Tag) + Send + Sync>(
 }
 
 fn convert_to_tag(tag: Arc<dyn shuttle::current::Tag>) -> Tag {
-    let ptr = Arc::into_raw(tag).cast::<Tag>();
-    *unsafe { Arc::from_raw(ptr) }
+    *tag.as_any().downcast_ref::<Tag>().unwrap()
 }
 
 fn curr_tag() -> Tag {
-    convert_to_tag(get_tag_for_current_task().unwrap())
+    *get_tag_for_current_task()
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Tag>()
+        .unwrap()
 }
 
 fn spawn_threads_which_spawn_more_threads(num_threads_first_block: u64, num_threads_second_block: u64) {
@@ -175,7 +178,7 @@ enum TaskType {
     Rest(u64),
 }
 
-impl shuttle::current::Tag for TaskType {}
+impl shuttle::current::Taggable for TaskType {}
 
 impl TaskType {
     fn new(i: u64) -> TaskType {
