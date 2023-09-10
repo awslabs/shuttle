@@ -171,11 +171,7 @@ impl<T> Channel<T> {
 
         if sender_should_block {
             if !can_block {
-                return Err(if is_full {
-                    TrySendError::Full(message)
-                } else {
-                    TrySendError::Disconnected(message)
-                });
+                return Err(TrySendError::Full(message));
             }
 
             state.waiting_senders.push(me);
@@ -201,7 +197,7 @@ impl<T> Channel<T> {
             // Check again that we still have a receiver; if not, return with error.
             // We repeat this check because the receivers may have disconnected while the sender was blocked.
             if state.known_receivers == 0 {
-                state.waiting_receivers.retain(|t| *t != me);
+                state.waiting_senders.retain(|t| *t != me);
                 // No receivers are left, so the channel is disconnected.  Stop and return failure.
                 return Err(TrySendError::Disconnected(message));
             }
@@ -272,6 +268,24 @@ impl<T> Channel<T> {
             return Err(TryRecvError::Disconnected);
         }
 
+        let is_rendezvous = self.bound == Some(0);
+        // If this is a rendezvous channel, and the channel is empty, and there are waiting senders,
+        // notify the first waiting sender
+        if is_rendezvous && state.messages.is_empty() {
+            if let Some(&tid) = state.waiting_senders.first() {
+                // Note: another receiver may have unblocked the sender already
+                ExecutionState::with(|s| s.get_mut(tid).unblock());
+            } else if !can_block {
+                // Nobody to rendezvous with
+                return Err(TryRecvError::Empty);
+            }
+        }
+
+        // Handle the try_recv case, accounting for the number of msgs available and already waiting receivers.
+        if !is_rendezvous && !can_block && state.waiting_receivers.len() >= state.messages.len() {
+            return Err(TryRecvError::Empty);
+        }
+
         // Pre-increment the receiver's clock before continuing
         //
         // Note: The reason for pre-incrementing the receiver's clock is to deal properly with rendezvous channels.
@@ -286,29 +300,11 @@ impl<T> Channel<T> {
             let _ = s.increment_clock();
         });
 
-        // If this is a rendezvous channel, and the channel is empty, and there are waiting senders,
-        // notify the first waiting sender
-        if self.bound == Some(0) && state.messages.is_empty() {
-            if let Some(&tid) = state.waiting_senders.first() {
-                // Note: another receiver may have unblocked the sender already
-                ExecutionState::with(|s| s.get_mut(tid).unblock());
-            }
-        }
-
         // The receiver should block in any of the following situations:
         //    the channel is empty
         //    there are waiting receivers
         let should_block = state.messages.is_empty() || !state.waiting_receivers.is_empty();
-
         if should_block {
-            if !can_block {
-                return Err(if state.messages.is_empty() {
-                    TryRecvError::Empty
-                } else {
-                    TryRecvError::Disconnected
-                });
-            }
-
             state.waiting_receivers.push(me);
             trace!(
                 state = ?state,

@@ -535,27 +535,40 @@ fn test_nested_recv_iter() {
 
 #[test]
 fn mpsc_try_recv_iter_sync() {
+    let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    let observed_values_clone = Arc::clone(&observed_values);
     check_dfs(
-        || {
+        move || {
             let (tx, rx) = sync_channel::<i32>(1);
-            let (total_tx, total_rx) = sync_channel::<i32>(0);
+            let (total_tx, total_rx) = sync_channel::<(_, _)>(0);
 
             let _t = thread::spawn(move || {
                 let mut acc = 0;
                 for x in rx.try_iter() {
                     acc += x;
+                    thread::yield_now();
                 }
-                total_tx.send(acc).unwrap();
+                total_tx.send((rx, acc)).unwrap();
             });
 
-            tx.send(3).unwrap();
-            tx.send(1).unwrap();
-            tx.send(2).unwrap();
+            let mut sent_acc = 0;
+            for i in [3, 1, 2] {
+                if tx.try_send(i).is_ok() {
+                    sent_acc += i;
+                    thread::yield_now();
+                }
+            }
             drop(tx);
-            assert_eq!(total_rx.recv().unwrap(), 6);
+            let (rx, mut recv_acc) = total_rx.recv().unwrap();
+            observed_values_clone.lock().unwrap().insert(recv_acc);
+            recv_acc += rx.try_recv().unwrap_or(0);
+            assert_eq!(recv_acc, sent_acc);
         },
         None,
     );
+    let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
+    // Could fail to rendezvous at any step of the sequence
+    assert_eq!(observed_values, HashSet::from([0, 3, 4, 6]));
 }
 
 #[test]
@@ -571,14 +584,15 @@ fn mpsc_try_recv_iter_rendezvous() {
                 let mut acc = 0;
                 for x in rx.try_iter() {
                     acc += x;
+                    thread::yield_now();
                 }
                 drop(rx);
                 total_tx.send(acc).unwrap();
             });
-
-            let _ = tx.send(3);
-            let _ = tx.send(1);
-            let _ = tx.send(2);
+            for i in [3, 1, 2] {
+                let _ = tx.send(i);
+                thread::yield_now();
+            }
             drop(tx);
             let result = total_rx.recv().unwrap();
             observed_values_clone.lock().unwrap().insert(result);
@@ -709,7 +723,7 @@ fn mpsc_try_send_rendezvous() {
     check_dfs(
         || {
             let (tx, _rx) = sync_channel::<i32>(0);
-            assert_eq!(tx.try_send(1), Err(TrySendError::Disconnected(1)));
+            assert_eq!(tx.try_send(1), Err(TrySendError::Full(1)));
         },
         None,
     );
@@ -743,7 +757,7 @@ fn mpsc_try_send_permutations(drop_receiver: bool, rendezvous: bool) {
     match (drop_receiver, rendezvous) {
         (true, true) => assert_eq!(
             observed_values,
-            vec![Err(TrySendError::Disconnected(1)), Err(TrySendError::Disconnected(1))]
+            vec![Err(TrySendError::Full(1)), Err(TrySendError::Disconnected(1))]
         ),
         (true, false) => {
             assert_eq!(observed_values.len(), 2);
@@ -752,7 +766,7 @@ fn mpsc_try_send_permutations(drop_receiver: bool, rendezvous: bool) {
         }
         (false, true) => {
             assert_eq!(observed_values.len(), 2);
-            assert!(observed_values.contains(&Err(TrySendError::Disconnected(1))));
+            assert!(observed_values.contains(&Err(TrySendError::Full(1))));
             assert!(observed_values.contains(&Ok(())));
         }
         (false, false) => assert_eq!(observed_values, vec![Ok(()), Ok(())]),
