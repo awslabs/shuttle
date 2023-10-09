@@ -118,9 +118,9 @@ impl Execution {
                             .filter(|t| !t.finished())
                             .map(|t| {
                                 format!(
-                                    "{} (task {}{}{})",
+                                    "{} (task {:?}{}{})",
                                     t.name().unwrap_or_else(|| "<unknown>".to_string()),
-                                    t.id().0,
+                                    t.id(),
                                     if t.detached { ", detached" } else { "" },
                                     if t.sleeping() { ", pending future" } else { "" },
                                 )
