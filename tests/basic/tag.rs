@@ -183,7 +183,7 @@ impl shuttle::current::Taggable for TaskType {}
 impl TaskType {
     fn new(i: u64) -> TaskType {
         match i {
-            x if x == 0 => TaskType::Unset,
+            0 => TaskType::Unset,
             x if x < 3 => TaskType::Low,
             x if x < 5 => TaskType::Mid,
             x => TaskType::Rest(x),
