@@ -587,10 +587,14 @@ impl<T> SyncSender<T> {
         self.inner.send(t)
     }
 
-    /// Sends a value on this synchronous channel.
+    /// Attempts to send a value on this channel without blocking.
     ///
-    /// This function will *block* until space in the internal buffer becomes
-    /// available or a receiver is available to hand off the message to.
+    /// This method differs from [`send`] by returning immediately if the
+    /// channel's buffer is full or no receiver is waiting to acquire some
+    /// data. Compared with [`send`], this function has two failure cases
+    /// instead of one (one for disconnection, one for a full buffer).
+    ///
+    /// [`send`]: Self::send
     pub fn try_send(&self, t: T) -> Result<(), TrySendError<T>> {
         self.inner.try_send(t)
     }
