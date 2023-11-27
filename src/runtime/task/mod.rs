@@ -12,6 +12,7 @@ use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Waker};
+use tracing::{event, field, info_span, Level, Span};
 
 pub(crate) mod clock;
 pub(crate) mod waker;
@@ -89,7 +90,11 @@ pub(crate) struct Task {
     name: Option<String>,
 
     local_storage: StorageMap,
-    pub(super) span: tracing::Span,
+
+    // The `Span` containing the `Task`s `id` and the current step count (if step count recording is enabled)
+    pub(super) step_span: Span,
+    // The current `tracing::span::Id` of the `Task`
+    pub(super) span_id: Option<tracing::span::Id>,
 
     // Arbitrarily settable tag which is inherited from the parent.
     tag: Option<Arc<dyn Tag>>,
@@ -104,9 +109,10 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_span: tracing::Span,
+        parent_id: Option<tracing::span::Id>,
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
+        current_task: Option<TaskId>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -117,11 +123,8 @@ impl Task {
         let waker = make_waker(id);
         let continuation = Rc::new(RefCell::new(continuation));
 
-        let span = if name == Some("main-thread".to_string()) {
-            parent_span
-        } else {
-            tracing::info_span!(parent: parent_span.id(), "step", i = schedule_len, task = id.0)
-        };
+        let step_span = info_span!(parent: parent_id.clone(), "step", task = id.0, i = field::Empty);
+        let span_id = step_span.id();
 
         let mut task = Self {
             id,
@@ -134,7 +137,8 @@ impl Task {
             detached: false,
             park_state: ParkState::default(),
             name,
-            span,
+            step_span,
+            span_id,
             local_storage: StorageMap::new(),
             tag: None,
         };
@@ -142,6 +146,9 @@ impl Task {
         if let Some(tag) = tag {
             task.set_tag(tag);
         }
+
+        info_span!(parent: parent_id, "new_task", parent = ?current_task, i = schedule_len)
+            .in_scope(|| event!(Level::INFO, "created task: {:?}", task.id));
 
         task
     }
@@ -153,14 +160,25 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_span: tracing::Span,
+        parent_id: Option<tracing::span::Id>,
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
+        current_task: Option<TaskId>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
-        Self::new(f, stack_size, id, name, clock, parent_span, schedule_len, tag)
+        Self::new(
+            f,
+            stack_size,
+            id,
+            name,
+            clock,
+            parent_id,
+            schedule_len,
+            tag,
+            current_task,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -170,9 +188,10 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_span: tracing::Span,
+        parent_id: Option<tracing::span::Id>,
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
+        current_task: Option<TaskId>,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -192,9 +211,10 @@ impl Task {
             id,
             name,
             clock,
-            parent_span,
+            parent_id,
             schedule_len,
             tag,
+            current_task,
         )
     }
 
