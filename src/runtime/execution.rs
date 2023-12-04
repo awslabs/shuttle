@@ -152,7 +152,7 @@ impl Execution {
                             subscriber.exit(span_id);
                         }
 
-                        if let Some(span_id) = state.current().span_id.as_ref() {
+                        if let Some(span_id) = state.current().span.id().as_ref() {
                             subscriber.enter(span_id)
                         }
 
@@ -167,11 +167,11 @@ impl Execution {
                 // Leave the Task's span and store which span it exited in order to restore it the next time the Task is run
                 ExecutionState::with(|state| {
                     tracing::dispatcher::get_default(|subscriber| {
-                        let current_span_id = tracing::Span::current().id();
-                        if let Some(span_id) = current_span_id.as_ref() {
+                        let current_span = tracing::Span::current();
+                        if let Some(span_id) = current_span.id().as_ref() {
                             subscriber.exit(span_id);
                         }
-                        state.current_mut().span_id = current_span_id;
+                        state.current_mut().span = current_span;
 
                         if let Some(span_id) = state.span.id().as_ref() {
                             subscriber.enter(span_id)

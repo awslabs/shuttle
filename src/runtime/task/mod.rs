@@ -93,8 +93,8 @@ pub(crate) struct Task {
 
     // The `Span` containing the `Task`s `id` and the current step count (if step count recording is enabled)
     pub(super) step_span: Span,
-    // The current `tracing::span::Id` of the `Task`
-    pub(super) span_id: Option<tracing::span::Id>,
+    // The current `Span` of the `Task`. We have to have it by ownership in order for the `Span` to not get dropped while the task is switched out.
+    pub(super) span: Span,
 
     // Arbitrarily settable tag which is inherited from the parent.
     tag: Option<Arc<dyn Tag>>,
@@ -124,7 +124,7 @@ impl Task {
         let continuation = Rc::new(RefCell::new(continuation));
 
         let step_span = info_span!(parent: parent_id.clone(), "step", task = id.0, i = field::Empty);
-        let span_id = step_span.id();
+        let span = step_span.clone();
 
         let mut task = Self {
             id,
@@ -138,7 +138,7 @@ impl Task {
             park_state: ParkState::default(),
             name,
             step_span,
-            span_id,
+            span,
             local_storage: StorageMap::new(),
             tag: None,
         };
