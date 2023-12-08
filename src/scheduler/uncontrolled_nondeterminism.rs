@@ -14,7 +14,7 @@ enum ScheduleRecord {
 /// valid and that the set of runnable tasks is the same at each step.
 /// Violations of these checks means that the program exhibits nondeterminism which is not
 /// under Shuttle's control. Note that the opposite is not true — there are no guarantees that
-/// the program under test does not have uncontrolled nondeterminism if it passes a run of 
+/// the program under test does not have uncontrolled nondeterminism if it passes a run of
 /// the `UncontrolledNondeterminismCheckScheduler`, even in the case where the wrapped `scheduler` is exhaustive.
 #[derive(Debug)]
 pub struct UncontrolledNondeterminismCheckScheduler<S: Scheduler> {
