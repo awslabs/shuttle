@@ -173,7 +173,7 @@ impl Execution {
                         }
                         state.current_mut().span = current_span;
 
-                        if let Some(span_id) = state.span.id().as_ref() {
+                        if let Some(span_id) = state.top_level_span.id().as_ref() {
                             subscriber.enter(span_id)
                         }
                     });
@@ -241,7 +241,7 @@ pub(crate) struct ExecutionState {
     has_cleaned_up: bool,
 
     // The `Span` which the `ExecutionState` was created under. Will be the parent of all `Task` `Span`s
-    pub(crate) span: Span,
+    pub(crate) top_level_span: Span,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -279,7 +279,7 @@ impl ExecutionState {
             current_schedule: initial_schedule,
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
-            span: tracing::Span::current(),
+            top_level_span: tracing::Span::current(),
         }
     }
 
@@ -327,7 +327,7 @@ impl ExecutionState {
     {
         Self::with(|state| {
             let schedule_len = state.current_schedule.len();
-            let parent_id = state.span.id();
+            let parent_span_id = state.top_level_span.id();
 
             let task_id = TaskId(state.tasks.len());
             let tag = state.get_tag_or_default_for_current_task();
@@ -340,7 +340,7 @@ impl ExecutionState {
                 task_id,
                 name,
                 clock.clone(),
-                parent_id,
+                parent_span_id,
                 schedule_len,
                 tag,
                 state.try_current().map(|t| t.id()),
@@ -361,7 +361,7 @@ impl ExecutionState {
         F: FnOnce() + Send + 'static,
     {
         Self::with(|state| {
-            let parent_id = state.span.id();
+            let parent_span_id = state.top_level_span.id();
             let task_id = TaskId(state.tasks.len());
             let tag = state.get_tag_or_default_for_current_task();
             let clock = if let Some(ref mut clock) = initial_clock {
@@ -381,7 +381,7 @@ impl ExecutionState {
                 task_id,
                 name,
                 clock,
-                parent_id,
+                parent_span_id,
                 schedule_len,
                 tag,
                 state.try_current().map(|t| t.id()),
@@ -638,7 +638,8 @@ impl ExecutionState {
             }
         }
 
-        self.span.in_scope(|| trace!(?runnable, next_task=?self.next_task));
+        self.top_level_span
+            .in_scope(|| trace!(?runnable, next_task=?self.next_task));
 
         Ok(())
     }

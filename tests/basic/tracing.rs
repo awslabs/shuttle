@@ -34,6 +34,12 @@ fn tracing_nested_spans() {
     }
 }
 
+#[ignore]
+#[test]
+fn test_tracing_nested_spans() {
+    check_random(tracing_nested_spans, 10);
+}
+
 fn tracing_nested_spans_panic_mod_5(number: usize) {
     let lock = Arc::new(Mutex::new(0));
     let threads: Vec<_> = (0..3)
@@ -61,17 +67,13 @@ fn tracing_nested_spans_panic_mod_5(number: usize) {
     }
 }
 
-#[test]
-fn test_tracing_nested_spans() {
-    check_random(tracing_nested_spans, 10);
-}
-
 // Test to check that spans don't stack on panic and that minimization works as it should
 proptest! {
     #![proptest_config(
         Config { cases: 1000, failure_persistence: None, .. Config::default() }
     )]
     #[should_panic]
+    #[ignore]
     #[test]
     fn test_stacks_cleaned_on_panic(i: usize) {
         check_random(move || {

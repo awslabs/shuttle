@@ -109,10 +109,10 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_id: Option<tracing::span::Id>,
+        parent_span_id: Option<tracing::span::Id>,
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
-        current_task: Option<TaskId>,
+        parent_task_id: Option<TaskId>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -123,7 +123,7 @@ impl Task {
         let waker = make_waker(id);
         let continuation = Rc::new(RefCell::new(continuation));
 
-        let step_span = info_span!(parent: parent_id.clone(), "step", task = id.0, i = field::Empty);
+        let step_span = info_span!(parent: parent_span_id.clone(), "step", task = id.0, i = field::Empty);
         let span = step_span.clone();
 
         let mut task = Self {
@@ -147,7 +147,7 @@ impl Task {
             task.set_tag(tag);
         }
 
-        info_span!(parent: parent_id, "new_task", parent = ?current_task, i = schedule_len)
+        info_span!(parent: parent_span_id, "new_task", parent = ?parent_task_id, i = schedule_len)
             .in_scope(|| event!(Level::INFO, "created task: {:?}", task.id));
 
         task
@@ -160,10 +160,10 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_id: Option<tracing::span::Id>,
+        parent_span_id: Option<tracing::span::Id>,
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
-        current_task: Option<TaskId>,
+        parent_task_id: Option<TaskId>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -174,10 +174,10 @@ impl Task {
             id,
             name,
             clock,
-            parent_id,
+            parent_span_id,
             schedule_len,
             tag,
-            current_task,
+            parent_task_id,
         )
     }
 
@@ -188,10 +188,10 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_id: Option<tracing::span::Id>,
+        parent_span_id: Option<tracing::span::Id>,
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
-        current_task: Option<TaskId>,
+        parent_task_id: Option<TaskId>,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -211,10 +211,10 @@ impl Task {
             id,
             name,
             clock,
-            parent_id,
+            parent_span_id,
             schedule_len,
             tag,
-            current_task,
+            parent_task_id,
         )
     }
 

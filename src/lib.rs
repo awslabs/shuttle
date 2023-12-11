@@ -227,7 +227,7 @@ pub struct Config {
     /// `tracing_subscriber::fmt`, appends to the span on calls to `record()` (instead of
     /// overwriting), which results in traces which are hard to read if the task is scheduled more
     /// than a few times.
-    /// Thus: set `record_steps_in_span` to `true` if you want this behaviour, or if you are using
+    /// Thus: set `record_steps_in_span` to `true` if you want "append behavior", or if you are using
     /// a `Subscriber` which overwrites on calls to `record()` and want to display the current step
     /// count.
     pub record_steps_in_span: bool,
