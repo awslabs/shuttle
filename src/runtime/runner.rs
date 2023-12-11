@@ -98,7 +98,7 @@ impl<S: Scheduler + 'static> Runner<S> {
                 let execution = Execution::new(self.scheduler.clone(), schedule);
                 let f = Arc::clone(&f);
 
-                span!(Level::INFO, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
+                span!(Level::ERROR, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
 
                 i += 1;
             }
@@ -165,7 +165,7 @@ impl PortfolioRunner {
 
                     let runner = Runner::new(scheduler, config);
 
-                    span!(Level::INFO, "job", i).in_scope(|| {
+                    span!(Level::ERROR, "job", i).in_scope(|| {
                         let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| runner.run(move || f())));
 
                         match ret {

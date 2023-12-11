@@ -12,7 +12,7 @@ use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Waker};
-use tracing::{event, field, info_span, Level, Span};
+use tracing::{error_span, event, field, Level, Span};
 
 pub(crate) mod clock;
 pub(crate) mod waker;
@@ -123,7 +123,7 @@ impl Task {
         let waker = make_waker(id);
         let continuation = Rc::new(RefCell::new(continuation));
 
-        let step_span = info_span!(parent: parent_span_id.clone(), "step", task = id.0, i = field::Empty);
+        let step_span = error_span!(parent: parent_span_id.clone(), "step", task = id.0, i = field::Empty);
         let span = step_span.clone();
 
         let mut task = Self {
@@ -147,7 +147,7 @@ impl Task {
             task.set_tag(tag);
         }
 
-        info_span!(parent: parent_span_id, "new_task", parent = ?parent_task_id, i = schedule_len)
+        error_span!(parent: parent_span_id, "new_task", parent = ?parent_task_id, i = schedule_len)
             .in_scope(|| event!(Level::INFO, "created task: {:?}", task.id));
 
         task
