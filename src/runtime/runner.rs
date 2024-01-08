@@ -98,6 +98,11 @@ impl<S: Scheduler + 'static> Runner<S> {
                 let execution = Execution::new(self.scheduler.clone(), schedule);
                 let f = Arc::clone(&f);
 
+                // This is a slightly lazy way to ensure that everything outside of the "execution" span gets
+                // established correctly between executions. Fully `exit`ing and fully `enter`ing (explicitly
+                // `enter`/`exit` all `Span`s) would most likely obviate the need for this.
+                let _rsod = ResetSpanOnDrop::new();
+
                 span!(Level::ERROR, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
 
                 i += 1;

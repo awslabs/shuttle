@@ -93,8 +93,13 @@ pub(crate) struct Task {
 
     // The `Span` containing the `Task`s `id` and the current step count (if step count recording is enabled)
     pub(super) step_span: Span,
-    // The current `Span` of the `Task`. We have to have it by ownership in order for the `Span` to not get dropped while the task is switched out.
-    pub(super) span: Span,
+    // The current `Span` "stack" of the `Task`. There are two things to note:
+    // 1: We have to own the `Span`s (versus storing `Id`s) for the `Span` to not get dropped while the task is switched out.
+    // 2: We have to store the stack of `Span`s in order to return to the correct `Span` once the `Entered<'_>` from an
+    //    `instrument`ed future is dropped.
+    // `span_stack` is (as the name suggests) a stack. We `pop` it empty when resuming a `Task`, and `push` + `exit`
+    // `tracing::Span::current()` until there is no entered `Span` when we switch out of the `Task`.
+    pub(super) span_stack: Vec<Span>,
 
     // Arbitrarily settable tag which is inherited from the parent.
     tag: Option<Arc<dyn Tag>>,
@@ -124,7 +129,10 @@ impl Task {
         let continuation = Rc::new(RefCell::new(continuation));
 
         let step_span = error_span!(parent: parent_span_id.clone(), "step", task = id.0, i = field::Empty);
-        let span = step_span.clone();
+        // Note that this is slightly lazy — we are starting storing at the step_span, but could have gotten the
+        // full `Span` stack and stored that. It should be fine, but if any issues arise, then full storing should
+        // be tried.
+        let span_stack = vec![step_span.clone()];
 
         let mut task = Self {
             id,
@@ -138,7 +146,7 @@ impl Task {
             park_state: ParkState::default(),
             name,
             step_span,
-            span,
+            span_stack,
             local_storage: StorageMap::new(),
             tag: None,
         };

@@ -145,15 +145,19 @@ impl Execution {
         let ret = match next_step {
             NextStep::Task(continuation) => {
                 // Enter the Task's span
+                // Note that if any issues arises with spans and tracing, then calling `exit` until `None`,
+                // storing the entirety of the `span_stack` when creating the `Task` and storing
+                // `top_level_span` as a stack should be tried.
                 ExecutionState::with(|state| {
                     tracing::dispatcher::get_default(|subscriber| {
-                        let current_span_id = tracing::Span::current().id();
-                        if let Some(span_id) = current_span_id.as_ref() {
+                        if let Some(span_id) = tracing::Span::current().id().as_ref() {
                             subscriber.exit(span_id);
                         }
 
-                        if let Some(span_id) = state.current().span.id().as_ref() {
-                            subscriber.enter(span_id)
+                        while let Some(span) = state.current_mut().span_stack.pop() {
+                            if let Some(span_id) = span.id().as_ref() {
+                                subscriber.enter(span_id)
+                            }
                         }
 
                         if state.config.record_steps_in_span {
@@ -164,14 +168,14 @@ impl Execution {
 
                 let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
 
-                // Leave the Task's span and store which span it exited in order to restore it the next time the Task is run
+                // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
                 ExecutionState::with(|state| {
                     tracing::dispatcher::get_default(|subscriber| {
-                        let current_span = tracing::Span::current();
-                        if let Some(span_id) = current_span.id().as_ref() {
+                        debug_assert!(state.current().span_stack.is_empty());
+                        while let Some(span_id) = tracing::Span::current().id().as_ref() {
+                            state.current_mut().span_stack.push(tracing::Span::current().clone());
                             subscriber.exit(span_id);
                         }
-                        state.current_mut().span = current_span;
 
                         if let Some(span_id) = state.top_level_span.id().as_ref() {
                             subscriber.enter(span_id)
