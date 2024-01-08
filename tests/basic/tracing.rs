@@ -116,6 +116,8 @@ async fn spawn_instrumented_futures() {
 #[ignore]
 #[test]
 fn instrumented_futures() {
+    let outer_span = warn_span!("OUTER");
+    let _e = outer_span.enter();
     let _res = tracing_subscriber::fmt::try_init();
     shuttle::check_random(
         || {
