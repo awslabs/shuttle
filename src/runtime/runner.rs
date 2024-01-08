@@ -20,14 +20,14 @@ use tracing::{span, Level};
 // then caught by `panic::catch_unwind()` (such as when Shuttle is run inside proptest).
 // In other words: it enables correct spans when doing proptest minimization.
 struct ResetSpanOnDrop {
-    span_id: Option<tracing::span::Id>,
+    span: tracing::Span,
 }
 
 impl ResetSpanOnDrop {
     #[must_use]
     fn new() -> Self {
         Self {
-            span_id: tracing::Span::current().id(),
+            span: tracing::Span::current().clone(),
         }
     }
 }
@@ -39,7 +39,7 @@ impl Drop for ResetSpanOnDrop {
             while let Some(span_id) = tracing::Span::current().id().as_ref() {
                 subscriber.exit(span_id);
             }
-            if let Some(span_id) = self.span_id.as_ref() {
+            if let Some(span_id) = self.span.id().as_ref() {
                 subscriber.enter(span_id);
             }
         });
