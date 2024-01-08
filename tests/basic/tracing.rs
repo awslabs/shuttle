@@ -93,18 +93,15 @@ async fn spawn_instrumented_futures() {
     let jhs = (0..2)
         .map(|_| {
             spawn(async {
+                let span_id = tracing::Span::current().id();
                 async {
-                    let span_id = tracing::Span::current().id();
-                    async {
-                        // NOTE: Just a way to get a `thread::switch` call.
-                        // Consider `pub`ing `thread::switch` ?
-                        thread::sleep(Duration::from_millis(0));
-                    }
-                    .instrument(warn_span!("Span"))
-                    .await;
-                    assert_eq!(span_id, tracing::Span::current().id())
+                    // NOTE: Just a way to get a `thread::switch` call.
+                    // Consider `pub`ing `thread::switch` ?
+                    thread::sleep(Duration::from_millis(0));
                 }
-                .await
+                .instrument(warn_span!("Span"))
+                .await;
+                assert_eq!(span_id, tracing::Span::current().id())
             })
         })
         .collect::<Vec<_>>();
@@ -125,6 +122,6 @@ fn instrumented_futures() {
                 spawn_instrumented_futures().await;
             })
         },
-        100,
+        1000,
     );
 }
