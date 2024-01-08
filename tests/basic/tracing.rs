@@ -1,13 +1,19 @@
 use proptest::proptest;
 use proptest::test_runner::Config;
+use shuttle::future::spawn;
 use shuttle::sync::{Arc, Mutex};
 use shuttle::{check_random, thread};
+use std::time::Duration;
 use test_log::test;
-use tracing::{warn, warn_span};
+use tracing::{instrument::Instrument, warn, warn_span};
+
+// NOTE:
+// All of the tests testing tracing will either have to have weak assertions,
+// or be #[ignore]d. The reason for this is that they are not thread safe
+// (since everything tracing is managed globally), and there is no way to
+// ensure that the tests are run single-threaded.
 
 // TODO: Custom Subscriber
-// TODO: Test with futures
-// TODO: Test with panics
 // TODO: Test with record_steps_in_span enabled
 
 fn tracing_nested_spans() {
@@ -81,4 +87,42 @@ proptest! {
         },
         10);
     }
+}
+
+async fn spawn_instrumented_futures() {
+    let jhs = (0..2)
+        .map(|_| {
+            spawn(async {
+                async {
+                    let span_id = tracing::Span::current().id();
+                    async {
+                        // NOTE: Just a way to get a `thread::switch` call.
+                        // Consider `pub`ing `thread::switch` ?
+                        thread::sleep(Duration::from_millis(0));
+                    }
+                    .instrument(warn_span!("Span"))
+                    .await;
+                    assert_eq!(span_id, tracing::Span::current().id())
+                }
+                .await
+            })
+        })
+        .collect::<Vec<_>>();
+    for jh in jhs {
+        jh.await.unwrap();
+    }
+}
+
+#[ignore]
+#[test]
+fn instrumented_futures() {
+    let _res = tracing_subscriber::fmt::try_init();
+    shuttle::check_random(
+        || {
+            shuttle::future::block_on(async move {
+                spawn_instrumented_futures().await;
+            })
+        },
+        100,
+    );
 }
