@@ -91,14 +91,20 @@ pub(crate) struct Task {
 
     local_storage: StorageMap,
 
-    // The `Span` containing the `Task`s `id` and the current step count (if step count recording is enabled)
+    // The `Span` which looks like this: step{task=task_id}, or, if step count recording is enabled, like this:
+    // step{task=task_id i=step_count}. Becomes the parent of the spans created by the `Task`.
     pub(super) step_span: Span,
-    // The current `Span` "stack" of the `Task`. There are two things to note:
+
+    // The current `Span` "stack" of the `Task`.
+    // `Span`s are stored such that the `Task`s current `Span` is at `span_stack[0]`, that `Span`s parent (if it exists)
+    // is at `span_stack[1]`, and so on, until `span_stack[span_stack.len()-1]`, which is the "outermost" (left-most when printed)
+    // `Span`. This means that `span_stack[span_stack.len()-1]` will usually be the `Span` saying `execution{i=X}`.
+    // We `pop` it empty when resuming a `Task`, and `push` + `exit` `tracing::Span::current()`
+    // until there is no entered `Span` when we switch out of the `Task`.
+    // There are two things to note:
     // 1: We have to own the `Span`s (versus storing `Id`s) for the `Span` to not get dropped while the task is switched out.
     // 2: We have to store the stack of `Span`s in order to return to the correct `Span` once the `Entered<'_>` from an
     //    `instrument`ed future is dropped.
-    // `span_stack` is (as the name suggests) a stack. We `pop` it empty when resuming a `Task`, and `push` + `exit`
-    // `tracing::Span::current()` until there is no entered `Span` when we switch out of the `Task`.
     pub(super) span_stack: Vec<Span>,
 
     // Arbitrarily settable tag which is inherited from the parent.

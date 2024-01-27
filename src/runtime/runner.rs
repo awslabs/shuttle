@@ -16,15 +16,15 @@ use std::time::Instant;
 use tracing::{span, Level};
 
 // A helper struct which on `drop` exits all current spans, then enters the span which was entered when it was constructed.
-// The reason this exist is to solve the "span-stacking" issue which occurs when there is a panic inside `run` which is
+// The reason this exists is to solve the "span-stacking" issue which occurs when there is a panic inside `run` which is
 // then caught by `panic::catch_unwind()` (such as when Shuttle is run inside proptest).
 // In other words: it enables correct spans when doing proptest minimization.
+#[must_use]
 struct ResetSpanOnDrop {
     span: tracing::Span,
 }
 
 impl ResetSpanOnDrop {
-    #[must_use]
     fn new() -> Self {
         Self {
             span: tracing::Span::current().clone(),
@@ -101,7 +101,7 @@ impl<S: Scheduler + 'static> Runner<S> {
                 // This is a slightly lazy way to ensure that everything outside of the "execution" span gets
                 // established correctly between executions. Fully `exit`ing and fully `enter`ing (explicitly
                 // `enter`/`exit` all `Span`s) would most likely obviate the need for this.
-                let _rsod = ResetSpanOnDrop::new();
+                let _span_drop_guard2 = ResetSpanOnDrop::new();
 
                 span!(Level::ERROR, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
 

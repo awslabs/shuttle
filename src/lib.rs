@@ -223,6 +223,14 @@ pub struct Config {
 
     /// Whether to call the `Span::record()` method to update the step count (`i`) of the `Span`
     /// containing the `TaskId` and the current step count for the given `TaskId`.
+    /// If `false`, this `Span` will look like this: `step{task=1}`, and if `true`, this `Span`
+    /// will look something like this: `step{task=1 i=3 i=9 i=12}`, or, if a `Subscriber` which
+    /// overwrites on calls to `span.record()` is used, something like this:
+    /// ```text
+    /// step{task=1 i=3}
+    /// step{task=1 i=9}
+    /// step{task=1 i=12}
+    /// ```
     /// The reason this is a config option is that the most popular tracing `Subscriber`s, ie
     /// `tracing_subscriber::fmt`, appends to the span on calls to `record()` (instead of
     /// overwriting), which results in traces which are hard to read if the task is scheduled more

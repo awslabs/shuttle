@@ -145,15 +145,19 @@ impl Execution {
         let ret = match next_step {
             NextStep::Task(continuation) => {
                 // Enter the Task's span
-                // Note that if any issues arises with spans and tracing, then calling `exit` until `None`,
-                // storing the entirety of the `span_stack` when creating the `Task` and storing
-                // `top_level_span` as a stack should be tried.
+                // (Note that if any issues arise with spans and tracing, then
+                // 1) calling `exit` until `None` before entering the `Task`s `Span`,
+                // 2) storing the entirety of the `span_stack` when creating the `Task`, and
+                // 3) storing `top_level_span` as a stack
+                // should be tried.)
                 ExecutionState::with(|state| {
                     tracing::dispatcher::get_default(|subscriber| {
                         if let Some(span_id) = tracing::Span::current().id().as_ref() {
                             subscriber.exit(span_id);
                         }
 
+                        // The `span_stack` stores `Span`s such that the top of the stack is the outermost `Span`,
+                        // meaning that parents (left-most when printed) are entered first.
                         while let Some(span) = state.current_mut().span_stack.pop() {
                             if let Some(span_id) = span.id().as_ref() {
                                 subscriber.enter(span_id)
@@ -642,6 +646,11 @@ impl ExecutionState {
             }
         }
 
+        // Tracing this `in_scope` is purely a matter of taste. We do it because
+        // 1) It is an action taken by the scheduler, and should thus be traced under the scheduler's span
+        // 2) It creates a visual separation of scheduling decisions and `Task`-induced tracing.
+        // Note that there is a case to be made for not `in_scope`-ing it, as that makes seeing the context
+        // of the context switch clearer.
         self.top_level_span
             .in_scope(|| trace!(?runnable, next_task=?self.next_task));
 

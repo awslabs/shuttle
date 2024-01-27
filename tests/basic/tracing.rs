@@ -3,7 +3,6 @@ use proptest::test_runner::Config;
 use shuttle::future::spawn;
 use shuttle::sync::{Arc, Mutex};
 use shuttle::{check_random, thread};
-use std::time::Duration;
 use test_log::test;
 use tracing::{instrument::Instrument, warn, warn_span};
 
@@ -95,9 +94,7 @@ async fn spawn_instrumented_futures() {
             spawn(async {
                 let span_id = tracing::Span::current().id();
                 async {
-                    // NOTE: Just a way to get a `thread::switch` call.
-                    // Consider `pub`ing `thread::switch` ?
-                    thread::sleep(Duration::from_millis(0));
+                    thread::yield_now();
                 }
                 .instrument(warn_span!("Span"))
                 .await;
