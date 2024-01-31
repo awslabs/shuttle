@@ -15,6 +15,37 @@ use std::thread;
 use std::time::Instant;
 use tracing::{span, Level};
 
+// A helper struct which on `drop` exits all current spans, then enters the span which was entered when it was constructed.
+// The reason this exists is to solve the "span-stacking" issue which occurs when there is a panic inside `run` which is
+// then caught by `panic::catch_unwind()` (such as when Shuttle is run inside proptest).
+// In other words: it enables correct spans when doing proptest minimization.
+#[must_use]
+struct ResetSpanOnDrop {
+    span: tracing::Span,
+}
+
+impl ResetSpanOnDrop {
+    fn new() -> Self {
+        Self {
+            span: tracing::Span::current().clone(),
+        }
+    }
+}
+
+impl Drop for ResetSpanOnDrop {
+    // Exits all current spans, then enters the span which was entered when `self` was constructed.
+    fn drop(&mut self) {
+        tracing::dispatcher::get_default(|subscriber| {
+            while let Some(span_id) = tracing::Span::current().id().as_ref() {
+                subscriber.exit(span_id);
+            }
+            if let Some(span_id) = self.span.id().as_ref() {
+                subscriber.enter(span_id);
+            }
+        });
+    }
+}
+
 /// A `Runner` is the entry-point for testing concurrent code.
 ///
 /// It takes as input a function to test and a `Scheduler` to run it under. It then executes that
@@ -43,6 +74,7 @@ impl<S: Scheduler + 'static> Runner<S> {
     where
         F: Fn() + Send + Sync + 'static,
     {
+        let _span_drop_guard = ResetSpanOnDrop::new();
         // Share continuations across executions to avoid reallocating them
         // TODO it would be a lot nicer if this were a more generic "context" thing that we passed
         // TODO around explicitly rather than being a thread local
@@ -66,7 +98,12 @@ impl<S: Scheduler + 'static> Runner<S> {
                 let execution = Execution::new(self.scheduler.clone(), schedule);
                 let f = Arc::clone(&f);
 
-                span!(Level::INFO, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
+                // This is a slightly lazy way to ensure that everything outside of the "execution" span gets
+                // established correctly between executions. Fully `exit`ing and fully `enter`ing (explicitly
+                // `enter`/`exit` all `Span`s) would most likely obviate the need for this.
+                let _span_drop_guard2 = ResetSpanOnDrop::new();
+
+                span!(Level::ERROR, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
 
                 i += 1;
             }
@@ -133,7 +170,7 @@ impl PortfolioRunner {
 
                     let runner = Runner::new(scheduler, config);
 
-                    span!(Level::INFO, "job", i).in_scope(|| {
+                    span!(Level::ERROR, "job", i).in_scope(|| {
                         let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| runner.run(move || f())));
 
                         match ret {

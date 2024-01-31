@@ -220,6 +220,25 @@ pub struct Config {
     ///    may miss bugs
     /// 2. [`lazy_static` values are dropped](mod@crate::lazy_static) at the end of an execution
     pub silence_warnings: bool,
+
+    /// Whether to call the `Span::record()` method to update the step count (`i`) of the `Span`
+    /// containing the `TaskId` and the current step count for the given `TaskId`.
+    /// If `false`, this `Span` will look like this: `step{task=1}`, and if `true`, this `Span`
+    /// will look something like this: `step{task=1 i=3 i=9 i=12}`, or, if a `Subscriber` which
+    /// overwrites on calls to `span.record()` is used, something like this:
+    /// ```text
+    /// step{task=1 i=3}
+    /// step{task=1 i=9}
+    /// step{task=1 i=12}
+    /// ```
+    /// The reason this is a config option is that the most popular tracing `Subscriber`s, ie
+    /// `tracing_subscriber::fmt`, appends to the span on calls to `record()` (instead of
+    /// overwriting), which results in traces which are hard to read if the task is scheduled more
+    /// than a few times.
+    /// Thus: set `record_steps_in_span` to `true` if you want "append behavior", or if you are using
+    /// a `Subscriber` which overwrites on calls to `record()` and want to display the current step
+    /// count.
+    pub record_steps_in_span: bool,
 }
 
 impl Config {
@@ -231,6 +250,7 @@ impl Config {
             max_steps: MaxSteps::FailAfter(1_000_000),
             max_time: None,
             silence_warnings: false,
+            record_steps_in_span: false,
         }
     }
 }

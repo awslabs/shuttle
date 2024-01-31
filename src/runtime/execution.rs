@@ -16,7 +16,7 @@ use std::future::Future;
 use std::panic;
 use std::rc::Rc;
 use std::sync::Arc;
-use tracing::trace;
+use tracing::{trace, Span};
 
 use super::task::Tag;
 
@@ -144,7 +144,50 @@ impl Execution {
         // Run a single step of the chosen task.
         let ret = match next_step {
             NextStep::Task(continuation) => {
-                panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()))
+                // Enter the Task's span
+                // (Note that if any issues arise with spans and tracing, then
+                // 1) calling `exit` until `None` before entering the `Task`s `Span`,
+                // 2) storing the entirety of the `span_stack` when creating the `Task`, and
+                // 3) storing `top_level_span` as a stack
+                // should be tried.)
+                ExecutionState::with(|state| {
+                    tracing::dispatcher::get_default(|subscriber| {
+                        if let Some(span_id) = tracing::Span::current().id().as_ref() {
+                            subscriber.exit(span_id);
+                        }
+
+                        // The `span_stack` stores `Span`s such that the top of the stack is the outermost `Span`,
+                        // meaning that parents (left-most when printed) are entered first.
+                        while let Some(span) = state.current_mut().span_stack.pop() {
+                            if let Some(span_id) = span.id().as_ref() {
+                                subscriber.enter(span_id)
+                            }
+                        }
+
+                        if state.config.record_steps_in_span {
+                            state.current().step_span.record("i", state.current_schedule.len());
+                        }
+                    });
+                });
+
+                let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
+
+                // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
+                ExecutionState::with(|state| {
+                    tracing::dispatcher::get_default(|subscriber| {
+                        debug_assert!(state.current().span_stack.is_empty());
+                        while let Some(span_id) = tracing::Span::current().id().as_ref() {
+                            state.current_mut().span_stack.push(tracing::Span::current().clone());
+                            subscriber.exit(span_id);
+                        }
+
+                        if let Some(span_id) = state.top_level_span.id().as_ref() {
+                            subscriber.enter(span_id)
+                        }
+                    });
+                });
+
+                result
             }
             NextStep::Failure(msg, schedule) => {
                 // Because we're creating the panic here, we don't need `persist_failure` to print
@@ -171,6 +214,7 @@ impl Execution {
                     Ok(panic_msg) => Box::new(format!("{}\noriginal panic: {}", message, panic_msg)),
                     Err(panic) => panic,
                 };
+
                 panic::resume_unwind(payload);
             }
         }
@@ -203,6 +247,9 @@ pub(crate) struct ExecutionState {
 
     #[cfg(debug_assertions)]
     has_cleaned_up: bool,
+
+    // The `Span` which the `ExecutionState` was created under. Will be the parent of all `Task` `Span`s
+    pub(crate) top_level_span: Span,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -240,6 +287,7 @@ impl ExecutionState {
             current_schedule: initial_schedule,
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
+            top_level_span: tracing::Span::current(),
         }
     }
 
@@ -287,11 +335,8 @@ impl ExecutionState {
     {
         Self::with(|state| {
             let schedule_len = state.current_schedule.len();
+            let parent_span_id = state.top_level_span.id();
 
-            let parent_span = state
-                .try_current()
-                .map(|t| t.span.clone())
-                .unwrap_or_else(tracing::Span::current);
             let task_id = TaskId(state.tasks.len());
             let tag = state.get_tag_or_default_for_current_task();
             let clock = state.increment_clock_mut(); // Increment the parent's clock
@@ -303,9 +348,10 @@ impl ExecutionState {
                 task_id,
                 name,
                 clock.clone(),
-                parent_span,
+                parent_span_id,
                 schedule_len,
                 tag,
+                state.try_current().map(|t| t.id()),
             );
 
             state.tasks.push(task);
@@ -323,6 +369,7 @@ impl ExecutionState {
         F: FnOnce() + Send + 'static,
     {
         Self::with(|state| {
+            let parent_span_id = state.top_level_span.id();
             let task_id = TaskId(state.tasks.len());
             let tag = state.get_tag_or_default_for_current_task();
             let clock = if let Some(ref mut clock) = initial_clock {
@@ -336,11 +383,17 @@ impl ExecutionState {
 
             let schedule_len = state.current_schedule.len();
 
-            let parent_span = state
-                .try_current()
-                .map(|t| t.span.clone())
-                .unwrap_or_else(tracing::Span::current);
-            let task = Task::from_closure(f, stack_size, task_id, name, clock, parent_span, schedule_len, tag);
+            let task = Task::from_closure(
+                f,
+                stack_size,
+                task_id,
+                name,
+                clock,
+                parent_span_id,
+                schedule_len,
+                tag,
+                state.try_current().map(|t| t.id()),
+            );
             state.tasks.push(task);
             task_id
         })
@@ -593,31 +646,25 @@ impl ExecutionState {
             }
         }
 
-        trace!(?runnable, next_task=?self.next_task);
+        // Tracing this `in_scope` is purely a matter of taste. We do it because
+        // 1) It is an action taken by the scheduler, and should thus be traced under the scheduler's span
+        // 2) It creates a visual separation of scheduling decisions and `Task`-induced tracing.
+        // Note that there is a case to be made for not `in_scope`-ing it, as that makes seeing the context
+        // of the context switch clearer.
+        self.top_level_span
+            .in_scope(|| trace!(?runnable, next_task=?self.next_task));
 
         Ok(())
     }
 
-    /// Set the next task as the current task, and update our tracing span
+    /// Set the next task as the current task
     fn advance_to_next_task(&mut self) {
         debug_assert_ne!(self.next_task, ScheduledTask::None);
-        let previous_task = self.current_task;
         self.current_task = self.next_task.take();
 
-        tracing::dispatcher::get_default(|subscriber| {
-            if let ScheduledTask::Some(previous) = previous_task {
-                if let Some(span_id) = self.get(previous).span.id() {
-                    subscriber.exit(&span_id)
-                }
-            }
-
-            if let ScheduledTask::Some(tid) = self.current_task {
-                if let Some(span_id) = self.get(tid).span.id() {
-                    subscriber.enter(&span_id);
-                }
-                self.current_schedule.push_task(tid);
-            }
-        });
+        if let ScheduledTask::Some(tid) = self.current_task {
+            self.current_schedule.push_task(tid);
+        }
     }
 
     // Sets the `tag` field of the current task.

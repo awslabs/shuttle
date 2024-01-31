@@ -12,6 +12,7 @@ use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Waker};
+use tracing::{error_span, event, field, Level, Span};
 
 pub(crate) mod clock;
 pub(crate) mod waker;
@@ -89,7 +90,22 @@ pub(crate) struct Task {
     name: Option<String>,
 
     local_storage: StorageMap,
-    pub(super) span: tracing::Span,
+
+    // The `Span` which looks like this: step{task=task_id}, or, if step count recording is enabled, like this:
+    // step{task=task_id i=step_count}. Becomes the parent of the spans created by the `Task`.
+    pub(super) step_span: Span,
+
+    // The current `Span` "stack" of the `Task`.
+    // `Span`s are stored such that the `Task`s current `Span` is at `span_stack[0]`, that `Span`s parent (if it exists)
+    // is at `span_stack[1]`, and so on, until `span_stack[span_stack.len()-1]`, which is the "outermost" (left-most when printed)
+    // `Span`. This means that `span_stack[span_stack.len()-1]` will usually be the `Span` saying `execution{i=X}`.
+    // We `pop` it empty when resuming a `Task`, and `push` + `exit` `tracing::Span::current()`
+    // until there is no entered `Span` when we switch out of the `Task`.
+    // There are two things to note:
+    // 1: We have to own the `Span`s (versus storing `Id`s) for the `Span` to not get dropped while the task is switched out.
+    // 2: We have to store the stack of `Span`s in order to return to the correct `Span` once the `Entered<'_>` from an
+    //    `instrument`ed future is dropped.
+    pub(super) span_stack: Vec<Span>,
 
     // Arbitrarily settable tag which is inherited from the parent.
     tag: Option<Arc<dyn Tag>>,
@@ -104,9 +120,10 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_span: tracing::Span,
+        parent_span_id: Option<tracing::span::Id>,
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
+        parent_task_id: Option<TaskId>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
@@ -117,11 +134,11 @@ impl Task {
         let waker = make_waker(id);
         let continuation = Rc::new(RefCell::new(continuation));
 
-        let span = if name == Some("main-thread".to_string()) {
-            parent_span
-        } else {
-            tracing::info_span!(parent: parent_span.id(), "step", i = schedule_len, task = id.0)
-        };
+        let step_span = error_span!(parent: parent_span_id.clone(), "step", task = id.0, i = field::Empty);
+        // Note that this is slightly lazy — we are starting storing at the step_span, but could have gotten the
+        // full `Span` stack and stored that. It should be fine, but if any issues arise, then full storing should
+        // be tried.
+        let span_stack = vec![step_span.clone()];
 
         let mut task = Self {
             id,
@@ -134,7 +151,8 @@ impl Task {
             detached: false,
             park_state: ParkState::default(),
             name,
-            span,
+            step_span,
+            span_stack,
             local_storage: StorageMap::new(),
             tag: None,
         };
@@ -142,6 +160,9 @@ impl Task {
         if let Some(tag) = tag {
             task.set_tag(tag);
         }
+
+        error_span!(parent: parent_span_id, "new_task", parent = ?parent_task_id, i = schedule_len)
+            .in_scope(|| event!(Level::INFO, "created task: {:?}", task.id));
 
         task
     }
@@ -153,14 +174,25 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_span: tracing::Span,
+        parent_span_id: Option<tracing::span::Id>,
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
+        parent_task_id: Option<TaskId>,
     ) -> Self
     where
         F: FnOnce() + Send + 'static,
     {
-        Self::new(f, stack_size, id, name, clock, parent_span, schedule_len, tag)
+        Self::new(
+            f,
+            stack_size,
+            id,
+            name,
+            clock,
+            parent_span_id,
+            schedule_len,
+            tag,
+            parent_task_id,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -170,9 +202,10 @@ impl Task {
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
-        parent_span: tracing::Span,
+        parent_span_id: Option<tracing::span::Id>,
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
+        parent_task_id: Option<TaskId>,
     ) -> Self
     where
         F: Future<Output = ()> + Send + 'static,
@@ -192,9 +225,10 @@ impl Task {
             id,
             name,
             clock,
-            parent_span,
+            parent_span_id,
             schedule_len,
             tag,
+            parent_task_id,
         )
     }
 

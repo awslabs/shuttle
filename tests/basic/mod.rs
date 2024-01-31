@@ -19,4 +19,5 @@ mod shrink;
 mod tag;
 mod thread;
 mod timeout;
+mod tracing;
 mod uncontrolled_nondeterminism;
