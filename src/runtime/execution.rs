@@ -681,10 +681,6 @@ impl ExecutionState {
         ExecutionState::with(|s| s.get_tag_or_default_for_current_task())
     }
 
-    pub(crate) fn get_tag_for_task(task: TaskId) -> Option<Arc<dyn Tag>> {
-        ExecutionState::with(|s| s.get(task).get_tag())
-    }
-
     pub(crate) fn set_tag_for_task(task: TaskId, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
         ExecutionState::with(|s| s.get_mut(task).set_tag(tag))
     }

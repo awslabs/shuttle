@@ -5,7 +5,7 @@
 //! example, a tool that wants to check linearizability might want access to a global timestamp for
 //! events, which the [`context_switches`] function provides.
 
-use crate::runtime::execution::ExecutionState;
+use crate::runtime::execution::{ExecutionState, TASK_ID_TO_TAGS};
 use crate::runtime::task::clock::VectorClock;
 pub use crate::runtime::task::{Tag, Taggable, TaskId};
 use std::sync::Arc;
@@ -51,8 +51,11 @@ pub fn get_current_task() -> Option<TaskId> {
 }
 
 /// Gets the `tag` field of the specified task.
-pub fn get_tag_for_task(task: TaskId) -> Option<Arc<dyn Tag>> {
-    ExecutionState::get_tag_for_task(task)
+pub fn get_tag_for_task(task_id: TaskId) -> Option<Arc<dyn Tag>> {
+    TASK_ID_TO_TAGS.with(|cell| {
+        let map = cell.borrow();
+        map.get(&task_id).cloned()
+    })
 }
 
 /// Sets the `tag` field of the specified task.
