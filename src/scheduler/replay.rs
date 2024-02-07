@@ -26,7 +26,7 @@ impl ReplayScheduler {
     }
 
     /// Given a file containing a schedule, construct a new [`ReplayScheduler`] that will execute
-    /// threads in the order epseicied in the schedule.
+    /// threads in the order specified in the schedule.
     pub fn new_from_file<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
         let mut file = OpenOptions::new().read(true).open(path)?;
         let mut encoded_schedule = String::new();
