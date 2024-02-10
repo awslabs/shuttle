@@ -191,6 +191,7 @@ pub mod current;
 pub mod scheduler;
 
 mod runtime;
+pub mod crossbeam_channel;
 
 pub use runtime::runner::{PortfolioRunner, Runner};
 

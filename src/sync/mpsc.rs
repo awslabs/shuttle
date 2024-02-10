@@ -9,13 +9,14 @@ use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::result::Result;
+use std::sync::mpsc::{TrySendError, TryRecvError};
 pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::trace;
 
+
 // TODO
-// * Add support for try_recv() and try_send()
 // * Add support for iter() for receivers
 
 const MAX_INLINE_MESSAGES: usize = 32;
@@ -44,10 +45,11 @@ pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
     (sender, receiver)
 }
 
+// TODO: move outside of mpsc.rs -- this is a more general channel primitive than simply mpsc.
 #[derive(Debug)]
-struct Channel<T> {
-    bound: Option<usize>, // None for an unbounded channel, Some(k) for a bounded channel of size k
-    state: Rc<RefCell<ChannelState<T>>>,
+pub(crate) struct Channel<T> {
+    pub(crate) bound: Option<usize>, // None for an unbounded channel, Some(k) for a bounded channel of size k
+    pub(crate) state: Rc<RefCell<ChannelState<T>>>,
 }
 
 // For tracking causality on channels, we timestamp each message with the clock of the sender.
@@ -83,13 +85,27 @@ impl<T> TimestampedValue<T> {
 // Note: The channels in std::sync::mpsc only support a single Receiver (which cannot be
 // cloned).  The state below admits a more general use case, where multiple Senders
 // and Receivers can share a single channel.
-struct ChannelState<T> {
+pub(crate) struct ChannelState<T> {
     messages: SmallVec<[TimestampedValue<T>; MAX_INLINE_MESSAGES]>, // messages in the channel
     receiver_clock: Option<SmallVec<[VectorClock; MAX_INLINE_MESSAGES]>>, // receiver vector clocks for bounded case
     known_senders: usize,                                           // number of senders referencing this channel
     known_receivers: usize,                                         // number or receivers referencing this channel
     waiting_senders: SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>,      // list of currently blocked senders
     waiting_receivers: SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>,    // list of currently blocked receivers
+}
+
+impl<T> ChannelState<T> {
+    pub(crate) fn has_messages(&self) -> bool {
+        self.messages.len() > 0
+    }
+
+    pub(crate) fn add_waiting_receiver(&mut self, task: TaskId) {
+        self.waiting_receivers.push(task)
+    }
+
+    pub(crate) fn delete_waiting_receiver(&mut self, task: TaskId) {
+        self.waiting_receivers.retain(|v| *v != task)
+    }
 }
 
 impl<T> Debug for ChannelState<T> {
@@ -108,7 +124,7 @@ impl<T> Debug for ChannelState<T> {
 }
 
 impl<T> Channel<T> {
-    fn new(bound: Option<usize>) -> Self {
+    pub(crate) fn new(bound: Option<usize>) -> Self {
         let receiver_clock = if let Some(bound) = bound {
             let mut s = SmallVec::with_capacity(bound);
             for _ in 0..bound {
@@ -131,7 +147,7 @@ impl<T> Channel<T> {
         }
     }
 
-    fn send(&self, message: T) -> Result<(), SendError<T>> {
+    pub(crate) fn send(&self, message: T) -> Result<(), SendError<T>> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
 
@@ -232,7 +248,33 @@ impl<T> Channel<T> {
         Ok(())
     }
 
-    fn recv(&self) -> Result<T, RecvError> {
+    pub(crate) fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
+        let state = self.state.borrow();
+        let (is_rendezvous, is_full) = if let Some(bound) = self.bound {
+            // For a rendezvous channel (bound = 0), "is_full" holds when there is a message in the channel.
+            // For a non-rendezvous channel (bound > 0), "is_full" holds when the capacity is reached.
+            // We cover both these cases at once using max(bound, 1) below.
+            (bound == 0, state.messages.len() >= std::cmp::max(bound, 1))
+        } else {
+            (false, false)
+        };
+
+        // The send cannot complete without blocking in any of the following situations:
+        //    the channel is full (as defined above)
+        //    there are already waiting senders
+        //    this is a rendezvous channel and there are no waiting receivers
+        let sender_should_block =
+            is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty());
+        drop(state);
+
+        if !sender_should_block {
+            self.send(message).map_err(|e| TrySendError::Disconnected(e.0))
+        } else {
+            Err(TrySendError::Full(message))
+        }
+    }
+
+    pub(crate) fn recv(&self) -> Result<T, RecvError> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
 
@@ -345,6 +387,73 @@ impl<T> Channel<T> {
         });
         Ok(value)
     }
+
+    pub(crate) fn try_recv(&self) -> Result<T, TryRecvError> {
+        let state = self.state.borrow();
+        
+        // If this is a rendezvous channel, and the channel is empty, and there are waiting senders,
+        // notify the first waiting sender
+        if self.bound == Some(0) && state.messages.is_empty() {
+            if let Some(&tid) = state.waiting_senders.first() {
+                // Note: another receiver may have unblocked the sender already
+                ExecutionState::with(|s| s.get_mut(tid).unblock());
+            }
+        }
+
+        // The receiver cannot proceed without blocking in any of the following situations:
+        //    the channel is empty
+        //    there are waiting receivers
+        let should_block = state.messages.is_empty() || !state.waiting_receivers.is_empty();
+
+        drop(state);
+        if !should_block {
+            self.recv().map_err(|_| TryRecvError::Disconnected)
+        } else {
+            Err(TryRecvError::Empty)
+        }
+    }
+
+    pub(crate) fn drop_receiver(&self) {
+        if ExecutionState::should_stop() {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        assert!(state.known_receivers > 0);
+        state.known_receivers -= 1;
+        if state.known_receivers == 0 {
+            // Last receiver was dropped; wake up all senders
+            for &tid in state.waiting_senders.iter() {
+                ExecutionState::with(|s| s.get_mut(tid).unblock());
+            }
+        }
+    }
+
+    pub(crate) fn drop_sender(&self) {
+        if ExecutionState::should_stop() {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        assert!(state.known_senders > 0);
+        state.known_senders -= 1;
+        if state.known_senders == 0 {
+            // Last sender was dropped; wake up all receivers
+            for &tid in state.waiting_receivers.iter() {
+                ExecutionState::with(|s| s.get_mut(tid).unblock());
+            }
+        }
+    }
+
+    pub(crate) fn inc_sender_count(&self) {
+        let mut state = self.state.borrow_mut();
+        state.known_senders += 1;
+        drop(state);
+    }
+
+    pub(crate) fn inc_receiver_count(&self) {
+        let mut state = self.state.borrow_mut();
+        state.known_receivers += 1;
+        drop(state);
+    }
 }
 
 // Safety: A Channel is never actually passed across true threads, only across continuations. The
@@ -377,18 +486,7 @@ impl<T> Receiver<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        if ExecutionState::should_stop() {
-            return;
-        }
-        let mut state = self.inner.state.borrow_mut();
-        assert!(state.known_receivers > 0);
-        state.known_receivers -= 1;
-        if state.known_receivers == 0 {
-            // Last receiver was dropped; wake up all senders
-            for &tid in state.waiting_senders.iter() {
-                ExecutionState::with(|s| s.get_mut(tid).unblock());
-            }
-        }
+        self.inner.drop_receiver()
     }
 }
 
@@ -405,13 +503,18 @@ impl<T> Sender<T> {
     pub fn send(&self, t: T) -> Result<(), SendError<T>> {
         self.inner.send(t)
     }
+
+    /// Attempts to send a value on this channel, returning it back if it could
+    /// not be sent.
+    /// TODO: incorporate timeout
+    pub fn send_timeout(&self, t: T, _: Duration) -> Result<(), SendError<T>> {
+        self.send(t)
+    }
 }
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
-        let mut state = self.inner.state.borrow_mut();
-        state.known_senders += 1;
-        drop(state);
+        self.inner.inc_sender_count();
         Self {
             inner: self.inner.clone(),
         }
@@ -420,18 +523,7 @@ impl<T> Clone for Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        if ExecutionState::should_stop() {
-            return;
-        }
-        let mut state = self.inner.state.borrow_mut();
-        assert!(state.known_senders > 0);
-        state.known_senders -= 1;
-        if state.known_senders == 0 {
-            // Last sender was dropped; wake up all receivers
-            for &tid in state.waiting_receivers.iter() {
-                ExecutionState::with(|s| s.get_mut(tid).unblock());
-            }
-        }
+        self.inner.drop_sender()
     }
 }
 
@@ -457,9 +549,7 @@ impl<T> SyncSender<T> {
 
 impl<T> Clone for SyncSender<T> {
     fn clone(&self) -> Self {
-        let mut state = self.inner.state.borrow_mut();
-        state.known_senders += 1;
-        drop(state);
+        self.inner.inc_sender_count();
         Self {
             inner: self.inner.clone(),
         }
@@ -468,17 +558,6 @@ impl<T> Clone for SyncSender<T> {
 
 impl<T> Drop for SyncSender<T> {
     fn drop(&mut self) {
-        if ExecutionState::should_stop() {
-            return;
-        }
-        let mut state = self.inner.state.borrow_mut();
-        assert!(state.known_senders > 0);
-        state.known_senders -= 1;
-        if state.known_senders == 0 {
-            // Last sender was dropped; wake up any receivers
-            for &tid in state.waiting_receivers.iter() {
-                ExecutionState::with(|s| s.get_mut(tid).unblock());
-            }
-        }
+        self.inner.drop_sender()
     }
 }

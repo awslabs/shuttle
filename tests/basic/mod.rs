@@ -15,6 +15,7 @@ mod pct;
 mod portfolio;
 mod replay;
 mod rwlock;
+mod selector;
 mod shrink;
 mod tag;
 mod thread;
