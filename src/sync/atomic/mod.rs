@@ -63,6 +63,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
 use std::cell::RefCell;
+use std::panic::RefUnwindSafe;
 
 static PRINTED_ORDERING_WARNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -123,6 +124,7 @@ struct Atomic<T> {
 // Safety: Atomic is never actually passed across true threads, only across continuations. The
 // RefCell<_> type therefore can't be preempted mid-bookkeeping-operation.
 unsafe impl<T: Sync> Sync for Atomic<T> {}
+impl<T: RefUnwindSafe> RefUnwindSafe for Atomic<T> {}
 
 impl<T> Atomic<T> {
     const fn new(v: T) -> Self {
