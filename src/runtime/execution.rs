@@ -1,7 +1,8 @@
 use crate::runtime::failure::{init_panic_hook, persist_failure, persist_task_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::labels::Labels;
+use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::thread::thread_fn;
@@ -18,6 +19,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tracing::{trace, Span};
 
+#[allow(deprecated)]
 use super::task::Tag;
 
 // We use this scoped TLS to smuggle the ExecutionState, which is not 'static, across tasks that
@@ -28,7 +30,12 @@ scoped_thread_local! {
 
 thread_local! {
     #[allow(clippy::complexity)]
+    #[allow(deprecated)]
     pub(crate) static TASK_ID_TO_TAGS: RefCell<HashMap<TaskId, Arc<dyn Tag>>> = RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    pub(crate) static LABELS: RefCell<HashMap<TaskId, Labels>> = RefCell::new(HashMap::new());
 }
 
 /// An `Execution` encapsulates a single run of a function under test against a chosen scheduler.
@@ -327,6 +334,33 @@ impl ExecutionState {
         Self::with(|s| s.current().id())
     }
 
+    fn set_labels_for_new_task(state: &ExecutionState, task_id: TaskId, name: Option<String>) {
+        LABELS.with(|cell| {
+            let mut map = cell.borrow_mut();
+
+            // If parent has labels, inherit them
+            if let Some(parent_task_id) = state.try_current().map(|t| t.id()) {
+                let parent_map = map.get(&parent_task_id);
+                if let Some(parent_map) = parent_map {
+                    let mut child_map = parent_map.clone();
+
+                    // If the parent has a `ChildLabelFn` set, use that to update the child's Labels
+                    if let Some(gen) = parent_map.get::<ChildLabelFn>() {
+                        (gen.0)(task_id, &mut child_map);
+                    }
+
+                    map.insert(task_id, child_map);
+                }
+            }
+
+            // Add any name assigned to the task to its set of Labels
+            if let Some(name) = name {
+                let m = map.entry(task_id).or_default();
+                m.insert(TaskName::from(name));
+            }
+        });
+    }
+
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
     /// if it wants to give the new task a chance to run immediately.
     pub(crate) fn spawn_future<F>(future: F, stack_size: usize, name: Option<String>) -> TaskId
@@ -339,6 +373,9 @@ impl ExecutionState {
 
             let task_id = TaskId(state.tasks.len());
             let tag = state.get_tag_or_default_for_current_task();
+
+            Self::set_labels_for_new_task(state, task_id, name.clone());
+
             let clock = state.increment_clock_mut(); // Increment the parent's clock
             clock.extend(task_id); // and extend it with an entry for the new task
 
@@ -372,6 +409,9 @@ impl ExecutionState {
             let parent_span_id = state.top_level_span.id();
             let task_id = TaskId(state.tasks.len());
             let tag = state.get_tag_or_default_for_current_task();
+
+            Self::set_labels_for_new_task(state, task_id, name.clone());
+
             let clock = if let Some(ref mut clock) = initial_clock {
                 clock
             } else {
@@ -424,6 +464,7 @@ impl ExecutionState {
         while Self::with(|state| state.storage.pop()).is_some() {}
 
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().clear());
+        LABELS.with(|cell| cell.borrow_mut().clear());
 
         #[cfg(debug_assertions)]
         Self::with(|state| state.has_cleaned_up = true);
@@ -651,6 +692,9 @@ impl ExecutionState {
         // 2) It creates a visual separation of scheduling decisions and `Task`-induced tracing.
         // Note that there is a case to be made for not `in_scope`-ing it, as that makes seeing the context
         // of the context switch clearer.
+        //
+        // Note also that changing this trace! statement requires changing the test `basic::labels::test_tracing_with_label_fn`
+        // which relies on this trace reporting the `runnable` tasks.
         self.top_level_span
             .in_scope(|| trace!(?runnable, next_task=?self.next_task));
 
@@ -669,18 +713,22 @@ impl ExecutionState {
 
     // Sets the `tag` field of the current task.
     // Returns the `tag` which was there previously.
+    #[allow(deprecated)]
     pub(crate) fn set_tag_for_current_task(tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
         ExecutionState::with(|s| s.current_mut().set_tag(tag))
     }
 
+    #[allow(deprecated)]
     fn get_tag_or_default_for_current_task(&self) -> Option<Arc<dyn Tag>> {
         self.try_current().and_then(|current| current.get_tag())
     }
 
+    #[allow(deprecated)]
     pub(crate) fn get_tag_for_current_task() -> Option<Arc<dyn Tag>> {
         ExecutionState::with(|s| s.get_tag_or_default_for_current_task())
     }
 
+    #[allow(deprecated)]
     pub(crate) fn set_tag_for_task(task: TaskId, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
         ExecutionState::with(|s| s.get_mut(task).set_tag(tag))
     }

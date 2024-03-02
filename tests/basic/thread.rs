@@ -1,3 +1,4 @@
+use shuttle::current::{get_name_for_task, me};
 use shuttle::sync::{Barrier, Condvar, Mutex};
 use shuttle::{check_dfs, check_random, thread};
 use std::collections::HashSet;
@@ -75,6 +76,8 @@ fn thread_builder_name() {
             let builder = thread::Builder::new().name("producer".into());
             let handle = builder
                 .spawn(|| {
+                    let name = String::from(get_name_for_task(me()).unwrap());
+                    assert_eq!(name, "producer");
                     thread::yield_now();
                 })
                 .unwrap();
