@@ -1,7 +1,9 @@
 use futures::future::join_all;
 use shuttle::{
     check_dfs, check_random,
-    current::{get_tag_for_current_task, get_tag_for_task, set_tag_for_current_task, set_tag_for_task},
+    current::{
+        get_current_task, get_tag_for_current_task, get_tag_for_task, set_tag_for_current_task, set_tag_for_task,
+    },
     future::block_on,
     sync::Mutex,
     thread,
@@ -288,19 +290,26 @@ fn tracing_tags() {
 }
 
 fn tag_modification_other_task_inner() {
+    let initial_tag = Arc::new(Tag::from(10));
     // Start with a known tag for current task
-    set_tag_for_current_task(Arc::new(Tag::from(10)));
+    set_tag_for_current_task(initial_tag.clone());
 
+    let task_id = get_current_task().unwrap();
     let t1 = thread::spawn(move || {
-        // Set the tag for the other thread
-        set_tag_for_task(0.into(), Arc::new(Tag::from(42)));
+        assert_eq!(*initial_tag, convert_to_tag(get_tag_for_current_task().unwrap()));
+
+        // Set the tag for the main thread
+        set_tag_for_task(task_id, Arc::new(Tag::from(42)));
+
+        assert_eq!(*initial_tag, convert_to_tag(get_tag_for_current_task().unwrap()));
     });
 
     t1.join().unwrap();
 
-    let my_tag = convert_to_tag(get_tag_for_task(0.into()).unwrap());
+    let my_tag = convert_to_tag(get_tag_for_task(task_id).unwrap());
     let curr_tag = convert_to_tag(get_tag_for_current_task().unwrap());
-    // All tags for task 0 should agree, and be the new value
+
+    // Tags gotten through `_for_task` and `_for_current_task` should be equal, and be the new value
     assert_eq!(my_tag, curr_tag);
     assert_eq!(curr_tag, Tag::from(42));
 }
