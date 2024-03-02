@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use futures::future::join_all;
 use shuttle::{
     check_dfs, check_random,
@@ -279,6 +281,7 @@ impl Subscriber for RunnableSubscriber {
     fn exit(&self, _span: &Id) {}
 }
 
+#[ignore] // This test doesn't work anymore, since we don't use tags for tracing output anymore
 #[test]
 fn tracing_tags() {
     let metrics = RunnableSubscriber::new();

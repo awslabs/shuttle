@@ -1,6 +1,8 @@
+use crate::current::get_name_for_task;
 use crate::runtime::execution::{ExecutionState, TASK_ID_TO_TAGS};
 use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
+use crate::runtime::task::labels::Labels;
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::{ContinuationPool, PooledContinuation};
 use crate::thread::LocalKey;
@@ -15,6 +17,7 @@ use std::task::{Context, Waker};
 use tracing::{error_span, event, field, Level, Span};
 
 pub(crate) mod clock;
+pub(crate) mod labels;
 pub(crate) mod waker;
 use waker::make_waker;
 
@@ -38,6 +41,73 @@ use waker::make_waker;
 
 pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 
+/// To make debugging easier, if a task is assigned a `TaskName(s)` Label,
+/// Shuttle will display the String `s` in addition to the `TaskId` in debug output.
+#[derive(Clone, PartialEq, Eq)]
+pub struct TaskName(String);
+
+impl From<String> for TaskName {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for TaskName {
+    fn from(s: &str) -> Self {
+        Self(String::from(s))
+    }
+}
+
+impl std::fmt::Debug for TaskName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<TaskName> for String {
+    fn from(task_name: TaskName) -> Self {
+        task_name.0
+    }
+}
+
+impl<'a> From<&'a TaskName> for &'a String {
+    fn from(task_name: &'a TaskName) -> Self {
+        &task_name.0
+    }
+}
+
+/// By default, when a task or thread T is spawned, it inherits all labels from its parent.
+/// It's often useful to modify or add new Labels to T.  One approach is to put label changes
+/// at the beginning of the closure that is passed to `spawn`, but this approach has the drawback
+/// that the changes are applied only when T is first selected for execution, and the closure
+/// is invoked.  To overcome this drawback, we introduce the `ChildLabelFn` label.  If a parent
+/// task or thread has a `ChildLabelFn` set when it spawns a new child task or thread, the
+/// child's label set at spawn time will be modified by applying the function inside the `ChildLabelFn`.
+///
+/// # Example
+/// The following example shows how a `ChildLabelFn` can be used to set up names for the next child(ren)
+/// that will be spawned by a parent task.
+/// ```
+/// # use shuttle::current::{me, set_label_for_task, get_name_for_task, ChildLabelFn, TaskName};
+/// # use std::sync::Arc;
+/// // In the parent, set up a `ChildLabelFn` that assigns a name to the child task
+/// shuttle::check_dfs(|| {
+///   set_label_for_task(me(), ChildLabelFn(Arc::new(|labels| { labels.insert(TaskName::from("ChildTask")); })));
+///   shuttle::thread::spawn(|| {
+///     assert_eq!(get_name_for_task(me()).unwrap(), TaskName::from("ChildTask")); // child task already has the name
+///     // ... rest of child
+///   }).join().unwrap();
+/// }, None);
+/// ```
+#[derive(Clone)]
+pub struct ChildLabelFn(pub Arc<dyn Fn(&mut Labels) + Send + Sync + 'static>);
+
+impl Debug for ChildLabelFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ChildLabelFn")
+    }
+}
+
 /// A `Tag` is an optional piece of metadata associated with a task (a thread or spawned future) to
 /// aid debugging.
 ///
@@ -47,18 +117,21 @@ pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
 /// identify tasks in failing Shuttle tests. A task's [Tag] can be set with the
 /// [set_tag_for_current_task](crate::current::set_tag_for_current_task) function. Newly spawned
 /// threads and futures inherit the tag of their parent at spawn time.
+#[deprecated]
+#[allow(deprecated)]
 pub trait Tag: Taggable {
     /// Return the tag as `Any`, typically so that it can be downcast to a known concrete type
     fn as_any(&self) -> &dyn Any;
 }
-
 /// `Taggable` is a marker trait which types implementing `Tag` have to implement.
 /// It exists since we both want to provide a blanket implementation of `as_any`, and have users
 /// opt in to a type being able to be used as a tag. If we did not have this trait, then `Tag`
 /// would be automatically implemented for most types (as most types are `Debug + Any`), which
 /// opens up for accidentally using a type which was not intended to be used as a tag as a tag.
+#[deprecated]
 pub trait Taggable: Debug {}
 
+#[allow(deprecated)]
 impl<T> Tag for T
 where
     T: Taggable + Any,
@@ -108,9 +181,11 @@ pub(crate) struct Task {
     pub(super) span_stack: Vec<Span>,
 
     // Arbitrarily settable tag which is inherited from the parent.
+    #[allow(deprecated)]
     tag: Option<Arc<dyn Tag>>,
 }
 
+#[allow(deprecated)]
 impl Task {
     /// Create a task from a continuation
     #[allow(clippy::too_many_arguments)]
@@ -464,14 +539,13 @@ pub(crate) struct ParkState {
 pub struct TaskId(pub(super) usize);
 
 impl Debug for TaskId {
+    // If the `TaskName` label is set, use that when generating the Debug string
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        TASK_ID_TO_TAGS.with(|cell| {
-            let map = cell.borrow();
-            match map.get(self) {
-                Some(tag) => f.write_str(&format!("{:?}({})", tag, self.0)),
-                None => f.debug_tuple("TaskId").field(&self.0).finish(),
-            }
-        })
+        if let Some(name) = get_name_for_task(*self) {
+            f.write_str(&format!("{:?}({})", name, self.0))
+        } else {
+            f.debug_tuple("TaskId").field(&self.0).finish()
+        }
     }
 }
 
