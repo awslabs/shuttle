@@ -40,8 +40,7 @@ struct Parent(usize);
 // - child Labels are independent of each other
 async fn spawn_tasks(counter: Arc<AtomicUsize>) -> HashSet<(usize, usize)> {
     set_label_for_task(me(), Ident(1));
-    #[allow(clippy::type_complexity)]
-    let handles: Vec<future::JoinHandle<(usize, usize, Vec<future::JoinHandle<(usize, usize)>>)>> = (0..2)
+    let handles: Vec<_> = (0..2)
         .map(|i| {
             let counter2 = counter.clone();
             future::spawn(async move {
@@ -50,7 +49,7 @@ async fn spawn_tasks(counter: Arc<AtomicUsize>) -> HashSet<(usize, usize)> {
                 set_label_for_task(me(), Parent(parent));
                 set_label_for_task(me(), Ident(2 * parent + i));
 
-                let handles: Vec<future::JoinHandle<(usize, usize)>> = (0..2)
+                let handles: Vec<_> = (0..2)
                     .map(|j| {
                         let counter3 = counter2.clone();
                         future::spawn(async move {
@@ -116,8 +115,7 @@ fn task_inheritance() {
 // Same test as above, except with threads
 fn spawn_threads(counter: Arc<AtomicUsize>) -> HashSet<(usize, usize)> {
     set_label_for_task(me(), Ident(1));
-    #[allow(clippy::type_complexity)]
-    let handles: Vec<thread::JoinHandle<(usize, usize, Vec<thread::JoinHandle<(usize, usize)>>)>> = (0..2)
+    let handles: Vec<_> = (0..2)
         .map(|i| {
             let counter2 = counter.clone();
             thread::spawn(move || {
@@ -126,7 +124,7 @@ fn spawn_threads(counter: Arc<AtomicUsize>) -> HashSet<(usize, usize)> {
                 set_label_for_task(me(), Parent(parent));
                 set_label_for_task(me(), Ident(2 * parent + i));
 
-                let handles: Vec<thread::JoinHandle<(usize, usize)>> = (0..2)
+                let handles: Vec<_> = (0..2)
                     .map(|j| {
                         let counter3 = counter2.clone();
                         thread::spawn(move || {
