@@ -54,19 +54,19 @@ where
 
 /// Get a label of the given type for the specified task, if any
 #[inline]
-pub fn get_label_for_task<T: Clone + Debug + Send + Sync + 'static>(task_id: TaskId) -> Option<T> {
+pub fn get_label_for_task<T: Clone + Debug + 'static>(task_id: TaskId) -> Option<T> {
     with_labels_for_task(task_id, |labels| labels.get().cloned())
 }
 
 /// Add the given label to the specified task, returning the old label for the type, if any
 #[inline]
-pub fn set_label_for_task<T: Clone + Debug + Send + Sync + 'static>(task_id: TaskId, value: T) -> Option<T> {
+pub fn set_label_for_task<T: Clone + Debug + 'static>(task_id: TaskId, value: T) -> Option<T> {
     with_labels_for_task(task_id, |labels| labels.insert(value))
 }
 
 /// Remove a label of the given type for the specified task, returning the old label for the type, if any
 #[inline]
-pub fn remove_label_for_task<T: Clone + Debug + Send + Sync + 'static>(task_id: TaskId) -> Option<T> {
+pub fn remove_label_for_task<T: Clone + Debug + 'static>(task_id: TaskId) -> Option<T> {
     with_labels_for_task(task_id, |labels| labels.remove())
 }
 
