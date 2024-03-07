@@ -1,3 +1,9 @@
+# 0.7.0 (March 7, 2024)
+
+* Add support for task labels. These replace task tags, which are deprecated and will be removed in a future release. (#138)
+* In the meantime, `Tag`s are now implemented with a trait. This is a breaking change from 0.6.1. (#111)
+* Implement `is_finished()` for `future::JoinHandle` (#118)
+
 # 0.6.1 (May 23, 2023)
 
 * Add feature to tag tasks (#98)
