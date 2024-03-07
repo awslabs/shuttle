@@ -145,6 +145,13 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.future.as_mut().poll(cx) {
             Poll::Ready(result) => {
+                // If we've finished execution already (this task was detached), don't clean up. We
+                // can't access the state any more to destroy thread locals, and don't want to run
+                // any more wakers (which will be no-ops anyway).
+                if ExecutionState::try_with(|state| state.is_finished()).unwrap_or(true) {
+                    return Poll::Ready(());
+                }
+
                 // Run thread-local destructors before publishing the result.
                 // See `pop_local` for details on why this loop looks this slightly funky way.
                 // TODO: thread locals and futures don't mix well right now. each task gets its own

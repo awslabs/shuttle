@@ -18,8 +18,8 @@ rand_core = "0.6.4"
 rand = "0.8.5"
 rand_pcg = "0.3.1"
 scoped-tls = "1.0.0"
-smallvec = { version = "1.10.0", features = ["const_new"] }
-tracing = { version = "0.1.21", default-features = false, features = ["std"] }
+smallvec = { version = "1.11.2", features = ["const_new"] }
+tracing = { version = "0.1.36", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 criterion = { version = "0.4.0", features = ["html_reports"] }

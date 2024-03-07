@@ -1,3 +1,4 @@
+use futures::task::{FutureObj, Spawn, SpawnError, SpawnExt as _};
 use futures::{try_join, Future};
 use shuttle::sync::{Barrier, Mutex};
 use shuttle::{check_dfs, check_random, future, scheduler::PctScheduler, thread, Runner};
@@ -384,4 +385,29 @@ fn is_finished_on_join_handle() {
         },
         None,
     );
+}
+
+struct ShuttleSpawn;
+
+impl Spawn for ShuttleSpawn {
+    fn spawn_obj(&self, future: FutureObj<'static, ()>) -> Result<(), SpawnError> {
+        future::spawn(future);
+        Ok(())
+    }
+}
+
+// Make sure a spawned detached task gets cleaned up correctly after execution ends
+#[test]
+fn clean_up_detached_task() {
+    check_dfs(
+        || {
+            let atomic = shuttle::sync::atomic::AtomicUsize::new(0);
+            let _task_handle = ShuttleSpawn
+                .spawn_with_handle(async move {
+                    atomic.fetch_add(1, Ordering::SeqCst);
+                })
+                .unwrap();
+        },
+        None,
+    )
 }
