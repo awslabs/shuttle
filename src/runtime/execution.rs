@@ -696,7 +696,7 @@ impl ExecutionState {
         // Note also that changing this trace! statement requires changing the test `basic::labels::test_tracing_with_label_fn`
         // which relies on this trace reporting the `runnable` tasks.
         self.top_level_span
-            .in_scope(|| trace!(?runnable, next_task=?self.next_task));
+            .in_scope(|| trace!(i=self.current_schedule.len(), next_task=?self.next_task, ?runnable));
 
         Ok(())
     }
