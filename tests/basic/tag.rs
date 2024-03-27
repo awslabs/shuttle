@@ -177,7 +177,7 @@ enum TaskType {
     Unset,
     Low,
     Mid,
-    Rest(u64),
+    Rest,
 }
 
 impl shuttle::current::Taggable for TaskType {}
@@ -188,7 +188,7 @@ impl TaskType {
             0 => TaskType::Unset,
             x if x < 3 => TaskType::Low,
             x if x < 5 => TaskType::Mid,
-            x => TaskType::Rest(x),
+            _x => TaskType::Rest,
         }
     }
 }
