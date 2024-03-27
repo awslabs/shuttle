@@ -21,6 +21,9 @@ use crate::runtime::storage::StorageKey;
 use crate::sync::Once;
 use std::marker::PhantomData;
 
+#[doc(hidden)]
+pub use core::ops::Deref as __Deref;
+
 // `use lazy_static::lazy_static;` is valid, thus `use shuttle::lazy_static::lazy_static;` should be as well.
 pub use crate::lazy_static;
 
