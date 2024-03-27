@@ -21,6 +21,9 @@ use crate::runtime::storage::StorageKey;
 use crate::sync::Once;
 use std::marker::PhantomData;
 
+#[doc(hidden)]
+pub use core::ops::Deref as __Deref;
+
 /// Shuttle's implementation of `lazy_static::Lazy` (aka the unstable `std::lazy::Lazy`).
 // Sadly, the fields of this thing need to be public because function pointers in const fns are
 // unstable, so an explicit instantiation is the only way to construct this struct. User code should
