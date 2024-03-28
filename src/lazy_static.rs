@@ -21,6 +21,9 @@ use crate::runtime::storage::StorageKey;
 use crate::sync::Once;
 use std::marker::PhantomData;
 
+// `use lazy_static::lazy_static;` is valid, thus `use shuttle::lazy_static::lazy_static;` should be as well.
+pub use crate::lazy_static;
+
 /// Shuttle's implementation of `lazy_static::Lazy` (aka the unstable `std::lazy::Lazy`).
 // Sadly, the fields of this thing need to be public because function pointers in const fns are
 // unstable, so an explicit instantiation is the only way to construct this struct. User code should
