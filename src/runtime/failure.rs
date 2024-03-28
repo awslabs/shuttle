@@ -114,7 +114,7 @@ enum PanicHookState {
 }
 
 thread_local! {
-    static PANIC_HOOK: Mutex<PanicHookState> = Mutex::new(PanicHookState::Disarmed);
+    static PANIC_HOOK: Mutex<PanicHookState> = const { Mutex::new(PanicHookState::Disarmed) };
 }
 
 /// A guard that disarms the panic hook when dropped
