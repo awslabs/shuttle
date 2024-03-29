@@ -17,7 +17,7 @@ pub mod rngs {
     /// unlike in the `rand` crate, this RNG is not *actually* thread-local --- all threads share a
     /// single RNG. This RNG is automatically seeded by Shuttle, and cannot be re-seeded, so this
     /// sharing should be indistinguishable from truly thread-local behavior.
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone)]
     pub struct ThreadRng;
 
     impl RngCore for ThreadRng {
