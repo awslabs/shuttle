@@ -35,6 +35,8 @@ impl std::fmt::Debug for OnceInitState {
 
 impl Once {
     /// Creates a new `Once` value.
+    #[must_use]
+    #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
         Self { _dummy: 0 }
     }
