@@ -1,3 +1,8 @@
+# 0.7.1 (May 31, 2024)
+
+* Implement `try_send` and iterators for `mpsc` channels (#120)
+* Implement `get_mut` for `Mutex` and `RwLock` (#120)
+
 # 0.7.0 (March 7, 2024)
 
 * Add support for task labels. These replace task tags, which are deprecated and will be removed in a future release. (#138)
