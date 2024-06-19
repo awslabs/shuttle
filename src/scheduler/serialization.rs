@@ -9,7 +9,7 @@ use bitvec::prelude::*;
 /// crate, used under the MIT license.
 mod varint {
     pub fn space_needed(val: u64) -> usize {
-        let used_bits = u64::min_value().leading_zeros() - val.leading_zeros();
+        let used_bits = u64::MIN.leading_zeros() - val.leading_zeros();
         std::cmp::max((used_bits + 6) as usize / 7, 1)
     }
 
