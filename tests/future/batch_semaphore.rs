@@ -1,7 +1,8 @@
+use crate::basic::clocks::{check_clock, me};
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
-use shuttle::check_dfs;
 use shuttle::future::{self, batch_semaphore::*};
+use shuttle::{check_dfs, current, thread};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -22,6 +23,145 @@ fn batch_semaphore_basic() {
                 s.release(1);
                 s.acquire(1).await.unwrap();
             });
+        },
+        None,
+    );
+}
+
+#[test]
+fn batch_semaphore_clock_1() {
+    check_dfs(
+        || {
+            let s = Arc::new(BatchSemaphore::new(0));
+
+            let s2 = s.clone();
+            thread::spawn(move || {
+                assert_eq!(me(), 1);
+                s2.release(1);
+            });
+            thread::spawn(move || {
+                assert_eq!(me(), 2);
+                check_clock(|i, c| (i != 1) || (c == 0));
+                s.acquire_blocking(1).unwrap();
+                // after the acquire, we are causally dependent on task 1
+                check_clock(|i, c| (i != 1) || (c > 0));
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn batch_semaphore_clock_2() {
+    check_dfs(
+        || {
+            let s = Arc::new(BatchSemaphore::new(0));
+
+            for i in 1..=2 {
+                let s2 = s.clone();
+                thread::spawn(move || {
+                    assert_eq!(me(), i);
+                    s2.release(1);
+                });
+            }
+
+            thread::spawn(move || {
+                assert_eq!(me(), 3);
+                check_clock(|i, c| (c > 0) == (i == 0));
+                // acquire 2: unblocked once both of the threads finished
+                s.acquire_blocking(2).unwrap();
+                // after the acquire, we are causally dependent on both tasks
+                check_clock(|i, c| (i == 3) || (c > 0));
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn batch_semaphore_clock_3() {
+    check_dfs(
+        || {
+            let s = Arc::new(BatchSemaphore::new(0));
+
+            for i in 1..=2 {
+                let s2 = s.clone();
+                thread::spawn(move || {
+                    assert_eq!(me(), i);
+                    s2.release(1);
+                });
+            }
+
+            thread::spawn(move || {
+                assert_eq!(me(), 3);
+                check_clock(|i, c| (c > 0) == (i == 0));
+                // acquire 1: unblocked once either of the threads finished
+                s.acquire_blocking(1).unwrap();
+                // after the acquire, we are causally dependent on exactly one of the two tasks
+                let clock = current::clock();
+                assert!((clock[1] > 0 && clock[2] == 0) || (clock[1] == 0 && clock[2] > 0));
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn batch_semaphore_clock_4() {
+    check_dfs(
+        || {
+            let s = Arc::new(BatchSemaphore::new(1));
+
+            for tid in 1..=2 {
+                let other_tid = 2 - tid;
+                let s2 = s.clone();
+                thread::spawn(move || {
+                    assert_eq!(me(), tid);
+                    match s2.try_acquire(1) {
+                        Ok(()) => {
+                            // we won the race, no causal dependence on another thread
+                            check_clock(|i, c| (c > 0) == (i == 0 || i == tid));
+                        }
+                        Err(TryAcquireError::NoPermits) => {
+                            // we lost the race, so we causally depend on the other thread
+                            check_clock(|i, c| !(i == 0 || i == other_tid) || (c > 0));
+                        }
+                        Err(TryAcquireError::Closed) => unreachable!(),
+                    }
+                });
+            }
+        },
+        None,
+    );
+}
+
+/// Shows a case in which causality tracking in the batch semaphore is
+/// currently imprecise. The test sets up a semaphore with two permits and two
+/// threads, each of which acquires one permit, then releases one permit, then
+/// repeats. Neither thread can be blocked in this situation, and so neither
+/// thread should causally depend on the other, but currently they do.
+#[test]
+#[should_panic(expected = "doesn't satisfy predicate")]
+fn batch_semaphore_clock_imprecise() {
+    check_dfs(
+        move || {
+            let s = Arc::new(BatchSemaphore::new(2, Fairness::StrictlyFair));
+
+            for tid in 1..=2 {
+                let s2 = s.clone();
+                thread::spawn(move || {
+                    assert_eq!(me(), tid);
+                    for _ in 0..2 {
+                        s2.try_acquire(1).unwrap();
+                        s2.release(1);
+                    }
+
+                    // With precise causality tracking, this predicate should
+                    // hold: each thread should only be aware of the events of
+                    // its parent and its own usage of the semaphore.
+                    check_clock(|i, c| (c > 0) == (i == 0 || i == tid));
+                });
+            }
         },
         None,
     );
