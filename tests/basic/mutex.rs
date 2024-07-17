@@ -377,3 +377,69 @@ fn mutex_into_inner() {
         None,
     )
 }
+
+/// Checks that the mutex is unfair, i.e. if there are two threads blocked
+/// on the same mutex, unlocking the mutex may unblock either thread.
+#[test]
+fn mutex_unfair() {
+    let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    let observed_values_clone = Arc::clone(&observed_values);
+
+    check_random(
+        move || {
+            let lock = Arc::new(Mutex::new(vec![]));
+            let guard = lock.lock().unwrap();
+
+            // Here we use a stdlib mutex to avoid introducing yield points.
+            // It is used to record in which order the two threads were
+            // enqueued, because `thread::spawn` is a yield point and as such
+            // the enqueing can happen in either order.
+            let order = Arc::new(std::sync::Mutex::new(vec![]));
+            let threads = (0..2)
+                .map(|tid| {
+                    let lock = lock.clone();
+                    let order = order.clone();
+                    thread::spawn(move || {
+                        // once the ID is pushed to the vector here and
+                        // observed in the busy loop below, the thread is
+                        // assumed to be blocked, because there is no yield
+                        // point between the push and the shuttle mutex lock
+                        order.lock().unwrap().push(tid); // stdlib mutex
+                        lock.lock().unwrap().push(tid); // shuttle mutex
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            while order.lock().unwrap().len() < 2 {
+                thread::yield_now();
+            }
+            drop(guard);
+
+            for thread in threads {
+                thread.join().unwrap();
+            }
+
+            let lock = Arc::try_unwrap(lock).unwrap();
+            let order = Arc::try_unwrap(order).unwrap();
+            observed_values_clone
+                .lock()
+                .unwrap()
+                .insert((lock.into_inner().unwrap(), order.into_inner().unwrap()));
+        },
+        100, // 100 tries should be enough to find both orders
+    );
+
+    // Once we are done, we should see four combinations: the threads can wait
+    // on the mutex in either order, and once the mutex is available, the
+    // threads can be unblock in either order as well.
+    let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
+    assert_eq!(
+        observed_values,
+        HashSet::from([
+            (vec![0, 1], vec![0, 1]),
+            (vec![1, 0], vec![0, 1]),
+            (vec![0, 1], vec![1, 0]),
+            (vec![1, 0], vec![1, 0]),
+        ])
+    );
+}
