@@ -2,7 +2,7 @@ use crate::basic::clocks::{check_clock, me};
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use shuttle::future::{self, batch_semaphore::*};
-use shuttle::{check_dfs, current, thread};
+use shuttle::{check_dfs, check_random, current, thread};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use test_log::test;
 fn batch_semaphore_basic() {
     check_dfs(
         || {
-            let s = BatchSemaphore::new(3);
+            let s = BatchSemaphore::new(3, Fairness::StrictlyFair);
 
             future::spawn(async move {
                 s.acquire(2).await.unwrap();
@@ -28,111 +28,223 @@ fn batch_semaphore_basic() {
     );
 }
 
+/// Checks the behavior of an unfair batch semaphore is unfair: if there are
+/// two threads blocked on the same semaphore, releasing permits may unblock
+/// them in any order.
+#[test]
+fn batch_semaphore_unfair() {
+    let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    let observed_values_clone = Arc::clone(&observed_values);
+
+    check_random(
+        move || {
+            let semaphore = Arc::new(BatchSemaphore::new(0, Fairness::Unfair));
+
+            // Here we use a stdlib mutex to avoid introducing yield points.
+            // It is used to record in which order the threads were enqueued
+            // into the semaphore's waiters list, because `thread::spawn` is
+            // a yield point and as such the enqueing can happen in either
+            // order.
+            let order1 = Arc::new(std::sync::Mutex::new(vec![]));
+            let order2 = Arc::new(std::sync::Mutex::new(vec![]));
+            let threads = (0..3)
+                .map(|tid| {
+                    let semaphore = semaphore.clone();
+                    let order1 = order1.clone();
+                    let order2 = order2.clone();
+                    thread::spawn(move || {
+                        // once the ID is pushed to the vector here and
+                        // observed in the busy loop below, the thread is
+                        // assumed to be blocked, because there is no yield
+                        // point between the push and the acquire
+                        order1.lock().unwrap().push(tid); // stdlib mutex
+                        let val = [2, 1, 1][tid];
+                        semaphore.acquire_blocking(val).unwrap(); // shuttle semaphore
+
+                        // after unblock, record which thread acquired how many
+                        order2.lock().unwrap().push((tid, val)); // stdlib mutex
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            // wait until all threads are blocked on the semaphore
+            while order1.lock().unwrap().len() < 3 {
+                thread::yield_now();
+            }
+
+            // record the order in which they enqueued for the semaphore
+            let order1_after_enqueued = order1.lock().unwrap().clone();
+
+            // release 2 permits, which either unblocks thread 0 (which needs
+            // 2 permits), or both thread 1 and 2 (both of which need 1 permit)
+            semaphore.release(2);
+
+            // wait until the threads unblock and finish
+            while order2.lock().unwrap().iter().map(|(_tid, val)| val).sum::<usize>() < 2 {
+                thread::yield_now();
+            }
+
+            // record the order in which they were woken
+            let order2_after_release = order2.lock().unwrap().clone();
+
+            // clean up: release 2 more permits to unblock any remaining
+            // threads, then join all threads
+            semaphore.release(2);
+            for thread in threads {
+                thread.join().unwrap();
+            }
+
+            observed_values_clone
+                .lock()
+                .unwrap()
+                .insert((order1_after_enqueued, order2_after_release));
+        },
+        1000, // should be enough to find all permutations
+    );
+
+    // We expect to see 18 (= 6 * 3) different outcomes:
+    // - the three threads may block on the semaphore in any order (6),
+    // - once the permits are released, then either both are consumed by
+    //   thread 0, or they are consumed threads 1 and 2 (3).
+    let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
+    assert_eq!(
+        observed_values,
+        HashSet::from([
+            (vec![0, 1, 2], vec![(0, 2)]),
+            (vec![0, 1, 2], vec![(1, 1), (2, 1)]),
+            (vec![0, 1, 2], vec![(2, 1), (1, 1)]),
+            (vec![0, 2, 1], vec![(0, 2)]),
+            (vec![0, 2, 1], vec![(1, 1), (2, 1)]),
+            (vec![0, 2, 1], vec![(2, 1), (1, 1)]),
+            (vec![1, 0, 2], vec![(0, 2)]),
+            (vec![1, 0, 2], vec![(1, 1), (2, 1)]),
+            (vec![1, 0, 2], vec![(2, 1), (1, 1)]),
+            (vec![1, 2, 0], vec![(0, 2)]),
+            (vec![1, 2, 0], vec![(1, 1), (2, 1)]),
+            (vec![1, 2, 0], vec![(2, 1), (1, 1)]),
+            (vec![2, 1, 0], vec![(0, 2)]),
+            (vec![2, 1, 0], vec![(1, 1), (2, 1)]),
+            (vec![2, 1, 0], vec![(2, 1), (1, 1)]),
+            (vec![2, 0, 1], vec![(0, 2)]),
+            (vec![2, 0, 1], vec![(1, 1), (2, 1)]),
+            (vec![2, 0, 1], vec![(2, 1), (1, 1)]),
+        ])
+    );
+}
+
 #[test]
 fn batch_semaphore_clock_1() {
-    check_dfs(
-        || {
-            let s = Arc::new(BatchSemaphore::new(0));
+    for fairness in [Fairness::StrictlyFair, Fairness::Unfair] {
+        check_dfs(
+            move || {
+                let s = Arc::new(BatchSemaphore::new(0, fairness));
 
-            let s2 = s.clone();
-            thread::spawn(move || {
-                assert_eq!(me(), 1);
-                s2.release(1);
-            });
-            thread::spawn(move || {
-                assert_eq!(me(), 2);
-                check_clock(|i, c| (i != 1) || (c == 0));
-                s.acquire_blocking(1).unwrap();
-                // after the acquire, we are causally dependent on task 1
-                check_clock(|i, c| (i != 1) || (c > 0));
-            });
-        },
-        None,
-    );
+                let s2 = s.clone();
+                thread::spawn(move || {
+                    assert_eq!(me(), 1);
+                    s2.release(1);
+                });
+                thread::spawn(move || {
+                    assert_eq!(me(), 2);
+                    check_clock(|i, c| (i != 1) || (c == 0));
+                    s.acquire_blocking(1).unwrap();
+                    // after the acquire, we are causally dependent on task 1
+                    check_clock(|i, c| (i != 1) || (c > 0));
+                });
+            },
+            None,
+        );
+    }
 }
 
 #[test]
 fn batch_semaphore_clock_2() {
-    check_dfs(
-        || {
-            let s = Arc::new(BatchSemaphore::new(0));
+    for fairness in [Fairness::StrictlyFair, Fairness::Unfair] {
+        check_dfs(
+            move || {
+                let s = Arc::new(BatchSemaphore::new(0, fairness));
 
-            for i in 1..=2 {
-                let s2 = s.clone();
+                for i in 1..=2 {
+                    let s2 = s.clone();
+                    thread::spawn(move || {
+                        assert_eq!(me(), i);
+                        s2.release(1);
+                    });
+                }
+
                 thread::spawn(move || {
-                    assert_eq!(me(), i);
-                    s2.release(1);
+                    assert_eq!(me(), 3);
+                    check_clock(|i, c| (c > 0) == (i == 0));
+                    // acquire 2: unblocked once both of the threads finished
+                    s.acquire_blocking(2).unwrap();
+                    // after the acquire, we are causally dependent on both tasks
+                    check_clock(|i, c| (i == 3) || (c > 0));
                 });
-            }
-
-            thread::spawn(move || {
-                assert_eq!(me(), 3);
-                check_clock(|i, c| (c > 0) == (i == 0));
-                // acquire 2: unblocked once both of the threads finished
-                s.acquire_blocking(2).unwrap();
-                // after the acquire, we are causally dependent on both tasks
-                check_clock(|i, c| (i == 3) || (c > 0));
-            });
-        },
-        None,
-    );
+            },
+            None,
+        );
+    }
 }
 
 #[test]
 fn batch_semaphore_clock_3() {
-    check_dfs(
-        || {
-            let s = Arc::new(BatchSemaphore::new(0));
+    for fairness in [Fairness::StrictlyFair, Fairness::Unfair] {
+        check_dfs(
+            move || {
+                let s = Arc::new(BatchSemaphore::new(0, fairness));
 
-            for i in 1..=2 {
-                let s2 = s.clone();
+                for i in 1..=2 {
+                    let s2 = s.clone();
+                    thread::spawn(move || {
+                        assert_eq!(me(), i);
+                        s2.release(1);
+                    });
+                }
+
                 thread::spawn(move || {
-                    assert_eq!(me(), i);
-                    s2.release(1);
+                    assert_eq!(me(), 3);
+                    check_clock(|i, c| (c > 0) == (i == 0));
+                    // acquire 1: unblocked once either of the threads finished
+                    s.acquire_blocking(1).unwrap();
+                    // after the acquire, we are causally dependent on exactly one of the two tasks
+                    let clock = current::clock();
+                    assert!((clock[1] > 0 && clock[2] == 0) || (clock[1] == 0 && clock[2] > 0));
                 });
-            }
-
-            thread::spawn(move || {
-                assert_eq!(me(), 3);
-                check_clock(|i, c| (c > 0) == (i == 0));
-                // acquire 1: unblocked once either of the threads finished
-                s.acquire_blocking(1).unwrap();
-                // after the acquire, we are causally dependent on exactly one of the two tasks
-                let clock = current::clock();
-                assert!((clock[1] > 0 && clock[2] == 0) || (clock[1] == 0 && clock[2] > 0));
-            });
-        },
-        None,
-    );
+            },
+            None,
+        );
+    }
 }
 
 #[test]
 fn batch_semaphore_clock_4() {
-    check_dfs(
-        || {
-            let s = Arc::new(BatchSemaphore::new(1));
+    for fairness in [Fairness::StrictlyFair, Fairness::Unfair] {
+        check_dfs(
+            move || {
+                let s = Arc::new(BatchSemaphore::new(1, fairness));
 
-            for tid in 1..=2 {
-                let other_tid = 2 - tid;
-                let s2 = s.clone();
-                thread::spawn(move || {
-                    assert_eq!(me(), tid);
-                    match s2.try_acquire(1) {
-                        Ok(()) => {
-                            // we won the race, no causal dependence on another thread
-                            check_clock(|i, c| (c > 0) == (i == 0 || i == tid));
+                for tid in 1..=2 {
+                    let other_tid = 2 - tid;
+                    let s2 = s.clone();
+                    thread::spawn(move || {
+                        assert_eq!(me(), tid);
+                        match s2.try_acquire(1) {
+                            Ok(()) => {
+                                // we won the race, no causal dependence on another thread
+                                check_clock(|i, c| (c > 0) == (i == 0 || i == tid));
+                            }
+                            Err(TryAcquireError::NoPermits) => {
+                                // we lost the race, so we causally depend on the other thread
+                                check_clock(|i, c| !(i == 0 || i == other_tid) || (c > 0));
+                            }
+                            Err(TryAcquireError::Closed) => unreachable!(),
                         }
-                        Err(TryAcquireError::NoPermits) => {
-                            // we lost the race, so we causally depend on the other thread
-                            check_clock(|i, c| !(i == 0 || i == other_tid) || (c > 0));
-                        }
-                        Err(TryAcquireError::Closed) => unreachable!(),
-                    }
-                });
-            }
-        },
-        None,
-    );
+                    });
+                }
+            },
+            None,
+        );
+    }
 }
 
 /// Shows a case in which causality tracking in the batch semaphore is
@@ -170,8 +282,8 @@ fn batch_semaphore_clock_imprecise() {
 // Create a semaphore with `num_permits` permits and spawn a bunch of tasks that each
 // try to grab a bunch of permits.  Task i sets the i'th bit in a shared atomic counter.
 // Afterwards, we'll see which combinations were allowable over a full dfs run.
-async fn semtest(num_permits: usize, counts: Vec<usize>, states: &Arc<Mutex<HashSet<(usize, usize)>>>) {
-    let s = Arc::new(BatchSemaphore::new(num_permits));
+async fn semtest(num_permits: usize, counts: Vec<usize>, states: &Arc<Mutex<HashSet<(usize, usize)>>>, mode: Fairness) {
+    let s = Arc::new(BatchSemaphore::new(num_permits, mode));
     let r = Arc::new(AtomicUsize::new(0));
     let mut handles = vec![];
     for (i, &c) in counts.iter().enumerate() {
@@ -201,7 +313,7 @@ fn batch_semaphore_test_1() {
         move || {
             let states2 = states2.clone();
             future::block_on(async move {
-                semtest(5, vec![3, 3, 3], &states2).await;
+                semtest(5, vec![3, 3, 3], &states2, Fairness::StrictlyFair).await;
             });
         },
         None,
@@ -219,7 +331,7 @@ fn batch_semaphore_test_2() {
         move || {
             let states2 = states2.clone();
             future::block_on(async move {
-                semtest(5, vec![3, 3, 2], &states2).await;
+                semtest(5, vec![3, 3, 2], &states2, Fairness::StrictlyFair).await;
             });
         },
         None,
@@ -237,7 +349,7 @@ fn batch_semaphore_signal() {
     // Use a semaphore for signaling
     check_dfs(
         move || {
-            let sem = Arc::new(BatchSemaphore::new(0));
+            let sem = Arc::new(BatchSemaphore::new(0, Fairness::StrictlyFair));
             let sem2 = sem.clone();
             let r = Arc::new(AtomicUsize::new(0));
             let r2 = r.clone();
@@ -264,8 +376,8 @@ fn batch_semaphore_close_acquire() {
     check_dfs(
         || {
             future::block_on(async {
-                let tx = Arc::new(BatchSemaphore::new(1));
-                let rx = Arc::new(BatchSemaphore::new(0));
+                let tx = Arc::new(BatchSemaphore::new(1, Fairness::StrictlyFair));
+                let rx = Arc::new(BatchSemaphore::new(0, Fairness::StrictlyFair));
                 let tx2 = tx.clone();
                 let rx2 = rx.clone();
 
@@ -302,7 +414,7 @@ fn batch_semaphore_drop_sender() {
     check_dfs(
         || {
             future::block_on(async {
-                let sem = Arc::new(BatchSemaphore::new(0));
+                let sem = Arc::new(BatchSemaphore::new(0, Fairness::StrictlyFair));
                 let sender = Sender { sem: sem.clone() };
 
                 future::spawn(async move {
@@ -360,7 +472,7 @@ fn bugged_cleanup_would_cause_deadlock() {
 
     check_dfs(
         || {
-            let sem = Arc::new(BatchSemaphore::new(1));
+            let sem = Arc::new(BatchSemaphore::new(1, Fairness::StrictlyFair));
             let sem2 = sem.clone();
 
             future::block_on(async move {
@@ -486,7 +598,7 @@ mod early_acquire_drop_test {
     fn dropped_acquire_must_release(num_permits: usize, early_drop: Vec<bool>) {
         shuttle::lazy_static! {
             // S1. Initialize the semaphore with no permits
-            static ref SEM: BatchSemaphore = BatchSemaphore::new(0);
+            static ref SEM: BatchSemaphore = BatchSemaphore::new(0, Fairness::StrictlyFair);
         }
 
         future::block_on(async move {
