@@ -252,6 +252,8 @@ pub(crate) struct ExecutionState {
     scheduler: Rc<RefCell<dyn Scheduler>>,
     pub(super) current_schedule: Schedule,
 
+    in_cleanup: bool,
+
     #[cfg(debug_assertions)]
     has_cleaned_up: bool,
 
@@ -292,6 +294,7 @@ impl ExecutionState {
             storage: StorageMap::new(),
             scheduler,
             current_schedule: initial_schedule,
+            in_cleanup: false,
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
@@ -447,6 +450,7 @@ impl ExecutionState {
         // `should_stop()`). So we pull the tasks out of the `ExecutionState`, leaving it in an
         // invalid state, but no one should still be accessing the tasks anyway.
         let (mut tasks, final_state) = Self::with(|state| {
+            state.in_cleanup = true;
             assert!(state.current_task == ScheduledTask::Stopped || state.current_task == ScheduledTask::Finished);
             (std::mem::replace(&mut state.tasks, SmallVec::new()), state.current_task)
         });
@@ -468,6 +472,8 @@ impl ExecutionState {
 
         #[cfg(debug_assertions)]
         Self::with(|state| state.has_cleaned_up = true);
+
+        Self::with(|state| state.in_cleanup = false);
     }
 
     /// Determine whether the execution has finished.
@@ -569,6 +575,10 @@ impl ExecutionState {
 
     pub(crate) fn try_get(&self, id: TaskId) -> Option<&Task> {
         self.tasks.get(id.0)
+    }
+
+    pub(crate) fn in_cleanup(&self) -> bool {
+        self.in_cleanup
     }
 
     pub(crate) fn context_switches() -> usize {

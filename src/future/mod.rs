@@ -16,6 +16,8 @@ use std::result::Result;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
+pub mod batch_semaphore;
+
 /// Spawn a new async task that the executor will run to completion.
 pub fn spawn<T, F>(fut: F) -> JoinHandle<T>
 where

@@ -1,6 +1,6 @@
 mod atomic;
 mod barrier;
-mod clocks;
+pub(crate) mod clocks;
 mod condvar;
 mod config;
 mod dfs;
