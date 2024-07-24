@@ -2,6 +2,7 @@
 use crate::current;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{clock::VectorClock, TaskId};
+use crate::runtime::thread;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -325,7 +326,7 @@ impl BatchSemaphore {
     /// If there aren't enough permits, returns `Err(TryAcquireError::NoPermits)`
     pub fn try_acquire(&self, num_permits: usize) -> Result<(), TryAcquireError> {
         let mut state = self.state.borrow_mut();
-        state.acquire_permits(num_permits).map_err(|err| {
+        let res = state.acquire_permits(num_permits).map_err(|err| {
             // Conservatively, the requester causally depends on the
             // last successful acquire.
             // TODO: This is not precise, but `try_acquire` causal dependency
@@ -343,7 +344,16 @@ impl BatchSemaphore {
                 s.update_clock(&state.permits_available.last_acquire);
             });
             err
-        })
+        });
+        drop(state);
+
+        // We context switch here whether we acquired any permits or not. If
+        // we have, this is to let other threads fail their `try_acquire`;
+        // if we have not, we yield so that the current thread can try again
+        // after other threads have worked.
+        thread::switch();
+
+        res
     }
 
     fn enqueue_waiter(&self, waiter: &Arc<Waiter>) {
@@ -391,11 +401,19 @@ impl BatchSemaphore {
             return;
         }
 
+        let mut state = self.state.borrow_mut();
+
         if ExecutionState::should_stop() {
+            // In case we are panicking, we release permits, but also clear
+            // the waiters queue: we should not unblock the threads at this
+            // point. However, the permits are released such that future
+            // acquires may succeed, as long as the requesters were not
+            // blocking on the semaphore at the time of the panic. This is
+            // used to correctly model lock poisoning.
+            state.permits_available.release(num_permits, VectorClock::new());
+            state.waiters.clear();
             return;
         }
-
-        let mut state = self.state.borrow_mut();
 
         // Permits released into the semaphore reflect the releasing thread's
         // clock; future acquires of those permits are causally dependent on
@@ -469,7 +487,7 @@ impl BatchSemaphore {
         drop(state);
 
         // Releasing a semaphore is a yield point
-        crate::runtime::thread::switch();
+        thread::switch();
     }
 }
 
@@ -572,7 +590,8 @@ impl Future for Acquire<'_> {
                         self.waiter.has_permits.store(true, Ordering::SeqCst);
                         self.completed = true;
                         trace!("Acquire::poll for waiter {:?} that got permits", self.waiter);
-                        crate::runtime::thread::switch();
+
+                        thread::switch();
                         Poll::Ready(Ok(()))
                     }
                     Err(TryAcquireError::NoPermits) => {
