@@ -1,6 +1,6 @@
-use crate::future::batch_semaphore::{BatchSemaphore, Fairness, TryAcquireError};
-use crate::runtime::task::TaskId;
 use crate::current;
+use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
+use crate::runtime::task::TaskId;
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -29,9 +29,7 @@ struct MutexState {
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
     pub const fn new(value: T) -> Self {
-        let state = MutexState {
-            holder: None,
-        };
+        let state = MutexState { holder: None };
         Self {
             state: RefCell::new(state),
             semaphore: BatchSemaphore::const_new(1, Fairness::Unfair),
@@ -49,12 +47,13 @@ impl<T: ?Sized> Mutex<T> {
         trace!(holder=?state.holder, semaphore=?self.semaphore, "waiting to acquire mutex {:p}", self);
         drop(state);
 
-        // Try to acquire without blocking first. If we succeed, we are done
-        // and can move on to acquiring the inner mutex. This is a yield point.
-        match self.semaphore.try_acquire(1) {
-            Ok(()) => (),
-            Err(TryAcquireError::Closed) => unreachable!(),
-            Err(_) => {
+        if !self.semaphore.is_closed() {
+            // This is a check for permits without any causal dependency or an
+            // immediate yield point! We need to do this in order to be able to
+            // detect a deadlock due to re-entrancy without unnecessary yield
+            // points. The yield(s) and causal dependency updates happen
+            // immediately after, in the `acquire_blocking` call.
+            if self.semaphore.available_permits() < 1 {
                 // If the lock is already held, then we are blocked. This can
                 // happen either because the lock is held by another thread,
                 // or because the lock is held by the current thread. For the
@@ -67,9 +66,8 @@ impl<T: ?Sized> Mutex<T> {
                     }
                 }
                 drop(state);
-
-                self.semaphore.acquire_blocking(1).unwrap();
             }
+            self.semaphore.acquire_blocking(1).unwrap();
         }
 
         state = self.state.borrow_mut();
@@ -89,7 +87,7 @@ impl<T: ?Sized> Mutex<T> {
                 inner: Some(guard.into_inner()),
                 mutex: self,
             })),
-            Err(TryLockError::WouldBlock) => panic!("mutex state out of sync"),
+            Err(TryLockError::WouldBlock) => unreachable!("mutex state out of sync"),
         };
 
         result
@@ -109,8 +107,7 @@ impl<T: ?Sized> Mutex<T> {
         // `try_acquire` is a yield point. We need to let other threads in here so they
         // (a) may fail a `try_lock` (in case we acquired), or
         // (b) may release the lock (in case we failed to acquire) so we can succeed in a subsequent `try_lock`.
-        self.semaphore.try_acquire(1)
-            .map_err(|_| TryLockError::WouldBlock)?;
+        self.semaphore.try_acquire(1).map_err(|_| TryLockError::WouldBlock)?;
 
         state = self.state.borrow_mut();
         state.holder = Some(me);
@@ -128,7 +125,7 @@ impl<T: ?Sized> Mutex<T> {
                 inner: Some(guard.into_inner()),
                 mutex: self,
             }))),
-            Err(TryLockError::WouldBlock) => panic!("mutex state out of sync"),
+            Err(TryLockError::WouldBlock) => unreachable!("mutex state out of sync"),
         };
 
         result

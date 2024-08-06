@@ -347,6 +347,12 @@ impl BatchSemaphore {
         });
         drop(state);
 
+        // If we won the race for permits of an unfair semaphore, re-block
+        // other waiting threads that can no longer succeed.
+        if res.is_ok() {
+            self.reblock_if_unfair();
+        }
+
         // We context switch here whether we acquired any permits or not. If
         // we have, this is to let other threads fail their `try_acquire`;
         // if we have not, we yield so that the current thread can try again
@@ -354,6 +360,27 @@ impl BatchSemaphore {
         thread::switch();
 
         res
+    }
+
+    /// Clean-up method used when a thread succeeds in acquiring permits. If
+    /// the semaphore is unfair, a preceding `release` may have unblocked a
+    /// number of threads, some of which may no longer be able to succeed with
+    /// the permits remaining in the semaphore.
+    fn reblock_if_unfair(&self) {
+        let state = self.state.borrow_mut();
+        if state.fairness == Fairness::Unfair {
+            ExecutionState::with(|s| {
+                for waiter in &state.waiters {
+                    let available = state.permits_available.available();
+                    if available < waiter.num_permits {
+                        // Block this waiter: it cannot succeed (there are not
+                        // enough permits available); its `poll` would return
+                        // without resolving.
+                        s.get_mut(waiter.task_id).block(false);
+                    }
+                }
+            });
+        }
     }
 
     fn enqueue_waiter(&self, waiter: &Arc<Waiter>) {
@@ -411,7 +438,11 @@ impl BatchSemaphore {
             // blocking on the semaphore at the time of the panic. This is
             // used to correctly model lock poisoning.
             state.permits_available.release(num_permits, VectorClock::new());
+            for waiter in &state.waiters {
+                waiter.is_queued.swap(false, Ordering::SeqCst);
+            }
             state.waiters.clear();
+            state.closed = true;
             return;
         }
 
@@ -591,6 +622,11 @@ impl Future for Acquire<'_> {
                         self.completed = true;
                         trace!("Acquire::poll for waiter {:?} that got permits", self.waiter);
 
+                        // If the semaphore is unfair, re-block other waiting
+                        // threads that can no longer succeed.
+                        self.semaphore.reblock_if_unfair();
+
+                        // Yield so other threads can fail a `try_acquire`.
                         thread::switch();
                         Poll::Ready(Ok(()))
                     }
