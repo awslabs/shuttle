@@ -185,17 +185,16 @@ struct BatchSemaphoreState {
     // (4) closed ==> waiters.is_empty()
     waiters: VecDeque<Arc<Waiter>>,
     permits_available: PermitsAvailable,
-    fairness: Fairness,
     // TODO: should there be a clock for the close event?
     closed: bool,
 }
 
 impl BatchSemaphoreState {
-    fn acquire_permits(&mut self, num_permits: usize) -> Result<(), TryAcquireError> {
+    fn acquire_permits(&mut self, num_permits: usize, fairness: Fairness) -> Result<(), TryAcquireError> {
         assert!(num_permits > 0);
         if self.closed {
             Err(TryAcquireError::Closed)
-        } else if self.waiters.is_empty() || matches!(self.fairness, Fairness::Unfair) {
+        } else if self.waiters.is_empty() || matches!(fairness, Fairness::Unfair) {
             // Permits here can be acquired in one of two scenarios:
             // - The waiter queue is empty; nobody else is waiting for permits,
             //   so if there are enough available, immediately succeed.
@@ -223,6 +222,7 @@ impl BatchSemaphoreState {
 #[derive(Debug)]
 pub struct BatchSemaphore {
     state: RefCell<BatchSemaphoreState>,
+    fairness: Fairness,
 }
 
 /// Error returned from the [`BatchSemaphore::try_acquire`] function.
@@ -262,10 +262,9 @@ impl BatchSemaphore {
         let state = RefCell::new(BatchSemaphoreState {
             waiters: VecDeque::new(),
             permits_available: PermitsAvailable::new(num_permits),
-            fairness,
             closed: false,
         });
-        Self { state }
+        Self { state, fairness }
     }
 
     /// Creates a new semaphore with the initial number of permits.
@@ -273,10 +272,9 @@ impl BatchSemaphore {
         let state = RefCell::new(BatchSemaphoreState {
             waiters: VecDeque::new(),
             permits_available: PermitsAvailable::const_new(num_permits),
-            fairness,
             closed: false,
         });
-        Self { state }
+        Self { state, fairness }
     }
 
     /// Returns the current number of available permits.
@@ -326,7 +324,7 @@ impl BatchSemaphore {
     /// If there aren't enough permits, returns `Err(TryAcquireError::NoPermits)`
     pub fn try_acquire(&self, num_permits: usize) -> Result<(), TryAcquireError> {
         let mut state = self.state.borrow_mut();
-        let res = state.acquire_permits(num_permits).map_err(|err| {
+        let res = state.acquire_permits(num_permits, self.fairness).map_err(|err| {
             // Conservatively, the requester causally depends on the
             // last successful acquire.
             // TODO: This is not precise, but `try_acquire` causal dependency
@@ -367,8 +365,8 @@ impl BatchSemaphore {
     /// number of threads, some of which may no longer be able to succeed with
     /// the permits remaining in the semaphore.
     fn reblock_if_unfair(&self) {
-        let state = self.state.borrow_mut();
-        if state.fairness == Fairness::Unfair {
+        if self.fairness == Fairness::Unfair {
+            let state = self.state.borrow_mut();
             ExecutionState::with(|s| {
                 for waiter in &state.waiters {
                     let available = state.permits_available.available();
@@ -457,7 +455,7 @@ impl BatchSemaphore {
         let me = ExecutionState::me();
         trace!(task = ?me, avail = ?state.permits_available, waiters = ?state.waiters, "released {} permits for semaphore {:p}", num_permits, &self.state);
 
-        match state.fairness {
+        match self.fairness {
             Fairness::StrictlyFair => {
                 // in a strictly fair mode we will always pick the first waiter
                 // in the queue, as long as there are enough permits available
@@ -599,7 +597,7 @@ impl Future for Acquire<'_> {
             // would always fail, and the waiter should remain suspended until
             // the semaphore has explicitly unblocked it and given it permits
             // during a `release` call.
-            let try_to_acquire = match (self.semaphore.state.borrow().fairness, is_queued) {
+            let try_to_acquire = match (self.semaphore.fairness, is_queued) {
                 // written this way to mirror the cases described above
                 (Fairness::Unfair, false) | (Fairness::StrictlyFair, false) | (Fairness::Unfair, true) => true,
                 (Fairness::StrictlyFair, true) => false,
@@ -610,7 +608,7 @@ impl Future for Acquire<'_> {
                 // because in case of `NoPermits`, we do not want to update the
                 // clock, as this thread will be blocked below.
                 let mut state = self.semaphore.state.borrow_mut();
-                let acquire_result = state.acquire_permits(self.waiter.num_permits);
+                let acquire_result = state.acquire_permits(self.waiter.num_permits, self.semaphore.fairness);
                 drop(state);
 
                 match acquire_result {
