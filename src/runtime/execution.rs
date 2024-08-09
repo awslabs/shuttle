@@ -679,12 +679,17 @@ impl ExecutionState {
 
         let is_yielding = std::mem::replace(&mut self.has_yielded, false);
 
+        let runnable_tasks = runnable
+            .iter()
+            .map(|id| self.tasks.get(id.0).unwrap())
+            .collect::<SmallVec<[&Task; DEFAULT_INLINE_TASKS]>>();
         self.next_task = self
             .scheduler
             .borrow_mut()
-            .next_task(&runnable, self.current_task.id(), is_yielding)
+            .next_task(&runnable_tasks, self.current_task.id(), is_yielding)
             .map(ScheduledTask::Some)
             .unwrap_or(ScheduledTask::Stopped);
+        drop(runnable_tasks);
 
         // If the task chosen by the scheduler is blocked, then it should be one that can be
         // spuriously woken up, and we need to unblock it here so that it can execute.

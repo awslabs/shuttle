@@ -12,7 +12,7 @@ mod uncontrolled_nondeterminism;
 pub(crate) mod metrics;
 pub(crate) mod serialization;
 
-pub use crate::runtime::task::TaskId;
+pub use crate::runtime::task::{Task, TaskId};
 
 pub use data::{DataSource, RandomDataSource};
 pub use dfs::DfsScheduler;
@@ -101,7 +101,7 @@ pub trait Scheduler {
     /// execution has not yet begun.
     fn next_task(
         &mut self,
-        runnable_tasks: &[TaskId],
+        runnable_tasks: &[&Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
     ) -> Option<TaskId>;
@@ -117,7 +117,7 @@ impl Scheduler for Box<dyn Scheduler + Send> {
 
     fn next_task(
         &mut self,
-        runnable_tasks: &[TaskId],
+        runnable_tasks: &[&Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
     ) -> Option<TaskId> {

@@ -1,4 +1,4 @@
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{Task, TaskId};
 use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
 use crate::scheduler::{Schedule, Scheduler};
@@ -33,17 +33,18 @@ impl Scheduler for RoundRobinScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
+    fn next_task(&mut self, runnable: &[&Task], current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
         if current.is_none() {
-            return Some(*runnable.first().unwrap());
+            return Some(runnable.first().unwrap().id());
         }
         let current = current.unwrap();
 
         Some(
-            *runnable
+            runnable
                 .iter()
-                .find(|t| **t > current)
-                .unwrap_or_else(|| runnable.first().unwrap()),
+                .find(|t| t.id() > current)
+                .unwrap_or_else(|| runnable.first().unwrap())
+                .id(),
         )
     }
 

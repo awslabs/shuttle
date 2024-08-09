@@ -1,4 +1,4 @@
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{Task, TaskId};
 use crate::scheduler::{Schedule, Scheduler};
 use tracing::info;
 
@@ -85,7 +85,7 @@ impl<S: Scheduler> Scheduler for MetricsScheduler<S> {
 
     fn next_task(
         &mut self,
-        runnable_tasks: &[TaskId],
+        runnable_tasks: &[&Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
     ) -> Option<TaskId> {
@@ -94,7 +94,7 @@ impl<S: Scheduler> Scheduler for MetricsScheduler<S> {
         self.steps += 1;
         if choice != self.last_task {
             self.context_switches += 1;
-            if runnable_tasks.contains(&self.last_task) {
+            if runnable_tasks.iter().any(|t| t.id() == self.last_task) {
                 self.preemptions += 1;
             }
         }

@@ -1,5 +1,5 @@
 use crate::runtime::execution::Execution;
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{Task, TaskId};
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
@@ -237,7 +237,7 @@ impl<S: Scheduler> Scheduler for PortfolioStoppableScheduler<S> {
 
     fn next_task(
         &mut self,
-        runnable_tasks: &[TaskId],
+        runnable_tasks: &[&Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
     ) -> Option<TaskId> {
