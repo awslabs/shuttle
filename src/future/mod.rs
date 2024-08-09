@@ -183,8 +183,6 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     let waker = ExecutionState::with(|state| state.current_mut().waker());
     let cx = &mut Context::from_waker(&waker);
 
-    thread::switch();
-
     loop {
         match future.as_mut().poll(cx) {
             Poll::Ready(result) => break result,

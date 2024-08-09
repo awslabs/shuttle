@@ -74,5 +74,5 @@ fn async_match_deadlock() {
 fn async_match_deadlock_replay() {
     // Deterministically replay a deadlocking execution so we can, for example, single-step through
     // it in a debugger.
-    shuttle::replay(|| tokio::block_on(main()), "91010cbbc0daf8c5a5a9b162a08a08")
+    shuttle::replay(|| tokio::block_on(main()), "91010ab393f492d4dabde32f202200")
 }
