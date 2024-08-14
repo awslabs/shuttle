@@ -48,25 +48,17 @@ impl<T: ?Sized> Mutex<T> {
         drop(state);
 
         if !self.semaphore.is_closed() {
-            // This is a check for permits without any causal dependency or an
-            // immediate yield point! We need to do this in order to be able to
-            // detect a deadlock due to re-entrancy without unnecessary yield
-            // points. The yield(s) and causal dependency updates happen
-            // immediately after, in the `acquire_blocking` call.
-            if self.semaphore.available_permits() < 1 {
-                // If the lock is already held, then we are blocked. This can
-                // happen either because the lock is held by another thread,
-                // or because the lock is held by the current thread. For the
-                // latter case, we check the state to report a more precise
-                // error message.
-                state = self.state.borrow_mut();
-                if let Some(holder) = state.holder {
-                    if holder == me {
-                        panic!("deadlock! task {:?} tried to acquire a Mutex it already holds", me);
-                    }
-                }
-                drop(state);
-            }
+            // Detect deadlock due to re-entrancy.
+            state = self.state.borrow_mut();
+            assert!(
+                match &state.holder {
+                    Some(holder) => *holder != me,
+                    None => true,
+                },
+                "deadlock! task {me:?} tried to acquire a Mutex it already holds"
+            );
+            drop(state);
+
             self.semaphore.acquire_blocking(1).unwrap();
         }
 
