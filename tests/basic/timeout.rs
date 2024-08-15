@@ -1,4 +1,4 @@
-use shuttle::scheduler::{RandomScheduler, Schedule, Scheduler, TaskId};
+use shuttle::scheduler::{RandomScheduler, Schedule, Scheduler, Task, TaskId};
 use shuttle::sync::Mutex;
 use shuttle::Config;
 use shuttle::{thread, Runner};
@@ -27,7 +27,7 @@ impl<S: Scheduler> Scheduler for SleepableScheduler<S> {
 
     fn next_task(
         &mut self,
-        runnable_tasks: &[TaskId],
+        runnable_tasks: &[&Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
     ) -> Option<TaskId> {

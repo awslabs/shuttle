@@ -1,4 +1,4 @@
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{Task, TaskId};
 use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
 use crate::scheduler::{Schedule, Scheduler};
@@ -51,8 +51,8 @@ impl Scheduler for RandomScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
-        Some(*runnable.choose(&mut self.rng).unwrap())
+    fn next_task(&mut self, runnable: &[&Task], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
+        Some(runnable.choose(&mut self.rng).unwrap().id())
     }
 
     fn next_u64(&mut self) -> u64 {

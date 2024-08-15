@@ -1,4 +1,4 @@
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{Task, TaskId};
 use crate::scheduler::data::fixed::FixedDataSource;
 use crate::scheduler::data::DataSource;
 use crate::scheduler::{Schedule, Scheduler};
@@ -66,13 +66,13 @@ impl Scheduler for DfsScheduler {
 
     // TODO should we respect `is_yielding` by not allowing `current` to be scheduled next? That
     // TODO would be unsound but perhaps useful for validating some code
-    fn next_task(&mut self, runnable: &[TaskId], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
+    fn next_task(&mut self, runnable: &[&Task], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
         let next = if self.steps >= self.levels.len() {
             // First time we've reached this level
             assert_eq!(self.steps, self.levels.len());
-            let to_run = runnable.first().unwrap();
-            self.levels.push((*to_run, runnable.len() == 1));
-            *to_run
+            let to_run = runnable.first().unwrap().id();
+            self.levels.push((to_run, runnable.len() == 1));
+            to_run
         } else {
             let (last_choice, was_last) = self.levels[self.steps];
             if self.has_more_choices(self.steps + 1) {
@@ -84,8 +84,8 @@ impl Scheduler for DfsScheduler {
                     !was_last,
                     "if we are making a change, there should be another available option"
                 );
-                let next_idx = runnable.iter().position(|tid| *tid == last_choice).unwrap() + 1;
-                let next = runnable[next_idx];
+                let next_idx = runnable.iter().position(|t| t.id() == last_choice).unwrap() + 1;
+                let next = runnable[next_idx].id();
                 self.levels.drain(self.steps..);
                 self.levels.push((next, next_idx == runnable.len() - 1));
                 next

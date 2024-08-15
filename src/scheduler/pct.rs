@@ -1,4 +1,4 @@
-use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
 use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
 use crate::scheduler::{Schedule, Scheduler};
@@ -105,11 +105,11 @@ impl Scheduler for PctScheduler {
         Some(Schedule::new(self.data_source.reinitialize()))
     }
 
-    fn next_task(&mut self, runnable: &[TaskId], current: Option<TaskId>, is_yielding: bool) -> Option<TaskId> {
+    fn next_task(&mut self, runnable: &[&Task], current: Option<TaskId>, is_yielding: bool) -> Option<TaskId> {
         // If any new tasks were created, assign them priorities by randomly swapping them with an
         // existing task's priority, so we maintain the invariant that every priority is distinct
         let max_known_task = self.priorities.len();
-        let max_new_task = usize::from(*runnable.iter().max().unwrap());
+        let max_new_task = usize::from(runnable.iter().map(|t| t.id()).max().unwrap());
         for new_task_id in max_known_task..1 + max_new_task {
             let new_task_id = TaskId::from(new_task_id);
             // Make sure there's a chance to give the new task the lowest priority
@@ -150,10 +150,11 @@ impl Scheduler for PctScheduler {
 
         // Choose the highest-priority (== lowest priority value) runnable task
         Some(
-            *runnable
+            runnable
                 .iter()
-                .min_by_key(|tid| self.priorities.get(tid))
-                .expect("priority queue invariant"),
+                .min_by_key(|t| self.priorities.get(&t.id()))
+                .expect("priority queue invariant")
+                .id(),
         )
     }
 

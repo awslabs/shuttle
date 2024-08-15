@@ -90,7 +90,7 @@ fn max_steps_fail() {
 // Test that a scheduler can return `None` to trigger the same behavior as `MaxSteps::ContinueAfter`
 #[test]
 fn max_steps_early_exit_scheduler() {
-    use shuttle::scheduler::{Schedule, Scheduler, TaskId};
+    use shuttle::scheduler::{Schedule, Scheduler, Task, TaskId};
 
     #[derive(Debug)]
     struct EarlyExitScheduler {
@@ -124,7 +124,7 @@ fn max_steps_early_exit_scheduler() {
 
         fn next_task(
             &mut self,
-            runnable_tasks: &[TaskId],
+            runnable_tasks: &[&Task],
             _current_task: Option<TaskId>,
             _is_yielding: bool,
         ) -> Option<TaskId> {
@@ -132,7 +132,7 @@ fn max_steps_early_exit_scheduler() {
                 None
             } else {
                 self.steps += 1;
-                Some(*runnable_tasks.first().unwrap())
+                Some(runnable_tasks.first().unwrap().id())
             }
         }
 

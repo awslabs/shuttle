@@ -149,7 +149,7 @@ where
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
 #[derive(Debug)]
-pub(crate) struct Task {
+pub struct Task {
     pub(super) id: TaskId,
     pub(super) state: TaskState,
     pub(super) detached: bool,
@@ -312,7 +312,8 @@ impl Task {
         )
     }
 
-    pub(crate) fn id(&self) -> TaskId {
+    /// Returns the identifier of this task.
+    pub fn id(&self) -> TaskId {
         self.id
     }
 

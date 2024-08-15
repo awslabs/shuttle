@@ -1,3 +1,4 @@
+use crate::basic::clocks::me;
 use crate::{check_replay_roundtrip, check_replay_roundtrip_file, Config, FailurePersistence};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler, Schedule};
 use shuttle::sync::Mutex;
@@ -177,4 +178,124 @@ fn replay_persist_none() {
     assert!(output.contains("counter is wrong"));
     // All our current failure persistence modes print the word "schedule", so check that's missing
     assert!(!output.contains("schedule"));
+}
+
+/// Tests that events not causally related to the failure are never scheduled.
+#[test]
+fn replay_causality() {
+    // The main thread will spawn three threads:
+    // - A, which acquires the lock and sets it to one;
+    // - B, which acquires the lock and asserts it is zero;
+    // - C, which sets an unrelated atomic Boolean.
+    // If A runs before B (as in the schedule below), then the assertion
+    // fails. If we provide the clock of this failure to the scheduler, we
+    // should never see thread C do anything, i.e., the atomic Boolean should
+    // never be set, because it is not causally related to the actual panic.
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let flag = Arc::new(AtomicBool::new(false));
+    let flag_clone = Arc::clone(&flag);
+
+    let result = panic::catch_unwind(|| {
+        let schedule = Schedule::new_from_task_ids(0, vec![0, 1, 0, 2, 0, 3, 0, 1, 1, 2, 2]);
+        let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
+        scheduler.set_target_clock(&[2, 2, 1]);
+        let mut config = Config::new();
+        config.failure_persistence = FailurePersistence::None;
+        let runner = Runner::new(scheduler, config);
+        runner.run(move || {
+            assert_eq!(me(), 0);
+            let lock = Arc::new(Mutex::new(0usize));
+            let lock_clone = Arc::clone(&lock);
+            thread::spawn(move || {
+                assert_eq!(me(), 1);
+                *lock_clone.lock().unwrap() = 1;
+            });
+            thread::spawn(move || {
+                assert_eq!(me(), 2);
+                let guard = lock.lock().unwrap();
+                assert!(*guard == 0, "expected panic");
+                drop(guard);
+            });
+            let flag_clone = Arc::clone(&flag_clone);
+            thread::spawn(move || {
+                assert_eq!(me(), 3);
+                // Note that this operation is performed in a separate thread,
+                // since the (non-Shuttle) atomic does not increment the clock
+                // of the current thread. If the atomic were set instead in the
+                // main thread, then the clocks of "setting the atomic" and "B
+                // acquiring a lock" would be indistinguishable. However, we
+                // need the non-Shuttle atomic to smuggle data out of a this
+                // panicking test.
+                flag_clone.store(true, Ordering::SeqCst);
+            });
+        });
+    })
+    .expect_err("test should panic");
+    let output = result.downcast::<&str>().unwrap();
+    assert_eq!(*output, "expected panic");
+
+    assert!(!flag.load(Ordering::SeqCst));
+}
+
+/// Similar to `replay_causality`, but with a schedule that also contains
+/// random choice steps.
+#[test]
+fn replay_causality_with_random() {
+    // The thread setup here is the same as in `replay_causality`, but thread
+    // 3 is using the RNG rather than setting a Boolean flag.
+
+    let result = panic::catch_unwind(|| {
+        // Manually construct a schedule, to show explicitly the thread steps
+        // and the random steps made for thread 3 (which are irrelevant to the
+        // failure being replayed).
+        let mut schedule = Schedule::new(0);
+        schedule.push_task(0.into());
+        schedule.push_task(1.into());
+        schedule.push_task(0.into());
+        schedule.push_task(2.into());
+        schedule.push_task(0.into());
+        schedule.push_task(3.into());
+        schedule.push_random();
+        schedule.push_random();
+        schedule.push_random();
+        schedule.push_task(0.into());
+        schedule.push_task(1.into());
+        schedule.push_task(1.into());
+        schedule.push_task(2.into());
+        schedule.push_task(2.into());
+
+        let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
+        scheduler.set_target_clock(&[2, 2, 1]);
+        let mut config = Config::new();
+        config.failure_persistence = FailurePersistence::None;
+        let runner = Runner::new(scheduler, config);
+        runner.run(move || {
+            assert_eq!(me(), 0);
+            let lock = Arc::new(Mutex::new(0usize));
+            let lock_clone = Arc::clone(&lock);
+            thread::spawn(move || {
+                assert_eq!(me(), 1);
+                *lock_clone.lock().unwrap() = 1;
+            });
+            thread::spawn(move || {
+                assert_eq!(me(), 2);
+                let guard = lock.lock().unwrap();
+                assert!(*guard == 0, "expected panic");
+                drop(guard);
+            });
+            thread::spawn(move || {
+                use shuttle::rand::Rng;
+                assert_eq!(me(), 3);
+                let mut thread_rng = shuttle::rand::thread_rng();
+                thread_rng.gen::<u64>();
+                thread_rng.gen::<u64>();
+                thread_rng.gen::<u64>();
+            });
+        });
+    })
+    .expect_err("test should panic");
+    let output = result.downcast::<&str>().unwrap();
+    assert_eq!(*output, "expected panic");
 }
