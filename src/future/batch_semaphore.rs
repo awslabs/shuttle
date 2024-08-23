@@ -24,9 +24,9 @@ struct Waiter {
 }
 
 // Implement debug in order to not output the `VectorClock`
-impl Debug for Waiter {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        fmt.debug_struct("Waiter")
+impl fmt::Debug for Waiter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Waiter")
             .field("task_id", &self.task_id)
             .field("num_permits", &self.num_permits)
             .field("is_queued", &self.is_queued)
@@ -70,9 +70,9 @@ struct PermitsAvailable {
 }
 
 // Implement debug in order to not output the `VectorClock`s
-impl Debug for PermitsAvailable {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        fmt.debug_struct("PermitsAvailable")
+impl fmt::Debug for PermitsAvailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PermitsAvailable")
             .field("num_available", &self.num_available)
             .finish()
     }
