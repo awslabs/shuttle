@@ -54,7 +54,6 @@ impl Waiter {
 /// farther back correspond to later `release` calls. Each batch is a tuple
 /// of the permits remaining in that batch and the clock of the event whence
 /// the permits originate.
-#[derive(Debug)]
 struct PermitsAvailable {
     // Invariant: the number of permits available is equal to the sum of the
     // batch sizes in the queue.
@@ -68,6 +67,15 @@ struct PermitsAvailable {
     /// The clock of the last successful acquire event. Used for causal
     /// dependence in `try_acquire` failures.
     last_acquire: VectorClock,
+}
+
+// Implement debug in order to not output the `VectorClock`s
+impl Debug for PermitsAvailable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        fmt.debug_struct("PermitsAvailable")
+            .field("num_available", &self.num_available)
+            .finish()
+    }
 }
 
 impl PermitsAvailable {
