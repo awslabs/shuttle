@@ -14,7 +14,6 @@ use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use tracing::trace;
 
-#[derive(Debug)]
 struct Waiter {
     task_id: TaskId,
     num_permits: usize,
@@ -22,6 +21,19 @@ struct Waiter {
     has_permits: AtomicBool,
     clock: VectorClock,
     waker: Mutex<Option<Waker>>,
+}
+
+// Implement debug in order to not output the `VectorClock`
+impl Debug for Waiter {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        fmt.debug_struct("Waiter")
+            .field("task_id", &self.task_id)
+            .field("num_permits", &self.num_permits)
+            .field("is_queued", &self.is_queued)
+            .field("has_permits", &self.has_permits)
+            .field("waker", &self.waker)
+            .finish()
+    }
 }
 
 impl Waiter {
