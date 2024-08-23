@@ -14,7 +14,6 @@ use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use tracing::trace;
 
-#[derive(Debug)]
 struct Waiter {
     task_id: TaskId,
     num_permits: usize,
@@ -22,6 +21,19 @@ struct Waiter {
     has_permits: AtomicBool,
     clock: VectorClock,
     waker: Mutex<Option<Waker>>,
+}
+
+// Implement debug in order to not output the `VectorClock`
+impl fmt::Debug for Waiter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Waiter")
+            .field("task_id", &self.task_id)
+            .field("num_permits", &self.num_permits)
+            .field("is_queued", &self.is_queued)
+            .field("has_permits", &self.has_permits)
+            .field("waker", &self.waker)
+            .finish()
+    }
 }
 
 impl Waiter {
@@ -42,7 +54,6 @@ impl Waiter {
 /// farther back correspond to later `release` calls. Each batch is a tuple
 /// of the permits remaining in that batch and the clock of the event whence
 /// the permits originate.
-#[derive(Debug)]
 struct PermitsAvailable {
     // Invariant: the number of permits available is equal to the sum of the
     // batch sizes in the queue.
@@ -56,6 +67,15 @@ struct PermitsAvailable {
     /// The clock of the last successful acquire event. Used for causal
     /// dependence in `try_acquire` failures.
     last_acquire: VectorClock,
+}
+
+// Implement debug in order to not output the `VectorClock`s
+impl fmt::Debug for PermitsAvailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PermitsAvailable")
+            .field("num_available", &self.num_available)
+            .finish()
+    }
 }
 
 impl PermitsAvailable {

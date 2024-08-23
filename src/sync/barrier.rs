@@ -4,6 +4,7 @@ use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fmt;
 use std::rc::Rc;
 use tracing::trace;
 
@@ -37,7 +38,6 @@ impl BarrierWaitResult {
 /// threads is released by `wait`. When that happens, we make a "leader token_" available for that
 /// batch. The first thread of a batch to get scheduled after becoming unblocked takes the leader
 /// token (without affecting any threads that are part of a different batch).
-#[derive(Debug)]
 struct BarrierState {
     /// The number of tasks that must call `wait` before they all get unblocked (and one gets
     /// chosen as the leader).
@@ -53,6 +53,18 @@ struct BarrierState {
     /// will take the token (by removing the epoch from the set) and become the leader.
     leader_tokens: HashSet<u64>,
     clock: VectorClock,
+}
+
+// Implement debug in order to not output the `VectorClock`
+impl fmt::Debug for BarrierState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BarrierState")
+            .field("bound", &self.bound)
+            .field("epoch", &self.epoch)
+            .field("waiters", &self.waiters)
+            .field("leader_tokens", &self.leader_tokens)
+            .finish()
+    }
 }
 
 #[derive(Debug)]
