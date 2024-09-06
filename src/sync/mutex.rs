@@ -217,3 +217,17 @@ impl<T: Display + ?Sized> Display for MutexGuard<'_, T> {
         (**self).fmt(f)
     }
 }
+
+impl<T> crate::annotations::WithName for &Mutex<T> {
+    fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self {
+        (&self.semaphore).with_name_and_kind(name, kind.or(Some("shuttle::sync::Mutex")));
+        self
+    }
+}
+
+impl<T> crate::annotations::WithName for Mutex<T> {
+    fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self {
+        (&self).with_name_and_kind(name, kind);
+        self
+    }
+}

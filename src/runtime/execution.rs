@@ -208,6 +208,7 @@ impl Execution {
         match ret {
             // Task finished
             Ok(true) => {
+                crate::annotations::record_task_terminated();
                 ExecutionState::with(|state| state.current_mut().finish());
             }
             // Task yielded
@@ -370,7 +371,7 @@ impl ExecutionState {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        Self::with(|state| {
+        let task_id = Self::with(|state| {
             let schedule_len = state.current_schedule.len();
             let parent_span_id = state.top_level_span.id();
 
@@ -395,8 +396,11 @@ impl ExecutionState {
             );
 
             state.tasks.push(task);
+
             task_id
-        })
+        });
+        crate::annotations::record_task_created(task_id, true);
+        task_id
     }
 
     pub(crate) fn spawn_thread<F>(
@@ -408,7 +412,7 @@ impl ExecutionState {
     where
         F: FnOnce() + Send + 'static,
     {
-        Self::with(|state| {
+        let task_id = Self::with(|state| {
             let parent_span_id = state.top_level_span.id();
             let task_id = TaskId(state.tasks.len());
             let tag = state.get_tag_or_default_for_current_task();
@@ -438,8 +442,11 @@ impl ExecutionState {
                 state.try_current().map(|t| t.id()),
             );
             state.tasks.push(task);
+
             task_id
-        })
+        });
+        crate::annotations::record_task_created(task_id, false);
+        task_id
     }
 
     /// Prepare this ExecutionState to be dropped. Call this before dropping so that the tasks have
