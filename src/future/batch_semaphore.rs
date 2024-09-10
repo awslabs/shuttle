@@ -344,7 +344,7 @@ impl BatchSemaphore {
     /// If there aren't enough permits, returns `Err(TryAcquireError::NoPermits)`
     pub fn try_acquire(&self, num_permits: usize) -> Result<(), TryAcquireError> {
         let mut state = self.state.borrow_mut();
-        let res = state.acquire_permits(num_permits, self.fairness).map_err(|err| {
+        let res = state.acquire_permits(num_permits, self.fairness).inspect_err(|_err| {
             // Conservatively, the requester causally depends on the
             // last successful acquire.
             // TODO: This is not precise, but `try_acquire` causal dependency
@@ -361,7 +361,6 @@ impl BatchSemaphore {
             ExecutionState::with(|s| {
                 s.update_clock(&state.permits_available.last_acquire);
             });
-            err
         });
         drop(state);
 

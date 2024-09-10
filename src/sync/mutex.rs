@@ -158,7 +158,7 @@ unsafe impl<T: Send + ?Sized> Sync for Mutex<T> {}
 impl<T: ?Sized> UnwindSafe for Mutex<T> {}
 impl<T: ?Sized> RefUnwindSafe for Mutex<T> {}
 
-impl<T: Default + ?Sized> Default for Mutex<T> {
+impl<T: Default> Default for Mutex<T> {
     fn default() -> Self {
         Self::new(Default::default())
     }
