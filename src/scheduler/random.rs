@@ -18,6 +18,33 @@ pub struct RandomScheduler {
     rng: Pcg64Mcg,
     iterations: usize,
     data_source: RandomDataSource,
+    current_seed: CurrentSeedDropGuard,
+}
+
+#[derive(Debug, Default)]
+struct CurrentSeedDropGuard {
+    inner: Option<u64>,
+}
+
+impl CurrentSeedDropGuard {
+    fn clear(&mut self) {
+        self.inner = None
+    }
+
+    fn update(&mut self, seed: u64) {
+        self.inner = Some(seed)
+    }
+}
+
+impl Drop for CurrentSeedDropGuard {
+    fn drop(&mut self) {
+        if let Some(s) = self.inner {
+            eprintln!(
+                "failing seed:\n\"\n{}\n\"\nTo replay the failure, either:\n    1) pass the seed to `shuttle::check_random_with_seed, or\n    2) set the environment variable SHUTTLE_RANDOM_SEED to the seed and run `shuttle::check_random`.",
+                s
+            )
+        }
+    }
 }
 
 impl RandomScheduler {
@@ -37,6 +64,7 @@ impl RandomScheduler {
             rng,
             iterations: 0,
             data_source: RandomDataSource::initialize(seed),
+            current_seed: CurrentSeedDropGuard::default(),
         }
     }
 }
@@ -44,10 +72,14 @@ impl RandomScheduler {
 impl Scheduler for RandomScheduler {
     fn new_execution(&mut self) -> Option<Schedule> {
         if self.iterations >= self.max_iterations {
+            self.current_seed.clear();
             None
         } else {
             self.iterations += 1;
-            Some(Schedule::new(self.data_source.reinitialize()))
+            let seed = self.data_source.reinitialize();
+            self.rng = Pcg64Mcg::seed_from_u64(seed);
+            self.current_seed.update(seed);
+            Some(Schedule::new(seed))
         }
     }
 

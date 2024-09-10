@@ -6,7 +6,7 @@ mod demo;
 mod future;
 
 use shuttle::scheduler::{ReplayScheduler, Scheduler};
-use shuttle::{replay_from_file, Config, FailurePersistence, Runner};
+use shuttle::{check_random_with_seed, replay_from_file, Config, FailurePersistence, Runner};
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
 use std::sync::Arc;
 
@@ -92,6 +92,25 @@ where
     assert_eq!(new_schedule, schedule);
     // Stronger `output == new_output` check doesn't hold here because we used different values of
     // `FailurePersistence`s for each test
+}
+
+/// Validates that the replay from seed functionality works by running a failing seed found by a random
+/// scheduler for one iteration, expecting it to fail, comparing the new failing schedule against the
+/// previously collected one, and checking the two schedules being identical.
+fn check_replay_from_seed_match_schedule<F>(test_func: F, seed: u64, expected_schedule: &str)
+where
+    F: Fn() + Send + Sync + UnwindSafe + 'static,
+{
+    let result = {
+        panic::catch_unwind(move || {
+            check_random_with_seed(test_func, seed, 1);
+        })
+        .expect_err("replay should panic")
+    };
+    let output = result.downcast::<String>().unwrap();
+    let schedule_from_replay = parse_schedule::from_stdout(&output).expect("output should contain a schedule");
+
+    assert_eq!(schedule_from_replay, expected_schedule);
 }
 
 /// Helpers to parse schedules from different types of output (as determined by [`FailurePersistence`])
