@@ -301,7 +301,7 @@ unsafe impl<T: Send + ?Sized> Sync for RwLock<T> {}
 impl<T: ?Sized> UnwindSafe for RwLock<T> {}
 impl<T: ?Sized> RefUnwindSafe for RwLock<T> {}
 
-impl<T: Default + ?Sized> Default for RwLock<T> {
+impl<T: Default> Default for RwLock<T> {
     fn default() -> Self {
         Self::new(Default::default())
     }
