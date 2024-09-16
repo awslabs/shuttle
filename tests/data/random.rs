@@ -1,4 +1,4 @@
-use crate::check_replay_roundtrip;
+use crate::{check_replay_from_seed_match_schedule, check_replay_roundtrip};
 use shuttle::rand::{thread_rng, Rng};
 use shuttle::scheduler::RandomScheduler;
 use shuttle::sync::Mutex;
@@ -170,6 +170,42 @@ fn dfs_threads_decorrelated_enabled() {
     let scheduler = DfsScheduler::new(None, true);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(thread_rng_decorrelated);
+}
+
+#[test]
+fn replay_from_seed_match_schedule0() {
+    check_replay_from_seed_match_schedule(
+        broken_atomic_counter_stress,
+        15603830570056246250,
+        "91022ceac7d5bcb1a7fcc5d801a8050ea528954032492693491200000000",
+    );
+}
+
+#[test]
+fn replay_from_seed_match_schedule1() {
+    check_replay_from_seed_match_schedule(
+        broken_atomic_counter_stress,
+        2185777353610950419,
+        "91023c93eecb80c29ddcaa1ef81a1c5251494a2c92928a2a954a25a904000000000000",
+    );
+}
+
+#[test]
+fn replay_from_seed_match_schedule2() {
+    check_replay_from_seed_match_schedule(
+        broken_atomic_counter_stress,
+        14231716651102207764,
+        "91024b94fed5e7c2dccdc0c501185a9c0a889e169b64ca455b2d954a52492a49a59204000000\n00000000",
+    );
+}
+
+#[test]
+fn replay_from_seed_match_schedule3() {
+    check_replay_from_seed_match_schedule(
+        broken_atomic_counter_stress,
+        14271799263003420363,
+        "910278cbcd808888bae787c601081eda4f904cb34937e96cb72db9da965c65d2969b29956dab\ne81625a54432c83469d24c020000000000000000",
+    );
 }
 
 // The DFS scheduler uses the same stream of randomness on each execution to ensure determinism
