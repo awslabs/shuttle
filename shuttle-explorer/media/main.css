@@ -1,0 +1,172 @@
+body {
+    padding: 0;
+}
+
+main {
+    display: grid;
+    gap: 0;
+    grid-template-areas:
+        "tl t s"
+        "m m s";
+    grid-template-columns: 100px 1fr 300px;
+    grid-template-rows: 20px 1fr;
+    height: 100vh;
+    max-height: 100%;
+    margin: 0;
+}
+
+vscode-checkbox .codicon {
+    transform: translate(0, 3px);
+}
+
+.panel-topleft {
+    grid-area: tl;
+    padding: 2px 5px;
+}
+
+.panel-topleft a {
+    cursor: pointer;
+    display: inline-block;
+    padding: 1px 3px 1px 1px;
+}
+.panel-topleft a.selected {
+    background: var(--vscode-inputOption-activeBorder);
+}
+
+.panel-top {
+    grid-area: t;
+}
+
+.panel-sidebar {
+    grid-area: s;
+    overflow-y: scroll;
+}
+
+.panel-sidebar vscode-panel-view {
+    flex-direction: column;
+}
+
+.panel-sidebar #sidebar-view-1.show-event .placeholder,
+.panel-sidebar #sidebar-view-1.show-task .placeholder,
+.panel-sidebar #sidebar-view-1.show-object .placeholder {
+    display: none;
+}
+
+.panel-sidebar #sidebar-view-1 .event-info,
+.panel-sidebar #sidebar-view-1 .task-info,
+.panel-sidebar #sidebar-view-1 .object-info {
+    display: none;
+}
+
+.panel-sidebar #sidebar-view-1.show-event .event-info,
+.panel-sidebar #sidebar-view-1.show-task .task-info,
+.panel-sidebar #sidebar-view-1.show-object .object-info {
+    display: block;
+}
+
+.event-info-backtrace-holder {
+    display: none;
+}
+.event-info-backtrace-holder.show {
+    display: block;
+}
+
+.panel-main {
+    display: grid;
+    gap: 0;
+    grid-template-areas: "l r";
+    grid-template-columns: 100px 1fr;
+    grid-template-rows: 1fr;
+    grid-area: m;
+    overflow-x: hidden;
+    overflow-y: scroll;
+}
+
+.panel-main-left {
+    grid-area: l;
+}
+
+.panel-main-right {
+    grid-area: r;
+}
+
+svg rect.task {
+    cursor: pointer;
+    fill: #ddd;
+    stroke: #999;
+    stroke-width: 1px;
+}
+
+svg rect.task.selected {
+    fill: #bbb;
+    stroke: #333;
+    stroke-width: 1px;
+}
+
+svg rect.blocked {
+    fill: #a00;
+}
+
+svg rect.object {
+    cursor: pointer;
+    fill: #add;
+    stroke: #799;
+    stroke-width: 1px;
+}
+
+svg rect.object.selected {
+    fill: #9bb;
+    stroke: #366;
+    stroke-width: 1px;
+}
+
+svg rect.event {
+    cursor: pointer;
+    fill: #0a0;
+    stroke: #070;
+    stroke-width: 1px;
+}
+svg rect.event.summary {
+    fill: #8a8;
+}
+
+svg rect.event.before {
+    fill: #ca0;
+}
+svg rect.event.after {
+    fill: #0ac;
+}
+svg rect.event.before.summary {
+    fill: #ca8;
+}
+svg rect.event.after.summary {
+    fill: #8ac;
+}
+
+svg rect.event.selected {
+    fill: #0f0;
+}
+
+svg rect.event:hover {
+    fill: #0d0;
+}
+svg rect.event.before:hover {
+    fill: #cd0;
+}
+svg rect.event.after:hover {
+    fill: #0dc;
+}
+
+svg path.link {
+    fill: none;
+    stroke: #000;
+    marker-end: url(#arrow);
+}
+
+.panel-main-left .pm, .panel-main-left circle {
+    cursor: pointer;
+}
+
+.panel-main-left .entry {
+    cursor: pointer;
+}

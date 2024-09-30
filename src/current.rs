@@ -80,7 +80,9 @@ pub fn get_name_for_task(task_id: TaskId) -> Option<TaskName> {
 
 /// Set the debug name for a task, returning the old name, if any
 pub fn set_name_for_task(task_id: TaskId, task_name: impl Into<TaskName>) -> Option<TaskName> {
-    set_label_for_task::<TaskName>(task_id, task_name.into())
+    let task_name = task_name.into();
+    crate::annotations::record_name_for_task(task_id, &task_name);
+    set_label_for_task::<TaskName>(task_id, task_name)
 }
 
 /// Gets the `TaskId` of the current task, or `None` if there is no current task.

@@ -189,6 +189,8 @@ pub enum Fairness {
 /// and supports both asychronous and synchronous blocking operations.
 #[derive(Debug)]
 struct BatchSemaphoreState {
+    id: Option<crate::annotations::ObjectId>,
+
     // Key invariants:
     //
     // (1) if `waiters` is nonempty and the head waiter is `H`,
@@ -280,6 +282,7 @@ impl BatchSemaphore {
     /// Creates a new semaphore with the initial number of permits.
     pub fn new(num_permits: usize, fairness: Fairness) -> Self {
         let state = RefCell::new(BatchSemaphoreState {
+            id: Some(crate::annotations::record_semaphore_created()),
             waiters: VecDeque::new(),
             permits_available: PermitsAvailable::new(num_permits),
             closed: false,
@@ -290,6 +293,7 @@ impl BatchSemaphore {
     /// Creates a new semaphore with the initial number of permits.
     pub const fn const_new(num_permits: usize, fairness: Fairness) -> Self {
         let state = RefCell::new(BatchSemaphoreState {
+            id: None,
             waiters: VecDeque::new(),
             permits_available: PermitsAvailable::const_new(num_permits),
             closed: false,
@@ -303,10 +307,22 @@ impl BatchSemaphore {
         state.permits_available.available()
     }
 
+    fn init_object_id(&self) {
+        let mut state = self.state.borrow_mut();
+        if state.id.is_none() {
+            state.id = Some(crate::annotations::record_semaphore_created());
+        }
+    }
+
     /// Closes the semaphore. This prevents the semaphore from issuing new
     /// permits and notifies all pending waiters.
     pub fn close(&self) {
+        self.init_object_id();
         let mut state = self.state.borrow_mut();
+        if state.closed {
+            return;
+        }
+        crate::annotations::record_semaphore_closed(state.id.unwrap());
         state.closed = true;
 
         // Wake up all the waiters.  Since we've marked the state as closed, they
@@ -343,7 +359,9 @@ impl BatchSemaphore {
     /// If the semaphore is closed, returns `Err(TryAcquireError::Closed)`
     /// If there aren't enough permits, returns `Err(TryAcquireError::NoPermits)`
     pub fn try_acquire(&self, num_permits: usize) -> Result<(), TryAcquireError> {
+        self.init_object_id();
         let mut state = self.state.borrow_mut();
+        let id = state.id.unwrap();
         let res = state.acquire_permits(num_permits, self.fairness).inspect_err(|_err| {
             // Conservatively, the requester causally depends on the
             // last successful acquire.
@@ -369,6 +387,8 @@ impl BatchSemaphore {
         if res.is_ok() {
             self.reblock_if_unfair();
         }
+
+        crate::annotations::record_semaphore_try_acquire(id, num_permits, res.is_ok());
 
         // We context switch here whether we acquired any permits or not. If
         // we have, this is to let other threads fail their `try_acquire`;
@@ -431,21 +451,26 @@ impl BatchSemaphore {
 
     /// Acquire the specified number of permits (async API)
     pub fn acquire(&self, num_permits: usize) -> Acquire<'_> {
+        self.init_object_id();
         Acquire::new(self, num_permits)
     }
 
     /// Acquire the specified number of permits (blocking API)
     pub fn acquire_blocking(&self, num_permits: usize) -> Result<(), AcquireError> {
+        self.init_object_id();
         crate::future::block_on(self.acquire(num_permits))
     }
 
     /// Release `num_permits` back to the Semaphore
     pub fn release(&self, num_permits: usize) {
+        self.init_object_id();
         if num_permits == 0 {
             return;
         }
 
         let mut state = self.state.borrow_mut();
+
+        crate::annotations::record_semaphore_release(state.id.unwrap(), num_permits);
 
         if ExecutionState::should_stop() {
             // In case we are panicking, we release permits, but also clear
@@ -481,6 +506,12 @@ impl BatchSemaphore {
                 while let Some(front) = state.waiters.front() {
                     if front.num_permits <= state.permits_available.available() {
                         let waiter = state.waiters.pop_front().unwrap();
+
+                        crate::annotations::record_semaphore_acquire_unblocked(
+                            state.id.unwrap(),
+                            waiter.task_id,
+                            waiter.num_permits,
+                        );
 
                         // The clock we pass into the semaphore is the clock of the
                         // waiter, corresponding to the point at which the waiter was
@@ -627,13 +658,21 @@ impl Future for Acquire<'_> {
                 // because in case of `NoPermits`, we do not want to update the
                 // clock, as this thread will be blocked below.
                 let mut state = self.semaphore.state.borrow_mut();
+                let id = state.id.unwrap();
                 let acquire_result = state.acquire_permits(self.waiter.num_permits, self.semaphore.fairness);
                 drop(state);
 
                 match acquire_result {
                     Ok(()) => {
                         if is_queued {
+                            crate::annotations::record_semaphore_acquire_unblocked(
+                                id,
+                                self.waiter.task_id,
+                                self.waiter.num_permits,
+                            );
                             self.semaphore.remove_waiter(&self.waiter);
+                        } else {
+                            crate::annotations::record_semaphore_acquire_fast(id, self.waiter.num_permits);
                         }
                         self.waiter.has_permits.store(true, Ordering::SeqCst);
                         self.completed = true;
@@ -651,6 +690,7 @@ impl Future for Acquire<'_> {
                         let mut maybe_waker = self.waiter.waker.lock().unwrap();
                         *maybe_waker = Some(cx.waker().clone());
                         if !is_queued {
+                            crate::annotations::record_semaphore_acquire_blocked(id, self.waiter.num_permits);
                             self.semaphore.enqueue_waiter(&self.waiter);
                             self.waiter.is_queued.store(true, Ordering::SeqCst);
                         }
@@ -677,5 +717,20 @@ impl Drop for Acquire<'_> {
             // If the waiter was granted permits, release them
             self.semaphore.release(self.waiter.num_permits);
         }
+    }
+}
+
+impl crate::annotations::WithName for &BatchSemaphore {
+    fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self {
+        self.init_object_id();
+        crate::annotations::record_name_for_object(self.state.borrow().id.unwrap(), name, kind);
+        self
+    }
+}
+
+impl crate::annotations::WithName for BatchSemaphore {
+    fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self {
+        (&self).with_name_and_kind(name, kind);
+        self
     }
 }

@@ -180,6 +180,7 @@
 //! [Loom]: https://github.com/tokio-rs/loom
 //! [pct]: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf
 
+pub mod annotations;
 pub mod future;
 pub mod hint;
 pub mod lazy_static;
@@ -422,6 +423,28 @@ where
     use crate::scheduler::ReplayScheduler;
 
     let scheduler = ReplayScheduler::new_from_encoded(encoded_schedule);
+    let runner = Runner::new(scheduler, Default::default());
+    runner.run(f);
+}
+
+/// Run the given function according to a given encoded schedule, usually produced as the output of
+/// a failing Shuttle test case, while recording an annotated schedule, for use with the Shuttle
+/// Explorer extension.
+///
+/// This function allows deterministic replay of a failing schedule, as long as `f` contains no
+/// non-determinism other than that introduced by scheduling.
+///
+/// This is a convenience function for constructing a [`Runner`] that uses
+/// an [`crate::scheduler::AnnotationScheduler`] wrapping a replay scheduler created with
+/// [`ReplayScheduler::new_from_encoded`](scheduler::ReplayScheduler::new_from_encoded).
+pub fn annotate_replay<F>(f: F, encoded_schedule: &str)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    use crate::scheduler::{AnnotationScheduler, ReplayScheduler};
+
+    let scheduler_inner = ReplayScheduler::new_from_encoded(encoded_schedule);
+    let scheduler = AnnotationScheduler::new(scheduler_inner);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
 }

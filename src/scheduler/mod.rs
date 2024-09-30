@@ -1,6 +1,7 @@
 //! Implementations of different scheduling strategies for concurrency testing.
 use std::fmt::Debug;
 
+mod annotation;
 mod data;
 mod dfs;
 mod pct;
@@ -14,6 +15,7 @@ pub(crate) mod serialization;
 
 pub use crate::runtime::task::{Task, TaskId};
 
+pub use annotation::AnnotationScheduler;
 pub use data::{DataSource, RandomDataSource};
 pub use dfs::DfsScheduler;
 pub use pct::PctScheduler;
