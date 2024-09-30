@@ -435,7 +435,7 @@ where
 /// non-determinism other than that introduced by scheduling.
 ///
 /// This is a convenience function for constructing a [`Runner`] that uses
-/// an [`AnnotationScheduler`] wrapping a replay scheduler created with
+/// an [`crate::scheduler::AnnotationScheduler`] wrapping a replay scheduler created with
 /// [`ReplayScheduler::new_from_encoded`](scheduler::ReplayScheduler::new_from_encoded).
 pub fn annotate_replay<F>(f: F, encoded_schedule: &str)
 where

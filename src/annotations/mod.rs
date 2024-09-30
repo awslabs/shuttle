@@ -1,5 +1,5 @@
 //! Annotated schedules. When an execution is scheduled using the
-//! [`AnnotationScheduler`], Shuttle will produce a file that contains
+//! [`crate::scheduler::AnnotationScheduler`], Shuttle will produce a file that contains
 //! additional information about the execution, such as the kind of step that
 //! was taken (was a task created, were permits acquired from a semaphore, etc)
 //! as well as the task's vector clocks and thus any causal dependence between
@@ -464,9 +464,9 @@ cfg_if::cfg_if! {
 }
 
 /// Trait to record information about shared objects, such as their name and
-/// type. See implementation in [`BatchSemaphore`], which actually records the
+/// type. See implementation in [`crate::future::batch_semaphore::BatchSemaphore`], which actually records the
 /// name into the schedule, other types should forward calls into their
-/// underlying primitive, as in [`Mutex`].
+/// underlying primitive, as in [`crate::sync::Mutex`].
 pub trait WithName {
     /// Set the name and kind (full type path) of this object.
     fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self;
