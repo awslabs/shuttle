@@ -6,7 +6,7 @@
 * Schedulers now receive references to `Task`s instead of `TaskId`s (#156)
 * Expose `check_random_with_seed` (#161)
 * Make `check_random` optionally take a seed by providing the environment variable `SHUTTLE_RANDOM_SEED` (#161)
-* Shuttle-explorer extension (#163).
+* Shuttle Explorer extension (#163).
 * `AnnotationScheduler` and annotated schedule support added under feature "annotation" (#163)
 
 # 0.7.1 (May 31, 2024)
