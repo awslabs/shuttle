@@ -90,7 +90,7 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
                         .map(|t| t.id())
                         .collect::<SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>>();
                     if *runnables.as_slice() != *runnable_ids {
-                        panic!("possible nondeterminism: set of runnable tasks is different than expected (expected {runnables:?} but got {runnable_tasks:?})");
+                        panic!("possible nondeterminism: set of runnable tasks is different than expected.\nExpected:\n{runnables:?}\nbut got:\n{runnable_ids:?}");
                     }
 
                     if *was_yielding != is_yielding {
