@@ -318,7 +318,7 @@ impl<T: 'static> LocalKey<T> {
         Ok(f(value))
     }
 
-    fn get(&'static self) -> Option<std::result::Result<&T, AccessError>> {
+    fn get(&'static self) -> Option<std::result::Result<&'static T, AccessError>> {
         // Safety: see the usage below
         unsafe fn extend_lt<'b, T>(t: &'_ T) -> &'b T {
             std::mem::transmute(t)
