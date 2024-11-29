@@ -484,7 +484,7 @@ pub struct IntoIter<T> {
     rx: Receiver<T>,
 }
 
-impl<'a, T> Iterator for Iter<'a, T> {
+impl<T> Iterator for Iter<'_, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
@@ -492,7 +492,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
-impl<'a, T> Iterator for TryIter<'a, T> {
+impl<T> Iterator for TryIter<'_, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {

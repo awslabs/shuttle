@@ -177,7 +177,7 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
     }
 }
 
-impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
+impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         // Release the inner mutex
         self.inner = None;

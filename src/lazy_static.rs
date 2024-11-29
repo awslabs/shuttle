@@ -45,7 +45,7 @@ impl<T: Sync> std::fmt::Debug for Lazy<T> {
 
 impl<T: Sync> Lazy<T> {
     /// Get a reference to the lazy value, initializing it first if necessary.
-    pub fn get(&'static self) -> &T {
+    pub fn get(&'static self) -> &'static T {
         // Safety: see the usage below
         unsafe fn extend_lt<T>(t: &T) -> &'static T {
             std::mem::transmute(t)

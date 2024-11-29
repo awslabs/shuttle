@@ -23,7 +23,7 @@ cfg_if::cfg_if! {
         use std::thread_local;
 
         thread_local! {
-            static ANNOTATION_STATE: RefCell<Option<AnnotationState>> = RefCell::new(None);
+            static ANNOTATION_STATE: RefCell<Option<AnnotationState>> = const { RefCell::new(None) };
         }
 
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -284,9 +284,11 @@ cfg_if::cfg_if! {
             ANNOTATION_STATE.with(|cell| {
                 let mut bw = cell.borrow_mut();
                 assert!(bw.is_none(), "annotations already started");
-                let mut state: AnnotationState = Default::default();
-                state.version = ANNOTATION_VERSION;
-                state.last_task_id = Some(0.into());
+                let state = AnnotationState {
+                    version: ANNOTATION_VERSION,
+                    last_task_id: Some(0.into()),
+                    ..Default::default()
+                };
                 *bw = Some(state);
             });
         }
