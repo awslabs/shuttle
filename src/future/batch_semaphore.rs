@@ -238,6 +238,49 @@ impl BatchSemaphoreState {
             Err(TryAcquireError::NoPermits)
         }
     }
+
+    fn unblock_waiters_from_front(&mut self) {
+        while let Some(front) = self.waiters.front() {
+            if front.num_permits <= self.permits_available.available() {
+                let waiter = self.waiters.pop_front().unwrap();
+
+                crate::annotations::record_semaphore_acquire_unblocked(
+                    self.id.unwrap(),
+                    waiter.task_id,
+                    waiter.num_permits,
+                );
+
+                // The clock we pass into the semaphore is the clock of the
+                // waiter, corresponding to the point at which the waiter was
+                // enqueued. The clock we get in return corresponds to the
+                // join of the clocks of the acquired permits, used to update
+                // the waiter's clock to causally depend on the release events.
+                let clock = self
+                    .permits_available
+                    .acquire(waiter.num_permits, waiter.clock.clone())
+                    .unwrap();
+                trace!("granted {:?} permits to waiter {:?}", waiter.num_permits, waiter);
+
+                // Update waiter state as it is no longer in the queue
+                assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
+                assert!(!waiter.has_permits.swap(true, Ordering::SeqCst));
+                ExecutionState::with(|s| {
+                    let task = s.get_mut(waiter.task_id);
+                    assert!(!task.finished());
+                    // The acquiry is causally dependent on the event
+                    // which released the acquired permits.
+                    task.clock.update(&clock);
+                    task.unblock();
+                });
+                let mut maybe_waker = waiter.waker.lock().unwrap();
+                if let Some(waker) = maybe_waker.take() {
+                    waker.wake();
+                }
+            } else {
+                return;
+            }
+        }
+    }
 }
 
 /// Counting semaphore
@@ -447,6 +490,20 @@ impl BatchSemaphore {
 
         state.waiters.remove(index).unwrap();
         assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
+
+        match self.fairness {
+            Fairness::StrictlyFair => {
+                if index == 0 {
+                    // If the semaphore is strictly fair, and we removed the first waiter, check if its
+                    // removal unblocks remaining waiters.  This can happen in the following situation:
+                    // - the semahore has 1 permit available
+                    // - there are 2 waiters W1 and W2 where W1 wants 2 permits, and W2 wants 1 permit
+                    // - if W1 gives up and drops out, we want to ensure W2 is granted the semaphore
+                    state.unblock_waiters_from_front();
+                }
+            }
+            Fairness::Unfair => {}
+        }
     }
 
     /// Acquire the specified number of permits (async API)
@@ -501,48 +558,9 @@ impl BatchSemaphore {
 
         match self.fairness {
             Fairness::StrictlyFair => {
-                // in a strictly fair mode we will always pick the first waiter
-                // in the queue, as long as there are enough permits available
-                while let Some(front) = state.waiters.front() {
-                    if front.num_permits <= state.permits_available.available() {
-                        let waiter = state.waiters.pop_front().unwrap();
-
-                        crate::annotations::record_semaphore_acquire_unblocked(
-                            state.id.unwrap(),
-                            waiter.task_id,
-                            waiter.num_permits,
-                        );
-
-                        // The clock we pass into the semaphore is the clock of the
-                        // waiter, corresponding to the point at which the waiter was
-                        // enqueued. The clock we get in return corresponds to the
-                        // join of the clocks of the acquired permits, used to update
-                        // the waiter's clock to causally depend on the release events.
-                        let clock = state
-                            .permits_available
-                            .acquire(waiter.num_permits, waiter.clock.clone())
-                            .unwrap();
-                        trace!("granted {:?} permits to waiter {:?}", waiter.num_permits, waiter);
-
-                        // Update waiter state as it is no longer in the queue
-                        assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
-                        assert!(!waiter.has_permits.swap(true, Ordering::SeqCst));
-                        ExecutionState::with(|s| {
-                            let task = s.get_mut(waiter.task_id);
-                            assert!(!task.finished());
-                            // The acquiry is causally dependent on the event
-                            // which released the acquired permits.
-                            task.clock.update(&clock);
-                            task.unblock();
-                        });
-                        let mut maybe_waker = waiter.waker.lock().unwrap();
-                        if let Some(waker) = maybe_waker.take() {
-                            waker.wake();
-                        }
-                    } else {
-                        break;
-                    }
-                }
+                // in a strictly fair mode we will grant permits to waiters from the front
+                // of the queue, as long as there are enough permits available
+                state.unblock_waiters_from_front();
             }
             Fairness::Unfair => {
                 // in an unfair mode, we will unblock all the waiters for which
