@@ -222,7 +222,7 @@ impl<T: ?Sized> RwLock<T> {
                 state.holder = RwLockHolder::Read(readers);
             }
             (RwLockType::Read, RwLockHolder::Read(readers)) => {
-                debug_assert!(readers.insert(me));
+                assert!(readers.insert(me));
             }
             _ => {
                 panic!(
