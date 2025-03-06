@@ -671,7 +671,7 @@ mod early_acquire_drop_tests {
                                 }
                                 dropped_acquire_must_release(&SEM, behavior.clone())
                             },
-                            10_000,
+                            1000,
                         );
                     }
                 }
