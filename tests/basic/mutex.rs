@@ -1,6 +1,6 @@
 use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Mutex;
-use shuttle::{check_dfs, check_random, thread, Runner};
+use shuttle::{Runner, check_dfs, check_random, thread};
 use std::collections::HashSet;
 use std::sync::{Arc, TryLockError};
 use test_log::test;
@@ -181,16 +181,19 @@ fn mutex_rwlock_interaction() {
                     }
                     {
                         let _guard = rwlock.write().unwrap();
-                        if let Ok(_g) = lock.try_lock() {
-                            // In this case the multiplication in the other thread can go before,
-                            // after, or between +1/+2/+3, resulting in final values 6, 7, 9, and 12.
-                            *value.lock().unwrap() += 2;
-                        } else {
-                            // In this case the multiplication in the other thread can only go between
-                            // +1 and +6 or between +6 and +3, resulting in final values 11 and 17.
-                            // The multiplication cannot go first or last, which would be final values
-                            // 10 and 20.
-                            *value.lock().unwrap() += 6;
+                        match lock.try_lock() {
+                            Ok(_g) => {
+                                // In this case the multiplication in the other thread can go before,
+                                // after, or between +1/+2/+3, resulting in final values 6, 7, 9, and 12.
+                                *value.lock().unwrap() += 2;
+                            }
+                            _ => {
+                                // In this case the multiplication in the other thread can only go between
+                                // +1 and +6 or between +6 and +3, resulting in final values 11 and 17.
+                                // The multiplication cannot go first or last, which would be final values
+                                // 10 and 20.
+                                *value.lock().unwrap() += 6;
+                            }
                         }
                     }
                     {

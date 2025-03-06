@@ -2,8 +2,8 @@ use shuttle::current::{get_name_for_task, me};
 use shuttle::sync::{Barrier, Condvar, Mutex};
 use shuttle::{check_dfs, check_random, thread};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use test_log::test;
 
 #[test]

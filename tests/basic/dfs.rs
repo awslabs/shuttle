@@ -1,8 +1,8 @@
 use shuttle::scheduler::DfsScheduler;
 use shuttle::sync::Mutex;
-use shuttle::{thread, Config, MaxSteps, Runner};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use shuttle::{Config, MaxSteps, Runner, thread};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use test_log::test;
 
 // TODO all these tests would be a lot simpler if we had some way for the scheduler to return us

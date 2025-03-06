@@ -2,7 +2,7 @@ use crate::runtime::failure::{init_panic_hook, persist_failure, persist_task_fai
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
-use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{ChildLabelFn, DEFAULT_INLINE_TASKS, Task, TaskId, TaskName};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::thread::thread_fn;
@@ -17,7 +17,7 @@ use std::future::Future;
 use std::panic;
 use std::rc::Rc;
 use std::sync::Arc;
-use tracing::{trace, Span};
+use tracing::{Span, trace};
 
 #[allow(deprecated)]
 use super::task::Tag;
@@ -321,12 +321,9 @@ impl ExecutionState {
         F: FnOnce(&mut ExecutionState) -> T,
     {
         if EXECUTION_STATE.is_set() {
-            EXECUTION_STATE.with(|cell| {
-                if let Ok(mut state) = cell.try_borrow_mut() {
-                    Some(f(&mut state))
-                } else {
-                    None
-                }
+            EXECUTION_STATE.with(|cell| match cell.try_borrow_mut() {
+                Ok(mut state) => Some(f(&mut state)),
+                _ => None,
             })
         } else {
             None
@@ -349,8 +346,8 @@ impl ExecutionState {
                     let mut child_map = parent_map.clone();
 
                     // If the parent has a `ChildLabelFn` set, use that to update the child's Labels
-                    if let Some(gen) = parent_map.get::<ChildLabelFn>() {
-                        (gen.0)(task_id, &mut child_map);
+                    if let Some(function) = parent_map.get::<ChildLabelFn>() {
+                        (function.0)(task_id, &mut child_map);
                     }
 
                     map.insert(task_id, child_map);

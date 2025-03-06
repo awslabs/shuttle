@@ -1,9 +1,9 @@
 use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Mutex;
-use shuttle::{check_pct, check_random, thread, Config, MaxSteps, Runner};
+use shuttle::{Config, MaxSteps, Runner, check_pct, check_random, thread};
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Duration;
 use test_log::test;
 

@@ -1,5 +1,5 @@
-use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
+use crate::scheduler::data::random::RandomDataSource;
 
 /// A `FixedDataSource` generates the same stream of non-determinism (from an underlying
 /// `RandomDataSource`) on every execution.

@@ -107,11 +107,12 @@ impl<T> Future for JoinHandle<T> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut lock = self.inner.lock().unwrap();
-        if let Some(result) = lock.result.take() {
-            Poll::Ready(result)
-        } else {
-            lock.waker = Some(cx.waker().clone());
-            Poll::Pending
+        match lock.result.take() {
+            Some(result) => Poll::Ready(result),
+            _ => {
+                lock.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
         }
     }
 }

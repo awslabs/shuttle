@@ -1,8 +1,8 @@
 use shuttle::scheduler::DfsScheduler;
 use shuttle::sync::{Mutex, RwLock};
-use shuttle::{check_dfs, thread, Config, Runner};
+use shuttle::{Config, Runner, check_dfs, thread};
 use std::collections::VecDeque;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, PoisonError};
 use test_log::test;
 

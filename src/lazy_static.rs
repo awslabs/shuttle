@@ -48,7 +48,7 @@ impl<T: Sync> Lazy<T> {
     pub fn get(&'static self) -> &'static T {
         // Safety: see the usage below
         unsafe fn extend_lt<T>(t: &T) -> &'static T {
-            std::mem::transmute(t)
+            unsafe { std::mem::transmute(t) }
         }
 
         // We implement lazy statics by using a `Once` to mediate initialization of the static, just

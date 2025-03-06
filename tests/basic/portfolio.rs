@@ -1,8 +1,8 @@
 use shuttle::scheduler::{PctScheduler, RandomScheduler};
 use shuttle::sync::Mutex;
-use shuttle::{thread, PortfolioRunner, Runner};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use shuttle::{PortfolioRunner, Runner, thread};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use test_log::test;
 
 #[test]

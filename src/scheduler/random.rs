@@ -1,6 +1,6 @@
 use crate::runtime::task::{Task, TaskId};
-use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
+use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::{Schedule, Scheduler};
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;

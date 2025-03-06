@@ -1,6 +1,6 @@
 use crate::runtime::task::{Task, TaskId};
-use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
+use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::{Schedule, Scheduler};
 
 /// A round robin scheduler that chooses the next available runnable task at each context switch.

@@ -1,6 +1,6 @@
 use shuttle::scheduler::PctScheduler;
-use shuttle::sync::{mpsc::channel, RwLock};
-use shuttle::{check, check_dfs, check_random, thread, Runner};
+use shuttle::sync::{RwLock, mpsc::channel};
+use shuttle::{Runner, check, check_dfs, check_random, thread};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, TryLockError};

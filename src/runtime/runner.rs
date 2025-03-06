@@ -1,19 +1,19 @@
+use crate::Config;
 use crate::runtime::execution::Execution;
 use crate::runtime::task::{Task, TaskId};
-use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
+use crate::runtime::thread::continuation::{CONTINUATION_POOL, ContinuationPool};
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::Config;
 use std::cell::RefCell;
 use std::fmt;
 use std::panic;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
-use tracing::{span, Level};
+use tracing::{Level, span};
 
 // A helper struct which on `drop` exits all current spans, then enters the span which was entered when it was constructed.
 // The reason this exists is to solve the "span-stacking" issue which occurs when there is a panic inside `run` which is

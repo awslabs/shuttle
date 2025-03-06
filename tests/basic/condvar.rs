@@ -1,8 +1,8 @@
 use rand::Rng;
 use shuttle::sync::{Condvar, Mutex};
 use shuttle::{check_dfs, check_random, replay, thread};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use test_log::test;
 
@@ -398,10 +398,10 @@ fn producer_consumer_random() {
         move || {
             let mut rng = shuttle::rand::thread_rng();
 
-            let num_producers = 1 + rng.gen::<usize>() % 3;
-            let num_consumers = 1 + rng.gen::<usize>() % 3;
+            let num_producers = 1 + rng.r#gen::<usize>() % 3;
+            let num_consumers = 1 + rng.r#gen::<usize>() % 3;
             // make events divisible evenly across both the producers and consumers
-            let num_events = (num_producers * num_consumers) * (1 + rng.gen::<usize>() % 4);
+            let num_events = (num_producers * num_consumers) * (1 + rng.r#gen::<usize>() % 4);
 
             let lock = Arc::new(Mutex::new(()));
             let is_empty = Arc::new(Condvar::new()); // count == 0

@@ -1,7 +1,7 @@
 use shuttle::scheduler::{ReplayScheduler, Schedule};
-use shuttle::{thread, Runner};
-use std::sync::atomic::{AtomicI32, Ordering};
+use shuttle::{Runner, thread};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use test_log::test;
 
 fn counter_test() {

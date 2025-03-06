@@ -89,7 +89,7 @@ const SCHEDULE_MAGIC_V2: u8 = 0x91;
 const LINE_WIDTH: usize = 76;
 
 pub(crate) fn serialize_schedule(schedule: &Schedule) -> String {
-    use self::varint::{space_needed, WriteVarInt};
+    use self::varint::{WriteVarInt, space_needed};
 
     let &max_task_id = schedule
         .steps

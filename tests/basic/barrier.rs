@@ -1,8 +1,8 @@
-use shuttle::sync::{mpsc::channel, Barrier};
+use shuttle::sync::{Barrier, mpsc::channel};
 use shuttle::{check_dfs, thread};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use test_log::test;
 
 #[test]

@@ -45,7 +45,7 @@ pub mod rngs {
 }
 
 /// Retrieve the thread-local random number generator, seeded by the system. Intended to be used in
-/// method chaining style, e.g. `thread_rng().gen::<i32>()`, or cached locally, e.g.
+/// method chaining style, e.g. `thread_rng().r#gen::<i32>()`, or cached locally, e.g.
 /// `let mut rng = thread_rng();`.
 pub fn thread_rng() -> rngs::ThreadRng {
     rngs::ThreadRng

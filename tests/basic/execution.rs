@@ -1,11 +1,11 @@
 use shuttle::scheduler::RandomScheduler;
-use shuttle::{check, check_dfs, current, thread, Config, MaxSteps, Runner};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use shuttle::{Config, MaxSteps, Runner, check, check_dfs, current, thread};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use test_log::test;
 // Not actually trying to explore interleavings involving AtomicUsize, just using to smuggle a
 // mutable counter across threads
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn basic_scheduler_test() {

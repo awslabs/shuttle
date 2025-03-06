@@ -1,7 +1,7 @@
-use futures::{future::join_all, stream::FuturesUnordered, StreamExt};
+use futures::{StreamExt, future::join_all, stream::FuturesUnordered};
 use shuttle::{
     check_dfs,
-    future::{block_on, spawn, JoinHandle},
+    future::{JoinHandle, block_on, spawn},
 };
 
 fn empty_tasks() -> FuturesUnordered<JoinHandle<()>> {

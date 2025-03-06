@@ -14,7 +14,7 @@ use std::future::Future;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Waker};
-use tracing::{error_span, event, field, Level, Span};
+use tracing::{Level, Span, error_span, event, field};
 
 pub(crate) mod clock;
 pub(crate) mod labels;

@@ -1,12 +1,12 @@
 use shuttle::{
     check_dfs, check_random,
-    current::{get_label_for_task, me, set_label_for_task, set_name_for_task, ChildLabelFn, TaskName},
+    current::{ChildLabelFn, TaskName, get_label_for_task, me, set_label_for_task, set_name_for_task},
     future, thread,
 };
 use std::collections::HashSet;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use test_log::test;
 use tracing::field::{Field, Visit};
@@ -317,9 +317,10 @@ impl Subscriber for RunnableSubscriber {
                             let value = format!("{:?}", value).replace('[', "").replace(']', "");
                             let v1 = value.split(',');
                             // The following assertion fails if a `ChildLabelFn` is not used to set child task names.
-                            assert!(v1
-                                .map(|s| s.trim())
-                                .all(|s| (s == "main-thread(0)") || s.starts_with("Child(")));
+                            assert!(
+                                v1.map(|s| s.trim())
+                                    .all(|s| (s == "main-thread(0)") || s.starts_with("Child("))
+                            );
                         }
                     }
                 }

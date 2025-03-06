@@ -43,8 +43,10 @@ unsafe fn raw_waker_wake(data: *const ()) {
 }
 
 unsafe fn raw_waker_wake_by_ref(data: *const ()) {
-    // Our wakers have no resources associated with then, so `wake` and `wake_by_ref` are the same
-    raw_waker_wake(data);
+    unsafe {
+        // Our wakers have no resources associated with then, so `wake` and `wake_by_ref` are the same
+        raw_waker_wake(data);
+    }
 }
 
 unsafe fn raw_waker_drop(_data: *const ()) {

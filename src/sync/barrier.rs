@@ -1,6 +1,6 @@
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
 use std::cell::RefCell;
 use std::collections::HashSet;

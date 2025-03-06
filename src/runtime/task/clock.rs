@@ -1,5 +1,5 @@
-use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
-use smallvec::{smallvec, SmallVec};
+use crate::runtime::task::{DEFAULT_INLINE_TASKS, TaskId};
+use smallvec::{SmallVec, smallvec};
 use std::cmp::{Ordering, PartialOrd};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

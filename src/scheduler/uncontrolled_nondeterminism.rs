@@ -1,4 +1,4 @@
-use crate::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{DEFAULT_INLINE_TASKS, Task, TaskId};
 use crate::scheduler::{Schedule, Scheduler};
 use smallvec::SmallVec;
 
@@ -45,7 +45,11 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
         if !self.recording {
             // Start a new recording
             if self.current_step != self.previous_schedule.len() {
-                panic!("possible nondeterminism: current execution ended earlier than expected (expected length {} but ended after {})", self.previous_schedule.len(), self.current_step);
+                panic!(
+                    "possible nondeterminism: current execution ended earlier than expected (expected length {} but ended after {})",
+                    self.previous_schedule.len(),
+                    self.current_step
+                );
             }
 
             self.previous_schedule.clear();
@@ -90,11 +94,15 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
                         .map(|t| t.id())
                         .collect::<SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>>();
                     if *runnables.as_slice() != *runnable_ids {
-                        panic!("possible nondeterminism: set of runnable tasks is different than expected.\nExpected:\n{runnables:?}\nbut got:\n{runnable_ids:?}");
+                        panic!(
+                            "possible nondeterminism: set of runnable tasks is different than expected.\nExpected:\n{runnables:?}\nbut got:\n{runnable_ids:?}"
+                        );
                     }
 
                     if *was_yielding != is_yielding {
-                        panic!("possible nondeterminism: `next_task` was called with `is_yielding` equal to {was_yielding} in the original execution, and {is_yielding} in the current execution");
+                        panic!(
+                            "possible nondeterminism: `next_task` was called with `is_yielding` equal to {was_yielding} in the original execution, and {is_yielding} in the current execution"
+                        );
                     }
 
                     self.current_step += 1;
@@ -102,7 +110,9 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
                     *maybe_id
                 }
                 ScheduleRecord::Random(_) => {
-                    panic!("possible nondeterminism: next step was context switch, but recording expected random number generation")
+                    panic!(
+                        "possible nondeterminism: next step was context switch, but recording expected random number generation"
+                    )
                 }
             }
         }
@@ -124,7 +134,9 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
             }
 
             match self.previous_schedule[self.current_step] {
-                ScheduleRecord::Task(..) => panic!("possible nondeterminism: next step was random number generation, but recording expected context switch"),
+                ScheduleRecord::Task(..) => panic!(
+                    "possible nondeterminism: next step was random number generation, but recording expected context switch"
+                ),
                 ScheduleRecord::Random(num) => {
                     self.current_step += 1;
                     num
