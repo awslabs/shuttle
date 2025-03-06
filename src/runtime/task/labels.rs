@@ -222,7 +222,7 @@ impl Labels {
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.map.as_ref().map_or(true, |map| map.is_empty())
+        self.map.as_ref().is_none_or(|map| map.is_empty())
     }
 
     /// Get the number of Labels available.
