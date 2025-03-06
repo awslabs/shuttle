@@ -20,7 +20,7 @@ jobs:
       - name: Install Rust
         run: rustup update stable
       - name: cargo test
-        run: cargo test
+        run: cargo test --release
 
   fmt:
     name: rustfmt
