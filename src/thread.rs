@@ -6,7 +6,7 @@ use crate::runtime::thread;
 use std::marker::PhantomData;
 use std::time::Duration;
 
-pub use std::thread::{panicking, Result};
+pub use std::thread::{Result, panicking};
 
 /// A unique identifier for a running thread
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -321,7 +321,7 @@ impl<T: 'static> LocalKey<T> {
     fn get(&'static self) -> Option<std::result::Result<&'static T, AccessError>> {
         // Safety: see the usage below
         unsafe fn extend_lt<'b, T>(t: &'_ T) -> &'b T {
-            std::mem::transmute(t)
+            unsafe { std::mem::transmute(t) }
         }
 
         ExecutionState::with(|state| {

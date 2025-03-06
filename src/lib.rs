@@ -72,7 +72,7 @@
 //! ```no_run
 //! use rand::{thread_rng, Rng};
 //!
-//! let x = thread_rng().gen::<u64>();
+//! let x = thread_rng().r#gen::<u64>();
 //! assert_eq!(x % 10, 7);
 //! ```
 //!
@@ -82,7 +82,7 @@
 //! use shuttle::rand::{thread_rng, Rng};
 //!
 //! shuttle::check_random(|| {
-//!     let x = thread_rng().gen::<u64>();
+//!     let x = thread_rng().r#gen::<u64>();
 //!     assert_ne!(x % 10, 7);
 //! }, 100);
 //! ```
@@ -108,7 +108,7 @@
 //! use shuttle::rand::{thread_rng, Rng};
 //!
 //! shuttle::replay(|| {
-//!     let x = thread_rng().gen::<u64>();
+//!     let x = thread_rng().r#gen::<u64>();
 //!     assert_ne!(x % 10, 7);
 //! }, "910102ccdedf9592aba2afd70104");
 //! ```
@@ -476,24 +476,24 @@ macro_rules! thread_local {
     () => {};
 
     // process multiple declarations with a const initializer
-    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = const { $init:expr }; $($rest:tt)*) => (
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = const { $init:expr_2021 }; $($rest:tt)*) => (
         $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
         $crate::thread_local!($($rest)*);
     );
 
     // handle a single declaration with a const initializer
-    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = const { $init:expr }) => (
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = const { $init:expr_2021 }) => (
         $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
     );
 
     // process multiple declarations
-    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr; $($rest:tt)*) => (
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr_2021; $($rest:tt)*) => (
         $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
         $crate::thread_local!($($rest)*);
     );
 
     // handle a single declaration
-    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr) => (
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr_2021) => (
         $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
     );
 }
@@ -501,7 +501,7 @@ macro_rules! thread_local {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __thread_local_inner {
-    ($(#[$attr:meta])* $vis:vis $name:ident, $t:ty, $init:expr) => {
+    ($(#[$attr:meta])* $vis:vis $name:ident, $t:ty, $init:expr_2021) => {
         $(#[$attr])* $vis static $name: $crate::thread::LocalKey<$t> =
             $crate::thread::LocalKey {
                 init: || { $init },
@@ -514,14 +514,14 @@ macro_rules! __thread_local_inner {
 // These macros are copied from the lazy_static crate.
 #[macro_export]
 macro_rules! lazy_static {
-    ($(#[$attr:meta])* static ref $N:ident : $T:ty = $e:expr; $($t:tt)*) => {
+    ($(#[$attr:meta])* static ref $N:ident : $T:ty = $e:expr_2021; $($t:tt)*) => {
         // use `()` to explicitly forward the information about private items
         $crate::__lazy_static_internal!($(#[$attr])* () static ref $N : $T = $e; $($t)*);
     };
-    ($(#[$attr:meta])* pub static ref $N:ident : $T:ty = $e:expr; $($t:tt)*) => {
+    ($(#[$attr:meta])* pub static ref $N:ident : $T:ty = $e:expr_2021; $($t:tt)*) => {
         $crate::__lazy_static_internal!($(#[$attr])* (pub) static ref $N : $T = $e; $($t)*);
     };
-    ($(#[$attr:meta])* pub ($($vis:tt)+) static ref $N:ident : $T:ty = $e:expr; $($t:tt)*) => {
+    ($(#[$attr:meta])* pub ($($vis:tt)+) static ref $N:ident : $T:ty = $e:expr_2021; $($t:tt)*) => {
         $crate::__lazy_static_internal!($(#[$attr])* (pub ($($vis)+)) static ref $N : $T = $e; $($t)*);
     };
     () => ()
@@ -532,12 +532,12 @@ macro_rules! lazy_static {
 macro_rules! __lazy_static_internal {
     // optional visibility restrictions are wrapped in `()` to allow for
     // explicitly passing otherwise implicit information about private items
-    ($(#[$attr:meta])* ($($vis:tt)*) static ref $N:ident : $T:ty = $e:expr; $($t:tt)*) => {
+    ($(#[$attr:meta])* ($($vis:tt)*) static ref $N:ident : $T:ty = $e:expr_2021; $($t:tt)*) => {
         $crate::__lazy_static_internal!(@MAKE TY, $(#[$attr])*, ($($vis)*), $N);
         $crate::__lazy_static_internal!(@TAIL, $N : $T = $e);
         $crate::lazy_static!($($t)*);
     };
-    (@TAIL, $N:ident : $T:ty = $e:expr) => {
+    (@TAIL, $N:ident : $T:ty = $e:expr_2021) => {
         impl ::std::ops::Deref for $N {
             type Target = $T;
             fn deref(&self) -> &$T {

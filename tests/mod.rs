@@ -6,7 +6,7 @@ mod demo;
 mod future;
 
 use shuttle::scheduler::{ReplayScheduler, Scheduler};
-use shuttle::{check_random_with_seed, replay_from_file, Config, FailurePersistence, Runner};
+use shuttle::{Config, FailurePersistence, Runner, check_random_with_seed, replay_from_file};
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
 use std::sync::Arc;
 

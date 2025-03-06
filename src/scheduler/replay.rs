@@ -1,6 +1,6 @@
-use crate::runtime::task::{clock::VectorClock, Task, TaskId};
-use crate::scheduler::data::random::RandomDataSource;
+use crate::runtime::task::{Task, TaskId, clock::VectorClock};
 use crate::scheduler::data::DataSource;
+use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::serialization::deserialize_schedule;
 use crate::scheduler::{Schedule, ScheduleStep, Scheduler};
 use std::fs::OpenOptions;

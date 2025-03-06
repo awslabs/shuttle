@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once};
 
 use crate::runtime::execution::ExecutionState;
-use crate::scheduler::serialization::serialize_schedule;
 use crate::scheduler::Schedule;
+use crate::scheduler::serialization::serialize_schedule;
 use crate::{Config, FailurePersistence};
 
 /// Produce a message describing how to replay a failing schedule.
@@ -67,8 +67,17 @@ fn persist_failure_inner(schedule: &Schedule, message: String, config: &Config) 
     // Try to persist to a file, but fall through to stdout if that fails for some reason
     if let FailurePersistence::File(directory) = &config.failure_persistence {
         match persist_failure_to_file(&serialized_schedule, directory.as_ref()) {
-            Ok(path) => return format!("{}\nfailing schedule persisted to file: {}\npass that path to `shuttle::replay_from_file` to replay the failure", message, path.display()),
-            Err(e) => eprintln!("failed to persist schedule to file (error: {}), falling back to printing the schedule", e),
+            Ok(path) => {
+                return format!(
+                    "{}\nfailing schedule persisted to file: {}\npass that path to `shuttle::replay_from_file` to replay the failure",
+                    message,
+                    path.display()
+                );
+            }
+            Err(e) => eprintln!(
+                "failed to persist schedule to file (error: {}), falling back to printing the schedule",
+                e
+            ),
         }
     }
     format!(

@@ -1,9 +1,9 @@
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::sync::{Condvar, Mutex};
-use shuttle::{thread, Runner};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use shuttle::{Runner, thread};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const ITERATIONS: usize = 1000;
 const NUM_PRODUCERS: usize = 3;

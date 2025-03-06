@@ -1,9 +1,9 @@
-use crate::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
-use crate::scheduler::data::random::RandomDataSource;
+use crate::runtime::task::{DEFAULT_INLINE_TASKS, Task, TaskId};
 use crate::scheduler::data::DataSource;
+use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::{Schedule, Scheduler};
 use rand::rngs::OsRng;
-use rand::seq::{index::sample, SliceRandom};
+use rand::seq::{SliceRandom, index::sample};
 use rand::{Rng, RngCore, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 use std::collections::{HashMap, HashSet};

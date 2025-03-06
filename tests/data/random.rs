@@ -1,17 +1,17 @@
 use crate::{check_replay_from_seed_match_schedule, check_replay_roundtrip};
-use shuttle::rand::{thread_rng, Rng};
+use shuttle::rand::{Rng, thread_rng};
 use shuttle::scheduler::RandomScheduler;
 use shuttle::sync::Mutex;
+use shuttle::{Runner, scheduler::DfsScheduler};
 use shuttle::{check_random, replay, thread};
-use shuttle::{scheduler::DfsScheduler, Runner};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use test_log::test;
 
 fn random_mod_10_equals_7() {
     let mut rng = thread_rng();
-    let x = rng.gen::<u64>();
+    let x = rng.r#gen::<u64>();
     assert_ne!(x % 10, 7, "found failing value {}", x);
 }
 
@@ -48,7 +48,7 @@ fn thread_rng_decorrelated() {
             let lock = lock.clone();
             thread::spawn(move || {
                 let mut rng = thread_rng();
-                lock.lock().unwrap()[i] = rng.gen::<usize>();
+                lock.lock().unwrap()[i] = rng.r#gen::<usize>();
             })
         })
         .collect::<Vec<_>>();
@@ -75,7 +75,7 @@ fn random_reseeds_on_every_execution() {
     check_random(
         move || {
             let mut rng = thread_rng();
-            let x = rng.gen::<u64>();
+            let x = rng.r#gen::<u64>();
             set.lock().unwrap().insert(x);
         },
         1000,
@@ -125,7 +125,7 @@ fn broken_atomic_counter_stress() {
                 let mut rng = thread_rng();
                 let num_steps = rng.gen_range(1..10);
                 for _ in 0..num_steps {
-                    if rng.gen::<bool>() {
+                    if rng.r#gen::<bool>() {
                         counter.inc();
                         truth.fetch_add(1, Ordering::SeqCst);
                     } else {
@@ -224,7 +224,7 @@ fn dfs_does_not_reseed_across_executions() {
         });
 
         let mut rng = thread_rng();
-        let x = rng.gen::<u64>();
+        let x = rng.r#gen::<u64>();
         let mut set = pair.lock().unwrap();
         set.0.insert(x);
         set.1 += 1;

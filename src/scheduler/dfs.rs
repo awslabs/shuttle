@@ -1,6 +1,6 @@
 use crate::runtime::task::{Task, TaskId};
-use crate::scheduler::data::fixed::FixedDataSource;
 use crate::scheduler::data::DataSource;
+use crate::scheduler::data::fixed::FixedDataSource;
 use crate::scheduler::{Schedule, Scheduler};
 
 const DFS_RANDOM_SEED: u64 = 0x12345678;

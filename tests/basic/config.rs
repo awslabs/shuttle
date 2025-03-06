@@ -1,6 +1,6 @@
 use shuttle::scheduler::RandomScheduler;
 use shuttle::sync::Mutex;
-use shuttle::{thread, Config, Runner};
+use shuttle::{Config, Runner, thread};
 use std::sync::Arc;
 
 #[test]

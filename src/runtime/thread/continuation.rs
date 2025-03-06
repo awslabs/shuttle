@@ -66,7 +66,7 @@ impl Continuation {
     pub fn new(stack_size: usize) -> Self {
         let function = ContinuationFunction(Rc::new(Cell::new(None)));
 
-        let mut gen = {
+        let mut generator = {
             let function = function.clone();
 
             Gn::new_opt(stack_size, move || {
@@ -92,11 +92,11 @@ impl Continuation {
         };
 
         // Resume the generator once to get it into the loop
-        let ret = gen.resume().unwrap();
+        let ret = generator.resume().unwrap();
         debug_assert_eq!(ret, ContinuationOutput::Finished);
 
         Self {
-            generator: gen,
+            generator,
             function,
             state: ContinuationState::NotReady,
         }

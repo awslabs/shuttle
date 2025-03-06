@@ -4,9 +4,9 @@ use futures::{FutureExt, StreamExt};
 use shuttle::future::{self, batch_semaphore::*};
 use shuttle::{check_dfs, check_random, current, thread};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use test_log::test;
 
 #[test]
@@ -531,16 +531,16 @@ fn bugged_cleanup_would_cause_deadlock() {
 mod early_acquire_drop_tests {
     use super::*;
     use futures::{
+        Future,
         future::join_all,
         task::{Context, Poll, Waker},
-        Future,
     };
     use pin_project::pin_project;
     use proptest::prelude::*;
     use proptest_derive::Arbitrary;
     use shuttle::{
         check_random,
-        sync::mpsc::{channel, Sender},
+        sync::mpsc::{Sender, channel},
     };
     use std::pin::Pin;
 
@@ -632,7 +632,7 @@ mod early_acquire_drop_tests {
     }
 
     macro_rules! sem_tests {
-        ($mod_name:ident, $fairness:expr) => {
+        ($mod_name:ident, $fairness:expr_2021) => {
             mod $mod_name {
                 use super::*;
 

@@ -10,8 +10,8 @@ use shuttle::{
     thread::JoinHandle,
 };
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 use test_log::test;
 use tracing::field::{Field, Visit};

@@ -20,7 +20,8 @@ impl From<bool> for AtomicBool {
 
 impl std::fmt::Debug for AtomicBool {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        std::fmt::Debug::fmt(unsafe { &self.raw_load() }, f)
+        let value = unsafe { &self.raw_load() };
+        std::fmt::Debug::fmt(value, f)
     }
 }
 
@@ -137,6 +138,6 @@ impl AtomicBool {
     /// and so it should be used when those interleavings aren't important (primarily in
     /// debugging scenarios where we might want to just print this atomic's value).
     pub unsafe fn raw_load(&self) -> bool {
-        self.inner.raw_load()
+        unsafe { self.inner.raw_load() }
     }
 }

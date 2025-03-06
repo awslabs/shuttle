@@ -1,7 +1,7 @@
 use crate::current;
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
+use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
 use crate::sync::MutexGuard;
 use assoc::AssocExt;

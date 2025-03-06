@@ -1,16 +1,16 @@
 //! A counting semaphore supporting both async and sync operations.
 use crate::current;
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{clock::VectorClock, TaskId};
+use crate::runtime::task::{TaskId, clock::VectorClock};
 use crate::runtime::thread;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Waker};
 use tracing::trace;
 
@@ -374,8 +374,7 @@ impl BatchSemaphore {
         for waiter in state.waiters.drain(..) {
             trace!(
                 "semaphore {:p} removing and waking up waiter {:?} on close",
-                ptr,
-                waiter,
+                ptr, waiter,
             );
             assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
             assert!(!waiter.has_permits.load(Ordering::SeqCst)); // sanity check

@@ -22,7 +22,8 @@ macro_rules! atomic_int {
 
         impl std::fmt::Debug for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                std::fmt::Debug::fmt(unsafe { &self.raw_load() }, f)
+                let value = unsafe { &self.raw_load() };
+                std::fmt::Debug::fmt(value, f)
             }
         }
 
@@ -175,7 +176,7 @@ macro_rules! atomic_int {
             /// and so it should be used when those interleavings aren't important (primarily in
             /// debugging scenarios where we might want to just print this atomic's value).
             pub unsafe fn raw_load(&self) -> $int_type {
-                self.inner.raw_load()
+                unsafe { self.inner.raw_load() }
             }
         }
     };

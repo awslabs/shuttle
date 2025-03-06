@@ -5,7 +5,7 @@ use std::task::{Context, Poll};
 
 use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Arc;
-use shuttle::{future, Config, MaxSteps, Runner};
+use shuttle::{Config, MaxSteps, Runner, future};
 
 /// Like [`shuttle::future::yield_now`] but doesn't request a yield from the scheduler
 struct UnfairYieldNow {

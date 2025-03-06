@@ -1,6 +1,6 @@
 use futures::future::poll_fn;
-use shuttle::sync::atomic::{AtomicBool, Ordering};
 use shuttle::sync::Mutex;
+use shuttle::sync::atomic::{AtomicBool, Ordering};
 use shuttle::{check_dfs, future, thread};
 use std::future::Future;
 use std::pin::Pin;

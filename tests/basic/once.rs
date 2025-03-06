@@ -1,10 +1,10 @@
 use shuttle::scheduler::DfsScheduler;
 use shuttle::sync::Once;
-use shuttle::{check_dfs, check_pct, thread, Runner};
+use shuttle::{Runner, check_dfs, check_pct, thread};
 use std::collections::HashSet;
 use std::panic;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use test_log::test;
 
 fn basic<F>(num_threads: usize, checker: F)

@@ -1,8 +1,8 @@
 use shuttle::scheduler::RandomScheduler;
-use shuttle::{check_random, thread, Runner};
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use shuttle::{Runner, check_random, thread};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Record};
 use tracing::{Event, Id, Metadata, Subscriber};

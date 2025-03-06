@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::basic::clocks::{check_clock, me};
-use shuttle::sync::mpsc::{channel, sync_channel, RecvError, TryRecvError, TrySendError};
+use shuttle::sync::mpsc::{RecvError, TryRecvError, TrySendError, channel, sync_channel};
 use shuttle::{check_dfs, check_random, thread};
 use test_log::test;
 

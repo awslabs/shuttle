@@ -1,8 +1,8 @@
 use crate::basic::clocks::me;
-use crate::{check_replay_roundtrip, check_replay_roundtrip_file, Config, FailurePersistence};
+use crate::{Config, FailurePersistence, check_replay_roundtrip, check_replay_roundtrip_file};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler, Schedule};
 use shuttle::sync::Mutex;
-use shuttle::{replay, thread, Runner};
+use shuttle::{Runner, replay, thread};
 use std::panic;
 use std::sync::Arc;
 use test_log::test;
@@ -289,9 +289,9 @@ fn replay_causality_with_random() {
                 use shuttle::rand::Rng;
                 assert_eq!(me(), 3);
                 let mut thread_rng = shuttle::rand::thread_rng();
-                thread_rng.gen::<u64>();
-                thread_rng.gen::<u64>();
-                thread_rng.gen::<u64>();
+                thread_rng.r#gen::<u64>();
+                thread_rng.r#gen::<u64>();
+                thread_rng.r#gen::<u64>();
             });
         });
     })

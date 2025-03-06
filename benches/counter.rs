@@ -1,7 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::sync::atomic::{AtomicUsize, Ordering};
-use shuttle::{future, thread, Runner};
+use shuttle::{Runner, future, thread};
 use std::sync::Arc;
 
 const NUM_TASKS: usize = 10;

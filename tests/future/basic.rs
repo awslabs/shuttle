@@ -1,10 +1,10 @@
 use futures::task::{FutureObj, Spawn, SpawnError, SpawnExt as _};
-use futures::{try_join, Future};
+use futures::{Future, try_join};
 use shuttle::sync::{Barrier, Mutex};
-use shuttle::{check_dfs, check_random, future, scheduler::PctScheduler, thread, Runner};
+use shuttle::{Runner, check_dfs, check_random, future, scheduler::PctScheduler, thread};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use test_log::test;
 
@@ -234,11 +234,7 @@ fn async_counter_pct() {
 }
 
 async fn do_err(e: bool) -> Result<(), ()> {
-    if e {
-        Err(())
-    } else {
-        Ok(())
-    }
+    if e { Err(()) } else { Ok(()) }
 }
 
 // Check that try_join on Shuttle futures works as expected

@@ -1,7 +1,7 @@
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::sync::Mutex;
-use shuttle::{thread, Runner};
+use shuttle::{Runner, thread};
 use std::sync::Arc;
 
 /// A simple benchmark that just runs 3 threads incrementing a lock a bunch of times. This is a

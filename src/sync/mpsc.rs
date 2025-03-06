@@ -2,15 +2,15 @@
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{DEFAULT_INLINE_TASKS, TaskId};
 use crate::runtime::thread;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::result::Result;
-pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError, TrySendError};
 use std::sync::Arc;
+pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError, TrySendError};
 use std::time::Duration;
 use tracing::trace;
 

@@ -1,6 +1,6 @@
 use shuttle::scheduler::DfsScheduler;
 use shuttle::thread::ThreadId;
-use shuttle::{check_dfs, check_random, lazy_static, thread, Runner};
+use shuttle::{Runner, check_dfs, check_random, lazy_static, thread};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use test_log::test;

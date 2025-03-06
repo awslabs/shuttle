@@ -1,7 +1,7 @@
+use shuttle::Config;
 use shuttle::scheduler::{RandomScheduler, Schedule, Scheduler, Task, TaskId};
 use shuttle::sync::Mutex;
-use shuttle::Config;
-use shuttle::{thread, Runner};
+use shuttle::{Runner, thread};
 use std::sync::Arc;
 use std::time::Duration;
 use test_log::test;
