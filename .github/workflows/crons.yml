@@ -1,0 +1,49 @@
+name: Cron jobs
+permissions:
+  contents: write
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+  schedule:
+    - cron: '0 2 * * 1' # run at 2 AM UTC every Monday
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install Audit
+        run: cargo install cargo-audit
+      - name: cargo audit
+        run: cargo audit
+  
+  # Runs Clippy, fmt, doc and tests on beta. 
+  # Exists to not get "caught off guard" by new Rust versions bringing new clippies.
+  beta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust
+        run: rustup update beta
+      - name: Default to beta
+        run: rustup default beta
+      - name: Install rustfmt
+        run: rustup component add rustfmt
+      - name: clippy
+        run: cargo clippy --all-targets -- -D clippy::all
+      - name: "rustfmt --check"
+        run: cargo fmt --all -- --check
+      - name: cargo doc
+        run: cargo doc --no-deps
+      - name: cargo test release
+        run: cargo test --release
+      - name: Notify failed build
+        uses: jayqi/failed-build-issue-action@v1
+        if: failure() 
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
