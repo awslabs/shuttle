@@ -323,15 +323,14 @@ where
 
 /// Run the given function under a randomized concurrency scheduler for some number of iterations.
 /// Each iteration will run a (potentially) different randomized schedule.
-/// When the environment variable SHUTTLE_RANDOM_SEED is set to a u64, this number will be used
-/// as the seed to initialize the random scheduler.
 pub fn check_random<F>(f: F, iterations: usize)
 where
     F: Fn() + Send + Sync + 'static,
 {
     use crate::scheduler::RandomScheduler;
 
-    Runner::new(RandomScheduler::new(iterations), Default::default()).run(f)
+    let runner = Runner::new(RandomScheduler::new(iterations), Default::default());
+    runner.run(f);
 }
 
 /// Run function `f` using `RandomScheduler` initialized with the provided `seed` for the given
