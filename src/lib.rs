@@ -330,24 +330,8 @@ where
     F: Fn() + Send + Sync + 'static,
 {
     use crate::scheduler::RandomScheduler;
-    use tracing::info;
 
-    let seed_env = std::env::var("SHUTTLE_RANDOM_SEED");
-    let runner = match seed_env {
-        Ok(s) => match s.as_str().parse::<u64>() {
-            Ok(seed) => {
-                info!(
-                    "Initializing RandomScheduler with the seed provided by SHUTTLE_RANDOM_SEED: {}",
-                    seed
-                );
-                Runner::new(RandomScheduler::new_from_seed(seed, iterations), Default::default())
-            }
-            Err(err) => panic!("The seed provided by SHUTTLE_RANDOM_SEED is not a valid u64: {}", err),
-        },
-        Err(_) => Runner::new(RandomScheduler::new(iterations), Default::default()),
-    };
-
-    runner.run(f);
+    Runner::new(RandomScheduler::new(iterations), Default::default()).run(f)
 }
 
 /// Run function `f` using `RandomScheduler` initialized with the provided `seed` for the given
