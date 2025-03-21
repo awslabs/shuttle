@@ -1,11 +1,14 @@
-use shuttle::scheduler::RandomScheduler;
-use shuttle::{check, check_dfs, current, thread, Config, MaxSteps, Runner};
+use shuttle::{
+    check, check_dfs, current,
+    scheduler::{DfsScheduler, RandomScheduler},
+    thread, Config, MaxSteps, Runner,
+};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use test_log::test;
 // Not actually trying to explore interleavings involving AtomicUsize, just using to smuggle a
 // mutable counter across threads
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use test_log::test;
 
 #[test]
 fn basic_scheduler_test() {
@@ -243,4 +246,44 @@ fn context_switches_mutex() {
 fn failure_outside_execution() {
     let lock = shuttle::sync::Mutex::new(0u64);
     let _ = lock.lock().unwrap();
+}
+
+fn reset_step_count(do_reset: bool, step_bound: usize) {
+    let mut config = Config::new();
+    config.max_steps = MaxSteps::FailAfter(step_bound);
+
+    let scheduler = DfsScheduler::new(None, false);
+    let runner = Runner::new(scheduler, config);
+
+    runner.run(move || {
+        (0..4)
+            .map(move |_| {
+                thread::spawn(move || {
+                    for _ in 0..3 {
+                        thread::yield_now();
+                    }
+                    if do_reset {
+                        shuttle::current::reset_step_count();
+                    }
+                })
+            })
+            .for_each(|jh| jh.join().unwrap())
+    });
+}
+
+#[test]
+#[should_panic(expected = "exceeded max_steps bound")]
+fn dont_reset_step_count() {
+    reset_step_count(false, 20);
+}
+
+#[test]
+fn do_reset_step_count() {
+    reset_step_count(true, 7);
+}
+
+#[test]
+#[should_panic(expected = "exceeded max_steps bound")]
+fn do_reset_step_count_panics() {
+    reset_step_count(true, 6);
 }

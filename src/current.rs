@@ -95,6 +95,16 @@ pub fn me() -> TaskId {
     get_current_task().unwrap()
 }
 
+/// Sets the number of scheduling steps used (wrt. the step bound) to 0.
+///
+/// The idea behind this is to run the test with some step bound, and then call this function whenever it is known that progress has been made.
+/// This allows tests to run with tighter step bounds, and to scale a test up without also changing the step bound.
+///
+/// NOTE: Be careful when using this, as if used wrongly it can be used to make a test execute forever.
+pub fn reset_step_count() {
+    ExecutionState::with(|s| s.steps_reset_at = s.current_schedule.len());
+}
+
 /// Sets the `tag` field of the current task.
 /// Returns the `tag` which was there previously.
 #[deprecated]
