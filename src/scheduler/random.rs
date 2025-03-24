@@ -57,8 +57,26 @@ impl RandomScheduler {
     ///
     /// Two RandomSchedulers initialized with the same seed will make the same scheduling decisions
     /// when executing the same workloads.
+    ///
+    /// If the `SHUTTLE_RANDOM_SEED` environment variable is set, then that seed will be used instead.
     pub fn new_from_seed(seed: u64, max_iterations: usize) -> Self {
+        let seed_env = std::env::var("SHUTTLE_RANDOM_SEED");
+        let seed = match seed_env {
+            Ok(s) => match s.as_str().parse::<u64>() {
+                Ok(seed) => {
+                    tracing::info!(
+                        "Initializing RandomScheduler with the seed provided by SHUTTLE_RANDOM_SEED: {}",
+                        seed
+                    );
+                    seed
+                }
+                Err(err) => panic!("The seed provided by SHUTTLE_RANDOM_SEED is not a valid u64: {}", err),
+            },
+            Err(_) => seed,
+        };
+
         let rng = Pcg64Mcg::seed_from_u64(seed);
+
         Self {
             max_iterations,
             rng,

@@ -323,30 +323,13 @@ where
 
 /// Run the given function under a randomized concurrency scheduler for some number of iterations.
 /// Each iteration will run a (potentially) different randomized schedule.
-/// When the environment variable SHUTTLE_RANDOM_SEED is set to a u64, this number will be used
-/// as the seed to initialize the random scheduler.
 pub fn check_random<F>(f: F, iterations: usize)
 where
     F: Fn() + Send + Sync + 'static,
 {
     use crate::scheduler::RandomScheduler;
-    use tracing::info;
 
-    let seed_env = std::env::var("SHUTTLE_RANDOM_SEED");
-    let runner = match seed_env {
-        Ok(s) => match s.as_str().parse::<u64>() {
-            Ok(seed) => {
-                info!(
-                    "Initializing RandomScheduler with the seed provided by SHUTTLE_RANDOM_SEED: {}",
-                    seed
-                );
-                Runner::new(RandomScheduler::new_from_seed(seed, iterations), Default::default())
-            }
-            Err(err) => panic!("The seed provided by SHUTTLE_RANDOM_SEED is not a valid u64: {}", err),
-        },
-        Err(_) => Runner::new(RandomScheduler::new(iterations), Default::default()),
-    };
-
+    let runner = Runner::new(RandomScheduler::new(iterations), Default::default());
     runner.run(f);
 }
 
