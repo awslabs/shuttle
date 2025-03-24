@@ -246,12 +246,14 @@ pub(crate) struct ExecutionState {
     has_yielded: bool,
     // the number of scheduling decisions made so far
     context_switches: usize,
+    // the schedule length last time `reset_stop_bound()` was called
+    pub(crate) steps_reset_at: usize,
 
     // static values for the current execution
     storage: StorageMap,
 
     scheduler: Rc<RefCell<dyn Scheduler>>,
-    pub(super) current_schedule: Schedule,
+    pub(crate) current_schedule: Schedule,
 
     in_cleanup: bool,
 
@@ -292,6 +294,7 @@ impl ExecutionState {
             next_task: ScheduledTask::None,
             has_yielded: false,
             context_switches: 0,
+            steps_reset_at: 0,
             storage: StorageMap::new(),
             scheduler,
             current_schedule: initial_schedule,
@@ -631,6 +634,11 @@ impl ExecutionState {
         &mut task.clock
     }
 
+    /// Returns `true` if the test has exceeded the step bound, and `false` otherwise.
+    fn is_step_bound_exceeded(&self, max_steps: usize) -> bool {
+        self.current_schedule.len() - self.steps_reset_at >= max_steps
+    }
+
     /// Run the scheduler to choose the next task to run. `has_yielded` should be false if the
     /// scheduler is being invoked from within a running task. If scheduling fails, returns an Err
     /// with a String describing the failure.
@@ -644,14 +652,14 @@ impl ExecutionState {
         self.context_switches += 1;
 
         match self.config.max_steps {
-            MaxSteps::FailAfter(n) if self.current_schedule.len() >= n => {
+            MaxSteps::FailAfter(max_steps) if self.is_step_bound_exceeded(max_steps) => {
                 let msg = format!(
                     "exceeded max_steps bound {}. this might be caused by an unfair schedule (e.g., a spin loop)?",
-                    n
+                    max_steps
                 );
                 return Err(msg);
             }
-            MaxSteps::ContinueAfter(n) if self.current_schedule.len() >= n => {
+            MaxSteps::ContinueAfter(max_steps) if self.is_step_bound_exceeded(max_steps) => {
                 self.next_task = ScheduledTask::Stopped;
                 return Ok(());
             }
