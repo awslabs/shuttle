@@ -372,7 +372,7 @@ impl ExecutionState {
     /// if it wants to give the new task a chance to run immediately.
     pub(crate) fn spawn_future<F>(future: F, stack_size: usize, name: Option<String>) -> TaskId
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = ()> + 'static,
     {
         let task_id = Self::with(|state| {
             let schedule_len = state.current_schedule.len();

@@ -206,7 +206,7 @@ impl Task {
         parent_task_id: Option<TaskId>,
     ) -> Self
     where
-        F: FnOnce() + Send + 'static,
+        F: FnOnce() + 'static,
     {
         assert!(id.0 < clock.time.len());
         let mut continuation = ContinuationPool::acquire(stack_size);
@@ -288,7 +288,7 @@ impl Task {
         parent_task_id: Option<TaskId>,
     ) -> Self
     where
-        F: Future<Output = ()> + Send + 'static,
+        F: Future<Output = ()> + 'static,
     {
         let mut future = Box::pin(future);
 
