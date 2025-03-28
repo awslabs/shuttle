@@ -1,7 +1,8 @@
 use shuttle::current::{get_name_for_task, me};
 use shuttle::sync::{Barrier, Condvar, Mutex};
-use shuttle::{check_dfs, check_random, thread};
+use shuttle::{check_dfs, check_random, future, thread};
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use test_log::test;
@@ -641,4 +642,15 @@ fn thread_unpark_after_spurious_wakeup() {
         },
         None,
     )
+}
+
+#[test]
+fn spawn_local_sanity() {
+    check_dfs(
+        || {
+            let rc = Rc::new(0);
+            shuttle::future::block_on(future::spawn_local(async { drop(rc) })).unwrap()
+        },
+        None,
+    );
 }

@@ -18,11 +18,10 @@ use std::task::{Context, Poll, Waker};
 
 pub mod batch_semaphore;
 
-/// Spawn a new async task that the executor will run to completion.
-pub fn spawn<T, F>(fut: F) -> JoinHandle<T>
+fn spawn_inner<T, F>(fut: F) -> JoinHandle<T>
 where
-    F: Future<Output = T> + Send + 'static,
-    T: Send + 'static,
+    F: Future<Output = T> + 'static,
+    T: 'static,
 {
     let stack_size = ExecutionState::with(|s| s.config.stack_size);
     let inner = Arc::new(std::sync::Mutex::new(JoinHandleInner::default()));
@@ -31,6 +30,25 @@ where
     thread::switch();
 
     JoinHandle { task_id, inner }
+}
+
+/// Spawn a new async task that the executor will run to completion.
+pub fn spawn<T, F>(fut: F) -> JoinHandle<T>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    spawn_inner(fut)
+}
+
+/// Spawn a new async task that the executor will run to completion.
+/// This is just `spawn` without the `Send` bound, and it mirrors `spawn_local` from Tokio.
+pub fn spawn_local<F>(fut: F) -> JoinHandle<F::Output>
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
+    spawn_inner(fut)
 }
 
 /// An owned permission to join on an async task (await its termination).
@@ -127,7 +145,7 @@ struct Wrapper<T, F> {
 
 impl<T, F> Wrapper<T, F>
 where
-    F: Future<Output = T> + Send + 'static,
+    F: Future<Output = T> + 'static,
 {
     fn new(future: F, inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<T>>>) -> Self {
         Self {
@@ -139,8 +157,8 @@ where
 
 impl<T, F> Future for Wrapper<T, F>
 where
-    F: Future<Output = T> + Send + 'static,
-    T: Send + 'static,
+    F: Future<Output = T> + 'static,
+    T: 'static,
 {
     type Output = ();
 
