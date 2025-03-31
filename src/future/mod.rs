@@ -18,10 +18,10 @@ use std::task::{Context, Poll, Waker};
 
 pub mod batch_semaphore;
 
-fn spawn_inner<T, F>(fut: F) -> JoinHandle<T>
+fn spawn_inner<F>(fut: F) -> JoinHandle<F::Output>
 where
-    F: Future<Output = T> + 'static,
-    T: 'static,
+    F: Future + 'static,
+    F::Output: 'static,
 {
     let stack_size = ExecutionState::with(|s| s.config.stack_size);
     let inner = Arc::new(std::sync::Mutex::new(JoinHandleInner::default()));
@@ -33,10 +33,10 @@ where
 }
 
 /// Spawn a new async task that the executor will run to completion.
-pub fn spawn<T, F>(fut: F) -> JoinHandle<T>
+pub fn spawn<F>(fut: F) -> JoinHandle<F::Output>
 where
-    F: Future<Output = T> + Send + 'static,
-    T: Send + 'static,
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
 {
     spawn_inner(fut)
 }
@@ -138,16 +138,17 @@ impl<T> Future for JoinHandle<T> {
 // contains a mutex-wrapped field that stores the value and the waker for the task
 // waiting on the join handle. When `poll` returns `Poll::Ready`, the `Wrapper` stores
 // the result in the `result` field and wakes the `waker`.
-struct Wrapper<T, F> {
+struct Wrapper<F: Future> {
     future: Pin<Box<F>>,
-    inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<T>>>,
+    inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<F::Output>>>,
 }
 
-impl<T, F> Wrapper<T, F>
+impl<F> Wrapper<F>
 where
-    F: Future<Output = T> + 'static,
+    F: Future + 'static,
+    F::Output: 'static,
 {
-    fn new(future: F, inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<T>>>) -> Self {
+    fn new(future: F, inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<F::Output>>>) -> Self {
         Self {
             future: Box::pin(future),
             inner,
@@ -155,10 +156,10 @@ where
     }
 }
 
-impl<T, F> Future for Wrapper<T, F>
+impl<F> Future for Wrapper<F>
 where
-    F: Future<Output = T> + 'static,
-    T: 'static,
+    F: Future + 'static,
+    F::Output: 'static,
 {
     type Output = ();
 
