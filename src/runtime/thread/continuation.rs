@@ -32,11 +32,11 @@ pub(crate) struct Continuation {
 /// A cell to pass functions into continuations
 #[allow(clippy::type_complexity)]
 #[derive(Clone)]
-struct ContinuationFunction(Rc<Cell<Option<Box<dyn FnOnce() + Send>>>>);
+struct ContinuationFunction(Rc<Cell<Option<Box<dyn FnOnce()>>>>);
 
 // Safety: we arrange for the `function` field of `Continuation` to only be accessed by one thread
 // at a time: Shuttle tests are single threaded, and continuations are never shared across threads
-// by the ContinuationPool, which is thread-local. The function itself already implements `Send`.
+// by the ContinuationPool, which is thread-local.
 unsafe impl Send for ContinuationFunction {}
 
 /// Inputs that we can pass to a continuation.
@@ -104,7 +104,7 @@ impl Continuation {
 
     /// Provide a new function for the continuation to execute. The continuation must
     /// be in reusable state.
-    pub fn initialize(&mut self, fun: Box<dyn FnOnce() + Send>) {
+    pub fn initialize(&mut self, fun: Box<dyn FnOnce()>) {
         debug_assert_eq!(
             self.state,
             ContinuationState::NotReady,

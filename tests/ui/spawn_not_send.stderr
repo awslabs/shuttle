@@ -1,0 +1,20 @@
+error: future cannot be sent between threads safely
+ --> tests/ui/spawn_not_send.rs:9:53
+  |
+9 |             shuttle::future::block_on(future::spawn(async { drop(rc) })).unwrap()
+  |                                                     ^^^^^^^^^^^^^^^^^^ future created by async block is not `Send`
+  |
+  = help: within `{async block@$DIR/tests/ui/spawn_not_send.rs:9:53: 9:58}`, the trait `Send` is not implemented for `Rc<i32>`
+note: captured value is not `Send`
+ --> tests/ui/spawn_not_send.rs:9:66
+  |
+9 |             shuttle::future::block_on(future::spawn(async { drop(rc) })).unwrap()
+  |                                                                  ^^ has type `Rc<i32>` which is not `Send`
+note: required by a bound in `shuttle::future::spawn`
+ --> src/future/mod.rs
+  |
+  | pub fn spawn<F>(fut: F) -> JoinHandle<F::Output>
+  |        ----- required by a bound in this function
+  | where
+  |     F: Future + Send + 'static,
+  |                 ^^^^ required by this bound in `spawn`

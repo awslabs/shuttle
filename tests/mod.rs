@@ -5,6 +5,12 @@ mod data;
 mod demo;
 mod future;
 
+#[test]
+fn ui() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/ui/*.rs");
+}
+
 use shuttle::scheduler::{ReplayScheduler, Scheduler};
 use shuttle::{check_random_with_seed, replay_from_file, Config, FailurePersistence, Runner};
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
