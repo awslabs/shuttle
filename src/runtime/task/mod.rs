@@ -344,6 +344,12 @@ impl Task {
         self.detached = true;
     }
 
+    pub(crate) fn abort(&mut self) {
+        self.finish();
+        let mut continuation = self.continuation.borrow_mut();
+        continuation.wipe();
+    }
+
     pub(crate) fn waker(&self) -> Waker {
         self.waker.clone()
     }
@@ -374,8 +380,10 @@ impl Task {
         self.park_state.blocked_in_park = false;
     }
 
+    // TODO: Investigate whether we should move `wipe` here. (I think the correct scheme is to have it
+    //       toggleable by the instantiator of the `Task` — those modelling async `JoinHandle`s should
+    //       clean eagerly, thos modelling sync `JoinHandle`s should not.)
     pub(crate) fn finish(&mut self) {
-        assert!(self.state != TaskState::Finished);
         self.state = TaskState::Finished;
     }
 
