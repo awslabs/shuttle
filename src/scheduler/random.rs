@@ -39,10 +39,7 @@ impl CurrentSeedDropGuard {
 impl Drop for CurrentSeedDropGuard {
     fn drop(&mut self) {
         if let Some(s) = self.inner {
-            eprintln!(
-                "failing seed:\n\"\n{}\n\"\nTo replay the failure, either:\n    1) pass the seed to `shuttle::check_random_with_seed, or\n    2) set the environment variable SHUTTLE_RANDOM_SEED to the seed and run `shuttle::check_random`.",
-                s
-            )
+            eprintln!("RandomScheduler failing seed: {s}")
         }
     }
 }
