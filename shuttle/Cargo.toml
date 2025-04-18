@@ -21,6 +21,8 @@ scoped-tls = "1.0.0"
 smallvec = { version = "1.11.2", features = ["const_new"] }
 tracing = { version = "0.1.36", default-features = false, features = ["std"] }
 corosensei = "0.3.1"
+indexmap = { version = "2.9", features = ["std"] }
+ahash = "0.8"
 
 # for annotation only
 regex = { version = "1.10.6", optional = true }
