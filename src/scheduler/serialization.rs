@@ -64,10 +64,7 @@ mod varint {
                     if last == 0x01 {
                         return Ok(result + (1 << offset));
                     } else {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "varint exceeded 64 bits long",
-                        ));
+                        return Err(std::io::Error::other("varint exceeded 64 bits long"));
                     }
                 }
             }

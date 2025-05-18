@@ -507,7 +507,7 @@ impl Task {
     /// Returns the `tag` which was there previously.
     pub(crate) fn set_tag(&mut self, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().insert(self.id(), tag.clone()));
-        std::mem::replace(&mut self.tag, Some(tag))
+        self.tag.replace(tag)
     }
 }
 
