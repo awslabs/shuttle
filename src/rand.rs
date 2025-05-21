@@ -18,7 +18,11 @@ pub mod rngs {
     /// single RNG. This RNG is automatically seeded by Shuttle, and cannot be re-seeded, so this
     /// sharing should be indistinguishable from truly thread-local behavior.
     #[derive(Debug, Default, Clone)]
-    pub struct ThreadRng;
+    pub struct ThreadRng {
+        // If this doesn't exist then usage of `ThreadRng::default()` will result in the following Clippy error:
+        // `error: use of `default` to create a unit struct`
+        pub(super) _field: (),
+    }
 
     impl RngCore for ThreadRng {
         #[inline]
@@ -48,7 +52,7 @@ pub mod rngs {
 /// method chaining style, e.g. `thread_rng().gen::<i32>()`, or cached locally, e.g.
 /// `let mut rng = thread_rng();`.
 pub fn thread_rng() -> rngs::ThreadRng {
-    rngs::ThreadRng
+    rngs::ThreadRng { _field: () }
 }
 
 pub use rand::{Rng, RngCore};
