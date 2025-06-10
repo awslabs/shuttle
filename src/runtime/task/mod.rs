@@ -344,6 +344,11 @@ impl Task {
         self.detached = true;
     }
 
+    pub(crate) fn abort(&mut self) {
+        // TODO: Change into actually aborting
+        self.detach();
+    }
+
     pub(crate) fn waker(&self) -> Waker {
         self.waker.clone()
     }

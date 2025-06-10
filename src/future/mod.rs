@@ -51,6 +51,38 @@ where
     spawn_inner(fut)
 }
 
+/// An owned permission to abort a spawned task, without awaiting its completion.
+#[derive(Debug, Clone)]
+pub struct AbortHandle {
+    task_id: TaskId,
+}
+
+impl AbortHandle {
+    /// Abort the task associated with the handle.
+    pub fn abort(&self) {
+        ExecutionState::try_with(|state| {
+            if !state.is_finished() {
+                let task = state.get_mut(self.task_id);
+                task.abort();
+            }
+        });
+    }
+
+    /// Returns `true` if this task is finished, otherwise returns `false`.
+    ///
+    /// ## Panics
+    /// Panics if called outside of shuttle context, i.e. if there is no execution context.
+    pub fn is_finished(&self) -> bool {
+        ExecutionState::with(|state| {
+            let task = state.get(self.task_id);
+            task.finished()
+        })
+    }
+}
+
+unsafe impl Send for AbortHandle {}
+unsafe impl Sync for AbortHandle {}
+
 /// An owned permission to join on an async task (await its termination).
 #[derive(Debug)]
 pub struct JoinHandle<T> {
@@ -79,7 +111,7 @@ impl<T> JoinHandle<T> {
         ExecutionState::try_with(|state| {
             if !state.is_finished() {
                 let task = state.get_mut(self.task_id);
-                task.detach();
+                task.abort();
             }
         });
     }
@@ -93,6 +125,11 @@ impl<T> JoinHandle<T> {
             let task = state.get(self.task_id);
             task.finished()
         })
+    }
+
+    /// Returns a new `AbortHandle` that can be used to remotely abort this task.
+    pub fn abort_handle(&self) -> AbortHandle {
+        AbortHandle { task_id: self.task_id }
     }
 }
 
