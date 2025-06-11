@@ -411,8 +411,7 @@ impl ExecutionState {
         stack_size: usize,
         name: Option<String>,
         mut initial_clock: Option<VectorClock>,
-    ) -> TaskId
-    {
+    ) -> TaskId {
         let task_id = Self::with(|state| {
             let parent_span_id = state.top_level_span.id();
             let task_id = TaskId(state.tasks.len());

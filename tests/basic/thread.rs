@@ -37,7 +37,7 @@ fn thread_yield_point() {
 
 #[test]
 fn thread_scope() {
-    check_random(
+    check_dfs(
         || {
             let mut trigger = false;
             thread::scope(|s| {
@@ -47,13 +47,13 @@ fn thread_scope() {
             });
             assert!(trigger);
         },
-        100,
+        None,
     );
 }
 
 #[test]
 fn thread_scope_multiple() {
-    check_random(
+    check_dfs(
         || {
             let mut data = vec![1, 2, 3, 4, 5, 6];
 
@@ -75,13 +75,13 @@ fn thread_scope_multiple() {
 
             assert_eq!(data, vec![10, 20, 30, 104, 105, 106]);
         },
-        100,
+        None,
     );
 }
 
 #[test]
 fn thread_scope_join() {
-    check_random(
+    check_dfs(
         || {
             let num = Mutex::new(10);
 
@@ -105,7 +105,7 @@ fn thread_scope_join() {
 
             assert_eq!(*num.lock().unwrap(), 110);
         },
-        100,
+        None,
     );
 }
 
