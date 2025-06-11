@@ -80,7 +80,7 @@ impl Execution {
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
             ExecutionState::spawn_thread(
-                move || thread_fn(f, Default::default()),
+                Box::new(move || thread_fn(f, Default::default())),
                 config.stack_size,
                 Some("main-thread".to_string()),
                 Some(VectorClock::new()),
@@ -406,14 +406,12 @@ impl ExecutionState {
         task_id
     }
 
-    pub(crate) fn spawn_thread<F>(
-        f: F,
+    pub(crate) fn spawn_thread(
+        f: Box<dyn FnOnce() + 'static>,
         stack_size: usize,
         name: Option<String>,
         mut initial_clock: Option<VectorClock>,
     ) -> TaskId
-    where
-        F: FnOnce() + Send + 'static,
     {
         let task_id = Self::with(|state| {
             let parent_span_id = state.top_level_span.id();

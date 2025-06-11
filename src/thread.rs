@@ -4,6 +4,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 pub use std::thread::{panicking, Result};
@@ -50,6 +51,89 @@ impl Thread {
     }
 }
 
+/// A scope to spawn scoped threads in.
+///
+/// See [`scope`] for details.
+pub struct Scope<'scope, 'env: 'scope> {
+    num_running_threads: AtomicUsize,
+    main_task: TaskId,
+    scope: PhantomData<&'scope mut &'scope ()>,
+    env: PhantomData<&'env mut &'env ()>,
+}
+
+impl std::fmt::Debug for Scope<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scope")
+            .field("num_running_threads", &self.num_running_threads.load(Ordering::Relaxed))
+            .field("main_thread", &self.main_task)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'scope> Scope<'scope, '_> {
+    /// Spawns a new thread within a scope, returning a [`ScopedJoinHandle`] for it.
+    ///
+    /// Unlike non-scoped threads, threads spawned with this function may
+    /// borrow non-`'static` data from the outside the scope. See [`scope`] for
+    /// details.
+    pub fn spawn<F, T>(&'scope self, f: F) -> ScopedJoinHandle<'scope, T>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        self.num_running_threads.fetch_add(1, Ordering::Relaxed);
+
+        let finished = std::sync::Arc::new(AtomicBool::new(false));
+        let scope_closure = {
+            let finished = finished.clone();
+            move || {
+                let ret = f();
+
+                finished.store(true, Ordering::Relaxed);
+
+                if self.num_running_threads.fetch_sub(1, Ordering::Relaxed) == 1 {
+                    ExecutionState::with(|s| s.get_mut(self.main_task).unblock());
+                }
+
+                ret
+            }
+        };
+
+        // SAFETY: main task is blocked until all scoped closures complete so all captured references remain valid
+        ScopedJoinHandle {
+            handle: unsafe { spawn_named_unchecked(scope_closure, None, None) },
+            finished,
+            _marker: PhantomData,
+        }
+    }
+}
+
+/// Creates a scope for spawning scoped threads.
+///
+/// The function passed to `scope` will be provided a [`Scope`] object,
+/// through which scoped threads can be [spawned][`Scope::spawn`].
+pub fn scope<'env, F, T>(f: F) -> T
+where
+    F: for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T,
+{
+    let scope = Scope {
+        num_running_threads: AtomicUsize::new(0),
+        main_task: ExecutionState::with(|s| s.current().id()),
+        env: PhantomData,
+        scope: PhantomData,
+    };
+
+    let ret = f(&scope);
+
+    if scope.num_running_threads.load(Ordering::Relaxed) != 0 {
+        tracing::info!("thread blocked, waiting for completion of scoped threads");
+        ExecutionState::with(|s| s.current_mut().block(false));
+        thread::switch();
+    }
+
+    ret
+}
+
 /// Spawn a new thread, returning a JoinHandle for it.
 ///
 /// The join handle can be used (via the `join` method) to block until the child thread has
@@ -69,13 +153,28 @@ where
     F: Send + 'static,
     T: Send + 'static,
 {
+    // SAFETY: F is static so all captured references must be `static and therefore
+    // will outlive the spawned continuation
+    unsafe { spawn_named_unchecked(f, name, stack_size) }
+}
+
+/// Must ensure all captured references in f are valid for at least as long as the spawned continuation will run
+unsafe fn spawn_named_unchecked<F, T>(f: F, name: Option<String>, stack_size: Option<usize>) -> JoinHandle<T>
+where
+    F: FnOnce() -> T,
+    T: Send,
+{
     // TODO Check if it's worth avoiding the call to `ExecutionState::config()` if we're going
     // TODO to use an existing continuation from the pool.
     let stack_size = stack_size.unwrap_or_else(|| ExecutionState::with(|s| s.config.stack_size));
     let result = std::sync::Arc::new(std::sync::Mutex::new(None));
     let task_id = {
         let result = std::sync::Arc::clone(&result);
-        let f = move || thread_fn(f, result);
+
+        // Allocate `thread_fn` on the heap and assume a `'static` bound.
+        let f: Box<dyn FnOnce()> = Box::new(move || thread_fn(f, result));
+        let f: Box<dyn FnOnce() + 'static> = unsafe { std::mem::transmute(f) };
+
         ExecutionState::spawn_thread(f, stack_size, name.clone(), None)
     };
 
@@ -98,8 +197,6 @@ where
 pub(crate) fn thread_fn<F, T>(f: F, result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>)
 where
     F: FnOnce() -> T,
-    F: Send + 'static,
-    T: Send + 'static,
 {
     let ret = f();
 
@@ -126,6 +223,36 @@ where
             state.get_mut(waiter).unblock();
         }
     });
+}
+
+/// An owned permission to join on a scoped thread (block on its termination).
+///
+/// See [`Scope::spawn`] for details.
+#[derive(Debug)]
+pub struct ScopedJoinHandle<'scope, T> {
+    handle: JoinHandle<T>,
+    finished: std::sync::Arc<AtomicBool>,
+    _marker: PhantomData<&'scope T>,
+}
+
+impl<T> ScopedJoinHandle<'_, T> {
+    /// Waits for the associated thread to finish.
+    pub fn join(self) -> Result<T> {
+        self.handle.join()
+    }
+
+    /// Extracts a handle to the underlying thread.
+    pub fn thread(&self) -> &Thread {
+        self.handle.thread()
+    }
+
+    /// Checks if the associated thread has finished running its main function.
+    ///
+    /// This might return `true` for a brief moment after the thread's main
+    /// function has returned, but before the thread itself has stopped running.
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Relaxed)
+    }
 }
 
 /// An owned permission to join on a thread (block on its termination).
