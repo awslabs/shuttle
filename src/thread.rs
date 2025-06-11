@@ -136,6 +136,9 @@ pub struct JoinHandle<T> {
     result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>,
 }
 
+unsafe impl<T> Send for JoinHandle<T> {}
+unsafe impl<T> Sync for JoinHandle<T> {}
+
 impl<T> JoinHandle<T> {
     /// Waits for the associated thread to finish.
     pub fn join(self) -> Result<T> {
