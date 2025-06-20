@@ -36,6 +36,80 @@ fn thread_yield_point() {
 }
 
 #[test]
+fn thread_scope() {
+    check_dfs(
+        || {
+            let mut trigger = false;
+            thread::scope(|s| {
+                s.spawn(|| {
+                    trigger = true;
+                });
+            });
+            assert!(trigger);
+        },
+        None,
+    );
+}
+
+#[test]
+fn thread_scope_multiple() {
+    check_dfs(
+        || {
+            let mut data = vec![1, 2, 3, 4, 5, 6];
+
+            thread::scope(|s| {
+                let (left, right) = data.split_at_mut(3);
+
+                s.spawn(|| {
+                    for x in left {
+                        *x *= 10;
+                    }
+                });
+
+                s.spawn(|| {
+                    for x in right {
+                        *x += 100;
+                    }
+                });
+            });
+
+            assert_eq!(data, vec![10, 20, 30, 104, 105, 106]);
+        },
+        None,
+    );
+}
+
+#[test]
+fn thread_scope_join() {
+    check_dfs(
+        || {
+            let num = Mutex::new(10);
+
+            thread::scope(|s| {
+                let handle = s.spawn(|| {
+                    let mut num_guard = num.lock().unwrap();
+                    *num_guard *= 10;
+                    *num_guard
+                });
+
+                assert_eq!(handle.join().unwrap(), 100);
+
+                let handle = s.spawn(|| {
+                    let mut num_guard = num.lock().unwrap();
+                    *num_guard += 10;
+                    *num_guard
+                });
+
+                assert_eq!(handle.join().unwrap(), 110);
+            });
+
+            assert_eq!(*num.lock().unwrap(), 110);
+        },
+        None,
+    );
+}
+
+#[test]
 fn thread_join() {
     check_random(
         || {

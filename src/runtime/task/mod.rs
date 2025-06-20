@@ -194,8 +194,8 @@ pub struct Task {
 impl Task {
     /// Create a task from a continuation
     #[allow(clippy::too_many_arguments)]
-    fn new<F>(
-        f: F,
+    fn new(
+        f: Box<dyn FnOnce() + 'static>,
         stack_size: usize,
         id: TaskId,
         name: Option<String>,
@@ -204,13 +204,10 @@ impl Task {
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
         parent_task_id: Option<TaskId>,
-    ) -> Self
-    where
-        F: FnOnce() + 'static,
-    {
+    ) -> Self {
         assert!(id.0 < clock.time.len());
         let mut continuation = ContinuationPool::acquire(stack_size);
-        continuation.initialize(Box::new(f));
+        continuation.initialize(f);
         let waker = make_waker(id);
         let continuation = Rc::new(RefCell::new(continuation));
 
@@ -248,8 +245,8 @@ impl Task {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_closure<F>(
-        f: F,
+    pub(crate) fn from_closure(
+        f: Box<dyn FnOnce() + 'static>,
         stack_size: usize,
         id: TaskId,
         name: Option<String>,
@@ -258,10 +255,7 @@ impl Task {
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
         parent_task_id: Option<TaskId>,
-    ) -> Self
-    where
-        F: FnOnce() + Send + 'static,
-    {
+    ) -> Self {
         Self::new(
             f,
             stack_size,
@@ -293,14 +287,14 @@ impl Task {
         let mut future = Box::pin(future);
 
         Self::new(
-            move || {
+            Box::new(move || {
                 let waker = ExecutionState::with(|state| state.current_mut().waker());
                 let cx = &mut Context::from_waker(&waker);
                 while future.as_mut().poll(cx).is_pending() {
                     ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
                     thread::switch();
                 }
-            },
+            }),
             stack_size,
             id,
             name,
