@@ -1,3 +1,12 @@
+# 0.8.1 (Jun 19, 2025)
+
+* Fix bug in `BatchSemaphore` (#167)
+* Fix bug in `RwLock` (#170)
+* Add `current::reset_step_count` (#175)
+* Add `spawn_local` (#176)
+* Add `thread::scope` (#181)
+* Add `AbortHandle` (#182)
+
 # 0.8.0 (Sep 30, 2024)
 
 * Add `BatchSemaphore` (#151)
