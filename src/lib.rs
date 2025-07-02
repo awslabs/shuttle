@@ -98,7 +98,6 @@
 //!
 //! ```text
 //! test panicked in task "task-0" with schedule: "910102ccdedf9592aba2afd70104"
-//! pass that schedule string into `shuttle::replay` to reproduce the failure
 //! ```
 //!
 //! We can use Shuttle's [`replay`] function to replay the execution that causes the failure:

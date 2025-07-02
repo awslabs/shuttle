@@ -67,14 +67,13 @@ fn persist_failure_inner(schedule: &Schedule, message: String, config: &Config) 
     // Try to persist to a file, but fall through to stdout if that fails for some reason
     if let FailurePersistence::File(directory) = &config.failure_persistence {
         match persist_failure_to_file(&serialized_schedule, directory.as_ref()) {
-            Ok(path) => return format!("{}\nfailing schedule persisted to file: {}\npass that path to `shuttle::replay_from_file` to replay the failure", message, path.display()),
-            Err(e) => eprintln!("failed to persist schedule to file (error: {}), falling back to printing the schedule", e),
+            Ok(path) => return format!("{message}\nfailing schedule persisted to file: {}", path.display()),
+            Err(e) => {
+                eprintln!("failed to persist schedule to file (error: {e}), falling back to printing the schedule")
+            }
         }
     }
-    format!(
-        "{}\nfailing schedule:\n\"\n{}\n\"\npass that string to `shuttle::replay` to replay the failure",
-        message, serialized_schedule
-    )
+    format!("{}\nfailing schedule:\n\"\n{}\n\"", message, serialized_schedule)
 }
 
 /// Persist the given serialized schedule to a file and return the new file's path. The file will be
