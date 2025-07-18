@@ -12,7 +12,7 @@ use test_log::test;
 fn random_mod_10_equals_7() {
     let mut rng = thread_rng();
     let x = rng.gen::<u64>();
-    assert_ne!(x % 10, 7, "found failing value {}", x);
+    assert_ne!(x % 10, 7, "found failing value {x}");
 }
 
 #[test]

@@ -167,7 +167,7 @@ impl std::fmt::Display for CountSummaryMetric {
         write!(f, "[min={}, max={},", self.min, self.max)?;
         if self.n > 0 {
             let avg = self.sum as f64 / self.n as f64;
-            write!(f, " avg={:.1}", avg)?;
+            write!(f, " avg={avg:.1}")?;
         }
         write!(f, "]")
     }

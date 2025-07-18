@@ -219,7 +219,7 @@ impl Execution {
                 let message = persist_task_failure(&schedule, name, config, true);
                 // Try to inject the schedule into the panic payload if we can
                 let payload: Box<dyn Any + Send> = match e.downcast::<String>() {
-                    Ok(panic_msg) => Box::new(format!("{}\noriginal panic: {}", message, panic_msg)),
+                    Ok(panic_msg) => Box::new(format!("{message}\noriginal panic: {panic_msg}")),
                     Err(panic) => panic,
                 };
 
@@ -651,8 +651,7 @@ impl ExecutionState {
         match self.config.max_steps {
             MaxSteps::FailAfter(max_steps) if self.is_step_bound_exceeded(max_steps) => {
                 let msg = format!(
-                    "exceeded max_steps bound {}. this might be caused by an unfair schedule (e.g., a spin loop)?",
-                    max_steps
+                    "exceeded max_steps bound {max_steps}. this might be caused by an unfair schedule (e.g., a spin loop)?"
                 );
                 return Err(msg);
             }

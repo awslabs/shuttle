@@ -54,7 +54,7 @@ impl PctScheduler {
                     );
                     seed
                 }
-                Err(err) => panic!("The seed provided by SHUTTLE_RANDOM_SEED is not a valid u64: {}", err),
+                Err(err) => panic!("The seed provided by SHUTTLE_RANDOM_SEED is not a valid u64: {err}"),
             },
             Err(_) => seed,
         };

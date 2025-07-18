@@ -119,8 +119,7 @@ impl Scheduler for ReplayScheduler {
                     } else {
                         assert!(
                             self.allow_incomplete,
-                            "scheduled task is not runnable, expected to run {:?}, but choices were {:?}",
-                            next, runnable
+                            "scheduled task is not runnable, expected to run {next:?}, but choices were {runnable:?}"
                         );
                         return None;
                     }
