@@ -43,7 +43,7 @@ pub fn persist_failure(schedule: &Schedule, message: String, config: &Config, pr
     let persisted_message = persist_failure_inner(schedule, message, config);
     PANIC_HOOK.with(|lock| *lock.lock().unwrap() = PanicHookState::Persisted(persisted_message.clone()));
     if print_if_fresh {
-        eprintln!("{}", persisted_message);
+        eprintln!("{persisted_message}");
     }
     persisted_message
 }
@@ -52,7 +52,7 @@ pub fn persist_failure(schedule: &Schedule, message: String, config: &Config, pr
 pub fn persist_task_failure(schedule: &Schedule, task_name: String, config: &Config, print_if_fresh: bool) -> String {
     persist_failure(
         schedule,
-        format!("test panicked in task '{}'", task_name),
+        format!("test panicked in task '{task_name}'"),
         config,
         print_if_fresh,
     )
@@ -68,12 +68,11 @@ fn persist_failure_inner(schedule: &Schedule, message: String, config: &Config) 
     if let FailurePersistence::File(directory) = &config.failure_persistence {
         match persist_failure_to_file(&serialized_schedule, directory.as_ref()) {
             Ok(path) => return format!("{}\nfailing schedule persisted to file: {}\npass that path to `shuttle::replay_from_file` to replay the failure", message, path.display()),
-            Err(e) => eprintln!("failed to persist schedule to file (error: {}), falling back to printing the schedule", e),
+            Err(e) => eprintln!("failed to persist schedule to file (error: {e}), falling back to printing the schedule"),
         }
     }
     format!(
-        "{}\nfailing schedule:\n\"\n{}\n\"\npass that string to `shuttle::replay` to replay the failure",
-        message, serialized_schedule
+        "{message}\nfailing schedule:\n\"\n{serialized_schedule}\n\"\npass that string to `shuttle::replay` to replay the failure"
     )
 }
 
@@ -89,7 +88,7 @@ fn persist_failure_to_file(serialized_schedule: &str, destination: Option<&PathB
         std::env::current_dir()?
     };
     let (path, mut file) = loop {
-        let path = dir.clone().join(Path::new(&format!("schedule{:03}.txt", i)));
+        let path = dir.clone().join(Path::new(&format!("schedule{i:03}.txt")));
         // `create_new` does the existence check and creation atomically, so this loop ensures that
         // two concurrent tests won't try to persist to the same file.
         match OpenOptions::new().write(true).create_new(true).open(&path) {

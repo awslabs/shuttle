@@ -40,8 +40,7 @@ impl Drop for CurrentSeedDropGuard {
     fn drop(&mut self) {
         if let Some(s) = self.inner {
             eprintln!(
-                "failing seed:\n\"\n{}\n\"\nTo replay the failure, either:\n    1) pass the seed to `shuttle::check_random_with_seed, or\n    2) set the environment variable SHUTTLE_RANDOM_SEED to the seed and run `shuttle::check_random`.",
-                s
+                "failing seed:\n\"\n{s}\n\"\nTo replay the failure, either:\n    1) pass the seed to `shuttle::check_random_with_seed, or\n    2) set the environment variable SHUTTLE_RANDOM_SEED to the seed and run `shuttle::check_random`."
             )
         }
     }
@@ -70,7 +69,7 @@ impl RandomScheduler {
                     );
                     seed
                 }
-                Err(err) => panic!("The seed provided by SHUTTLE_RANDOM_SEED is not a valid u64: {}", err),
+                Err(err) => panic!("The seed provided by SHUTTLE_RANDOM_SEED is not a valid u64: {err}"),
             },
             Err(_) => seed,
         };

@@ -314,7 +314,7 @@ impl Subscriber for RunnableSubscriber {
                         if field.name() == "runnable" {
                             // The following code relies on the fact that the list of runnable tasks is a SmallVec which is reported
                             // in debug output in the format "[main-thread(0), first-task-name(3), other-task-name(17)]" etc.
-                            let value = format!("{:?}", value).replace('[', "").replace(']', "");
+                            let value = format!("{value:?}").replace('[', "").replace(']', "");
                             let v1 = value.split(',');
                             // The following assertion fails if a `ChildLabelFn` is not used to set child task names.
                             assert!(v1
