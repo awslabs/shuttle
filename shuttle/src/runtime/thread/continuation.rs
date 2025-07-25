@@ -222,12 +222,19 @@ pub(crate) struct PooledContinuation {
     queue: Rc<RefCell<VecDeque<Continuation>>>,
 }
 
+impl PooledContinuation {
+    pub fn wipe(&mut self) {
+        if let Some(c) = self.continuation.take() {
+            if c.reusable() {
+                self.queue.borrow_mut().push_back(c);
+            }
+        }
+    }
+}
+
 impl Drop for PooledContinuation {
     fn drop(&mut self) {
-        let c = self.continuation.take().unwrap();
-        if c.reusable() {
-            self.queue.borrow_mut().push_back(c);
-        }
+        self.wipe();
     }
 }
 

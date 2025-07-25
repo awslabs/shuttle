@@ -411,3 +411,76 @@ fn clean_up_detached_task() {
         None,
     )
 }
+
+// We need a way to hold the `MutexGuard`, which is `!Send`, across an `await`.
+struct WrappedMutexGuard<'a> {
+    #[allow(unused)]
+    guard: shuttle::sync::MutexGuard<'a, ()>,
+}
+
+unsafe impl<'a> Send for WrappedMutexGuard<'a> {}
+
+async fn acquire_and_loop(mutex: Arc<Mutex<()>>) {
+    let _g = WrappedMutexGuard {
+        guard: mutex.lock().unwrap(),
+    };
+    loop {
+        future::yield_now().await;
+    }
+}
+
+// The idea is to acquire a mutex, abort the JoinHandle, then acquire the Mutex.
+// This should succeed, because `JoinHandle::abort()` should free the Mutex.
+#[ignore]
+#[test]
+fn abort_frees_mutex() {
+    check_random(
+        || {
+            let mutex = Arc::new(Mutex::new(()));
+            let jh = future::spawn(acquire_and_loop(mutex.clone()));
+
+            jh.abort(); // this unblocks
+
+            let _g = mutex.lock();
+        },
+        1000,
+    );
+}
+
+// The idea is to acquire a mutex, drop the JoinHandle, then acquire the Mutex.
+// This should fail, because `drop`ping the JoinHandle just detaches it, meaning
+// it keeps holding the Mutex.
+#[test]
+#[should_panic(expected = "exceeded max_steps bound")]
+fn drop_join_handle_deadlocks() {
+    check_random(
+        || {
+            let mutex = Arc::new(Mutex::new(()));
+            let jh = future::spawn(acquire_and_loop(mutex.clone()));
+
+            drop(jh);
+
+            let _g = mutex.lock();
+        },
+        1000,
+    );
+}
+
+// The idea is to acquire a mutex, forget the JoinHandle, then acquire the Mutex.
+// This should fail, because `forget`ting the JoinHandle doesn't cause it to release
+// the Mutex.
+#[test]
+#[should_panic(expected = "exceeded max_steps bound")]
+fn forget_join_handle_deadlocks() {
+    check_random(
+        || {
+            let mutex = Arc::new(Mutex::new(()));
+            let jh = future::spawn(acquire_and_loop(mutex.clone()));
+
+            std::mem::forget(jh);
+
+            let _g = mutex.lock();
+        },
+        1000,
+    );
+}

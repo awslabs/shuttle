@@ -106,6 +106,16 @@ impl<T> Default for JoinHandleInner<T> {
 }
 
 impl<T> JoinHandle<T> {
+    /// Detach the task associated with the handle.
+    fn detach(&self) {
+        ExecutionState::try_with(|state| {
+            if !state.is_finished() {
+                let task = state.get_mut(self.task_id);
+                task.detach();
+            }
+        });
+    }
+
     /// Abort the task associated with the handle.
     pub fn abort(&self) {
         ExecutionState::try_with(|state| {
@@ -153,7 +163,7 @@ impl Error for JoinError {}
 
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
-        self.abort();
+        self.detach();
     }
 }
 

@@ -339,8 +339,9 @@ impl Task {
     }
 
     pub(crate) fn abort(&mut self) {
-        // TODO: Change into actually aborting
-        self.detach();
+        self.finish();
+        let mut continuation = self.continuation.borrow_mut();
+        continuation.wipe();
     }
 
     pub(crate) fn waker(&self) -> Waker {
@@ -374,7 +375,6 @@ impl Task {
     }
 
     pub(crate) fn finish(&mut self) {
-        assert!(self.state != TaskState::Finished);
         self.state = TaskState::Finished;
     }
 
