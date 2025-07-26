@@ -34,7 +34,9 @@ use crate::{Config, FailurePersistence};
 ///
 /// If `print_if_fresh` is true, the message will also be printed to stderr if this is the first
 /// time `persist_failure` has been called.
+#[track_caller]
 pub fn persist_failure(schedule: &Schedule, message: String, config: &Config, print_if_fresh: bool) -> String {
+    tracing::error!("----------- persisting {:?}", std::panic::Location::caller());
     // Disarm the panic hook so that we don't print the failure twice
     if let PanicHookState::Persisted(persisted_message) = PANIC_HOOK.with(|lock| lock.lock().unwrap().clone()) {
         return persisted_message;
@@ -123,6 +125,7 @@ pub struct PanicHookGuard;
 
 impl Drop for PanicHookGuard {
     fn drop(&mut self) {
+        tracing::error!("Dropping panichookguard");
         PANIC_HOOK.with(|lock| *lock.lock().unwrap() = PanicHookState::Disarmed);
     }
 }
@@ -138,6 +141,7 @@ pub fn init_panic_hook(config: Config) -> PanicHookGuard {
     INIT.call_once(|| {
         let original_hook = panic::take_hook();
         panic::set_hook(Box::new(move |panic_info| {
+            tracing::error!("Panic hook");
             let state = PANIC_HOOK.with(|lock| std::mem::replace(&mut *lock.lock().unwrap(), PanicHookState::Disarmed));
             // The hook is armed if this is the first time it's fired
             if let PanicHookState::Armed(config) = state {

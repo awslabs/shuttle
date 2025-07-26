@@ -218,16 +218,52 @@ impl Drop for ContinuationPool {
 /// A thin wrapper around a `Continuation` that returns it to a `ContinuationPool`
 /// when dropped, but only if it's reusable.
 pub(crate) struct PooledContinuation {
-    continuation: Option<Continuation>,
+    pub(crate) continuation: Option<Continuation>,
     queue: Rc<RefCell<VecDeque<Continuation>>>,
+}
+
+impl PooledContinuation {
+    pub fn wipe(&mut self, disable_should_stop: bool) {
+        // Note that we deliberately enter `ExecutionState`, disable `should_stop`, (if `disable_should_stop`) exit `ExecutionState`,
+        // do the drop, and then enter `ExecutionState` and reenable `should_stop`
+
+        if disable_should_stop {
+            ExecutionState::with(|state| {
+                state.should_stop_enabled = false;
+            });
+        }
+
+        tracing::info!("Wiping continuation with should_stop_enabled={}", !disable_should_stop);
+        {
+            if let Some(c) = self.continuation.take() {
+                tracing::info!(
+                    "Wiping continuation is some, {:?} {:?}",
+                    c.generator.is_done(),
+                    std::thread::panicking()
+                );
+                if c.reusable() {
+                    tracing::info!("Wiping continuation reusable");
+                    self.queue.borrow_mut().push_back(c);
+                }
+            }
+        }
+        tracing::info!(
+            "Finished wiping continuation with should_stop_enabled={}",
+            !disable_should_stop
+        );
+
+        if disable_should_stop {
+            ExecutionState::with(|state| {
+                state.should_stop_enabled = true;
+            });
+        }
+    }
 }
 
 impl Drop for PooledContinuation {
     fn drop(&mut self) {
-        let c = self.continuation.take().unwrap();
-        if c.reusable() {
-            self.queue.borrow_mut().push_back(c);
-        }
+        tracing::info!("Dropping continuation");
+        self.wipe(false);
     }
 }
 
@@ -247,7 +283,10 @@ impl DerefMut for PooledContinuation {
 
 impl std::fmt::Debug for PooledContinuation {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("PooledContinuation").finish()
+        f.write_fmt(format_args!(
+            "PooledContinuation, is some: {}",
+            self.continuation.is_some()
+        ))
     }
 }
 
@@ -255,9 +294,20 @@ impl std::fmt::Debug for PooledContinuation {
 unsafe impl Send for PooledContinuation {}
 
 /// Possibly yield back to the executor to perform a context switch.
+#[track_caller]
 pub(crate) fn switch() {
+    tracing::error!("----------- switch {:?}", std::panic::Location::caller());
     crate::annotations::record_tick();
-    if ExecutionState::maybe_yield() {
+    if ExecutionState::maybe_yield(false) {
+        let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
+        assert!(matches!(r, ContinuationInput::Resume));
+    }
+}
+
+pub(crate) fn async_switch() {
+    tracing::error!("----------- switch {:?}", std::panic::Location::caller());
+    crate::annotations::record_tick();
+    if ExecutionState::maybe_yield(true) {
         let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
         assert!(matches!(r, ContinuationInput::Resume));
     }

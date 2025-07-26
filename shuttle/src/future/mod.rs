@@ -5,7 +5,7 @@
 //!
 //! [`futures::executor`]: https://docs.rs/futures/0.3.13/futures/executor/index.html
 
-use crate::runtime::execution::ExecutionState;
+use crate::runtime::execution::{ExecutionState, UnprocessedAbort};
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use std::error::Error;
@@ -24,12 +24,14 @@ where
     F::Output: 'static,
 {
     let stack_size = ExecutionState::with(|s| s.config.stack_size);
-    let inner = Arc::new(std::sync::Mutex::new(JoinHandleInner::default()));
-    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, inner.clone()), stack_size, None);
+    let result = Arc::new(std::sync::Mutex::new(Option::None));
+    let waker = Arc::new(std::sync::Mutex::new(Option::None));
+    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, result.clone(), waker.clone()), stack_size, None);
+    ExecutionState::with(|state| state.get_mut(task_id).waker_for_joinhandle = Some(waker.clone()));
 
     thread::switch();
 
-    JoinHandle { task_id, inner }
+    JoinHandle { task_id, result, waker }
 }
 
 /// Spawn a new async task that the executor will run to completion.
@@ -55,15 +57,22 @@ where
 #[derive(Debug, Clone)]
 pub struct AbortHandle {
     task_id: TaskId,
+    waker: Arc<std::sync::Mutex<Option<Waker>>>,
 }
 
 impl AbortHandle {
     /// Abort the task associated with the handle.
     pub fn abort(&self) {
+        panic!();
         ExecutionState::try_with(|state| {
             if !state.is_finished() {
                 let task = state.get_mut(self.task_id);
-                task.abort();
+                // SAREK TODO: fix
+                let _ = task.abort();
+                let mut waker_lock = self.waker.lock().unwrap();
+                if let Some(waker) = waker_lock.take() {
+                    waker.wake();
+                }
             }
         });
     }
@@ -87,31 +96,33 @@ unsafe impl Sync for AbortHandle {}
 #[derive(Debug)]
 pub struct JoinHandle<T> {
     task_id: TaskId,
-    inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<T>>>,
-}
-
-#[derive(Debug)]
-struct JoinHandleInner<T> {
-    result: Option<Result<T, JoinError>>,
-    waker: Option<Waker>,
-}
-
-impl<T> Default for JoinHandleInner<T> {
-    fn default() -> Self {
-        JoinHandleInner {
-            result: None,
-            waker: None,
-        }
-    }
+    result: Arc<std::sync::Mutex<Option<Result<T, JoinError>>>>,
+    waker: Arc<std::sync::Mutex<Option<Waker>>>,
 }
 
 impl<T> JoinHandle<T> {
-    /// Abort the task associated with the handle.
-    pub fn abort(&self) {
+    /// Detach the task associated with the handle.
+    fn detach(&self) {
         ExecutionState::try_with(|state| {
             if !state.is_finished() {
                 let task = state.get_mut(self.task_id);
-                task.abort();
+                task.detach();
+            }
+        });
+    }
+
+    /// Abort the task associated with the handle.
+    pub fn abort(&self) {
+        ExecutionState::try_with(|state| {
+            tracing::error!("aborting!");
+            if !state.is_finished() {
+                let task = state.get_mut(self.task_id);
+                if let Some(waker) = task.abort() {
+                    state.unprocessed_aborts.push_back(UnprocessedAbort {
+                        task_id: self.task_id,
+                        waker,
+                    });
+                }
             }
         });
     }
@@ -129,7 +140,10 @@ impl<T> JoinHandle<T> {
 
     /// Returns a new `AbortHandle` that can be used to remotely abort this task.
     pub fn abort_handle(&self) -> AbortHandle {
-        AbortHandle { task_id: self.task_id }
+        AbortHandle {
+            task_id: self.task_id,
+            waker: self.waker.clone(),
+        }
     }
 }
 
@@ -153,7 +167,7 @@ impl Error for JoinError {}
 
 impl<T> Drop for JoinHandle<T> {
     fn drop(&mut self) {
-        self.abort();
+        self.detach();
     }
 }
 
@@ -161,11 +175,20 @@ impl<T> Future for JoinHandle<T> {
     type Output = Result<T, JoinError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut lock = self.inner.lock().unwrap();
-        if let Some(result) = lock.result.take() {
+        let mut result_lock = self.result.lock().unwrap();
+        if let Some(result) = result_lock.take() {
             Poll::Ready(result)
         } else {
-            lock.waker = Some(cx.waker().clone());
+            drop(result_lock);
+            let is_aborted = ExecutionState::with(|state| {
+                let task = state.get(self.task_id);
+                task.is_aborted()
+            });
+            if is_aborted {
+                return Poll::Ready(Err(JoinError::Cancelled));
+            }
+            let mut waker_lock = self.waker.lock().unwrap();
+            *waker_lock = Some(cx.waker().clone());
             Poll::Pending
         }
     }
@@ -177,7 +200,8 @@ impl<T> Future for JoinHandle<T> {
 // the result in the `result` field and wakes the `waker`.
 struct Wrapper<F: Future> {
     future: Pin<Box<F>>,
-    inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<F::Output>>>,
+    result: Arc<std::sync::Mutex<Option<Result<F::Output, JoinError>>>>,
+    waker: Arc<std::sync::Mutex<Option<Waker>>>,
 }
 
 impl<F> Wrapper<F>
@@ -185,10 +209,15 @@ where
     F: Future + 'static,
     F::Output: 'static,
 {
-    fn new(future: F, inner: std::sync::Arc<std::sync::Mutex<JoinHandleInner<F::Output>>>) -> Self {
+    fn new(
+        future: F,
+        result: Arc<std::sync::Mutex<Option<Result<F::Output, JoinError>>>>,
+        waker: Arc<std::sync::Mutex<Option<Waker>>>,
+    ) -> Self {
         Self {
             future: Box::pin(future),
-            inner,
+            result,
+            waker,
         }
     }
 }
@@ -219,10 +248,10 @@ where
                     drop(local);
                 }
 
-                let mut lock = self.inner.lock().unwrap();
-                lock.result = Some(Ok(result));
+                let mut result_lock = self.result.lock().unwrap();
+                *result_lock = Some(Ok(result));
 
-                if let Some(waker) = lock.waker.take() {
+                if let Some(waker) = self.waker.lock().unwrap().take() {
                     waker.wake();
                 }
 
@@ -247,6 +276,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
             }
         }
 
+        tracing::info!("block on switch");
         thread::switch();
     }
 }
@@ -264,13 +294,16 @@ pub async fn yield_now() {
         type Output = ();
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            tracing::error!("poll");
+            /*
             if self.yielded {
                 return Poll::Ready(());
             }
+            */
 
             self.yielded = true;
             cx.waker().wake_by_ref();
-            ExecutionState::request_yield();
+            //ExecutionState::request_yield();
             Poll::Pending
         }
     }

@@ -3,7 +3,7 @@ use crate::runtime::execution::{ExecutionState, TASK_ID_TO_TAGS};
 use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
-use crate::runtime::thread;
+use crate::runtime::thread::continuation::async_switch;
 use crate::runtime::thread::continuation::{ContinuationPool, PooledContinuation};
 use crate::thread::LocalKey;
 use bitvec::prelude::*;
@@ -151,8 +151,10 @@ where
 #[derive(Debug)]
 pub struct Task {
     pub(super) id: TaskId,
-    pub(super) state: TaskState,
+    state: TaskState,
     pub(super) detached: bool,
+    pub(super) aborted: bool,
+    pub(crate) waker_for_joinhandle: Option<Arc<std::sync::Mutex<Option<Waker>>>>,
     park_state: ParkState,
 
     pub(super) continuation: Rc<RefCell<PooledContinuation>>,
@@ -184,6 +186,10 @@ pub struct Task {
     // 2: We have to store the stack of `Span`s in order to return to the correct `Span` once the `Entered<'_>` from an
     //    `instrument`ed future is dropped.
     pub(super) span_stack: Vec<Span>,
+
+    // whether the last yield was due to a `yield()` from a `Poll::Pending`.
+    // used in order to know when to fulfill the abort request for a `JoinHandle`.
+    async_yield: bool,
 
     // Arbitrarily settable tag which is inherited from the parent.
     #[allow(deprecated)]
@@ -224,13 +230,16 @@ impl Task {
             clock,
             waiter: None,
             waker,
+            waker_for_joinhandle: None,
             woken: false,
             detached: false,
+            aborted: false,
             park_state: ParkState::default(),
             name,
             step_span,
             span_stack,
             local_storage: StorageMap::new(),
+            async_yield: true,
             tag: None,
         };
 
@@ -292,7 +301,7 @@ impl Task {
                 let cx = &mut Context::from_waker(&waker);
                 while future.as_mut().poll(cx).is_pending() {
                     ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
-                    thread::switch();
+                    async_switch();
                 }
             }),
             stack_size,
@@ -331,6 +340,12 @@ impl Task {
     }
 
     pub(crate) fn finished(&self) -> bool {
+        println!(
+            "Is finished: {:?} {:?}, panicking: {:?}",
+            self.id,
+            self.state,
+            std::thread::panicking()
+        );
         self.state == TaskState::Finished
     }
 
@@ -338,9 +353,26 @@ impl Task {
         self.detached = true;
     }
 
-    pub(crate) fn abort(&mut self) {
-        // TODO: Change into actually aborting
-        self.detach();
+    #[must_use]
+    fn maybe_take_continuation(&mut self) -> Option<Arc<std::sync::Mutex<Option<Waker>>>> {
+        if self.async_yield && self.aborted {
+            println!("WIIPE {}", std::thread::panicking());
+            // SAREK TODO: Is this the correct place to finish?
+            //self.finish();
+            Some(self.waker_for_joinhandle.clone().unwrap())
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn abort(&mut self) -> Option<Arc<std::sync::Mutex<Option<Waker>>>> {
+        self.aborted = true;
+        self.maybe_take_continuation()
+    }
+
+    pub(crate) fn is_aborted(&self) -> bool {
+        self.aborted
     }
 
     pub(crate) fn waker(&self) -> Waker {
@@ -356,11 +388,13 @@ impl Task {
     }
 
     pub(crate) fn sleep(&mut self) {
+        println!("sleep: {:?} {:?}", self.id, self.state);
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Sleeping;
     }
 
     pub(crate) fn unblock(&mut self) {
+        println!("unblocking: {:?} {:?}", self.id, self.state);
         // Note we don't assert the task is blocked here. For example, a task invoking its own waker
         // will not be blocked when this is called.
         assert!(self.state != TaskState::Finished);
@@ -374,7 +408,7 @@ impl Task {
     }
 
     pub(crate) fn finish(&mut self) {
-        assert!(self.state != TaskState::Finished);
+        println!("Finishing: {:?} {:?}", self.id, self.state);
         self.state = TaskState::Finished;
     }
 
@@ -496,6 +530,12 @@ impl Task {
             // the token already is available, then this does nothing.
             self.park_state.token_available = true;
         }
+    }
+
+    #[must_use]
+    pub(crate) fn set_async_yield(&mut self, async_yield: bool) -> Option<Arc<std::sync::Mutex<Option<Waker>>>> {
+        self.async_yield = async_yield;
+        self.maybe_take_continuation()
     }
 
     pub(crate) fn get_tag(&self) -> Option<Arc<dyn Tag>> {

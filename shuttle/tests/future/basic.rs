@@ -1,5 +1,7 @@
 use futures::task::{FutureObj, Spawn, SpawnError, SpawnExt as _};
 use futures::{try_join, Future};
+use shuttle::future::batch_semaphore::BatchSemaphore;
+use shuttle::future::JoinError;
 use shuttle::sync::{Barrier, Mutex};
 use shuttle::{check_dfs, check_random, future, scheduler::PctScheduler, thread, Runner};
 use std::pin::Pin;
@@ -198,6 +200,177 @@ fn join_handle_abort() {
         },
         None,
     );
+}
+
+/*
+#[test]
+fn abort_no_intermediate() {
+    check_random(
+        || shuttle::future::block_on(async {
+            let sem = Arc::new(BatchSemaphore::new(0, future::batch_semaphore::Fairness::StrictlyFair));
+            let sem_cloned = sem.clone();
+            let t1 = future::spawn(async move {
+                let l1 = lock1.lock().unwrap();
+                *l1 += 1;
+                sem_cloned.release(1);
+                let l2 = lock2.lock().unwrap();
+                *l2 += 1;
+            });
+            t1.abort();
+            assert_eq!(*l1.lock().unwrap(), *l2.lock().unwrap());
+        }),
+    100
+    )
+}
+*/
+
+// We need a way to hold the `MutexGuard`, which is `!Send`, across an `await`.
+struct WrappedMutexGuard<'a> {
+    #[allow(unused)]
+    guard: shuttle::sync::MutexGuard<'a, ()>,
+}
+
+impl<'a> Drop for WrappedMutexGuard<'a> {
+    fn drop(&mut self) {
+        tracing::error!("dropping mutexguard");
+    }
+}
+
+unsafe impl<'a> Send for WrappedMutexGuard<'a> {}
+
+async fn acquire_and_loop(mutex: Arc<Mutex<()>>) {
+    tracing::error!("ACQUIRE");
+    let _g = WrappedMutexGuard {
+        guard: mutex.lock().unwrap(),
+    };
+    tracing::error!("ACQUIRED");
+    loop {
+        tracing::error!("before");
+        future::yield_now().await;
+        tracing::error!("after");
+    }
+}
+
+// The idea is to acquire a mutex, abort the JoinHandle, then acquire the Mutex.
+// This should succeed, because `JoinHandle::abort()` should free the Mutex.
+#[test]
+fn abort_frees_mutex() {
+    check_random(
+        || {
+            let mutex = Arc::new(Mutex::new(()));
+            let jh = future::spawn(acquire_and_loop(mutex.clone()));
+
+            tracing::error!("aborting");
+            jh.abort(); // this unblocks
+
+            tracing::error!("acquiring lock");
+            let _g = mutex.lock();
+        },
+        1000,
+    );
+}
+
+// The idea is to acquire a mutex, drop the JoinHandle, then acquire the Mutex.
+// This should fail, because `drop`ping the JoinHandle just detaches it, meaning
+// it keeps holding the Mutex.
+#[test]
+#[should_panic(expected = "exceeded max_steps bound")]
+fn drop_join_handle_deadlocks() {
+    check_random(
+        || {
+            let mutex = Arc::new(Mutex::new(()));
+            let jh = future::spawn(acquire_and_loop(mutex.clone()));
+
+            drop(jh);
+
+            let _g = mutex.lock();
+        },
+        1000,
+    );
+}
+
+// The idea is to acquire a mutex, forget the JoinHandle, then acquire the Mutex.
+// This should fail, because `forget`ting the JoinHandle doesn't cause it to release
+// the Mutex.
+#[test]
+#[should_panic(expected = "exceeded max_steps bound")]
+fn forget_join_handle_deadlocks() {
+    check_random(
+        || {
+            let mutex = Arc::new(Mutex::new(()));
+            let jh = future::spawn(acquire_and_loop(mutex.clone()));
+
+            std::mem::forget(jh);
+
+            let _g = mutex.lock();
+        },
+        1000,
+    );
+}
+
+#[test]
+fn abort_cancelled() {
+    check_random(
+        || {
+            shuttle::future::block_on(async {
+                let sem = Arc::new(BatchSemaphore::new(0, future::batch_semaphore::Fairness::StrictlyFair));
+                let sem_cloned = sem.clone();
+
+                let t1 = future::spawn(async move {
+                    sem_cloned.release(1);
+                    loop {
+                        sem_cloned.release(1);
+                        sem_cloned.acquire(1).await.unwrap();
+                    }
+                });
+
+                sem.acquire(1).await.unwrap();
+                t1.abort();
+
+                let result = future::block_on(t1);
+
+                assert!(matches!(result, Err(JoinError::Cancelled)));
+
+                // TODO: This should pass, but the current implementation does not discriminate on scheduling
+                assert!(
+                    sem.available_permits() == 0,
+                    "available permits: {}",
+                    sem.available_permits()
+                );
+            })
+        },
+        100,
+    );
+}
+
+#[test]
+fn yield_now_test() {
+    check_random(|| shuttle::future::block_on(async { yield_now().await }), 1);
+}
+
+async fn yield_now() {
+    /// Yield implementation
+    struct YieldNow {
+        yielded: bool,
+    }
+
+    impl Future for YieldNow {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+            println!("POLL");
+            if self.yielded {
+                println!("YIELDED");
+                return Poll::Ready(());
+            }
+
+            self.yielded = true;
+            //cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    YieldNow { yielded: false }.await
 }
 
 fn async_counter() {

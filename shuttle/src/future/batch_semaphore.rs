@@ -520,6 +520,7 @@ impl BatchSemaphore {
 
     /// Release `num_permits` back to the Semaphore
     pub fn release(&self, num_permits: usize) {
+        tracing::error!("release");
         self.init_object_id();
         if num_permits == 0 {
             return;
@@ -530,6 +531,7 @@ impl BatchSemaphore {
         crate::annotations::record_semaphore_release(state.id.unwrap(), num_permits);
 
         if ExecutionState::should_stop() {
+            tracing::error!("ss");
             // In case we are panicking, we release permits, but also clear
             // the waiters queue: we should not unblock the threads at this
             // point. However, the permits are released such that future
@@ -553,6 +555,7 @@ impl BatchSemaphore {
             state.permits_available.release(num_permits, clock.clone());
         });
 
+        tracing::error!("drop");
         let me = ExecutionState::me();
         trace!(task = ?me, avail = ?state.permits_available, waiters = ?state.waiters, "released {} permits for semaphore {:p}", num_permits, &self.state);
 
@@ -718,8 +721,9 @@ impl Future for Acquire<'_> {
                     Err(TryAcquireError::Closed) => unreachable!(),
                 }
             } else {
+                panic!();
                 // No progress made, future is still pending.
-                Poll::Pending
+                //Poll::Pending
             }
         }
     }

@@ -3,7 +3,7 @@ use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, DEFAULT_INLINE_TASKS};
-use crate::runtime::thread::continuation::PooledContinuation;
+use crate::runtime::thread::continuation::{self, Continuation, PooledContinuation};
 use crate::scheduler::{Schedule, Scheduler};
 use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
@@ -12,11 +12,14 @@ use smallvec::SmallVec;
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::future::Future;
 use std::panic;
 use std::rc::Rc;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::task::Waker;
 use tracing::{trace, Span};
 
 #[allow(deprecated)]
@@ -27,6 +30,8 @@ use super::task::Tag;
 scoped_thread_local! {
     static EXECUTION_STATE: RefCell<ExecutionState>
 }
+
+static DOING_WIPE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 thread_local! {
     #[allow(clippy::complexity)]
@@ -86,12 +91,16 @@ impl Execution {
                 Some(VectorClock::new()),
             );
 
+            tracing::info!("Running steps");
             // Run the test to completion
             while self.step(config) {}
+            tracing::info!("Done Running steps");
 
             // Cleanup the state before it goes out of `EXECUTION_STATE` scope
             ExecutionState::cleanup();
+            tracing::info!("Cleaning up");
         });
+        tracing::info!("Bye bye");
     }
 
     /// Execute a single step of the scheduler. Returns true if the execution should continue.
@@ -115,6 +124,7 @@ impl Execution {
                     NextStep::Task(Rc::clone(&task.continuation))
                 }
                 ScheduledTask::Finished => {
+                    tracing::info!("FINISHED");
                     // The scheduler decided we're finished, so there are either no runnable tasks,
                     // or all runnable tasks are detached and there are no unfinished attached
                     // tasks. Therefore, it's a deadlock if there are unfinished attached tasks.
@@ -133,6 +143,7 @@ impl Execution {
                                 )
                             })
                             .collect::<Vec<_>>();
+                        tracing::error!("Blocked tasks: {blocked_tasks:?}");
                         NextStep::Failure(
                             format!("deadlock! blocked tasks: [{}]", blocked_tasks.join(", ")),
                             state.current_schedule.clone(),
@@ -177,7 +188,32 @@ impl Execution {
                     });
                 });
 
+                ExecutionState::with(|state| {
+                    state.async_yield = true;
+                });
+
+                tracing::error!("-- before, {:?}", continuation);
+
                 let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
+                tracing::error!("-- after, {:?}", continuation);
+
+                ExecutionState::with(|state| {
+                    tracing::error!("-- unp, {:?}", &state.unprocessed_aborts);
+                    let async_yield = state.async_yield;
+                    let current_task = state.current_mut();
+                    let task_id = current_task.id;
+                    if let Some(waker) = current_task.set_async_yield(async_yield) {
+                        tracing::error!("seet");
+                        state.unprocessed_aborts.push_back(UnprocessedAbort { task_id, waker });
+                    }
+                });
+
+                // SAREK TODO: Add test which does cascading aborts.
+                while ExecutionState::with(|state| !state.unprocessed_aborts.is_empty()) {
+                    let unproceessed_abort =
+                        ExecutionState::with(|state| state.unprocessed_aborts.pop_front()).unwrap();
+                    unproceessed_abort.handle();
+                }
 
                 // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
                 ExecutionState::with(|state| {
@@ -197,6 +233,7 @@ impl Execution {
                 result
             }
             NextStep::Failure(msg, schedule) => {
+                tracing::info!("FAILURE");
                 // Because we're creating the panic here, we don't need `persist_failure` to print
                 // as the failure message will be part of the panic payload.
                 let message = persist_failure(&schedule, msg, config, false);
@@ -205,6 +242,7 @@ impl Execution {
             NextStep::Finished => return false,
         };
 
+        tracing::info!("=== ret: {ret:?}");
         match ret {
             // Task finished
             Ok(true) => {
@@ -215,6 +253,9 @@ impl Execution {
             Ok(false) => {}
             // Task failed
             Err(e) => {
+                tracing::error!("resuming unwind");
+                panic::resume_unwind(e);
+                /*
                 let (name, schedule) = ExecutionState::failure_info().unwrap();
                 let message = persist_task_failure(&schedule, name, config, true);
                 // Try to inject the schedule into the panic payload if we can
@@ -224,10 +265,75 @@ impl Execution {
                 };
 
                 panic::resume_unwind(payload);
+                */
             }
         }
 
+        tracing::error!("step done");
         true
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct UnprocessedAbort {
+    pub(crate) task_id: TaskId,
+    pub(crate) waker: Arc<std::sync::Mutex<Option<Waker>>>,
+}
+
+pub fn wipe(continuation: Option<Continuation>, disable_should_stop: bool) {
+    // Note that we deliberately enter `ExecutionState`, disable `should_stop`, (if `disable_should_stop`) exit `ExecutionState`,
+    // do the drop, and then enter `ExecutionState` and reenable `should_stop`
+
+    if disable_should_stop {
+        ExecutionState::with(|state| {
+            state.should_stop_enabled = false;
+        });
+    }
+
+    tracing::info!("Wiping continuation with should_stop_enabled={}", !disable_should_stop);
+    {
+        drop(continuation);
+    }
+    tracing::info!(
+        "Finished wiping continuation with should_stop_enabled={}",
+        !disable_should_stop
+    );
+
+    if disable_should_stop {
+        ExecutionState::with(|state| {
+            state.should_stop_enabled = true;
+        });
+    }
+}
+
+impl UnprocessedAbort {
+    fn handle(&self) {
+        let continuation = ExecutionState::with(|state| {
+            let task = state.get_mut(self.task_id);
+            // SAREK TODO: Is this the correct place to finish?
+            task.finish();
+            task.continuation.clone()
+        });
+        tracing::info!("Dropping continuation for task: {:?}", self.task_id);
+        //let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
+        let cont = continuation.borrow_mut().continuation.take();
+        // Absolute motherfucker. We need to not fuck up the panic count (to not fuck up `std::thread::panicking`), so
+        // we need to spawn, but that is incompatible with ExecutionState in a thread local.
+        //let result = std::thread::spawn(|| panic::catch_unwind(panic::AssertUnwindSafe(|| wipe(cont, true)))).join();
+        // I think the problem is that we are continuing scheduling in panic mode and that is what makes the panic bleed
+
+        // How about letting the panic bleed?
+        DOING_WIPE.store(true, Ordering::SeqCst);
+        wipe(cont, true);
+        DOING_WIPE.store(false, Ordering::SeqCst);
+        //tracing::error!("RESULT: {result:?}");
+        //continuation.borrow_mut().wipe(true);
+        tracing::info!("Finished dropping continuation for task: {:?}", self.task_id);
+
+        let mut maybe_waker = self.waker.lock().unwrap();
+        if let Some(waker) = maybe_waker.take() {
+            waker.wake();
+        }
     }
 }
 
@@ -237,7 +343,7 @@ impl Execution {
 pub(crate) struct ExecutionState {
     pub config: Config,
     // invariant: tasks are never removed from this list
-    tasks: SmallVec<[Task; DEFAULT_INLINE_TASKS]>,
+    pub(crate) tasks: SmallVec<[Task; DEFAULT_INLINE_TASKS]>,
     // invariant: if this transitions to Stopped or Finished, it can never change again
     current_task: ScheduledTask,
     // the task the scheduler has chosen to run next
@@ -256,6 +362,19 @@ pub(crate) struct ExecutionState {
     pub(crate) current_schedule: Schedule,
 
     in_cleanup: bool,
+
+    // whether the last yield was due to a `yield()` from a `Poll::Pending`.
+    // used in order to know when to fulfill the abort request for a `JoinHandle`.
+    async_yield: bool,
+
+    pub(crate) unprocessed_aborts: VecDeque<UnprocessedAbort>,
+
+    // TODO: Investigate whether we want to ever do `should_stop`. I assume the better scheme is to have code which is resilient to not stopping.
+    // whether `should_stop` can return `true`. We have this because a `JoinHandle::abort` will cause an early drop of the `Task`'s continuation,
+    // which means dropping the generator object. The drop handler for the generator invokes a panic (this is how cleanup is done by Generator),
+    // which means `std::thread::panicking()` will be `true`, and thus `should_stop` will return `true`. We thus have this field to override this
+    // behavior, meaning that `should_stop` will return `false` if this is `false`.
+    pub(crate) should_stop_enabled: bool,
 
     #[cfg(debug_assertions)]
     has_cleaned_up: bool,
@@ -299,6 +418,9 @@ impl ExecutionState {
             scheduler,
             current_schedule: initial_schedule,
             in_cleanup: false,
+            async_yield: true,
+            should_stop_enabled: true,
+            unprocessed_aborts: VecDeque::new(),
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
@@ -491,18 +613,27 @@ impl ExecutionState {
     /// Invoke the scheduler to decide which task to schedule next. Returns true if the chosen task
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
-    pub(crate) fn maybe_yield() -> bool {
+    pub(crate) fn maybe_yield(async_yield: bool) -> bool {
+        if DOING_WIPE.load(Ordering::SeqCst) {
+            return false;
+        }
+        tracing::error!("maybe yield: {async_yield}");
         Self::with(|state| {
+            state.async_yield = async_yield;
+            return true;
+
             debug_assert!(
                 matches!(state.current_task, ScheduledTask::Some(_)) && state.next_task == ScheduledTask::None,
                 "we're inside a task and scheduler should not yet have run"
             );
 
+            tracing::error!("maybe yield");
             let result = state.schedule();
             // If scheduling failed, yield so that the outer scheduling loop can handle it.
             if result.is_err() {
                 return true;
             }
+            //return true;
 
             // If the next task is the same as the current one, we can skip the context switch
             // and just advance to the next task immediately.
@@ -531,8 +662,12 @@ impl ExecutionState {
     /// MutexGuard). This avoids calling back into the scheduler during a panic, because the state
     /// may be poisoned or otherwise invalid.
     pub(crate) fn should_stop() -> bool {
+        if !Self::with(|state| state.should_stop_enabled) {
+            return false;
+        }
         std::thread::panicking()
             || Self::with(|s| {
+                tracing::error!("Should stop: {:?}", s.current_task);
                 assert_ne!(s.current_task, ScheduledTask::Finished);
                 s.current_task == ScheduledTask::Stopped
             })
@@ -568,6 +703,7 @@ impl ExecutionState {
     pub(crate) fn current_mut(&mut self) -> &mut Task {
         self.get_mut(self.current_task.id().unwrap())
     }
+
     pub(crate) fn try_current(&self) -> Option<&Task> {
         self.try_get(self.current_task.id()?)
     }
@@ -640,6 +776,7 @@ impl ExecutionState {
     /// scheduler is being invoked from within a running task. If scheduling fails, returns an Err
     /// with a String describing the failure.
     fn schedule(&mut self) -> Result<(), String> {
+        tracing::error!("Schedule: {:?}", self.next_task);
         // Don't schedule twice. If `maybe_yield` ran the scheduler, we don't want to run it
         // again at the top of `step`.
         if self.next_task != ScheduledTask::None {
@@ -712,6 +849,8 @@ impl ExecutionState {
                 task.unblock();
             }
         }
+
+        tracing::error!("in schedule");
 
         // Tracing this `in_scope` is purely a matter of taste. We do it because
         // 1) It is an action taken by the scheduler, and should thus be traced under the scheduler's span

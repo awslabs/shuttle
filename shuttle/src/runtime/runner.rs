@@ -103,7 +103,9 @@ impl<S: Scheduler + 'static> Runner<S> {
                 // `enter`/`exit` all `Span`s) would most likely obviate the need for this.
                 let _span_drop_guard2 = ResetSpanOnDrop::new();
 
+                println!("Running");
                 span!(Level::ERROR, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
+                println!("DONE Running");
 
                 i += 1;
             }
