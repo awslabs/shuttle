@@ -249,3 +249,29 @@ fn poison() {
         None,
     );
 }
+
+// Tests that `Once` state is preserved even if the `Once` is moved.
+fn moved<F>(checker: F)
+where
+    F: FnOnce(Box<dyn Fn() + Send + Sync + 'static>),
+{
+    checker(Box::new(move || {
+        let once = Box::new(Once::new());
+        assert!(!once.is_completed());
+        once.call_once(|| {});
+        assert!(once.is_completed());
+
+        // The `Once` is still completed, even if its moved to another address.
+        let once = Box::new(*once);
+        assert!(once.is_completed());
+
+        // Other `Once`s are not completed.
+        let different_once = Once::new();
+        assert!(!different_once.is_completed());
+    }));
+}
+
+#[test]
+fn moved_dfs() {
+    moved(|f| check_dfs(f, None));
+}
