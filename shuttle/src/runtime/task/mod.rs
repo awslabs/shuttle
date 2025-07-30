@@ -205,6 +205,7 @@ impl Task {
         tag: Option<Arc<dyn Tag>>,
         parent_task_id: Option<TaskId>,
     ) -> Self {
+        #[cfg(any(test, feature = "vector-clocks"))]
         assert!(id.0 < clock.time.len());
         let mut continuation = ContinuationPool::acquire(stack_size);
         continuation.initialize(f);
