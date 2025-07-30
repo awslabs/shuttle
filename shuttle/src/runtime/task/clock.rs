@@ -2,7 +2,7 @@ use crate::runtime::task::TaskId;
 use std::cmp::{Ordering, PartialOrd};
 
 #[cfg(any(test, feature = "vector-clocks"))]
-mod vc_enabled {
+mod vector_clock {
     use super::*;
     use crate::runtime::task::DEFAULT_INLINE_TASKS;
     use smallvec::{smallvec, SmallVec};
@@ -100,7 +100,7 @@ mod vc_enabled {
 /// A dummy VectorClock implementation which only provides no-op stubs to improve testing throughput when
 /// vector clocks are not necessary
 #[cfg(not(any(test, feature = "vector-clocks")))]
-mod vc_disabled {
+mod vector_clock {
     use super::*;
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,11 +154,7 @@ mod vc_disabled {
     }
 }
 
-#[cfg(any(test, feature = "vector-clocks"))]
-pub use vc_enabled::VectorClock;
-
-#[cfg(not(any(test, feature = "vector-clocks")))]
-pub use vc_disabled::VectorClock;
+pub use vector_clock::VectorClock;
 
 #[cfg(test)]
 mod test {
