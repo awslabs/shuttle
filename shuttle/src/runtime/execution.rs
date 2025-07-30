@@ -262,6 +262,10 @@ pub(crate) struct ExecutionState {
 
     // The `Span` which the `ExecutionState` was created under. Will be the parent of all `Task` `Span`s
     pub(crate) top_level_span: Span,
+
+    // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
+    // on each scheduling decision. Should not be used outside of the `schedule` function
+    runnable_tasks: Vec<*const Task>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -302,6 +306,7 @@ impl ExecutionState {
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
+            runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
         }
     }
 
@@ -663,44 +668,70 @@ impl ExecutionState {
         }
 
         let mut unfinished_attached = false;
-        let mut runnable = self
-            .tasks
-            .iter()
-            .inspect(|t| unfinished_attached = unfinished_attached || (!t.finished() && !t.detached))
-            .filter(|t| t.runnable())
-            .map(|t| t.id)
-            .collect::<SmallVec<[_; DEFAULT_INLINE_TASKS]>>();
+        let mut all_runnable_detached = true;
+        let mut any_runnable = false;
+
+        for task in &self.tasks {
+            unfinished_attached |= !task.finished() && !task.detached;
+            let is_runnable = task.runnable();
+            any_runnable |= is_runnable;
+
+            if is_runnable {
+                all_runnable_detached &= task.detached;
+                self.runnable_tasks.push(task as *const Task);
+            } else if task.can_spuriously_wakeup() {
+                // Some blocked tasks can be woken up spuriously, even though the condition the task is
+                // blocked on hasn't happened yet. We'll add such tasks to the list of runnable tasks, but
+                // they won't contribute to the check on `any_runnable`; if the only runnable tasks
+                // are ones that are waiting for a potential spurious wakeup, it should still be treated as
+                // a deadlock since there's no guarantee that spurious wakeups will ever occur.
+                self.runnable_tasks.push(task as *const Task);
+            }
+        }
 
         // We should finish execution when either
         // (1) There are no runnable tasks, or
         // (2) All runnable tasks have been detached AND there are no unfinished attached tasks
         // If there are some unfinished attached tasks and all runnable tasks are detached, we must
         // run some detached task to give them a chance to unblock some unfinished attached task.
-        if runnable.is_empty() || (!unfinished_attached && runnable.iter().all(|id| self.get(*id).detached)) {
+        if !any_runnable || (!unfinished_attached && all_runnable_detached) {
             self.next_task = ScheduledTask::Finished;
             return Ok(());
         }
 
-        // Some blocked tasks can be woken up spuriously, even though the condition the task is
-        // blocked on hasn't happened yet. We'll add such tasks to the list of runnable tasks, but
-        // they won't contribute to the check on `runnable.is_empty()` if the only runnable tasks
-        // are ones that are waiting for a potential spurious wakeup, it should still be treated as
-        // a deadlock since there's no guarantee that spurious wakeups will ever occur.
-        runnable.extend(self.tasks.iter().filter(|t| t.can_spuriously_wakeup()).map(|t| t.id));
-
         let is_yielding = std::mem::replace(&mut self.has_yielded, false);
 
-        let runnable_tasks = runnable
-            .iter()
-            .map(|id| self.tasks.get(id.0).unwrap())
-            .collect::<SmallVec<[&Task; DEFAULT_INLINE_TASKS]>>();
+        // Cast the slice of raw pointers to a slice of references in place to provide schedulers with a safe API
+        //
+        // SAFETY: This is safe because the tasks themselves are only being accessed through this shared reference by the
+        // schedulers, and all references are always cleared from the runnable_tasks Vec at the end of this function.
+        // The transmute itself is safe because *const and & have the same layout, and the pointer is created from a
+        // reference earlier in this function.
+        let task_refs = unsafe { std::mem::transmute::<&[*const Task], &[&Task]>(&self.runnable_tasks) };
+
         self.next_task = self
             .scheduler
             .borrow_mut()
-            .next_task(&runnable_tasks, self.current_task.id(), is_yielding)
+            .next_task(task_refs, self.current_task.id(), is_yielding)
             .map(ScheduledTask::Some)
             .unwrap_or(ScheduledTask::Stopped);
-        drop(runnable_tasks);
+
+        // Tracing this `in_scope` is purely a matter of taste. We do it because
+        // 1) It is an action taken by the scheduler, and should thus be traced under the scheduler's span
+        // 2) It creates a visual separation of scheduling decisions and `Task`-induced tracing.
+        // Note that there is a case to be made for not `in_scope`-ing it, as that makes seeing the context
+        // of the context switch clearer.
+        //
+        // Note also that changing this trace! statement requires changing the test `basic::labels::test_tracing_with_label_fn`
+        // which relies on this trace reporting the `runnable` tasks.
+        self.top_level_span.in_scope(|| {
+            trace!(
+                i=self.current_schedule.len(),
+                next_task=?self.next_task,
+                runnable=?task_refs.iter().map(|task| task.id()).collect::<SmallVec<[_; DEFAULT_INLINE_TASKS]>>(),
+                "scheduling decision"
+            );
+        });
 
         // If the task chosen by the scheduler is blocked, then it should be one that can be
         // spuriously woken up, and we need to unblock it here so that it can execute.
@@ -713,16 +744,8 @@ impl ExecutionState {
             }
         }
 
-        // Tracing this `in_scope` is purely a matter of taste. We do it because
-        // 1) It is an action taken by the scheduler, and should thus be traced under the scheduler's span
-        // 2) It creates a visual separation of scheduling decisions and `Task`-induced tracing.
-        // Note that there is a case to be made for not `in_scope`-ing it, as that makes seeing the context
-        // of the context switch clearer.
-        //
-        // Note also that changing this trace! statement requires changing the test `basic::labels::test_tracing_with_label_fn`
-        // which relies on this trace reporting the `runnable` tasks.
-        self.top_level_span
-            .in_scope(|| trace!(i=self.current_schedule.len(), next_task=?self.next_task, ?runnable));
+        // Retains the capacity of `runnable_tasks` for future calls of `schedule`
+        self.runnable_tasks.clear();
 
         Ok(())
     }
