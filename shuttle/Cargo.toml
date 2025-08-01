@@ -49,6 +49,11 @@ bench = false
 default = []
 vector-clocks = []
 annotation = ["dep:serde", "dep:serde_json", "dep:regex"]
+# The following feature overrides the `vector-clocks` feature. It SHOULD NOT be used in production.
+# Its purpose is solely to allow `cargo bench` to be run without vector clocks enabled, as they
+# are otherwise always enabled via a dev-dependency to ensure all *test* assertions utilizing vector
+# clocks behave correctly during testing
+bench-no-vector-clocks = []
 
 [[bench]]
 name = "lock"
@@ -60,4 +65,8 @@ harness = false
 
 [[bench]]
 name = "counter"
+harness = false
+
+[[bench]]
+name = "create"
 harness = false
