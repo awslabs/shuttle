@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::sync::{Condvar, Mutex};
 use shuttle::{thread, Runner};
@@ -78,7 +78,6 @@ fn bounded_buffer_check(scheduler: impl Scheduler + 'static) {
 
 pub fn bounded_buffer_benchmark(c: &mut Criterion) {
     let mut g = c.benchmark_group("buffer");
-    g.throughput(Throughput::Elements(ITERATIONS as u64));
 
     g.bench_function("pct", |b| {
         b.iter(|| {
