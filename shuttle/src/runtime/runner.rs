@@ -6,7 +6,7 @@ use crate::scheduler::{Schedule, Scheduler};
 use crate::Config;
 use std::cell::RefCell;
 use std::fmt;
-use std::panic;
+use std::panic::{self, Location};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -70,6 +70,7 @@ impl<S: Scheduler + 'static> Runner<S> {
 
     /// Test the given function and return the number of times the function was invoked during the
     /// test (i.e., the number of iterations run).
+    #[track_caller]
     pub fn run<F>(self, f: F) -> usize
     where
         F: Fn() + Send + Sync + 'static,
@@ -103,7 +104,8 @@ impl<S: Scheduler + 'static> Runner<S> {
                 // `enter`/`exit` all `Span`s) would most likely obviate the need for this.
                 let _span_drop_guard2 = ResetSpanOnDrop::new();
 
-                span!(Level::ERROR, "execution", i).in_scope(|| execution.run(&self.config, move || f()));
+                span!(Level::ERROR, "execution", i)
+                    .in_scope(|| execution.run(&self.config, move || f(), Location::caller()));
 
                 i += 1;
             }

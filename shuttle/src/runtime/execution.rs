@@ -2,7 +2,7 @@ use crate::runtime::failure::{init_panic_hook, persist_failure, persist_task_fai
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
-use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::thread::thread_fn;
@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
-use std::panic;
+use std::panic::{self, Location};
 use std::rc::Rc;
 use std::sync::Arc;
 use tracing::{trace, Span};
@@ -65,7 +65,7 @@ impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
     /// scheduler returns `None`, indicating the execution should not be explored any further.
-    pub(crate) fn run<F>(mut self, config: &Config, f: F)
+    pub(crate) fn run<F>(mut self, config: &Config, f: F, caller: &'static Location<'static>)
     where
         F: FnOnce() + Send + 'static,
     {
@@ -79,11 +79,10 @@ impl Execution {
 
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
-            ExecutionState::spawn_thread(
+            ExecutionState::spawn_main_thread(
                 Box::new(move || thread_fn(f, Default::default())),
                 config.stack_size,
-                Some("main-thread".to_string()),
-                Some(VectorClock::new()),
+                caller,
             );
 
             // Run the test to completion
@@ -373,9 +372,57 @@ impl ExecutionState {
         });
     }
 
+    // Note: `spawn_thread`, `spawn_main_thread`, and `spawn_future` share some similar logic.
+    // Changes to one of these functions likely need to be propagated to the other two as well.
+    pub(crate) fn spawn_main_thread(
+        f: Box<dyn FnOnce() + 'static>,
+        stack_size: usize,
+        caller: &'static Location<'static>,
+    ) -> TaskId {
+        let name = "main-thread".to_string();
+        let mut clock = VectorClock::new();
+
+        let task_id = Self::with(|state| {
+            let parent_span_id = state.top_level_span.id();
+            let task_id = TaskId(state.tasks.len());
+            let tag = state.get_tag_or_default_for_current_task();
+
+            Self::set_labels_for_new_task(state, task_id, Some(name.clone()));
+
+            clock.extend(task_id); // and extend it with an entry for the new thread
+
+            let schedule_len = state.current_schedule.len();
+
+            let task = Task::from_closure(
+                f,
+                stack_size,
+                task_id,
+                Some(name),
+                clock,
+                parent_span_id,
+                schedule_len,
+                tag,
+                None,
+                TaskSignature::new_parentless(caller),
+            );
+            state.tasks.push(task);
+
+            task_id
+        });
+        crate::annotations::record_task_created(task_id, false);
+        task_id
+    }
+
+    // Note: `spawn_thread`, `spawn_main_thread`, and `spawn_future` share some similar logic.
+    // Changes to one of these functions likely need to be propagated to the other two as well.
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
     /// if it wants to give the new task a chance to run immediately.
-    pub(crate) fn spawn_future<F>(future: F, stack_size: usize, name: Option<String>) -> TaskId
+    pub(crate) fn spawn_future<F>(
+        future: F,
+        stack_size: usize,
+        name: Option<String>,
+        caller: &'static Location<'static>,
+    ) -> TaskId
     where
         F: Future<Output = ()> + 'static,
     {
@@ -400,7 +447,8 @@ impl ExecutionState {
                 parent_span_id,
                 schedule_len,
                 tag,
-                state.try_current().map(|t| t.id()),
+                Some(state.current().id()),
+                state.current_mut().signature.new_child(caller),
             );
 
             state.tasks.push(task);
@@ -411,11 +459,14 @@ impl ExecutionState {
         task_id
     }
 
+    // Note: `spawn_thread`, `spawn_main_thread`, and `spawn_future` share some similar logic.
+    // Changes to one of these functions likely need to be propagated to the other two as well.
     pub(crate) fn spawn_thread(
         f: Box<dyn FnOnce() + 'static>,
         stack_size: usize,
         name: Option<String>,
         mut initial_clock: Option<VectorClock>,
+        caller: &'static Location<'static>,
     ) -> TaskId {
         let task_id = Self::with(|state| {
             let parent_span_id = state.top_level_span.id();
@@ -444,7 +495,8 @@ impl ExecutionState {
                 parent_span_id,
                 schedule_len,
                 tag,
-                state.try_current().map(|t| t.id()),
+                Some(state.current().id()),
+                state.current_mut().signature.new_child(caller),
             );
             state.tasks.push(task);
 

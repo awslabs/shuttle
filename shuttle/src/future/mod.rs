@@ -11,6 +11,7 @@ use crate::runtime::thread;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
+use std::panic::Location;
 use std::pin::Pin;
 use std::result::Result;
 use std::sync::Arc;
@@ -18,14 +19,14 @@ use std::task::{Context, Poll, Waker};
 
 pub mod batch_semaphore;
 
-fn spawn_inner<F>(fut: F) -> JoinHandle<F::Output>
+fn spawn_inner<F>(fut: F, caller: &'static Location<'static>) -> JoinHandle<F::Output>
 where
     F: Future + 'static,
     F::Output: 'static,
 {
     let stack_size = ExecutionState::with(|s| s.config.stack_size);
     let inner = Arc::new(std::sync::Mutex::new(JoinHandleInner::default()));
-    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, inner.clone()), stack_size, None);
+    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, inner.clone()), stack_size, None, caller);
 
     thread::switch();
 
@@ -33,22 +34,24 @@ where
 }
 
 /// Spawn a new async task that the executor will run to completion.
+#[track_caller]
 pub fn spawn<F>(fut: F) -> JoinHandle<F::Output>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    spawn_inner(fut)
+    spawn_inner(fut, Location::caller())
 }
 
 /// Spawn a new async task that the executor will run to completion.
 /// This is just `spawn` without the `Send` bound, and it mirrors `spawn_local` from Tokio.
+#[track_caller]
 pub fn spawn_local<F>(fut: F) -> JoinHandle<F::Output>
 where
     F: Future + 'static,
     F::Output: 'static,
 {
-    spawn_inner(fut)
+    spawn_inner(fut, Location::caller())
 }
 
 /// An owned permission to abort a spawned task, without awaiting its completion.
