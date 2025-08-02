@@ -2,8 +2,9 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::storage::StorageKey;
 use crate::runtime::task::clock::VectorClock;
 use crate::sync::Mutex;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
 use tracing::trace;
 
 /// A synchronization primitive which can be used to run a one-time global initialization. Useful
@@ -11,9 +12,8 @@ use tracing::trace;
 /// with [`Once::new()`].
 #[derive(Debug)]
 pub struct Once {
-    // We use the address of the `Once` as an identifier, so it can't be zero-sized even though all
-    // its state is stored in ExecutionState storage
-    _dummy: usize,
+    /// Unique identifier for this [`Once`], used as a key for the [`OnceInitState`] for this instance.
+    id: OnceCell<usize>,
 }
 
 /// A `Once` cell can either be `Running`, in which case a `Mutex` mediates racing threads trying to
@@ -33,12 +33,19 @@ impl std::fmt::Debug for OnceInitState {
     }
 }
 
+// Safety: Once is never actually passed across true threads, only across continuations. The
+// OnceCell type therefore can't be preempted mid-bookkeeping-operation.
+// TODO we shouldn't need to do this, but OnceCell is not Send, and anything we put within a Once
+// TODO needs to be Send.
+unsafe impl Send for Once {}
+unsafe impl Sync for Once {}
+
 impl Once {
     /// Creates a new `Once` value.
     #[must_use]
     #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
-        Self { _dummy: 0 }
+        Self { id: OnceCell::new() }
     }
 
     /// Performs an initialization routine once and only once. The given closure will be executed
@@ -142,6 +149,14 @@ impl Once {
         }
     }
 
+    fn id(&self) -> usize {
+        static NEXT_ID: StdAtomicUsize = StdAtomicUsize::new(1);
+
+        let id = *self.id.get_or_init(|| NEXT_ID.fetch_add(1, Ordering::Relaxed));
+        assert_ne!(id, 0, "id overflow");
+        id
+    }
+
     fn get_state<'a>(&self, from: &'a ExecutionState) -> Option<&'a RefCell<OnceInitState>> {
         from.get_storage::<_, RefCell<OnceInitState>>(self)
     }
@@ -167,6 +182,6 @@ impl OnceState {
 
 impl From<&Once> for StorageKey {
     fn from(once: &Once) -> Self {
-        StorageKey(once as *const _ as usize, 0x2)
+        StorageKey(once.id(), 0x2)
     }
 }
