@@ -9,8 +9,11 @@ use crate::thread::LocalKey;
 use bitvec::prelude::*;
 use std::any::Any;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::panic::Location;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Waker};
@@ -146,6 +149,86 @@ where
     }
 }
 
+/// A task signature is an identifier that is intended to be *mostly* stable across executions
+/// and allow for categorization of tasks according to how they were created. It provides two
+/// levels of granularity: static (compile-time) spawn location and dynamic (run-time) context where
+/// that spawn location was reached. The static spawn location and signature are each represented
+/// by a u64 so that the details of how they are computed can be non-breaking changes in the future.
+/// Hashes are all pre-computed for fast checking of equality of signatures at runtime.
+#[derive(Debug, Clone)]
+pub(crate) struct TaskSignature {
+    /// The task creation stack is a tuple of (create location, number of tasks created at that location in the parent)
+    task_creation_stack: Vec<(&'static Location<'static>, u32)>,
+    spawn_call_site_hash: u64,
+    signature_hash: u64,
+    child_counters: HashMap<&'static Location<'static>, u32>,
+}
+
+impl TaskSignature {
+    pub(crate) fn new_parentless(spawn_call_site: &'static Location<'static>) -> TaskSignature {
+        let mut hasher = DefaultHasher::new();
+        let task_creation_stack = vec![(spawn_call_site, 0)];
+        task_creation_stack.hash(&mut hasher);
+        let signature_hash = hasher.finish();
+        spawn_call_site.hash(&mut hasher);
+
+        Self {
+            task_creation_stack,
+            spawn_call_site_hash: hasher.finish(),
+            signature_hash,
+            child_counters: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn new_child(&mut self, spawn_call_site: &'static Location<'static>) -> Self {
+        let mut hasher = DefaultHasher::new();
+        let counter = self
+            .child_counters
+            .entry(spawn_call_site)
+            .and_modify(|c| *c += 1)
+            .or_insert(1);
+        let mut task_creation_stack = self.task_creation_stack.clone();
+        task_creation_stack.push((spawn_call_site, *counter));
+
+        spawn_call_site.hash(&mut hasher);
+        let spawn_call_site_hash = hasher.finish();
+
+        task_creation_stack.hash(&mut hasher);
+
+        Self {
+            task_creation_stack,
+            spawn_call_site_hash,
+            signature_hash: hasher.finish(),
+            child_counters: HashMap::new(),
+        }
+    }
+
+    /// Hash of the static location within the source code where the task was spawned
+    pub(crate) fn static_create_location_hash(&self) -> u64 {
+        self.spawn_call_site_hash
+    }
+
+    /// Combined signature of the static location and dynamic context
+    /// context where the task was spawned.
+    pub(crate) fn signature_hash(self: &TaskSignature) -> u64 {
+        self.signature_hash
+    }
+}
+
+impl Hash for TaskSignature {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.task_creation_stack.hash(state);
+    }
+}
+
+impl PartialEq for TaskSignature {
+    fn eq(&self, other: &Self) -> bool {
+        self.signature_hash == other.signature_hash
+    }
+}
+
+impl Eq for TaskSignature {}
+
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
 #[derive(Debug)]
@@ -188,6 +271,11 @@ pub struct Task {
     // Arbitrarily settable tag which is inherited from the parent.
     #[allow(deprecated)]
     tag: Option<Arc<dyn Tag>>,
+
+    /// The signature of a Task; this is an identifier that is *not* guaranteed to be unique but should be *mostly*
+    /// stable across iterations in a single Shuttle test. Tasks with the same signature are very likely to exhibit
+    /// similar behavior
+    pub(crate) signature: TaskSignature,
 }
 
 #[allow(deprecated)]
@@ -204,6 +292,7 @@ impl Task {
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
         parent_task_id: Option<TaskId>,
+        signature: TaskSignature,
     ) -> Self {
         #[cfg(all(any(test, feature = "vector-clocks"), not(feature = "bench-no-vector-clocks")))]
         assert!(id.0 < clock.time.len());
@@ -233,14 +322,17 @@ impl Task {
             span_stack,
             local_storage: StorageMap::new(),
             tag: None,
+            signature,
         };
 
         if let Some(tag) = tag {
             task.set_tag(tag);
         }
 
-        error_span!(parent: parent_span_id, "new_task", parent = ?parent_task_id, i = schedule_len)
-            .in_scope(|| event!(Level::INFO, "created task: {:?}", task.id));
+        // Note: the tests for the task signature in [`crate::tests::basic::task`] depend on tracing the task signature and creation point here
+        error_span!(parent: parent_span_id, "new_task", parent = ?parent_task_id, i = schedule_len).in_scope(
+            || event!(Level::INFO, task_id = ?task.id, signature = task.signature.signature_hash(), static_create_location = task.signature.static_create_location_hash(), "created task"),
+        );
 
         task
     }
@@ -256,6 +348,7 @@ impl Task {
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
         parent_task_id: Option<TaskId>,
+        signature: TaskSignature,
     ) -> Self {
         Self::new(
             f,
@@ -267,6 +360,7 @@ impl Task {
             schedule_len,
             tag,
             parent_task_id,
+            signature,
         )
     }
 
@@ -281,6 +375,7 @@ impl Task {
         schedule_len: usize,
         tag: Option<Arc<dyn Tag>>,
         parent_task_id: Option<TaskId>,
+        signature: TaskSignature,
     ) -> Self
     where
         F: Future<Output = ()> + 'static,
@@ -304,6 +399,7 @@ impl Task {
             schedule_len,
             tag,
             parent_task_id,
+            signature,
         )
     }
 
