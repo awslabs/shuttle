@@ -2,7 +2,7 @@ use crate::runtime::failure::{init_panic_hook, persist_failure, persist_task_fai
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
-use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::thread::thread_fn;
@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
-use std::panic;
+use std::panic::{self, Location};
 use std::rc::Rc;
 use std::sync::Arc;
 use tracing::{trace, Span};
@@ -65,6 +65,7 @@ impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
     /// scheduler returns `None`, indicating the execution should not be explored any further.
+    #[track_caller]
     pub(crate) fn run<F>(mut self, config: &Config, f: F)
     where
         F: FnOnce() + Send + 'static,
@@ -77,6 +78,7 @@ impl Execution {
 
         let _guard = init_panic_hook(config.clone());
 
+        let caller = Location::caller();
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
             ExecutionState::spawn_thread(
@@ -84,6 +86,7 @@ impl Execution {
                 config.stack_size,
                 Some("main-thread".to_string()),
                 Some(VectorClock::new()),
+                caller,
             );
 
             // Run the test to completion
@@ -370,7 +373,12 @@ impl ExecutionState {
 
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
     /// if it wants to give the new task a chance to run immediately.
-    pub(crate) fn spawn_future<F>(future: F, stack_size: usize, name: Option<String>) -> TaskId
+    pub(crate) fn spawn_future<F>(
+        future: F,
+        stack_size: usize,
+        name: Option<String>,
+        caller: &'static Location<'static>,
+    ) -> TaskId
     where
         F: Future<Output = ()> + 'static,
     {
@@ -396,6 +404,7 @@ impl ExecutionState {
                 schedule_len,
                 tag,
                 state.try_current().map(|t| t.id()),
+                TaskSignature::new(state, caller),
             );
 
             state.tasks.push(task);
@@ -411,6 +420,7 @@ impl ExecutionState {
         stack_size: usize,
         name: Option<String>,
         mut initial_clock: Option<VectorClock>,
+        caller: &'static Location<'static>,
     ) -> TaskId {
         let task_id = Self::with(|state| {
             let parent_span_id = state.top_level_span.id();
@@ -440,6 +450,7 @@ impl ExecutionState {
                 schedule_len,
                 tag,
                 state.try_current().map(|t| t.id()),
+                TaskSignature::new(state, caller),
             );
             state.tasks.push(task);
 
@@ -572,6 +583,10 @@ impl ExecutionState {
         self.try_get(self.current_task.id()?)
     }
 
+    pub(crate) fn try_current_mut(&mut self) -> Option<&mut Task> {
+        self.try_get_mut(self.current_task.id()?)
+    }
+
     pub(crate) fn get(&self, id: TaskId) -> &Task {
         self.try_get(id).unwrap()
     }
@@ -582,6 +597,10 @@ impl ExecutionState {
 
     pub(crate) fn try_get(&self, id: TaskId) -> Option<&Task> {
         self.tasks.get(id.0)
+    }
+
+    pub(crate) fn try_get_mut(&mut self, id: TaskId) -> Option<&mut Task> {
+        self.tasks.get_mut(id.0)
     }
 
     pub(crate) fn in_cleanup(&self) -> bool {
