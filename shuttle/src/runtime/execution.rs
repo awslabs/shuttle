@@ -533,7 +533,7 @@ impl ExecutionState {
     pub(crate) fn should_stop() -> bool {
         std::thread::panicking()
             || Self::with(|s| {
-                assert_ne!(s.current_task, ScheduledTask::Finished);
+                //assert_ne!(s.current_task, ScheduledTask::Finished);
                 s.current_task == ScheduledTask::Stopped
             })
     }

@@ -403,6 +403,7 @@ impl Task {
     /// Register a waiter for this thread to terminate. Returns a boolean indicating whether the
     /// waiter should block or not. If false, this task has already finished, and so the waiter need
     /// not block.
+    #[allow(unused)]
     pub(crate) fn set_waiter(&mut self, waiter: TaskId) -> bool {
         assert!(
             self.waiter.is_none() || self.waiter == Some(waiter),

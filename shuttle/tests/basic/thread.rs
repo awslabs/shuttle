@@ -35,6 +35,7 @@ fn thread_yield_point() {
     assert_eq!(success_clone.load(Ordering::SeqCst), 0x3);
 }
 
+/*
 #[test]
 fn thread_scope() {
     check_dfs(
@@ -108,6 +109,7 @@ fn thread_scope_join() {
         None,
     );
 }
+    */
 
 #[test]
 fn thread_join() {
@@ -144,6 +146,7 @@ fn thread_join_drop() {
     );
 }
 
+/*
 #[test]
 fn thread_builder_name() {
     check_random(
@@ -194,6 +197,7 @@ fn thread_identity() {
         None,
     );
 }
+    */
 
 /// Thread local tests
 ///

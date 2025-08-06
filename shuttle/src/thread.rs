@@ -70,6 +70,7 @@ impl std::fmt::Debug for Scope<'_, '_> {
     }
 }
 
+/*
 impl<'scope> Scope<'scope, '_> {
     /// Spawns a new thread within a scope, returning a [`ScopedJoinHandle`] for it.
     ///
@@ -107,6 +108,7 @@ impl<'scope> Scope<'scope, '_> {
         }
     }
 }
+    */
 
 /// Creates a scope for spawning scoped threads.
 ///
@@ -134,6 +136,44 @@ where
     ret
 }
 
+impl<T> std::fmt::Debug for JoinHandle<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JoinHandle2")
+    }
+}
+
+/// Doc
+pub struct JoinHandle<T> {
+    inner: crate::future::JoinHandle<T>,
+}
+
+impl<T> JoinHandle<T> {
+    /// Waits for the associated thread to finish.
+    pub fn join(self) -> std::thread::Result<T> {
+        let out = Ok(crate::future::block_on(self.inner).unwrap());
+
+        out
+    }
+
+    /// Extracts a handle to the underlying thread.
+    pub fn thread(&self) -> &Thread {
+        todo!();
+    }
+}
+
+/// Doc
+pub fn spawn<F, T>(f: F) -> JoinHandle<T>
+where
+    F: FnOnce() -> T,
+    F: Send + 'static,
+    T: Send + 'static,
+{
+    let future = Box::pin(async move { f() });
+    let inner = crate::future::spawn(future);
+    JoinHandle { inner }
+}
+
+/*
 /// Spawn a new thread, returning a JoinHandle for it.
 ///
 /// The join handle can be used (via the `join` method) to block until the child thread has
@@ -192,6 +232,8 @@ where
     }
 }
 
+
+    */
 /// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
 /// stores the result of the thread in the given lock.
 pub(crate) fn thread_fn<F, T>(f: F, result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>)
@@ -255,6 +297,7 @@ impl<T> ScopedJoinHandle<'_, T> {
     }
 }
 
+/*
 /// An owned permission to join on a thread (block on its termination).
 #[derive(Debug)]
 pub struct JoinHandle<T> {
@@ -295,6 +338,7 @@ impl<T> JoinHandle<T> {
         &self.thread
     }
 }
+    */
 
 /// Cooperatively gives up a timeslice to the Shuttle scheduler.
 ///
@@ -380,6 +424,7 @@ impl Builder {
         self
     }
 
+    /*
     /// Spawns a new thread by taking ownership of the Builder, and returns an `io::Result` to its `JoinHandle`.
     pub fn spawn<F, T>(self, f: F) -> std::io::Result<JoinHandle<T>>
     where
@@ -389,6 +434,7 @@ impl Builder {
     {
         Ok(spawn_named(f, self.name, self.stack_size))
     }
+    */
 }
 
 /// A thread local storage key which owns its contents
