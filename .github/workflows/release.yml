@@ -1,0 +1,28 @@
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'CHANGELOG.md'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'CHANGELOG.md'
+
+env:
+  RUSTFLAGS: -Dwarnings
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: Benchmarks (with vector clocks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust
+        run: rustup update stable
+      - name: cargo bench
+        run: cargo bench
+
+
+ 

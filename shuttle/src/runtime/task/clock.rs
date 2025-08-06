@@ -1,7 +1,7 @@
 use crate::runtime::task::TaskId;
 use std::cmp::{Ordering, PartialOrd};
 
-#[cfg(any(test, feature = "vector-clocks"))]
+#[cfg(all(any(test, feature = "vector-clocks"), not(feature = "bench-no-vector-clocks")))]
 mod vector_clock {
     use super::*;
     use crate::runtime::task::DEFAULT_INLINE_TASKS;
@@ -99,7 +99,7 @@ mod vector_clock {
 
 /// A dummy VectorClock implementation which only provides no-op stubs to improve testing throughput when
 /// vector clocks are not necessary
-#[cfg(not(any(test, feature = "vector-clocks")))]
+#[cfg(any(not(any(test, feature = "vector-clocks")), feature = "bench-no-vector-clocks"))]
 mod vector_clock {
     use super::*;
 
