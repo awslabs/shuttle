@@ -89,7 +89,7 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// If the lock could not be acquired at this time, then Err is returned. This function does not
     /// block.
-    pub fn try_lock(&self) -> TryLockResult<MutexGuard<T>> {
+    pub fn try_lock(&self) -> TryLockResult<MutexGuard<'_, T>> {
         let me = current::me();
 
         let mut state = self.state.borrow_mut();
