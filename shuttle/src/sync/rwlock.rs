@@ -114,7 +114,7 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// Note that unlike [`std::sync::RwLock::try_read`], if the current thread already holds this
     /// read lock, `try_read` will return Err.
-    pub fn try_read(&self) -> TryLockResult<RwLockReadGuard<T>> {
+    pub fn try_read(&self) -> TryLockResult<RwLockReadGuard<'_, T>> {
         if self.try_lock(RwLockType::Read) {
             match self.inner.try_read() {
                 Ok(guard) => Ok(RwLockReadGuard {
@@ -138,7 +138,7 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// If the access could not be granted at this time, then Err is returned. This function does
     /// not block.
-    pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<T>> {
+    pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, T>> {
         if self.try_lock(RwLockType::Write) {
             match self.inner.try_write() {
                 Ok(guard) => Ok(RwLockWriteGuard {
