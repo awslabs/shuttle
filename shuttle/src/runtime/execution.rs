@@ -2,10 +2,9 @@ use crate::runtime::failure::{init_panic_hook, persist_failure, persist_task_fai
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
+use crate::runtime::task::DynFuture;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, DEFAULT_INLINE_TASKS};
-use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
@@ -17,6 +16,8 @@ use std::future::Future;
 use std::panic;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::task::Context;
+use std::task::Poll;
 use tracing::{trace, Span};
 
 #[allow(deprecated)]
@@ -78,13 +79,9 @@ impl Execution {
         let _guard = init_panic_hook(config.clone());
 
         EXECUTION_STATE.set(&state, move || {
+            let future = Box::pin(async move { f() });
             // Spawn `f` as the first task
-            ExecutionState::spawn_thread(
-                Box::new(move || thread_fn(f, Default::default())),
-                config.stack_size,
-                Some("main-thread".to_string()),
-                Some(VectorClock::new()),
-            );
+            ExecutionState::spawn_future(future, Some("main-thread".to_string()));
 
             // Run the test to completion
             while self.step(config) {}
@@ -98,7 +95,7 @@ impl Execution {
     #[inline]
     fn step(&mut self, config: &Config) -> bool {
         enum NextStep {
-            Task(Rc<RefCell<PooledContinuation>>),
+            Task(Rc<RefCell<DynFuture>>),
             Failure(String, Schedule),
             Finished,
         }
@@ -112,7 +109,7 @@ impl Execution {
             match state.current_task {
                 ScheduledTask::Some(tid) => {
                     let task = state.get(tid);
-                    NextStep::Task(Rc::clone(&task.continuation))
+                    NextStep::Task(Rc::clone(&task.future))
                 }
                 ScheduledTask::Finished => {
                     // The scheduler decided we're finished, so there are either no runnable tasks,
@@ -177,7 +174,19 @@ impl Execution {
                     });
                 });
 
-                let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
+                // Dylan you have to update this to be a poll of the future.
+                // This has to become the async executor doing a single poll !!!!!!!!!
+                let mut future = Box::pin(continuation.borrow_mut().inner);
+                let waker = ExecutionState::with(|state| state.current_mut().waker());
+                let cx = &mut Context::from_waker(&waker);
+
+                let result = panic::catch_unwind(panic::AssertUnwindSafe(|| match future.as_mut().poll(cx) {
+                    Poll::Ready(result) => true,
+                    Poll::Pending => {
+                        ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
+                        false
+                    }
+                }));
 
                 // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
                 ExecutionState::with(|state| {
@@ -224,7 +233,9 @@ impl Execution {
                 };
 
                 panic::resume_unwind(payload);
+                //panic!();
             }
+            e => unimplemented!(),
         }
 
         true
@@ -370,7 +381,7 @@ impl ExecutionState {
 
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
     /// if it wants to give the new task a chance to run immediately.
-    pub(crate) fn spawn_future<F>(future: F, stack_size: usize, name: Option<String>) -> TaskId
+    pub(crate) fn spawn_future<F>(future: F, name: Option<String>) -> TaskId
     where
         F: Future<Output = ()> + 'static,
     {
@@ -388,7 +399,6 @@ impl ExecutionState {
 
             let task = Task::from_future(
                 future,
-                stack_size,
                 task_id,
                 name,
                 clock.clone(),
@@ -406,6 +416,7 @@ impl ExecutionState {
         task_id
     }
 
+    /*
     pub(crate) fn spawn_thread(
         f: Box<dyn FnOnce() + 'static>,
         stack_size: usize,
@@ -448,6 +459,7 @@ impl ExecutionState {
         crate::annotations::record_task_created(task_id, false);
         task_id
     }
+    */
 
     /// Prepare this ExecutionState to be dropped. Call this before dropping so that the tasks have
     /// a chance to run their drop handlers while `EXECUTION_STATE` is still in scope.
@@ -467,7 +479,7 @@ impl ExecutionState {
                 final_state == ScheduledTask::Stopped || task.finished() || task.detached,
                 "execution finished but task is not"
             );
-            Rc::try_unwrap(task.continuation)
+            Rc::try_unwrap(task.future)
                 .map_err(|_| ())
                 .expect("couldn't cleanup a future");
         }

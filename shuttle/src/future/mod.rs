@@ -24,9 +24,8 @@ where
     F: Future + 'static,
     F::Output: 'static,
 {
-    let stack_size = ExecutionState::with(|s| s.config.stack_size);
     let inner = Arc::new(std::sync::Mutex::new(JoinHandleInner::default()));
-    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, inner.clone()), stack_size, None);
+    let task_id = ExecutionState::spawn_future(Wrapper::new(fut, inner.clone()), None);
 
     thread::switch();
 

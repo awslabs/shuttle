@@ -146,6 +146,17 @@ where
     }
 }
 
+use std::pin::Pin;
+pub(crate) struct DynFuture {
+    pub(crate) inner: Pin<Box<dyn Future<Output = ()>>>,
+}
+
+impl Debug for DynFuture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DynFuture")
+    }
+}
+
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
 #[derive(Debug)]
@@ -155,7 +166,7 @@ pub struct Task {
     pub(super) detached: bool,
     park_state: ParkState,
 
-    pub(super) continuation: Rc<RefCell<PooledContinuation>>,
+    pub(super) future: Rc<RefCell<DynFuture>>,
 
     pub(crate) clock: VectorClock,
 
@@ -195,8 +206,7 @@ impl Task {
     /// Create a task from a continuation
     #[allow(clippy::too_many_arguments)]
     fn new(
-        f: Box<dyn FnOnce() + 'static>,
-        stack_size: usize,
+        future: DynFuture,
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
@@ -207,10 +217,9 @@ impl Task {
     ) -> Self {
         #[cfg(all(any(test, feature = "vector-clocks"), not(feature = "bench-no-vector-clocks")))]
         assert!(id.0 < clock.time.len());
-        let mut continuation = ContinuationPool::acquire(stack_size);
-        continuation.initialize(f);
         let waker = make_waker(id);
-        let continuation = Rc::new(RefCell::new(continuation));
+
+        let future = Rc::new(RefCell::new(future));
 
         let step_span = error_span!(parent: parent_span_id.clone(), "step", task = id.0, i = field::Empty);
         // Note that this is slightly lazy — we are starting storing at the step_span, but could have gotten the
@@ -221,7 +230,7 @@ impl Task {
         let mut task = Self {
             id,
             state: TaskState::Runnable,
-            continuation,
+            future,
             clock,
             waiter: None,
             waker,
@@ -245,35 +254,20 @@ impl Task {
         task
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_closure(
-        f: Box<dyn FnOnce() + 'static>,
-        stack_size: usize,
-        id: TaskId,
-        name: Option<String>,
-        clock: VectorClock,
-        parent_span_id: Option<tracing::span::Id>,
-        schedule_len: usize,
-        tag: Option<Arc<dyn Tag>>,
-        parent_task_id: Option<TaskId>,
-    ) -> Self {
-        Self::new(
-            f,
-            stack_size,
-            id,
-            name,
-            clock,
-            parent_span_id,
-            schedule_len,
-            tag,
-            parent_task_id,
-        )
-    }
+    /*
+    Box::new(move || {
+        let waker = ExecutionState::with(|state| state.current_mut().waker());
+        let cx = &mut Context::from_waker(&waker);
+        while future.as_mut().poll(cx).is_pending() {
+            ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
+            thread::switch();
+        }
+    }),
+    */
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_future<F>(
         future: F,
-        stack_size: usize,
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
@@ -285,18 +279,12 @@ impl Task {
     where
         F: Future<Output = ()> + 'static,
     {
-        let mut future = Box::pin(future);
+        let future = DynFuture {
+            inner: Box::pin(future),
+        };
 
         Self::new(
-            Box::new(move || {
-                let waker = ExecutionState::with(|state| state.current_mut().waker());
-                let cx = &mut Context::from_waker(&waker);
-                while future.as_mut().poll(cx).is_pending() {
-                    ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
-                    thread::switch();
-                }
-            }),
-            stack_size,
+            future,
             id,
             name,
             clock,
