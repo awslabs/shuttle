@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::sync::atomic::{AtomicUsize, Ordering};
 use shuttle::{future, thread, Runner};
@@ -54,7 +54,6 @@ fn counter_sync(scheduler: impl Scheduler + 'static, num_tasks: u32) {
 
 pub fn create_async_benchmark(c: &mut Criterion) {
     let mut g = c.benchmark_group("create async");
-    g.throughput(Throughput::Elements(ITERATIONS as u64));
 
     g.bench_function("pct-narrow", |b| {
         b.iter(|| {
@@ -87,7 +86,6 @@ pub fn create_async_benchmark(c: &mut Criterion) {
 
 pub fn create_sync_benchmark(c: &mut Criterion) {
     let mut g = c.benchmark_group("create sync");
-    g.throughput(Throughput::Elements(ITERATIONS as u64));
 
     g.bench_function("pct-narrow", |b| {
         b.iter(|| {
