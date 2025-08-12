@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::sync::atomic::{AtomicUsize, Ordering};
 use shuttle::{future, thread, Runner};
@@ -62,7 +62,6 @@ fn counter_sync(scheduler: impl Scheduler + 'static, num_tasks: u32, num_events_
 
 pub fn counter_async_benchmark(c: &mut Criterion) {
     let mut g = c.benchmark_group("counter async");
-    g.throughput(Throughput::Elements((ITERATIONS * TOTAL_EVENTS as usize) as u64));
     g.warm_up_time(Duration::from_secs(1));
 
     g.bench_function("pct-narrow", |b| {
@@ -96,7 +95,6 @@ pub fn counter_async_benchmark(c: &mut Criterion) {
 
 pub fn counter_sync_benchmark(c: &mut Criterion) {
     let mut g = c.benchmark_group("counter sync");
-    g.throughput(Throughput::Elements((ITERATIONS * TOTAL_EVENTS as usize) as u64));
     g.warm_up_time(Duration::from_secs(1));
 
     g.bench_function("pct-narrow", |b| {
