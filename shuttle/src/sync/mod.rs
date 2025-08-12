@@ -21,5 +21,7 @@ pub use rwlock::RwLock;
 pub use rwlock::RwLockReadGuard;
 pub use rwlock::RwLockWriteGuard;
 
+pub use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
+
 // TODO implement true support for `Arc`
 pub use std::sync::{Arc, Weak};

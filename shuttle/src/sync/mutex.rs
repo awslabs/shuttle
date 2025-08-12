@@ -1,11 +1,11 @@
 use crate::current;
 use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
 use crate::runtime::task::TaskId;
+use crate::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
 use std::panic::{RefUnwindSafe, UnwindSafe};
-use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use tracing::trace;
 
 /// A mutex, the same as [`std::sync::Mutex`].
