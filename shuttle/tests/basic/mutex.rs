@@ -1,8 +1,8 @@
 use shuttle::scheduler::PctScheduler;
-use shuttle::sync::Mutex;
+use shuttle::sync::{Mutex, TryLockError};
 use shuttle::{check_dfs, check_random, thread, Runner};
 use std::collections::HashSet;
-use std::sync::{Arc, TryLockError};
+use std::sync::Arc;
 use test_log::test;
 
 #[test]
