@@ -18,6 +18,7 @@ mod replay;
 mod rwlock;
 mod shrink;
 mod tag;
+mod task;
 mod thread;
 mod timeout;
 mod tracing;
