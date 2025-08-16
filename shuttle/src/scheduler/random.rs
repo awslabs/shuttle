@@ -6,6 +6,8 @@ use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use rand::{RngCore, SeedableRng};
 use rand_pcg::Pcg64Mcg;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// A scheduler that randomly chooses a runnable task at each context switch.
 ///
@@ -21,24 +23,25 @@ pub struct RandomScheduler {
     current_seed: CurrentSeedDropGuard,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct CurrentSeedDropGuard {
-    inner: Option<u64>,
+    inner: Arc<Mutex<Option<u64>>>,
 }
 
 impl CurrentSeedDropGuard {
     fn clear(&mut self) {
-        self.inner = None
+        *self.inner.lock().unwrap() = None;
     }
 
     fn update(&mut self, seed: u64) {
-        self.inner = Some(seed)
+        *self.inner.lock().unwrap() = Some(seed);
     }
 }
 
 impl Drop for CurrentSeedDropGuard {
     fn drop(&mut self) {
-        if let Some(s) = self.inner {
+        println!("Dropping");
+        if let Some(s) = *self.inner.lock().unwrap() {
             eprintln!(
                 "failing seed:\n\"\n{s}\n\"\nTo replay the failure, either:\n    1) pass the seed to `shuttle::check_random_with_seed, or\n    2) set the environment variable SHUTTLE_RANDOM_SEED to the seed and run `shuttle::check_random`."
             )
@@ -76,12 +79,20 @@ impl RandomScheduler {
 
         let rng = Pcg64Mcg::seed_from_u64(seed);
 
+        let current_seed = CurrentSeedDropGuard::default();
+        let drop_guard_clone = current_seed.clone();
+
+        std::thread::spawn(move || {
+            let _drop_guard = drop_guard_clone;
+            std::thread::sleep(Duration::MAX);
+        });
+
         Self {
             max_iterations,
             rng,
             iterations: 0,
             data_source: RandomDataSource::initialize(seed),
-            current_seed: CurrentSeedDropGuard::default(),
+            current_seed,
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::runtime::failure::{init_panic_hook, persist_failure, persist_task_failure};
+use crate::runtime::failure::{init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
@@ -10,7 +10,7 @@ use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
@@ -26,6 +26,57 @@ use super::task::Tag;
 // need access to it (to spawn new tasks, interrogate task status, etc).
 scoped_thread_local! {
     static EXECUTION_STATE: RefCell<ExecutionState>
+}
+
+// The reason this is separated out from `ExecutionState` is to ensure that we're always able to persist the schedule.
+// If we don't do this, then we may panic while borrowing `ExecutionState`, and then not be able to emit the schedule.
+// If we then panic again while trying to handle the panic, such that the panic becomes an abort, we will never log
+// the schedule.
+//
+// It is expected that if the `ExecutionState` exists, then this will exist, and any usage of this happens through the
+// `ExecutionState`, or at a point where it is known that the `ExecutionState` must exist (eg. when serializing on a panic).
+scoped_thread_local! {
+    static CURRENT_SCHEDULE: CurrentSchedule
+}
+
+pub struct CurrentSchedule {
+    // SAFETY: There are two ways having an `UnsafeCell` could be unsafe:
+    //         1: Multiple threads are accessing the `UnsafeCell` at the same time, and at least one thread does a write.
+    //         2: We give out a reference or a pointer to the `UnsafeCell`, and that reference is used after the contents have been moved or freed.
+    //         These cannot occur, as Shuttle is single threaded, and we never give out a reference or a raw pointer.
+    current_schedule: UnsafeCell<Schedule>,
+}
+
+impl CurrentSchedule {
+    fn new(schedule: Schedule) -> Self {
+        Self {
+            current_schedule: UnsafeCell::new(schedule),
+        }
+    }
+
+    /// Add the given task ID as the next step of the schedule.
+    fn push_task(tid: TaskId) {
+        // SAFETY: Shuttle is single threaded, and we never give out references to `current_schedule`
+        unsafe { CURRENT_SCHEDULE.with(|cs| (&mut *cs.current_schedule.get()).push_task(tid)) }
+    }
+
+    /// Add a choice of a random u64 value as the next step of the schedule
+    fn push_random() {
+        // SAFETY: Shuttle is single threaded, and we never give out references to `current_schedule`
+        unsafe { CURRENT_SCHEDULE.with(|cs| (&mut *cs.current_schedule.get()).push_random()) }
+    }
+
+    /// Return the number of steps in the schedule
+    pub(crate) fn len() -> usize {
+        // SAFETY: Shuttle is single threaded, and we never give out references to `current_schedule`
+        unsafe { CURRENT_SCHEDULE.with(|cs| (*cs.current_schedule.get()).len()) }
+    }
+
+    /// Returns a clone of the inner schedule
+    pub(crate) fn get_schedule() -> Schedule {
+        // SAFETY: Shuttle is single threaded, and we never give out references to `current_schedule`
+        unsafe { CURRENT_SCHEDULE.with(|cs| (*cs.current_schedule.get()).clone()) }
+    }
 }
 
 thread_local! {
@@ -61,6 +112,19 @@ impl Execution {
     }
 }
 
+enum StepError {
+    // Contains the panic payload of the task that failed.
+    TaskFailure(Box<dyn Any + Send>),
+    // The scheduler didn't make a decision. Indicates a scheduler error.
+    SchedulingError,
+    // Returns the blocked tasks stringified
+    Deadlock(Vec<String>),
+    // We exceeded the step bound.
+    StepBoundExceeded,
+    //
+    TaskPanicEarlyReturn,
+}
+
 impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
@@ -69,165 +133,187 @@ impl Execution {
     where
         F: FnOnce() + Send + 'static,
     {
-        let state = RefCell::new(ExecutionState::new(
-            config.clone(),
-            Rc::clone(&self.scheduler),
-            self.initial_schedule.clone(),
-        ));
+        let state = RefCell::new(ExecutionState::new(config.clone(), Rc::clone(&self.scheduler)));
 
-        let _guard = init_panic_hook(config.clone());
+        init_panic_hook(config.clone());
+        let schedule = CurrentSchedule::new(self.initial_schedule.clone());
 
-        EXECUTION_STATE.set(&state, move || {
-            // Spawn `f` as the first task
-            ExecutionState::spawn_thread(
-                Box::new(move || thread_fn(f, Default::default())),
-                config.stack_size,
-                Some("main-thread".to_string()),
-                Some(VectorClock::new()),
-            );
+        CURRENT_SCHEDULE.set(&schedule, move || {
+            EXECUTION_STATE.set(&state, move || {
+                // Spawn `f` as the first task
+                ExecutionState::spawn_thread(
+                    Box::new(move || thread_fn(f, Default::default())),
+                    config.stack_size,
+                    Some("main-thread".to_string()),
+                    Some(VectorClock::new()),
+                );
 
-            // Run the test to completion
-            while self.step(config) {}
+                // Run the test to completion
+                match self.run_to_competion() {
+                    Ok(()) => {},
+                    Err(e) => {
+                        match e {
+                            StepError::TaskFailure(payload) => {
+                                let task_name = ExecutionState::failing_task();
+                                eprintln!("test panicked in task '{task_name}'");
+                                persist_failure(config);
 
-            // Cleanup the state before it goes out of `EXECUTION_STATE` scope
-            ExecutionState::cleanup();
+                                panic::resume_unwind(payload);
+                            }
+                            StepError::Deadlock(blocked_tasks) => {
+                                eprintln!("deadlock! blocked tasks: [{}]", blocked_tasks.join(", "));
+                                persist_failure(config);
+
+                                panic!();
+                            }
+                            StepError::SchedulingError => {
+                                eprintln!("no task was scheduled\nThis indicates an issue with the scheduler.");
+                                persist_failure(config);
+
+                                panic!();
+                            }
+                            StepError::StepBoundExceeded => {
+                                if let MaxSteps::FailAfter(max_steps) = config.max_steps {
+                                    eprintln!("exceeded max_steps bound {max_steps}. this might be caused by an unfair schedule (e.g., a spin loop)?");
+                                    persist_failure(config);
+
+                                    panic!();
+                                }
+                            }
+                            StepError::TaskPanicEarlyReturn => {
+                                persist_failure(config);
+
+                                panic::resume_unwind(Box::new("Task panicked, and early return is enabled."));
+                            },
+                        }
+                    }
+                }
+
+
+                // Cleanup the state before it goes out of `EXECUTION_STATE` scope
+                ExecutionState::cleanup();
+            });
         });
     }
 
-    /// Execute a single step of the scheduler. Returns true if the execution should continue.
-    #[inline]
-    fn step(&mut self, config: &Config) -> bool {
-        enum NextStep {
-            Task(Rc<RefCell<PooledContinuation>>),
-            Failure(String, Schedule),
-            Finished,
-        }
-
-        let next_step = ExecutionState::with(|state| {
-            if let Err(msg) = state.schedule() {
-                return NextStep::Failure(msg, state.current_schedule.clone());
-            }
-            state.advance_to_next_task();
-
-            match state.current_task {
-                ScheduledTask::Some(tid) => {
-                    let task = state.get(tid);
-                    NextStep::Task(Rc::clone(&task.continuation))
+    fn enter_task_span() {
+        // Enter the Task's span
+        // (Note that if any issues arise with spans and tracing, then
+        // 1) calling `exit` until `None` before entering the `Task`s `Span`,
+        // 2) storing the entirety of the `span_stack` when creating the `Task`, and
+        // 3) storing `top_level_span` as a stack
+        // should be tried.)
+        ExecutionState::with(|state| {
+            tracing::dispatcher::get_default(|subscriber| {
+                if let Some(span_id) = tracing::Span::current().id().as_ref() {
+                    subscriber.exit(span_id);
                 }
-                ScheduledTask::Finished => {
-                    // The scheduler decided we're finished, so there are either no runnable tasks,
-                    // or all runnable tasks are detached and there are no unfinished attached
-                    // tasks. Therefore, it's a deadlock if there are unfinished attached tasks.
-                    if state.tasks.iter().any(|t| !t.finished() && !t.detached) {
-                        let blocked_tasks = state
-                            .tasks
-                            .iter()
-                            .filter(|t| !t.finished())
-                            .map(|t| {
-                                format!(
-                                    "{} (task {:?}{}{})",
-                                    t.name().unwrap_or_else(|| "<unknown>".to_string()),
-                                    t.id(),
-                                    if t.detached { ", detached" } else { "" },
-                                    if t.sleeping() { ", pending future" } else { "" },
-                                )
-                            })
-                            .collect::<Vec<_>>();
-                        NextStep::Failure(
-                            format!("deadlock! blocked tasks: [{}]", blocked_tasks.join(", ")),
-                            state.current_schedule.clone(),
-                        )
-                    } else {
-                        NextStep::Finished
+
+                // The `span_stack` stores `Span`s such that the top of the stack is the outermost `Span`,
+                // meaning that parents (left-most when printed) are entered first.
+                while let Some(span) = state.current_mut().span_stack.pop() {
+                    if let Some(span_id) = span.id().as_ref() {
+                        subscriber.enter(span_id)
                     }
                 }
-                ScheduledTask::Stopped => NextStep::Finished,
-                ScheduledTask::None => {
-                    NextStep::Failure("no task was scheduled".to_string(), state.current_schedule.clone())
+
+                if state.config.record_steps_in_span {
+                    state.current().step_span.record("i", CurrentSchedule::len());
                 }
-            }
+            });
         });
+    }
 
-        // Run a single step of the chosen task.
-        let ret = match next_step {
-            NextStep::Task(continuation) => {
-                // Enter the Task's span
-                // (Note that if any issues arise with spans and tracing, then
-                // 1) calling `exit` until `None` before entering the `Task`s `Span`,
-                // 2) storing the entirety of the `span_stack` when creating the `Task`, and
-                // 3) storing `top_level_span` as a stack
-                // should be tried.)
-                ExecutionState::with(|state| {
-                    tracing::dispatcher::get_default(|subscriber| {
-                        if let Some(span_id) = tracing::Span::current().id().as_ref() {
-                            subscriber.exit(span_id);
+    fn leave_task_span() {
+        // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
+        ExecutionState::with(|state| {
+            tracing::dispatcher::get_default(|subscriber| {
+                debug_assert!(state.current().span_stack.is_empty());
+                while let Some(span_id) = tracing::Span::current().id().as_ref() {
+                    state.current_mut().span_stack.push(tracing::Span::current().clone());
+                    subscriber.exit(span_id);
+                }
+
+                if let Some(span_id) = state.top_level_span.id().as_ref() {
+                    subscriber.enter(span_id)
+                }
+            });
+        });
+    }
+
+    /// Run the execution to completion.
+    #[inline]
+    fn run_to_competion(&mut self) -> Result<(), StepError> {
+        loop {
+            let next_step: Option<Rc<RefCell<PooledContinuation>>> = ExecutionState::with(|state| {
+                state.schedule()?;
+                state.advance_to_next_task();
+
+                match state.current_task {
+                    ScheduledTask::Some(tid) => {
+                        let task = state.get(tid);
+                        Ok(Some(task.continuation.clone()))
+                    }
+                    ScheduledTask::Finished => {
+                        // The scheduler decided we're finished, so there are either no runnable tasks,
+                        // or all runnable tasks are detached and there are no unfinished attached
+                        // tasks. Therefore, it's a deadlock if there are unfinished attached tasks.
+                        if state.tasks.iter().any(|t| !t.finished() && !t.detached) {
+                            let blocked_tasks = state
+                                .tasks
+                                .iter()
+                                .filter(|t| !t.finished())
+                                .map(|t| {
+                                    format!(
+                                        "{} (task {:?}{}{})",
+                                        t.name().unwrap_or_else(|| "<unknown>".to_string()),
+                                        t.id(),
+                                        if t.detached { ", detached" } else { "" },
+                                        if t.sleeping() { ", pending future" } else { "" },
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            Err(StepError::Deadlock(blocked_tasks))
+                        } else {
+                            Ok(None)
                         }
+                    }
+                    ScheduledTask::Stopped => Ok(None),
+                    ScheduledTask::None => Err(StepError::SchedulingError),
+                }
+            })?;
 
-                        // The `span_stack` stores `Span`s such that the top of the stack is the outermost `Span`,
-                        // meaning that parents (left-most when printed) are entered first.
-                        while let Some(span) = state.current_mut().span_stack.pop() {
-                            if let Some(span_id) = span.id().as_ref() {
-                                subscriber.enter(span_id)
-                            }
-                        }
+            // Run a single step of the chosen task.
+            let ret = match next_step {
+                Some(continuation) => {
+                    Execution::enter_task_span();
 
-                        if state.config.record_steps_in_span {
-                            state.current().step_span.record("i", state.current_schedule.len());
-                        }
-                    });
-                });
+                    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
 
-                let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
+                    Execution::leave_task_span();
 
-                // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
-                ExecutionState::with(|state| {
-                    tracing::dispatcher::get_default(|subscriber| {
-                        debug_assert!(state.current().span_stack.is_empty());
-                        while let Some(span_id) = tracing::Span::current().id().as_ref() {
-                            state.current_mut().span_stack.push(tracing::Span::current().clone());
-                            subscriber.exit(span_id);
-                        }
+                    result
+                }
+                None => return Ok(()),
+            };
 
-                        if let Some(span_id) = state.top_level_span.id().as_ref() {
-                            subscriber.enter(span_id)
-                        }
-                    });
-                });
-
-                result
+            match ret {
+                // Task finished
+                Ok(true) => {
+                    crate::annotations::record_task_terminated();
+                    ExecutionState::with(|state| state.current_mut().finish());
+                }
+                // Task yielded
+                Ok(false) => {}
+                // Task failed
+                Err(e) => return Err(StepError::TaskFailure(e)),
             }
-            NextStep::Failure(msg, schedule) => {
-                // Because we're creating the panic here, we don't need `persist_failure` to print
-                // as the failure message will be part of the panic payload.
-                let message = persist_failure(&schedule, msg, config, false);
-                panic!("{}", message);
-            }
-            NextStep::Finished => return false,
-        };
 
-        match ret {
-            // Task finished
-            Ok(true) => {
-                crate::annotations::record_task_terminated();
-                ExecutionState::with(|state| state.current_mut().finish());
-            }
-            // Task yielded
-            Ok(false) => {}
-            // Task failed
-            Err(e) => {
-                let (name, schedule) = ExecutionState::failure_info().unwrap();
-                let message = persist_task_failure(&schedule, name, config, true);
-                // Try to inject the schedule into the panic payload if we can
-                let payload: Box<dyn Any + Send> = match e.downcast::<String>() {
-                    Ok(panic_msg) => Box::new(format!("{message}\noriginal panic: {panic_msg}")),
-                    Err(panic) => panic,
-                };
-
-                panic::resume_unwind(payload);
+            if std::thread::panicking() {
+                ExecutionState::with(|state| state.current_task = ScheduledTask::Stopped);
+                return Err(StepError::TaskPanicEarlyReturn);
             }
         }
-
-        true
     }
 }
 
@@ -253,7 +339,6 @@ pub(crate) struct ExecutionState {
     storage: StorageMap,
 
     scheduler: Rc<RefCell<dyn Scheduler>>,
-    pub(crate) current_schedule: Schedule,
 
     in_cleanup: bool,
 
@@ -286,7 +371,7 @@ impl ScheduledTask {
 }
 
 impl ExecutionState {
-    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>) -> Self {
         Self {
             config,
             tasks: SmallVec::new(),
@@ -297,7 +382,6 @@ impl ExecutionState {
             steps_reset_at: 0,
             storage: StorageMap::new(),
             scheduler,
-            current_schedule: initial_schedule,
             in_cleanup: false,
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
@@ -375,7 +459,7 @@ impl ExecutionState {
         F: Future<Output = ()> + 'static,
     {
         let task_id = Self::with(|state| {
-            let schedule_len = state.current_schedule.len();
+            let schedule_len = CurrentSchedule::len();
             let parent_span_id = state.top_level_span.id();
 
             let task_id = TaskId(state.tasks.len());
@@ -428,8 +512,6 @@ impl ExecutionState {
             clock.extend(task_id); // and extend it with an entry for the new thread
             let clock = clock.clone();
 
-            let schedule_len = state.current_schedule.len();
-
             let task = Task::from_closure(
                 f,
                 stack_size,
@@ -437,7 +519,7 @@ impl ExecutionState {
                 name,
                 clock,
                 parent_span_id,
-                schedule_len,
+                CurrentSchedule::len(),
                 tag,
                 state.try_current().map(|t| t.id()),
             );
@@ -493,6 +575,9 @@ impl ExecutionState {
     /// its execution.
     pub(crate) fn maybe_yield() -> bool {
         Self::with(|state| {
+            if std::thread::panicking() {
+                return true;
+            }
             debug_assert!(
                 matches!(state.current_task, ScheduledTask::Some(_)) && state.next_task == ScheduledTask::None,
                 "we're inside a task and scheduler should not yet have run"
@@ -541,22 +626,22 @@ impl ExecutionState {
     /// Generate some diagnostic information used when persisting failures.
     ///
     /// Because this method may be called from a panic hook, it must not panic.
-    pub(crate) fn failure_info() -> Option<(String, Schedule)> {
+    pub(crate) fn failing_task() -> String {
         Self::try_with(|state| {
-            let name = if let Some(task) = state.try_current() {
+            if let Some(task) = state.try_current() {
                 task.name().unwrap_or_else(|| format!("task-{:?}", task.id().0))
             } else {
                 "<unknown>".into()
-            };
-            (name, state.current_schedule.clone())
+            }
         })
+        .unwrap_or_else(|| "ExecutionState is either not set or currently borrowed. This should not happen".to_string())
     }
 
     /// Generate a random u64 from the current scheduler and return it.
     #[inline]
     pub(crate) fn next_u64() -> u64 {
         Self::with(|state| {
-            state.current_schedule.push_random();
+            CurrentSchedule::push_random();
             state.scheduler.borrow_mut().next_u64()
         })
     }
@@ -633,13 +718,13 @@ impl ExecutionState {
 
     /// Returns `true` if the test has exceeded the step bound, and `false` otherwise.
     fn is_step_bound_exceeded(&self, max_steps: usize) -> bool {
-        self.current_schedule.len() - self.steps_reset_at >= max_steps
+        CurrentSchedule::len() - self.steps_reset_at >= max_steps
     }
 
     /// Run the scheduler to choose the next task to run. `has_yielded` should be false if the
     /// scheduler is being invoked from within a running task. If scheduling fails, returns an Err
     /// with a String describing the failure.
-    fn schedule(&mut self) -> Result<(), String> {
+    fn schedule(&mut self) -> Result<(), StepError> {
         // Don't schedule twice. If `maybe_yield` ran the scheduler, we don't want to run it
         // again at the top of `step`.
         if self.next_task != ScheduledTask::None {
@@ -649,15 +734,11 @@ impl ExecutionState {
         self.context_switches += 1;
 
         match self.config.max_steps {
-            MaxSteps::FailAfter(max_steps) if self.is_step_bound_exceeded(max_steps) => {
-                let msg = format!(
-                    "exceeded max_steps bound {max_steps}. this might be caused by an unfair schedule (e.g., a spin loop)?"
-                );
-                return Err(msg);
-            }
-            MaxSteps::ContinueAfter(max_steps) if self.is_step_bound_exceeded(max_steps) => {
+            MaxSteps::FailAfter(max_steps) | MaxSteps::ContinueAfter(max_steps)
+                if self.is_step_bound_exceeded(max_steps) =>
+            {
                 self.next_task = ScheduledTask::Stopped;
-                return Ok(());
+                return Err(StepError::StepBoundExceeded);
             }
             _ => {}
         }
@@ -722,7 +803,7 @@ impl ExecutionState {
         // Note also that changing this trace! statement requires changing the test `basic::labels::test_tracing_with_label_fn`
         // which relies on this trace reporting the `runnable` tasks.
         self.top_level_span
-            .in_scope(|| trace!(i=self.current_schedule.len(), next_task=?self.next_task, ?runnable));
+            .in_scope(|| trace!(i=CurrentSchedule::len(), next_task=?self.next_task, ?runnable));
 
         Ok(())
     }
@@ -733,7 +814,7 @@ impl ExecutionState {
         self.current_task = self.next_task.take();
 
         if let ScheduledTask::Some(tid) = self.current_task {
-            self.current_schedule.push_task(tid);
+            CurrentSchedule::push_task(tid);
         }
     }
 
