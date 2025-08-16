@@ -13,7 +13,7 @@
 
 #[allow(deprecated)]
 use crate::runtime::execution::TASK_ID_TO_TAGS;
-use crate::runtime::execution::{ExecutionState, LABELS};
+use crate::runtime::execution::{CurrentSchedule, ExecutionState, LABELS};
 use crate::runtime::task::clock::VectorClock;
 pub use crate::runtime::task::labels::Labels;
 pub use crate::runtime::task::{ChildLabelFn, TaskId, TaskName};
@@ -102,7 +102,7 @@ pub fn me() -> TaskId {
 ///
 /// NOTE: Be careful when using this, as if used wrongly it can be used to make a test execute forever.
 pub fn reset_step_count() {
-    ExecutionState::with(|s| s.steps_reset_at = s.current_schedule.len());
+    ExecutionState::with(|s| s.steps_reset_at = CurrentSchedule::len());
 }
 
 /// Sets the `tag` field of the current task.
