@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "shuttle",
-    "shuttle_sync",
+    "wrappers/shuttle_rand_0.8",
+    "wrappers/shuttle_sync",
 ]
 
 resolver = "2"
