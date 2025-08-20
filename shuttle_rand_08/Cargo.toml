@@ -1,0 +1,24 @@
+[package]
+name = "shuttle-rand"
+version = "0.8.5"
+edition = "2021"
+publish = ["brazil"]
+
+[features]
+shuttle = [ "dep:shuttle" ]
+
+alloc = ["rand-orig/alloc"]
+default = [ "rand-orig/default" ]
+getrandom = [ "rand-orig/getrandom" ]
+min_const_gen = [ "rand-orig/min_const_gen" ]
+nightly = [ "rand-orig/nightly" ]
+serde1 = [ "rand-orig/serde1" ]
+simd_support = [ "rand-orig/simd_support" ]
+small_rng = [ "rand-orig/small_rng" ]
+std = [ "rand-orig/std" ]
+std_rng = [ "rand-orig/std_rng" ]
+
+[dependencies]
+cfg-if = "1.0"
+rand-orig = { package = "rand", version = "0.8.5" }
+shuttle = { path = "../shuttle", version = "*", optional = true }
