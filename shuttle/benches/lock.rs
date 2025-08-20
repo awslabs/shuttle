@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
 use shuttle::sync::Mutex;
 use shuttle::{thread, Runner};
@@ -38,7 +38,6 @@ fn lock_benchmark(scheduler: impl Scheduler + 'static, num_tasks: u32, num_event
 
 pub fn lock_sync_benchmark(c: &mut Criterion) {
     let mut g = c.benchmark_group("lock sync");
-    g.throughput(Throughput::Elements((ITERATIONS * TOTAL_EVENTS as usize) as u64));
     g.warm_up_time(Duration::from_secs(1));
 
     g.bench_function("pct-narrow", |b| {
