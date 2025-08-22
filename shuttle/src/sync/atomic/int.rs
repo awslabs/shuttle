@@ -1,4 +1,5 @@
 use crate::sync::atomic::Atomic;
+use std::panic::Location;
 use std::sync::atomic::Ordering;
 
 macro_rules! atomic_int {
@@ -28,9 +29,10 @@ macro_rules! atomic_int {
 
         impl $name {
             /// Creates a new atomic integer.
+            #[track_caller]
             pub const fn new(v: $int_type) -> Self {
                 Self {
-                    inner: Atomic::new(v),
+                    inner: Atomic::new(v, Location::caller()),
                 }
             }
 
@@ -176,6 +178,11 @@ macro_rules! atomic_int {
             /// debugging scenarios where we might want to just print this atomic's value).
             pub unsafe fn raw_load(&self) -> $int_type {
                 self.inner.raw_load()
+            }
+
+            #[cfg(test)]
+            pub(crate) fn signature(&self) -> crate::sync::TypedResourceSignature {
+                self.inner.signature()
             }
         }
     };
