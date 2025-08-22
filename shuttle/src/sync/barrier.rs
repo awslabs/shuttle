@@ -2,9 +2,11 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
+use crate::sync::TypedResourceSignature;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
+use std::panic::Location;
 use std::rc::Rc;
 use tracing::trace;
 
@@ -71,12 +73,15 @@ impl fmt::Debug for BarrierState {
 /// A barrier enables multiple threads to synchronize the beginning of some computation.
 pub struct Barrier {
     state: Rc<RefCell<BarrierState>>,
+    #[allow(unused)]
+    signature: TypedResourceSignature,
 }
 
 impl Barrier {
     /// Creates a new barrier that can block a given number of threads.
     /// A barrier will block n-1 threads which call `wait()` and then wake up all threads
     /// at once when the nth thread calls `wait()`.
+    #[track_caller]
     pub fn new(n: usize) -> Self {
         let state = BarrierState {
             bound: n,
@@ -88,6 +93,7 @@ impl Barrier {
 
         Self {
             state: Rc::new(RefCell::new(state)),
+            signature: TypedResourceSignature::Barrier(ExecutionState::new_resource_signature(Location::caller())),
         }
     }
 
@@ -162,3 +168,20 @@ impl Barrier {
 // TODO we shouldn't need to do this, but RefCell is not Send, and Barrier needs to be Send.
 unsafe impl Send for Barrier {}
 unsafe impl Sync for Barrier {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_resource_signature_barrier() {
+        crate::check_random(
+            || {
+                let barrier1 = Barrier::new(2);
+                let barrier2 = Barrier::new(2);
+                assert_ne!(barrier1.signature, barrier2.signature);
+            },
+            1,
+        );
+    }
+}

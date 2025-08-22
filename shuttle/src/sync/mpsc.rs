@@ -4,9 +4,11 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
+use crate::sync::TypedResourceSignature;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
+use std::panic::Location;
 use std::rc::Rc;
 use std::result::Result;
 pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError, TrySendError};
@@ -17,8 +19,9 @@ use tracing::trace;
 const MAX_INLINE_MESSAGES: usize = 32;
 
 /// Create an unbounded channel
+#[track_caller]
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    let channel = Arc::new(Channel::new(None));
+    let channel = Arc::new(Channel::new(None, Location::caller()));
     let sender = Sender {
         inner: Arc::clone(&channel),
     };
@@ -29,8 +32,9 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
 }
 
 /// Create a bounded channel
+#[track_caller]
 pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
-    let channel = Arc::new(Channel::new(Some(bound)));
+    let channel = Arc::new(Channel::new(Some(bound), Location::caller()));
     let sender = SyncSender {
         inner: Arc::clone(&channel),
     };
@@ -44,6 +48,8 @@ pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
 struct Channel<T> {
     bound: Option<usize>, // None for an unbounded channel, Some(k) for a bounded channel of size k
     state: Rc<RefCell<ChannelState<T>>>,
+    #[allow(unused)]
+    signature: TypedResourceSignature,
 }
 
 // For tracking causality on channels, we timestamp each message with the clock of the sender.
@@ -104,7 +110,7 @@ impl<T> Debug for ChannelState<T> {
 }
 
 impl<T> Channel<T> {
-    fn new(bound: Option<usize>) -> Self {
+    fn new(bound: Option<usize>, caller: &'static Location<'static>) -> Self {
         let receiver_clock = if let Some(bound) = bound {
             let mut s = SmallVec::with_capacity(bound);
             for _ in 0..bound {
@@ -124,6 +130,7 @@ impl<T> Channel<T> {
                 waiting_senders: SmallVec::new(),
                 waiting_receivers: SmallVec::new(),
             })),
+            signature: TypedResourceSignature::MpscChannel(ExecutionState::new_resource_signature(caller)),
         }
     }
 
@@ -625,5 +632,22 @@ impl<T> Drop for SyncSender<T> {
                 ExecutionState::with(|s| s.get_mut(tid).unblock());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_resource_signature_mpsc() {
+        crate::check_random(
+            || {
+                let (sender1, _) = channel::<i32>();
+                let (sender2, _) = channel::<i32>();
+                assert_ne!(sender1.inner.signature, sender2.inner.signature);
+            },
+            1,
+        );
     }
 }
