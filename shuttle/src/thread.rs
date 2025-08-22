@@ -4,6 +4,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use std::marker::PhantomData;
+use std::panic::Location;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -76,6 +77,7 @@ impl<'scope> Scope<'scope, '_> {
     /// Unlike non-scoped threads, threads spawned with this function may
     /// borrow non-`'static` data from the outside the scope. See [`scope`] for
     /// details.
+    #[track_caller]
     pub fn spawn<F, T>(&'scope self, f: F) -> ScopedJoinHandle<'scope, T>
     where
         F: FnOnce() -> T + Send + 'scope,
@@ -101,7 +103,7 @@ impl<'scope> Scope<'scope, '_> {
 
         // SAFETY: main task is blocked until all scoped closures complete so all captured references remain valid
         ScopedJoinHandle {
-            handle: unsafe { spawn_named_unchecked(scope_closure, None, None) },
+            handle: unsafe { spawn_named_unchecked(scope_closure, None, None, Location::caller()) },
             finished,
             _marker: PhantomData,
         }
@@ -138,16 +140,22 @@ where
 ///
 /// The join handle can be used (via the `join` method) to block until the child thread has
 /// finished.
+#[track_caller]
 pub fn spawn<F, T>(f: F) -> JoinHandle<T>
 where
     F: FnOnce() -> T,
     F: Send + 'static,
     T: Send + 'static,
 {
-    spawn_named(f, None, None)
+    spawn_named(f, None, None, Location::caller())
 }
 
-fn spawn_named<F, T>(f: F, name: Option<String>, stack_size: Option<usize>) -> JoinHandle<T>
+fn spawn_named<F, T>(
+    f: F,
+    name: Option<String>,
+    stack_size: Option<usize>,
+    caller: &'static Location<'static>,
+) -> JoinHandle<T>
 where
     F: FnOnce() -> T,
     F: Send + 'static,
@@ -155,11 +163,16 @@ where
 {
     // SAFETY: F is static so all captured references must be `static and therefore
     // will outlive the spawned continuation
-    unsafe { spawn_named_unchecked(f, name, stack_size) }
+    unsafe { spawn_named_unchecked(f, name, stack_size, caller) }
 }
 
 /// Must ensure all captured references in f are valid for at least as long as the spawned continuation will run
-unsafe fn spawn_named_unchecked<F, T>(f: F, name: Option<String>, stack_size: Option<usize>) -> JoinHandle<T>
+unsafe fn spawn_named_unchecked<F, T>(
+    f: F,
+    name: Option<String>,
+    stack_size: Option<usize>,
+    caller: &'static Location<'static>,
+) -> JoinHandle<T>
 where
     F: FnOnce() -> T,
     T: Send,
@@ -175,7 +188,7 @@ where
         let f: Box<dyn FnOnce()> = Box::new(move || thread_fn(f, result));
         let f: Box<dyn FnOnce() + 'static> = unsafe { std::mem::transmute(f) };
 
-        ExecutionState::spawn_thread(f, stack_size, name.clone(), None)
+        ExecutionState::spawn_thread(f, stack_size, name.clone(), None, caller)
     };
 
     thread::switch();
@@ -381,13 +394,14 @@ impl Builder {
     }
 
     /// Spawns a new thread by taking ownership of the Builder, and returns an `io::Result` to its `JoinHandle`.
+    #[track_caller]
     pub fn spawn<F, T>(self, f: F) -> std::io::Result<JoinHandle<T>>
     where
         F: FnOnce() -> T,
         F: Send + 'static,
         T: Send + 'static,
     {
-        Ok(spawn_named(f, self.name, self.stack_size))
+        Ok(spawn_named(f, self.name, self.stack_size, Location::caller()))
     }
 }
 
