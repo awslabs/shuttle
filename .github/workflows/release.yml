@@ -18,7 +18,7 @@ jobs:
     name: Benchmarks (with vector clocks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install Rust
         run: rustup update stable
       - name: cargo bench
