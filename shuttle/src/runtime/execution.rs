@@ -573,6 +573,7 @@ impl ExecutionState {
     pub(crate) fn current_mut(&mut self) -> &mut Task {
         self.get_mut(self.current_task.id().unwrap())
     }
+
     pub(crate) fn try_current(&self) -> Option<&Task> {
         self.try_get(self.current_task.id()?)
     }
