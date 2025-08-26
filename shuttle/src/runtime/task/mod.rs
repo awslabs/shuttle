@@ -8,6 +8,7 @@ use crate::runtime::thread::continuation::{ContinuationPool, PooledContinuation}
 use crate::thread::LocalKey;
 use bitvec::prelude::*;
 use std::any::Any;
+use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::future::Future;
@@ -188,6 +189,9 @@ pub struct Task {
     // Arbitrarily settable tag which is inherited from the parent.
     #[allow(deprecated)]
     tag: Option<Arc<dyn Tag>>,
+
+    // If `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is set then this will be populated on task block.
+    pub(crate) backtrace: Backtrace,
 }
 
 #[allow(deprecated)]
@@ -233,6 +237,7 @@ impl Task {
             span_stack,
             local_storage: StorageMap::new(),
             tag: None,
+            backtrace: Backtrace::disabled(),
         };
 
         if let Some(tag) = tag {
@@ -352,11 +357,17 @@ impl Task {
     /// permitted to spuriously wake up the thread (though it will still not count as a live thread
     /// for deadlock detection purposes for as long as it remains blocked).
     pub(crate) fn block(&mut self, allow_spurious_wakeups: bool) {
+        // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
+        self.backtrace = Backtrace::capture();
+
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
 
     pub(crate) fn sleep(&mut self) {
+        // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
+        self.backtrace = Backtrace::capture();
+
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Sleeping;
     }

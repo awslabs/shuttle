@@ -61,6 +61,10 @@ impl Execution {
     }
 }
 
+fn backtrace_enabled() -> bool {
+    std::env::var("RUST_BACKTRACE").is_ok() || std::env::var("RUST_LIB_BACKTRACE").is_ok()
+}
+
 impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
@@ -125,14 +129,25 @@ impl Execution {
                             .filter(|t| !t.finished())
                             .map(|t| {
                                 format!(
-                                    "{} (task {:?}{}{})",
+                                    "{} (task {:?}{}{}){}",
                                     t.name().unwrap_or_else(|| "<unknown>".to_string()),
                                     t.id(),
                                     if t.detached { ", detached" } else { "" },
                                     if t.sleeping() { ", pending future" } else { "" },
+                                    if backtrace_enabled() {
+                                        format!("\nBacktrace:\n{:#?}\n", t.backtrace)
+                                    } else {
+                                        "".into()
+                                    }
                                 )
                             })
                             .collect::<Vec<_>>();
+
+                        // Collecting backtraces is expensive, so we only want to do it if the use opts in to collecting them.
+                        if !backtrace_enabled() {
+                            eprintln!("Test deadlocked, and `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` are not set. If either of those are set then the backtrace of each task will be collected and printed as part of the panic message.")
+                        }
+
                         NextStep::Failure(
                             format!("deadlock! blocked tasks: [{}]", blocked_tasks.join(", ")),
                             state.current_schedule.clone(),
