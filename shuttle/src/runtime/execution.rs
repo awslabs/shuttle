@@ -143,7 +143,7 @@ impl Execution {
                             })
                             .collect::<Vec<_>>();
 
-                        // Collecting backtraces is expensive, so we only want to do it if the use opts in to collecting them.
+                        // Collecting backtraces is expensive, so we only want to do it if the user opts in to collecting them.
                         if !backtrace_enabled() {
                             eprintln!("Test deadlocked, and `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` are not set. If either of those are set then the backtrace of each task will be collected and printed as part of the panic message.")
                         }
