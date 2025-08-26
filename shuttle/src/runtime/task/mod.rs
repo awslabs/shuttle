@@ -171,7 +171,7 @@ pub struct Task {
 
     // The `Span` which looks like this: step{task=task_id}, or, if step count recording is enabled, like this:
     // step{task=task_id i=step_count}. Becomes the parent of the spans created by the `Task`.
-    pub(super) step_span: Span,
+    pub(crate) step_span: Span,
 
     // The current `Span` "stack" of the `Task`.
     // `Span`s are stored such that the `Task`s current `Span` is at `span_stack[0]`, that `Span`s parent (if it exists)
@@ -212,7 +212,8 @@ impl Task {
         let waker = make_waker(id);
         let continuation = Rc::new(RefCell::new(continuation));
 
-        let step_span = error_span!(parent: parent_span_id.clone(), "step", task = id.0, i = field::Empty);
+        let step_span =
+            error_span!(parent: parent_span_id.clone(), "step", task = format!("{:?}", id), i = field::Empty);
         // Note that this is slightly lazy — we are starting storing at the step_span, but could have gotten the
         // full `Span` stack and stored that. It should be fine, but if any issues arise, then full storing should
         // be tried.

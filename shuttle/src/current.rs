@@ -82,6 +82,17 @@ pub fn get_name_for_task(task_id: TaskId) -> Option<TaskName> {
 pub fn set_name_for_task(task_id: TaskId, task_name: impl Into<TaskName>) -> Option<TaskName> {
     let task_name = task_name.into();
     crate::annotations::record_name_for_task(task_id, &task_name);
+    // Do note that `record` simply appends the new name as a field, meaning the step span will end up looking something like this:
+    // step{task="main-thread(2)" task="Child"}
+    // when running with something like the `tracing_subscriber::fmt` subscriber.
+    // This either has to be lived with, or the task name should be set via the `ChildLabelFn` mechanism, or a different subscriber should be used
+    // (if this is done, then `record_steps_in_span` should be set to true as well), or Shuttle will have to be chanegd to recreate the Span
+    ExecutionState::try_with(|state| {
+        state
+            .get_mut(task_id)
+            .step_span
+            .record("task", format!("{:?}", task_name));
+    });
     set_label_for_task::<TaskName>(task_id, task_name)
 }
 
