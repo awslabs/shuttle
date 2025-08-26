@@ -13,6 +13,8 @@ env:
 
 jobs:
   test:
+    env:
+      RUST_LOG: off
     name: Tests
     runs-on: ubuntu-latest
     steps:
