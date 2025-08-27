@@ -1,7 +1,7 @@
 //! A counting semaphore supporting both async and sync operations.
 use crate::current;
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{clock::VectorClock, TaskId};
+use crate::runtime::task::{clock::VectorClock, Event, TaskId};
 use crate::runtime::thread;
 use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
@@ -289,7 +289,6 @@ impl BatchSemaphoreState {
 pub struct BatchSemaphore {
     state: RefCell<BatchSemaphoreState>,
     fairness: Fairness,
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -392,8 +391,9 @@ impl BatchSemaphore {
 
     /// Closes the semaphore. This prevents the semaphore from issuing new
     /// permits and notifies all pending waiters.
+    #[track_caller]
     pub fn close(&self) {
-        thread::switch();
+        thread::switch(Event::batch_semaphore_rel(&self.signature));
 
         self.init_object_id();
         let mut state = self.state.borrow_mut();
@@ -436,8 +436,9 @@ impl BatchSemaphore {
     /// If the permits are available, returns Ok(())
     /// If the semaphore is closed, returns `Err(TryAcquireError::Closed)`
     /// If there aren't enough permits, returns `Err(TryAcquireError::NoPermits)`
+    #[track_caller]
     pub fn try_acquire(&self, num_permits: usize) -> Result<(), TryAcquireError> {
-        thread::switch();
+        thread::switch(Event::batch_semaphore_acq(&self.signature));
 
         self.init_object_id();
         let mut state = self.state.borrow_mut();
@@ -538,6 +539,7 @@ impl BatchSemaphore {
     }
 
     /// Acquire the specified number of permits (async API)
+    #[track_caller]
     pub fn acquire(&self, num_permits: usize) -> Acquire<'_> {
         // No switch here; switch should be triggered on polling future
         self.init_object_id();
@@ -545,6 +547,7 @@ impl BatchSemaphore {
     }
 
     /// Acquire the specified number of permits (blocking API)
+    #[track_caller]
     pub fn acquire_blocking(&self, num_permits: usize) -> Result<(), AcquireError> {
         // No switch here; switch should be triggered on polling future
         self.init_object_id();
@@ -552,8 +555,9 @@ impl BatchSemaphore {
     }
 
     /// Release `num_permits` back to the Semaphore
+    #[track_caller]
     pub fn release(&self, num_permits: usize) {
-        thread::switch();
+        thread::switch(Event::batch_semaphore_rel(&self.signature));
 
         self.init_object_id();
         if num_permits == 0 {
@@ -645,6 +649,7 @@ pub struct Acquire<'a> {
 }
 
 impl<'a> Acquire<'a> {
+    #[track_caller]
     fn new(semaphore: &'a BatchSemaphore, num_permits: usize) -> Self {
         let waiter = Arc::new(Waiter::new(num_permits));
         Self {
@@ -689,7 +694,7 @@ impl Future for Acquire<'_> {
         let blocking_is_not_commutative = self.semaphore.fairness == Fairness::StrictlyFair;
 
         if self.never_polled && (will_succeed || blocking_is_not_commutative) {
-            thread::switch();
+            thread::switch(Event::batch_semaphore_acq(&self.semaphore.signature));
         }
         self.never_polled = false;
 
@@ -778,12 +783,25 @@ impl Future for Acquire<'_> {
                             self.waiter.is_queued.store(true, Ordering::SeqCst);
                         }
                         trace!("Acquire::poll for waiter {:?} that is enqueued", self.waiter);
+
+                        let event = Event::batch_semaphore_acq(&self.semaphore.signature);
+                        ExecutionState::with(|s| unsafe { s.current_mut().set_next_event(event) });
+                        // SAFETY: This is safe because the current task immediately suspends after this future
+                        // returns Poll::Pending (src/future/mod.rs). Whenever a task resumes, the `next_event`
+                        // is unset, so there is no opportunity to corrupt the reference to our signature while
+                        // it is set as the `next_task`.
                         Poll::Pending
                     }
                     Err(TryAcquireError::Closed) => unreachable!(),
                 }
             } else {
                 // No progress made, future is still pending.
+                let event = Event::batch_semaphore_acq(&self.semaphore.signature);
+                // SAFETY: This is safe because the current task immediately suspends after this future
+                // returns Poll::Pending (src/future/mod.rs). Whenever a task resumes, the `next_event`
+                // is unset, so there is no opportunity to corrupt the reference to our signature while
+                // it is set as the `next_task`.
+                ExecutionState::with(|s| unsafe { s.current_mut().set_next_event(event) });
                 Poll::Pending
             }
         }

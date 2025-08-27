@@ -122,7 +122,12 @@ impl Scheduler for PctScheduler {
         Some(Schedule::new(self.data_source.reinitialize()))
     }
 
-    fn next_task(&mut self, runnable: &[&Task], current: Option<TaskId>, is_yielding: bool) -> Option<TaskId> {
+    fn next_task<'a>(
+        &mut self,
+        runnable: &'a [&'a Task],
+        current: Option<TaskId>,
+        is_yielding: bool,
+    ) -> Option<&'a Task> {
         // If any new tasks were created, assign them priorities by randomly swapping them with an
         // existing task's priority, so we maintain the invariant that every priority is distinct
         let max_known_task = self.priorities.len();
@@ -167,11 +172,10 @@ impl Scheduler for PctScheduler {
 
         // Choose the highest-priority (== lowest priority value) runnable task
         Some(
-            runnable
+            *runnable
                 .iter()
                 .min_by_key(|t| self.priorities.get(&t.id()))
-                .expect("priority queue invariant")
-                .id(),
+                .expect("priority queue invariant"),
         )
     }
 
