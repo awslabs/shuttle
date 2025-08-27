@@ -2,9 +2,10 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::storage::StorageKey;
 use crate::runtime::task::clock::VectorClock;
 use crate::sync::Mutex;
-use std::cell::{OnceCell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
+use std::sync::LazyLock;
 use tracing::trace;
 
 /// A synchronization primitive which can be used to run a one-time global initialization. Useful
@@ -12,8 +13,24 @@ use tracing::trace;
 /// with [`Once::new()`].
 #[derive(Debug)]
 pub struct Once {
+    // Note that we need to use a `LazyLock` here (or similar) so that tests don't interfere with each other when multiple
+    // tests try to interact with a `Once` at the same time. This happens in our `Lazy` implementation, and also happens
+    // whenever there is a `static Once`, such as in the following:
+    // ```
+    // static O: Once = Once::new();
+    //
+    // #[test]
+    // fn foo1() {
+    //     check_dfs(|| O.call_once(|| {}), None);
+    // }
+    //
+    //  #[test]
+    // fn foo2() {
+    //     check_dfs(|| O.call_once(|| {}), None);
+    // }
+    // ```
     /// Unique identifier for this [`Once`], used as a key for the [`OnceInitState`] for this instance.
-    id: OnceCell<usize>,
+    id: LazyLock<usize>,
 }
 
 /// A `Once` cell can either be `Running`, in which case a `Mutex` mediates racing threads trying to
@@ -33,19 +50,20 @@ impl std::fmt::Debug for OnceInitState {
     }
 }
 
-// Safety: Once is never actually passed across true threads, only across continuations. The
-// OnceCell type therefore can't be preempted mid-bookkeeping-operation.
-// TODO we shouldn't need to do this, but OnceCell is not Send, and anything we put within a Once
-// TODO needs to be Send.
-unsafe impl Send for Once {}
-unsafe impl Sync for Once {}
-
 impl Once {
     /// Creates a new `Once` value.
     #[must_use]
     #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
-        Self { id: OnceCell::new() }
+        static NEXT_ID: StdAtomicUsize = StdAtomicUsize::new(1);
+
+        Self {
+            id: LazyLock::new(|| {
+                let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+                assert_ne!(id, 0, "id overflow");
+                id
+            }),
+        }
     }
 
     /// Performs an initialization routine once and only once. The given closure will be executed
@@ -150,11 +168,7 @@ impl Once {
     }
 
     fn id(&self) -> usize {
-        static NEXT_ID: StdAtomicUsize = StdAtomicUsize::new(1);
-
-        let id = *self.id.get_or_init(|| NEXT_ID.fetch_add(1, Ordering::Relaxed));
-        assert_ne!(id, 0, "id overflow");
-        id
+        *self.id
     }
 
     fn get_state<'a>(&self, from: &'a ExecutionState) -> Option<&'a RefCell<OnceInitState>> {
