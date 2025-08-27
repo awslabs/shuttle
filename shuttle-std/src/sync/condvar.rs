@@ -3,7 +3,7 @@ use assoc::AssocExt;
 use shuttle_engine::current;
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::clock::VectorClock;
-use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::task::{Event, TaskId};
 use shuttle_engine::runtime::thread;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -16,7 +16,6 @@ use tracing::trace;
 #[derive(Debug)]
 pub struct Condvar {
     state: RefCell<CondvarState>,
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -131,6 +130,7 @@ impl Condvar {
     }
 
     /// Blocks the current thread until this condition variable receives a notification.
+    #[track_caller]
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         let me = ExecutionState::me();
 
@@ -152,7 +152,7 @@ impl Condvar {
 
         // TODO: Condvar::wait should allow for spurious wakeups.
         ExecutionState::with(|s| s.current_mut().block(false));
-        thread::switch();
+        thread::switch(Event::condvar_wait(&self.signature));
 
         // After the context switch, consume whichever signal that woke this thread
         let mut state = self.state.borrow_mut();
@@ -240,8 +240,9 @@ impl Condvar {
     ///
     /// If there is a blocked thread on this condition variable, then it will be woken up from its
     /// call to wait or wait_timeout. Calls to notify_one are not buffered in any way.
+    #[track_caller]
     pub fn notify_one(&self) {
-        thread::switch();
+        thread::switch(Event::condvar_notify());
 
         let me = ExecutionState::me();
 
@@ -277,8 +278,9 @@ impl Condvar {
     }
 
     /// Wakes up all blocked threads on this condvar.
+    #[track_caller]
     pub fn notify_all(&self) {
-        thread::switch();
+        thread::switch(Event::condvar_notify());
 
         let me = ExecutionState::me();
 

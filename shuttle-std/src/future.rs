@@ -6,7 +6,7 @@
 //! [`futures::executor`]: https://docs.rs/futures/0.3.13/futures/executor/index.html
 
 use shuttle_engine::runtime::execution::ExecutionState;
-use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::task::{Event, TaskId};
 use shuttle_engine::runtime::thread;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -79,7 +79,8 @@ impl AbortHandle {
         // Scheduling point: the scheduler may run other tasks (including the target)
         // before the abort flag is set, creating interleavings where the task completes
         // normally despite an abort() call.
-        thread::switch();
+        // There is no `Event` variant for aborts, so this scheduling point is unlabelled.
+        thread::switch(Event::Unknown);
 
         // Signal the Wrapper to skip the inner future on the next poll.
         // If already aborted, skip the redundant wake.
@@ -145,7 +146,8 @@ impl<T> JoinHandle<T> {
         // Scheduling point: the scheduler may run other tasks (including the target)
         // before the abort flag is set, creating interleavings where the task completes
         // normally despite an abort() call.
-        thread::switch();
+        // There is no `Event` variant for aborts, so this scheduling point is unlabelled.
+        thread::switch(Event::Unknown);
 
         // Signal the Wrapper to skip the inner future on the next poll.
         // If already aborted, skip the redundant wake.
@@ -342,7 +344,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
             Poll::Ready(result) => break result,
             Poll::Pending => {
                 ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
-                thread::switch();
+                thread::switch_keeping_current_event();
             }
         }
     }
