@@ -123,7 +123,7 @@ impl UrwRandomScheduler {
         self.state = UrwSchedulerState::Initialized;
     }
 
-    fn next_task_urw(&mut self, runnable: &[&Task]) -> Option<TaskId> {
+    fn next_task_urw<'a>(&mut self, runnable: &[&'a Task]) -> Option<&'a Task> {
         let task_event_counts = self.task_event_counts.as_mut().unwrap();
 
         // We need to loop over the tasks to identify if there has been a `spawn` event
@@ -157,15 +157,14 @@ impl UrwRandomScheduler {
             assert!(task_event_counts[tid] >= 1);
         }
 
-        let next_tid = runnable
+        let next_t = *runnable
             .choose_weighted(&mut self.rng, |t| task_event_counts[get_tid(t)])
-            .unwrap()
-            .id();
-        let next_tid_usize: usize = next_tid.into();
+            .unwrap();
+        let next_tid_usize: usize = next_t.id().into();
         task_event_counts[next_tid_usize] = task_event_counts[next_tid_usize].saturating_sub(1).max(1);
 
         trace!("URW remaining event counts: {:?}", task_event_counts);
-        Some(next_tid)
+        Some(next_t)
     }
 }
 
@@ -192,12 +191,17 @@ impl Scheduler for UrwRandomScheduler {
         Some(Schedule::new(seed))
     }
 
-    fn next_task(&mut self, runnable: &[&Task], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
+    fn next_task<'a>(
+        &mut self,
+        runnable: &'a [&'a Task],
+        _current: Option<TaskId>,
+        _is_yielding: bool,
+    ) -> Option<&'a Task> {
         match self.state {
             UrwSchedulerState::PreEstimation => unreachable!(),
             UrwSchedulerState::Estimating => {
                 // Delegate scheduling to vanilla RW when estimating counts
-                let t = runnable.choose(&mut self.rng).unwrap();
+                let t = *runnable.choose(&mut self.rng).unwrap();
 
                 // If we don't have event counts yet, use the current run to estimate event counts (1-shot)
                 self.signature_event_counts
@@ -212,7 +216,7 @@ impl Scheduler for UrwRandomScheduler {
                         1
                     });
 
-                Some(t.id())
+                Some(t)
             }
             UrwSchedulerState::Initialized => self.next_task_urw(runnable),
         }

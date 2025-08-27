@@ -1,6 +1,6 @@
 use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{TaskId, TaskSet};
+use crate::runtime::task::{Event, TaskId, TaskSet};
 use crate::runtime::thread;
 use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
@@ -218,7 +218,7 @@ impl<T: ?Sized> RwLock<T> {
             self.semaphore.acquire_blocking(typ.num_permits()).unwrap();
         } else {
             // we always need to allow for a context switch to make the previous event visible for completeness
-            thread::switch();
+            thread::switch(Event::Unknown);
         }
 
         state = self.state.borrow_mut();

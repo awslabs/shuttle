@@ -1,4 +1,5 @@
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::Event;
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
@@ -6,7 +7,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::panic::Location;
 use std::rc::Rc;
 use tracing::trace;
 
@@ -313,9 +313,29 @@ unsafe impl Send for PooledContinuation {}
 /// operation `Y1`, it suffices to check that `Y1` commutes with all operations `Z` on the same resource,
 /// as operations on other resources should commute trivially.
 #[track_caller]
-pub(crate) fn switch() {
+pub(crate) fn switch(event: Event<'_>) {
+    // SAFETY we cast the lifetime of the Event to 'static when embedding it into the current Task
+    // This is safe because (1) we have a valid reference to the Event's data for the scope of this function
+    // and (2) the static reference is dropped at the end of the scope of this function when the next_event
+    // is set back to Unknown in `switch_keep_event`
+    ExecutionState::with(|s| s.try_current_mut().map(|c| unsafe { c.set_next_event(event) }));
+    switch_keeping_current_event()
+}
+
+/// This function should be identical to `continuation::switch` except that the burden of setting the next event on the current
+/// task before switching is on the *caller* of this function. In contrast, `continuation::switch` takes the next event as an
+/// argument and sets it for you. This is useful for futures, which yield by returning Poll::Pending rather than calling `switch`
+/// explicitly, and thus can't pass the `next_event` as an argument. Instead, Futures can set the next event on the current task
+/// before returning `Poll::Pending`, and the Shuttle async runtime will call `switch_keep_current_event` to preserve that event.
+/// The next event is always unset by this function when the caller resumes/continues from the switch.
+#[track_caller]
+pub(crate) fn switch_keeping_current_event() {
     crate::annotations::record_tick();
-    trace!("switch from {}", Location::caller());
+
+    trace!(
+        "switch from {:?}",
+        ExecutionState::with(|s| s.try_current_mut().map(|c| format!("{}", c.next_event())))
+    );
     if ExecutionState::maybe_yield() {
         let yielder = ExecutionState::with(|state| state.current().yielder);
 
@@ -327,6 +347,7 @@ pub(crate) fn switch() {
             ContinuationInput::Resume => {}
         };
     }
+    ExecutionState::with(|s| s.try_current_mut().map(|c| c.unset_next_event()));
 }
 
 #[cfg(test)]
