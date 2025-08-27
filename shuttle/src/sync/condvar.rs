@@ -1,7 +1,7 @@
 use crate::current;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{Event, TaskId};
 use crate::runtime::thread;
 use crate::sync::{MutexGuard, ResourceSignatureData, TypedResourceSignature};
 use assoc::AssocExt;
@@ -16,7 +16,6 @@ use tracing::trace;
 #[derive(Debug)]
 pub struct Condvar {
     state: RefCell<CondvarState>,
-    #[allow(unused)]
     signature: TypedResourceSignature,
 }
 
@@ -131,6 +130,7 @@ impl Condvar {
     }
 
     /// Blocks the current thread until this condition variable receives a notification.
+    #[track_caller]
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         let me = ExecutionState::me();
 
@@ -147,7 +147,7 @@ impl Condvar {
 
         // TODO: Condvar::wait should allow for spurious wakeups.
         ExecutionState::with(|s| s.current_mut().block(false));
-        thread::switch();
+        thread::switch(Event::condvar_wait(&self.signature));
 
         // After the context switch, consume whichever signal that woke this thread
         let mut state = self.state.borrow_mut();
@@ -235,8 +235,9 @@ impl Condvar {
     ///
     /// If there is a blocked thread on this condition variable, then it will be woken up from its
     /// call to wait or wait_timeout. Calls to notify_one are not buffered in any way.
+    #[track_caller]
     pub fn notify_one(&self) {
-        thread::switch();
+        thread::switch(Event::condvar_notify());
 
         let me = ExecutionState::me();
 
@@ -272,8 +273,9 @@ impl Condvar {
     }
 
     /// Wakes up all blocked threads on this condvar.
+    #[track_caller]
     pub fn notify_all(&self) {
-        thread::switch();
+        thread::switch(Event::condvar_notify());
 
         let me = ExecutionState::me();
 

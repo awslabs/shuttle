@@ -2,7 +2,7 @@ use crate::runtime::failure::{init_panic_hook, persist_failure, persist_task_fai
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
-use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{ChildLabelFn, Event, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
@@ -473,7 +473,8 @@ impl ExecutionState {
     where
         F: Future<Output = ()> + 'static,
     {
-        thread::switch();
+        let signature = ExecutionState::with(|state| state.current_mut().signature.new_child(caller));
+        thread::switch(Event::Spawn(&signature));
         let task_id = Self::with(|state| {
             let schedule_len = state.current_schedule.len();
             let parent_span_id = state.top_level_span.id();
@@ -496,7 +497,7 @@ impl ExecutionState {
                 schedule_len,
                 tag,
                 Some(state.current().id()),
-                state.current_mut().signature.new_child(caller),
+                signature,
             );
 
             state.tasks.push(task);
@@ -516,7 +517,8 @@ impl ExecutionState {
         mut initial_clock: Option<VectorClock>,
         caller: &'static Location<'static>,
     ) -> TaskId {
-        thread::switch();
+        let signature = ExecutionState::with(|state| state.current_mut().signature.new_child(caller));
+        thread::switch(Event::Spawn(&signature));
         let task_id = Self::with(|state| {
             let parent_span_id = state.top_level_span.id();
             let task_id = TaskId(state.tasks.len());
@@ -545,7 +547,7 @@ impl ExecutionState {
                 schedule_len,
                 tag,
                 Some(state.current().id()),
-                state.current_mut().signature.new_child(caller),
+                signature,
             );
             state.tasks.push(task);
 
@@ -820,7 +822,7 @@ impl ExecutionState {
             .scheduler
             .borrow_mut()
             .next_task(task_refs, self.current_task.id(), is_yielding)
-            .map(ScheduledTask::Some)
+            .map(|task| ScheduledTask::Some(task.id()))
             .unwrap_or(ScheduledTask::Stopped);
 
         // Tracing this `in_scope` is purely a matter of taste. We do it because
