@@ -49,16 +49,19 @@ impl<T> AtomicPtr<T> {
     }
 
     /// Loads a value from the pointer.
+    #[track_caller]
     pub fn load(&self, order: Ordering) -> *mut T {
         self.inner.load(order)
     }
 
     /// Stores a value into the pointer.
+    #[track_caller]
     pub fn store(&self, val: *mut T, order: Ordering) {
         self.inner.store(val, order)
     }
 
     /// Stores a value into the atomic pointer, returning the previous value.
+    #[track_caller]
     pub fn swap(&self, val: *mut T, order: Ordering) -> *mut T {
         self.inner.swap(val, order)
     }
@@ -66,6 +69,7 @@ impl<T> AtomicPtr<T> {
     /// Fetches the value, and applies a function to it that returns an optional new value.
     /// Returns a `Result` of `Ok(previous_value)` if the function returned `Some(_)`, else
     /// `Err(previous_value)`.
+    #[track_caller]
     pub fn fetch_update<F>(&self, set_order: Ordering, fetch_order: Ordering, f: F) -> Result<*mut T, *mut T>
     where
         F: FnMut(*mut T) -> Option<*mut T>,
@@ -76,6 +80,7 @@ impl<T> AtomicPtr<T> {
     /// Stores a value into the atomic pointer if the current value is the same as the
     /// `current` value.
     #[deprecated(since = "0.0.6", note = "Use `compare_exchange` or `compare_exchange_weak` instead")]
+    #[track_caller]
     pub fn compare_and_swap(&self, current: *mut T, new: *mut T, order: Ordering) -> *mut T {
         match self.compare_exchange(current, new, order, order) {
             Ok(v) => v,
@@ -89,6 +94,7 @@ impl<T> AtomicPtr<T> {
     /// The return value is a result indicating whether the new value was written and
     /// containing the previous value. On success this value is guaranteed to be equal to
     /// `current`.
+    #[track_caller]
     pub fn compare_exchange(
         &self,
         current: *mut T,
@@ -107,6 +113,7 @@ impl<T> AtomicPtr<T> {
     /// platforms. The return value is a result indicating whether the new value was written
     /// and containing the previous value.
     // TODO actually produce spurious failures
+    #[track_caller]
     pub fn compare_exchange_weak(
         &self,
         current: *mut T,

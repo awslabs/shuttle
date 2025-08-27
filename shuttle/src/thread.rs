@@ -1,7 +1,7 @@
 //! Shuttle's implementation of [`std::thread`].
 
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{Event, TaskId};
 use crate::runtime::thread;
 use std::marker::PhantomData;
 use std::panic::Location;
@@ -42,8 +42,10 @@ impl Thread {
     }
 
     /// Atomically makes the handle's token available if it is not already.
+    #[track_caller]
     pub fn unpark(&self) {
-        thread::switch_task();
+        let target_task_signature = ExecutionState::with(|s| s.get(self.id.task_id).signature.clone());
+        thread::switch(Event::unpark(&target_task_signature));
 
         ExecutionState::with(|s| {
             s.get_mut(self.id.task_id).unpark();
@@ -91,7 +93,7 @@ impl<'scope> Scope<'scope, '_> {
                 let ret = f();
 
                 if ExecutionState::with(|s| s.exit_current_truncates_execution()) {
-                    thread::switch_task();
+                    thread::switch(Event::Exit);
                 }
 
                 finished.store(true, Ordering::Relaxed);
@@ -117,6 +119,7 @@ impl<'scope> Scope<'scope, '_> {
 ///
 /// The function passed to `scope` will be provided a [`Scope`] object,
 /// through which scoped threads can be [spawned][`Scope::spawn`].
+#[track_caller]
 pub fn scope<'env, F, T>(f: F) -> T
 where
     F: for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T,
@@ -133,7 +136,7 @@ where
     if scope.num_running_threads.load(Ordering::Relaxed) != 0 {
         tracing::info!("thread blocked, waiting for completion of scoped threads");
         ExecutionState::with(|s| s.current_mut().block(false));
-        thread::switch_task();
+        thread::switch(Event::park());
     }
 
     ret
@@ -221,7 +224,7 @@ pub(crate) fn thread_fn<F, T>(
     if switch_before_exit && ExecutionState::with(|s| s.exit_current_truncates_execution()) {
         // Exiting the last attached task can truncate the execution. To make the previous
         // event visible before truncation, we need a scheduling point before exiting.
-        thread::switch_task();
+        thread::switch(Event::Exit);
     }
 
     tracing::trace!("thread finished, dropping thread locals");
@@ -292,11 +295,13 @@ unsafe impl<T> Sync for JoinHandle<T> {}
 
 impl<T> JoinHandle<T> {
     /// Waits for the associated thread to finish.
+    #[track_caller]
     pub fn join(self) -> Result<T> {
+        let target_task_signature = ExecutionState::with(|s| s.get(self.task_id).signature.clone());
         // The switch before joining ensures that the preceding operation on the joiner is visible to be returned by the joinee
         let will_block = !ExecutionState::with(|state| state.get(self.task_id).finished());
         if !will_block {
-            thread::switch_task();
+            thread::switch(Event::join(&target_task_signature));
         }
 
         let should_block = ExecutionState::with(|state| {
@@ -311,7 +316,7 @@ impl<T> JoinHandle<T> {
         });
 
         if should_block {
-            thread::switch_task();
+            thread::switch(Event::join(&target_task_signature));
         }
 
         // Waiting thread inherits the clock of the finished thread
@@ -334,17 +339,19 @@ impl<T> JoinHandle<T> {
 ///
 /// Some Shuttle schedulers use this as a hint to deprioritize the current thread in order for other
 /// threads to make progress (e.g., in a spin loop).
+#[track_caller]
 pub fn yield_now() {
     let waker = ExecutionState::with(|state| state.current().waker());
     waker.wake_by_ref();
     ExecutionState::request_yield();
-    thread::switch_task();
+    thread::switch(Event::yield_now());
 }
 
 /// Puts the current thread to sleep for at least the specified amount of time.
 // Note that Shuttle does not model time, so this behaves just like a context switch.
+#[track_caller]
 pub fn sleep(_dur: Duration) {
-    thread::switch_task();
+    thread::switch(Event::sleep());
 }
 
 /// Get a handle to the thread that invokes it
@@ -361,10 +368,11 @@ pub fn current() -> Thread {
 }
 
 /// Blocks unless or until the current thread's token is made available (may wake spuriously).
+#[track_caller]
 pub fn park() {
     let mut switch = ExecutionState::with(|s| !s.current().park_token_is_available());
     if !switch {
-        thread::switch_task();
+        thread::switch(Event::park());
     }
     switch = ExecutionState::with(|s| s.current_mut().park());
 
@@ -376,7 +384,7 @@ pub fn park() {
     // context would result in spurious wakeups triggering nearly every time.
     if switch {
         ExecutionState::request_yield();
-        thread::switch_task();
+        thread::switch(Event::park());
     }
 }
 
