@@ -2,7 +2,7 @@
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{Event, TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
 use crate::sync::{ResourceSignature, ResourceType};
 use smallvec::SmallVec;
@@ -47,7 +47,6 @@ pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
 struct Channel<T> {
     bound: Option<usize>, // None for an unbounded channel, Some(k) for a bounded channel of size k
     state: Rc<RefCell<ChannelState<T>>>,
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -134,10 +133,12 @@ impl<T> Channel<T> {
         }
     }
 
+    #[track_caller]
     fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
         self.send_internal(message, false)
     }
 
+    #[track_caller]
     fn send(&self, message: T) -> Result<(), SendError<T>> {
         self.send_internal(message, true).map_err(|e| match e {
             TrySendError::Full(_) => unreachable!(),
@@ -166,6 +167,7 @@ impl<T> Channel<T> {
         is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty())
     }
 
+    #[track_caller]
     fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
@@ -181,7 +183,7 @@ impl<T> Channel<T> {
         // to ensure completeness
         if !can_block || !should_block || blocking_send_changes_state {
             drop(state);
-            thread::switch_task();
+            thread::switch(Event::channel_send(&self.signature));
             state = self.state.borrow_mut();
             should_block = self.sender_must_block(&state); // After a switch channel state may have changed
         }
@@ -212,7 +214,7 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
-            thread::switch_task();
+            thread::switch(Event::channel_send(&self.signature));
 
             state = self.state.borrow_mut();
             trace!(
@@ -270,6 +272,7 @@ impl<T> Channel<T> {
         Ok(())
     }
 
+    #[track_caller]
     fn recv(&self) -> Result<T, RecvError> {
         self.recv_internal(true).map_err(|e| match e {
             TryRecvError::Disconnected => RecvError,
@@ -277,6 +280,7 @@ impl<T> Channel<T> {
         })
     }
 
+    #[track_caller]
     fn try_recv(&self) -> Result<T, TryRecvError> {
         self.recv_internal(false)
     }
@@ -288,6 +292,7 @@ impl<T> Channel<T> {
         state.messages.is_empty() || !state.waiting_receivers.is_empty()
     }
 
+    #[track_caller]
     fn recv_internal(&self, can_block: bool) -> Result<T, TryRecvError> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
@@ -303,7 +308,7 @@ impl<T> Channel<T> {
         // to ensure completeness
         if !can_block || !should_block || blocking_recv_changes_state {
             drop(state);
-            thread::switch_task();
+            thread::switch(Event::channel_recv(&self.signature));
             state = self.state.borrow_mut();
             should_block = self.receiver_must_block(&state); // After a switch channel state may have changed
         }
@@ -361,7 +366,7 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
-            thread::switch_task();
+            thread::switch(Event::channel_recv(&self.signature));
 
             state = self.state.borrow_mut();
             trace!(
