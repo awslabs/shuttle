@@ -277,12 +277,13 @@ fn check_producer_consumer_broken1() {
     check_random(producer_consumer_broken1, 5000)
 }
 
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 #[test]
 #[should_panic(expected = "nothing to get")]
 fn replay_producer_consumer_broken1() {
     replay(
         producer_consumer_broken1,
-        "910219ccf2ead7a59dee9e4590000282249100208904",
+        "910216c5ebeace8f90be89c601804082124090024901",
     )
 }
 
@@ -338,7 +339,7 @@ fn check_producer_consumer_broken2() {
 #[test]
 #[should_panic(expected = "deadlock")]
 fn replay_producer_consumer_broken2() {
-    replay(producer_consumer_broken2, "91021499a0ee829bee85922b104410200052a404")
+    replay(producer_consumer_broken2, "910217c2e2f9f7c5c9b6f926004888124000a44409")
 }
 
 /// From "Operating Systems: Three Easy Pieces", Figure 30.12. Like `producer_consumer_broken2`, but

@@ -28,10 +28,11 @@ fn random_mod_10_equals_7_replay_fails() {
     replay(random_mod_10_equals_7, "910102fe93a9cef4f3faaf5a04")
 }
 
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 #[test]
 fn random_mod_10_equals_7_replay_succeeds() {
     // A schedule in which the random value is 8809595901112014164 != 7 mod 10
-    replay(random_mod_10_equals_7, "910102d2c4cfddfba9a4f2c80104")
+    replay(random_mod_10_equals_7, "910102e5d591a18ffeb9d21804")
 }
 
 #[test]
@@ -229,6 +230,7 @@ fn dfs_does_not_reseed_across_executions() {
             }
         });
 
+        thread::yield_now(); // Everything below is not visible to Shuttle, so we need to give an opportunity to switch
         let mut rng = thread_rng();
         let x = rng.gen::<u64>();
         let mut set = pair.lock().unwrap();

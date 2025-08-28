@@ -171,12 +171,11 @@ fn context_switches_outside_execution() {
 #[test]
 fn context_switches_atomic() {
     // The current implementation makes the following context switches:
-    // 1 initial
     // 2 spawns
-    // 2 joins
-    // 2 thread terminations
-    // 4 `fetch_add` (one before and one after each)
-    const EXPECTED_CONTEXT_SWITCHES: usize = 11;
+    // 2 joins (1 pre-non-blocking join XOR 1 when blocking for joinee)
+    // 3 thread terminations
+    // 2 `fetch_add` (one before each)
+    const EXPECTED_CONTEXT_SWITCHES: usize = 9;
 
     check_dfs(
         move || {
@@ -191,9 +190,8 @@ fn context_switches_atomic() {
                 threads.push(thread::spawn(move || {
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
 
-                    // We saw the initial context switch, the spawn and first context switch for each `fetch_add`,
-                    // and the second context switch after the `fetch_add` of this thread.
-                    assert!(current::context_switches() >= 2 + 2 * count);
+                    // We saw the initial context switch, the spawn and context switch before each `fetch_add`
+                    assert!(current::context_switches() >= 2 + count);
 
                     // We did not see the last context switch of this thread.
                     assert!(current::context_switches() < EXPECTED_CONTEXT_SWITCHES);
@@ -285,5 +283,5 @@ fn do_reset_step_count() {
 #[test]
 #[should_panic(expected = "exceeded max_steps bound")]
 fn do_reset_step_count_panics() {
-    reset_step_count(true, 6);
+    reset_step_count(true, 5);
 }

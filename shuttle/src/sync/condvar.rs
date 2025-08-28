@@ -134,18 +134,25 @@ impl Condvar {
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         let me = ExecutionState::me();
 
+        // Release the lock, which allows for a switch *before* unlocking, but not after
+        // This is because the MutexGuard internally calls `batch_semaphore::release` when it
+        // unlocks via it's drop handler. `release` itself is a visible operation, so it provides
+        // it's own scheduling point prior to releasing the mutex. As all scheduling points are
+        // *only before* visible operations, anything done after this point is not visible until
+        // we switch ourselves
+        let mutex = guard.unlock();
+        // Unlocked, but no other task has run yet. We thus block ourselves and switch
         let mut state = self.state.borrow_mut();
 
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "waiting on condvar {:p}", self);
 
         debug_assert!(<_ as AssocExt<_, _>>::get(&state.waiters, &me).is_none());
         state.waiters.push((me, CondvarWaitStatus::Waiting));
-        // TODO: Condvar::wait should allow for spurious wakeups.
-        ExecutionState::with(|s| s.current_mut().block(false));
         drop(state);
 
-        // Release the lock, which triggers a context switch now that we are blocked
-        let mutex = guard.unlock();
+        // TODO: Condvar::wait should allow for spurious wakeups.
+        ExecutionState::with(|s| s.current_mut().block(false));
+        thread::switch();
 
         // After the context switch, consume whichever signal that woke this thread
         let mut state = self.state.borrow_mut();
@@ -234,6 +241,8 @@ impl Condvar {
     /// If there is a blocked thread on this condition variable, then it will be woken up from its
     /// call to wait or wait_timeout. Calls to notify_one are not buffered in any way.
     pub fn notify_one(&self) {
+        thread::switch();
+
         let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
@@ -265,12 +274,12 @@ impl Condvar {
         state.next_epoch += 1;
 
         drop(state);
-
-        thread::switch();
     }
 
     /// Wakes up all blocked threads on this condvar.
     pub fn notify_all(&self) {
+        thread::switch();
+
         let me = ExecutionState::me();
 
         let mut state = self.state.borrow_mut();
@@ -285,8 +294,6 @@ impl Condvar {
         }
 
         drop(state);
-
-        thread::switch();
     }
 }
 
