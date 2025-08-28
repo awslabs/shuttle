@@ -204,6 +204,7 @@ fn mutex_rwlock_interaction() {
                 let log = Arc::clone(&value);
                 thread::spawn(move || {
                     let _guard = lock.lock().unwrap();
+                    thread::yield_now(); // log is `std::sync::Mutex`, so it is not visible to Shuttle without an explicit yield
                     *log.lock().unwrap() *= 2;
                 })
             };

@@ -159,7 +159,6 @@ impl<T: Copy + Eq> Atomic<T> {
         thread::switch();
         self.exhale_clock();
         let value = *self.inner.borrow();
-        thread::switch();
         value
     }
 
@@ -169,7 +168,6 @@ impl<T: Copy + Eq> Atomic<T> {
         thread::switch();
         self.inhale_clock();
         *self.inner.borrow_mut() = val;
-        thread::switch();
     }
 
     fn swap(&self, mut val: T, order: Ordering) -> T {
@@ -180,7 +178,6 @@ impl<T: Copy + Eq> Atomic<T> {
         self.exhale_clock(); // for the load
         self.inhale_clock(); // for the store
         std::mem::swap(&mut *self.inner.borrow_mut(), &mut val);
-        thread::switch();
         val
     }
 
@@ -203,7 +200,6 @@ impl<T: Copy + Eq> Atomic<T> {
         } else {
             Err(current)
         };
-        thread::switch();
         ret
     }
 
