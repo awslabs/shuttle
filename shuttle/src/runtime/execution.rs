@@ -420,13 +420,18 @@ impl ExecutionState {
             Self::set_labels_for_new_task(state, task_id, name.clone());
 
             let clock = if let Some(ref mut clock) = initial_clock {
+                println!("fresh");
                 clock
             } else {
+                println!("inherited");
                 // Inherit the clock of the parent thread (which spawned this task)
                 state.increment_clock_mut()
             };
+            println!("{clock:?}");
             clock.extend(task_id); // and extend it with an entry for the new thread
             let clock = clock.clone();
+
+            println!("{clock:?}");
 
             let schedule_len = state.current_schedule.len();
 
@@ -627,6 +632,8 @@ impl ExecutionState {
     /// Increment the current thread's clock and return a mutable reference to it
     pub(crate) fn increment_clock_mut(&mut self) -> &mut VectorClock {
         let task = self.current_mut();
+        println!("{:?}", task.id);
+        println!("{:?}", task.clock);
         task.clock.increment(task.id);
         &mut task.clock
     }

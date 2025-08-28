@@ -21,6 +21,8 @@ mod vector_clock {
 
         // Zero extend clock to accommodate `task_id` tasks.
         pub(crate) fn extend(&mut self, task_id: TaskId) {
+            println!("{}", task_id.0);
+            println!("{}", self.time.len());
             let num_new_tasks = 1 + task_id.0 - self.time.len();
             let clock: SmallVec<[_; DEFAULT_INLINE_TASKS]> = smallvec![0u32; num_new_tasks];
             self.time.extend_from_slice(&clock);
