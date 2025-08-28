@@ -416,7 +416,7 @@ impl Task {
                 let cx = &mut Context::from_waker(&waker);
                 while future.as_mut().poll(cx).is_pending() {
                     ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
-                    thread::switch();
+                    thread::switch_task();
                 }
             }),
             stack_size,
@@ -462,6 +462,10 @@ impl Task {
 
     pub(crate) fn finished(&self) -> bool {
         self.state == TaskState::Finished
+    }
+
+    pub(crate) fn is_detached(&self) -> bool {
+        self.detached
     }
 
     pub(crate) fn detach(&mut self) {
@@ -592,6 +596,9 @@ impl Task {
         self.local_storage.pop()
     }
 
+    pub(crate) fn park_token_is_available(&self) -> bool {
+        self.park_state.token_available
+    }
     /// Park the task if its park token is unavailable. If the task blocks, then it will be woken up
     /// when the token becomes available or spuriously without consuming the token (see the
     /// documentation for [`std::thread::park`], which says that "it may also return spuriously,

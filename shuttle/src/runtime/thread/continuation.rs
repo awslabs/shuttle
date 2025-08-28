@@ -11,7 +11,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::panic::Location;
 use std::rc::Rc;
+use tracing::debug;
 
 scoped_thread_local! {
     pub(crate) static CONTINUATION_POOL: ContinuationPool
@@ -255,8 +257,29 @@ impl std::fmt::Debug for PooledContinuation {
 unsafe impl Send for PooledContinuation {}
 
 /// Possibly yield back to the executor to perform a context switch.
-pub(crate) fn switch() {
+/// This function should be called *before* any visible operation.
+/// If each visible operation has a scheduling point before it, then there will
+/// be a potential context switch *in between* each visible operation, which
+/// is a necessary condition for Shuttle's completeness.
+///
+/// Putting scheduling points before visible operations, rather than after, has the
+/// advantage of giving the scheduling algorithm *maximum information* to make scheduling
+/// decisions based on what is about-to-happen on each task. The disadvantage of this
+/// approach is that it can lead to double-yields for blocking operations, explained below.
+///
+/// Blocking operations will result in an additional switch when the current thread blocks.
+/// As an optimization, the switch *before* the blocking operation can be conditionally
+/// omitted to avoid switching twice for the same operation iff (1) the operation *will*
+/// block in the current context and (2) if the act of blocking does not affect other tasks.
+/// For example, a blocking Channel send does not satisfy (2) if there are not already
+/// other blocking senders on the channel -- prior to the sender blocking, `try_recv` will
+/// fail, but after the sender blocks, `try_recv` succeeds. Thus the act of blocking itself
+/// is a visible operation, meaning that both scheduling points are necessary for complete
+/// exploration of all possible behaviors.
+#[track_caller]
+pub(crate) fn switch_task() {
     crate::annotations::record_tick();
+    debug!("switch from {}", Location::caller());
     if ExecutionState::maybe_yield() {
         let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
         assert!(matches!(r, ContinuationInput::Resume));

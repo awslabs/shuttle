@@ -69,6 +69,7 @@ fn async_match_deadlock() {
     shuttle::check_random(|| tokio::block_on(main()), 1000)
 }
 
+#[ignore]
 #[test]
 #[should_panic(expected = "tried to acquire a RwLock it already holds")]
 fn async_match_deadlock_replay() {

@@ -145,7 +145,42 @@ impl<T> Channel<T> {
         })
     }
 
+    fn is_rendezvous(&self) -> bool {
+        self.bound == Some(0)
+    }
+
+    fn sender_must_block(&self) -> bool {
+        let state = self.state.borrow();
+        let (is_rendezvous, is_full) = if let Some(bound) = self.bound {
+            // For a rendezvous channel (bound = 0), "is_full" holds when there is a message in the channel.
+            // For a non-rendezvous channel (bound > 0), "is_full" holds when the capacity is reached.
+            // We cover both these cases at once using max(bound, 1) below.
+            (bound == 0, state.messages.len() >= std::cmp::max(bound, 1))
+        } else {
+            (false, false)
+        };
+
+        // The sender should block in any of the following situations:
+        //    the channel is full (as defined above)
+        //    there are already waiting senders
+        //    this is a rendezvous channel and there are no waiting receivers
+        is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty())
+    }
+
     fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
+        let mut should_block = self.sender_must_block();
+        let blocking_send_changes_state =
+            self.state.borrow().waiting_receivers.is_empty() || self.state.borrow().waiting_senders.is_empty();
+
+        // If the sender won't block, we need to allow for a switch to make the previous operation visible
+        // Also, because the sender blocking with no receivers/senders changes the state of the channel
+        // prior to blocking, we also need to make the previous operation visible *before* this state-change
+        // to ensure completeness
+        if !can_block || !should_block || blocking_send_changes_state {
+            thread::switch_task();
+            should_block = self.sender_must_block(); // After a switch channel state may have changed
+        }
+
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
 
@@ -160,23 +195,7 @@ impl<T> Channel<T> {
             return Err(TrySendError::Disconnected(message));
         }
 
-        let (is_rendezvous, is_full) = if let Some(bound) = self.bound {
-            // For a rendezvous channel (bound = 0), "is_full" holds when there is a message in the channel.
-            // For a non-rendezvous channel (bound > 0), "is_full" holds when the capacity is reached.
-            // We cover both these cases at once using max(bound, 1) below.
-            (bound == 0, state.messages.len() >= std::cmp::max(bound, 1))
-        } else {
-            (false, false)
-        };
-
-        // The sender should block in any of the following situations:
-        //    the channel is full (as defined above)
-        //    there are already waiting senders
-        //    this is a rendezvous channel and there are no waiting receivers
-        let sender_should_block =
-            is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty());
-
-        if sender_should_block {
+        if should_block {
             if !can_block {
                 return Err(TrySendError::Full(message));
             }
@@ -191,7 +210,7 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
-            thread::switch();
+            thread::switch_task();
 
             state = self.state.borrow_mut();
             trace!(
@@ -225,7 +244,7 @@ impl<T> Channel<T> {
 
                 // When a sender successfully sends on a rendezvous channel, it knows that the receiver will perform
                 // the matching receive, so we need to update the sender's clock with the receiver's.
-                if is_rendezvous {
+                if self.is_rendezvous() {
                     let recv_clock = s.get_clock(tid).clone();
                     s.update_clock(&recv_clock);
                 }
@@ -239,7 +258,7 @@ impl<T> Channel<T> {
             }
         }
 
-        if !is_rendezvous {
+        if !self.is_rendezvous() {
             if let Some(receiver_clock) = &mut state.receiver_clock {
                 let recv_clock = receiver_clock.remove(0);
                 ExecutionState::with(|s| s.update_clock(&recv_clock));
@@ -260,7 +279,28 @@ impl<T> Channel<T> {
         self.recv_internal(false)
     }
 
+    fn receiver_must_block(&self) -> bool {
+        let state = self.state.borrow_mut();
+        // The receiver should block in any of the following situations:
+        //    the channel is empty
+        //    there are waiting receivers
+        state.messages.is_empty() || !state.waiting_receivers.is_empty()
+    }
+
     fn recv_internal(&self, can_block: bool) -> Result<T, TryRecvError> {
+        let mut should_block = self.receiver_must_block();
+        let blocking_recv_changes_state =
+            self.state.borrow().waiting_receivers.is_empty() || self.state.borrow().waiting_senders.is_empty();
+
+        // If the receiver won't block, we need to allow for a switch to make the previous operation visible
+        // Also, because the receiver blocking with no senders/receivers changes the state of the channel
+        // prior to blocking, we also need to make the previous operation visible *before* this state-change
+        // to ensure completeness
+        if !can_block || !should_block || blocking_recv_changes_state {
+            thread::switch_task();
+            should_block = self.receiver_must_block(); // After a switch channel state may have changed
+        }
+
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
 
@@ -275,10 +315,9 @@ impl<T> Channel<T> {
             return Err(TryRecvError::Disconnected);
         }
 
-        let is_rendezvous = self.bound == Some(0);
         // If this is a rendezvous channel, and the channel is empty, and there are waiting senders,
         // notify the first waiting sender
-        if is_rendezvous && state.messages.is_empty() {
+        if self.is_rendezvous() && state.messages.is_empty() {
             if let Some(&tid) = state.waiting_senders.first() {
                 // Note: another receiver may have unblocked the sender already
                 ExecutionState::with(|s| s.get_mut(tid).unblock());
@@ -289,7 +328,7 @@ impl<T> Channel<T> {
         }
 
         // Handle the try_recv case, accounting for the number of msgs available and already waiting receivers.
-        if !is_rendezvous && !can_block && state.waiting_receivers.len() >= state.messages.len() {
+        if !self.is_rendezvous() && !can_block && state.waiting_receivers.len() >= state.messages.len() {
             return Err(TryRecvError::Empty);
         }
 
@@ -307,10 +346,6 @@ impl<T> Channel<T> {
             let _ = s.increment_clock();
         });
 
-        // The receiver should block in any of the following situations:
-        //    the channel is empty
-        //    there are waiting receivers
-        let should_block = state.messages.is_empty() || !state.waiting_receivers.is_empty();
         if should_block {
             state.waiting_receivers.push(me);
             trace!(
@@ -322,7 +357,7 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
-            thread::switch();
+            thread::switch_task();
 
             state = self.state.borrow_mut();
             trace!(

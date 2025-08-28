@@ -12,11 +12,12 @@ fn thread_yield_point() {
     let success = Arc::new(AtomicU8::new(0));
     let success_clone = Arc::clone(&success);
 
-    // We want to see executions that include both threads running first, otherwise we have
-    // messed up the yieldpoints around spawn.
+    // We want to see executions that include both threads running first.
+    // Spawn no longer itself produces a switch, but accessing any Shuttle primitive will allow
+    // either thread to run it's visible operations first.
     check_random(
         move || {
-            let flag = Arc::new(AtomicBool::new(false));
+            let flag = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
             let flag_clone = Arc::clone(&flag);
 
             thread::spawn(move || {
@@ -345,7 +346,8 @@ mod thread_local {
                     seen_drop_counters.lock().unwrap().insert(DROPS.load(Ordering::SeqCst));
                 });
 
-                // force access to the thread local so that it's initialized
+                thread::yield_now(); // thread-local operations are not visible, so we must manually allow a switch
+                                     // force access to the thread local so that it's initialized
                 DROPPED_LOCAL.with(|local| assert!(local.dummy));
             },
             None,
@@ -555,6 +557,7 @@ fn thread_park_spuriously_wakeup() {
                 })
             };
 
+            thread::yield_now(); // `flag` is `std::sync` and thus not visible to Shuttle, so we need to give an opportunity to switch
             flag.store(true, Ordering::SeqCst);
             thd.thread().unpark();
             thd.join().unwrap();
@@ -667,6 +670,7 @@ fn thread_double_unpark() {
                 })
             };
 
+            thread::yield_now(); // `unpark_count` is `std::sync` and thus not visible to Shuttle, so we need to give an opportunity to switch
             unpark_count.fetch_add(1, Ordering::SeqCst);
             parkee.thread().unpark();
             unpark_count.fetch_add(1, Ordering::SeqCst);

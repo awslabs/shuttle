@@ -49,82 +49,28 @@ fn trivial_two_threads() {
 }
 
 /// We have two threads T0 and T1 with the following lifecycle (with letter denoting each step):
-/// * T0: spawns T1 (S), acquires lock (A), releases lock (R), finishes (F)
-/// * T1:                acquires lock (a), releases lock (r), finishes (f)
+/// * T0: (i) initializes, spawns T1 (s), acquires lock (a), releases lock (r), finishes (e)
+/// * T1:                (I) initializes, acquires lock (A), releases lock (R), finishes (E)
 ///
-/// Additionally, T0 and T1 may block before acquiring the lock, which we denote by B and b,
-/// respectively.
+/// Additionally, T0 and T1 may block before acquiring the lock, which show up as duplicate acquires.
 ///
-/// We have a total of 16 interleavings: 8 where the critical sections do not overlap (4 where
-/// T0 goes first and 4 symmetric ones where T1 goes first), and 8 where the critical sections
-/// overlap (4 where T0 goes first and T1 blocks, and 4 symmetric ones where T1 goes first and
-/// T0 blocks). The following computation tree illustrates all interleavings.
+/// We have a total of 15 interleavings:
 ///
-/// ```
-/// digraph G {
-///   node[shape=point];
-///   "" -> "S" [label="S"];
-///   "S" -> "SA" [label="A"];
-///   "SA" -> "SAR" [label="R"];
-///   "SAR" -> "SARF" [label="F"];
-///   "SARF" -> "SARFa" [label="a"];
-///   "SARFa" -> "SARFar" [label="r"];
-///   "SARFar" -> "SARFarf" [label="f"];
-///   "SAR" -> "SARa" [label="a"];
-///   "SARa" -> "SARaF" [label="F"];
-///   "SARaF" -> "SARaFr" [label="r"];
-///   "SARaFr" -> "SARaFrf" [label="f"];
-///   "SARa" -> "SARar" [label="r"];
-///   "SARar" -> "SARarF" [label="F"];
-///   "SARarF" -> "SARarFf" [label="f"];
-///   "SARar" -> "SARarf" [label="f"];
-///   "SARarf" -> "SARarfF" [label="F"];
-///   "SA" -> "SAb" [label="b"];
-///   "SAb" -> "SAbR" [label="R"];
-///   "SAbR" -> "SAbRF" [label="F"];
-///   "SAbRF" -> "SAbRFa" [label="a"];
-///   "SAbRFa" -> "SAbRFar" [label="r"];
-///   "SAbRFar" -> "SAbRFarf" [label="f"];
-///   "SAbR" -> "SAbRa" [label="a"];
-///   "SAbRa" -> "SAbRaF" [label="F"];
-///   "SAbRaF" -> "SAbRaFr" [label="r"];
-///   "SAbRaFr" -> "SAbRaFrf" [label="f"];
-///   "SAbRa" -> "SAbRar" [label="r"];
-///   "SAbRar" -> "SAbRarF" [label="F"];
-///   "SAbRarF" -> "SAbRarFf" [label="f"];
-///   "SAbRar" -> "SAbRarf" [label="f"];
-///   "SAbRarf" -> "SAbRarfF" [label="F"];
-///   "S" -> "Sa" [label="a"];
-///   "Sa" -> "SaB" [label="B"];
-///   "SaB" -> "SaBr" [label="r"];
-///   "SaBr" -> "SaBrA" [label="A"];
-///   "SaBrA" -> "SaBrAR" [label="R"];
-///   "SaBrAR" -> "SaBrARF" [label="F"];
-///   "SaBrARF" -> "SaBrARFf" [label="f"];
-///   "SaBrAR" -> "SaBrARf" [label="f"];
-///   "SaBrARf" -> "SaBrARfF" [label="F"];
-///   "SaBrA" -> "SaBrAf" [label="f"];
-///   "SaBrAf" -> "SaBrAfR" [label="R"];
-///   "SaBrAfR" -> "SaBrAfRF" [label="F"];
-///   "SaBr" -> "SaBrf" [label="f"];
-///   "SaBrf" -> "SaBrfA" [label="A"];
-///   "SaBrfA" -> "SaBrfAR" [label="R"];
-///   "SaBrfAR" -> "SaBrfARF" [label="F"];
-///   "Sa" -> "Sar" [label="r"];
-///   "Sar" -> "SarA" [label="A"];
-///   "SarA" -> "SarAR" [label="R"];
-///   "SarAR" -> "SarARF" [label="F"];
-///   "SarARF" -> "SarARFf" [label="f"];
-///   "SarAR" -> "SarARf" [label="f"];
-///   "SarARf" -> "SarARfF" [label="F"];
-///   "SarA" -> "SarAf" [label="f"];
-///   "SarAf" -> "SarAfR" [label="R"];
-///   "SarAfR" -> "SarAfRF" [label="F"];
-///   "Sar" -> "Sarf" [label="f"];
-///   "Sarf" -> "SarfA" [label="A"];
-///   "SarfA" -> "SarfAR" [label="R"];
-///   "SarfAR" -> "SarfARF" [label="F"];
-/// }
+/// isareIARE
+/// isarIeARE
+/// isarIAeRE
+/// isarIAREe
+/// isaIreARE
+/// isaIrAeRE
+/// isaIrAREe
+/// isIareARE
+/// isIarAeRE
+/// isIarAREe
+/// isIaAIreARE
+/// isIaAIrAeRE
+/// isIaAIrAREe
+/// isIAaREare
+/// isIAREare
 /// ```
 fn two_threads_work(counter: &Arc<AtomicUsize>) {
     counter.fetch_add(1, Ordering::SeqCst);
@@ -155,7 +101,7 @@ fn two_threads() {
     }
 
     // See `two_threads_work` for an illustration of all 16 interleavings.
-    assert_eq!(iterations.load(Ordering::SeqCst), 16);
+    assert_eq!(iterations.load(Ordering::SeqCst), 15);
 }
 
 #[test]
@@ -169,8 +115,8 @@ fn two_threads_depth_4() {
         runner.run(move || two_threads_work(&counter));
     }
 
-    // See `two_threads_work` for an illustration of all 6 interleavings up to depth 4.
-    assert_eq!(iterations.load(Ordering::SeqCst), 6);
+    // See `two_threads_work` for an illustration of all 4 interleavings up to depth 4.
+    assert_eq!(iterations.load(Ordering::SeqCst), 4);
 }
 
 #[test]
@@ -184,8 +130,8 @@ fn two_threads_depth_5() {
         runner.run(move || two_threads_work(&counter));
     }
 
-    // See `two_threads_work` for an illustration of all 10 interleavings up to depth 5.
-    assert_eq!(iterations.load(Ordering::SeqCst), 10);
+    // See `two_threads_work` for an illustration of all 7 interleavings up to depth 5.
+    assert_eq!(iterations.load(Ordering::SeqCst), 7);
 }
 
 #[test]

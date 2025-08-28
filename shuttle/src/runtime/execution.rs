@@ -3,6 +3,7 @@ use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
+use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::sync::{ResourceSignature, ResourceType};
@@ -361,6 +362,36 @@ impl ExecutionState {
         Self::with(|s| s.current().id())
     }
 
+    /// If there is only one attached, unfinished task and there is at least one detached, unfinished task
+    /// then exiting the attached task will truncate the events on the detached task(s)
+    pub(crate) fn exit_current_truncates_execution(&self) -> bool {
+        // Strictly speaking, this is only true if there are other runnable detached tasks, but always making the main thread
+        // exit a scheduling point is simpler conceptually
+        if self.current().id() == TaskId::from(0) {
+            return true;
+        }
+
+        // If the current task is detached, then it definitely doesn't truncate the execution
+        if self.current().is_detached() {
+            return false;
+        }
+
+        let mut single_unfinished_attached = false;
+        let mut has_unfinished_detached = false;
+        for t in self.tasks.iter() {
+            let unfinished_attached = !t.finished() && !t.detached;
+            if single_unfinished_attached && unfinished_attached {
+                // there are more than one unfinished attached tasks, so one exiting won't truncate
+                return false;
+            } else {
+                single_unfinished_attached = true;
+            }
+
+            has_unfinished_detached |= !t.finished() && t.detached;
+        }
+        has_unfinished_detached && single_unfinished_attached
+    }
+
     fn set_labels_for_new_task(state: &ExecutionState, task_id: TaskId, name: Option<String>) {
         LABELS.with(|cell| {
             let mut map = cell.borrow_mut();
@@ -442,6 +473,7 @@ impl ExecutionState {
     where
         F: Future<Output = ()> + 'static,
     {
+        thread::switch_task();
         let task_id = Self::with(|state| {
             let schedule_len = state.current_schedule.len();
             let parent_span_id = state.top_level_span.id();
@@ -484,6 +516,7 @@ impl ExecutionState {
         mut initial_clock: Option<VectorClock>,
         caller: &'static Location<'static>,
     ) -> TaskId {
+        thread::switch_task();
         let task_id = Self::with(|state| {
             let parent_span_id = state.top_level_span.id();
             let task_id = TaskId(state.tasks.len());

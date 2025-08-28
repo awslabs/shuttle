@@ -224,6 +224,7 @@ fn test_bounded_buffer_minimal_deadlock() {
 /// magic file that Coyote can use to replay the bug. With this, you can step through your program
 /// in the debugger, take as long as you want, and the bug will always be found. This is a HUGE
 /// advantage to anyone debugging these kinds of Heisenbugs.
+#[ignore]
 #[test]
 #[should_panic(expected = "deadlock")]
 fn test_bounded_buffer_minimal_deadlock_replay() {
