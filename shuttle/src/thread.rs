@@ -90,7 +90,9 @@ impl<'scope> Scope<'scope, '_> {
             move || {
                 let ret = f();
 
-                thread::switch_task();
+                if ExecutionState::with(|s| s.exit_current_truncates_execution()) {
+                    thread::switch_task();
+                }
 
                 finished.store(true, Ordering::Relaxed);
 
@@ -216,7 +218,9 @@ pub(crate) fn thread_fn<F, T>(
 {
     let ret = f();
 
-    if switch_before_exit {
+    if switch_before_exit && ExecutionState::with(|s| s.exit_current_truncates_execution()) {
+        // Exiting the last attached task can truncate the execution. To make the previous
+        // event visible before truncation, we need a scheduling point before exiting.
         thread::switch_task();
     }
 
@@ -289,8 +293,11 @@ unsafe impl<T> Sync for JoinHandle<T> {}
 impl<T> JoinHandle<T> {
     /// Waits for the associated thread to finish.
     pub fn join(self) -> Result<T> {
-        // TODO can we soundly skip the yield if the target thread has already finished?
-        thread::switch_task();
+        // The switch before joining ensures that the preceding operation on the joiner is visible to be returned by the joinee
+        let will_block = !ExecutionState::with(|state| state.get(self.task_id).finished());
+        if !will_block {
+            thread::switch_task();
+        }
 
         let should_block = ExecutionState::with(|state| {
             let me = state.current().id();
@@ -355,8 +362,11 @@ pub fn current() -> Thread {
 
 /// Blocks unless or until the current thread's token is made available (may wake spuriously).
 pub fn park() {
-    thread::switch_task();
-    let switch = ExecutionState::with(|s| s.current_mut().park());
+    let mut switch = ExecutionState::with(|s| !s.current().park_token_is_available());
+    if !switch {
+        thread::switch_task();
+    }
+    switch = ExecutionState::with(|s| s.current_mut().park());
 
     // We only need to context switch if the park token was unavailable. If it was available, then
     // any execution reachable by context switching here would also be reachable by having not

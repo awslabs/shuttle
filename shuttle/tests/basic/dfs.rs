@@ -45,7 +45,7 @@ fn trivial_two_threads() {
         });
     }
 
-    assert_eq!(iterations.load(Ordering::SeqCst), 3);
+    assert_eq!(iterations.load(Ordering::SeqCst), 2);
 }
 
 /// We have two threads T0 and T1 with the following lifecycle (with letter denoting each step):
@@ -54,7 +54,7 @@ fn trivial_two_threads() {
 ///
 /// Additionally, T0 and T1 may block before acquiring the lock, which show up as duplicate acquires.
 ///
-/// We have a total of 15 interleavings:
+/// We have a total of 16 interleavings:
 ///
 /// isareIARE
 /// isarIeARE
@@ -71,6 +71,7 @@ fn trivial_two_threads() {
 /// isIaAIrAREe
 /// isIAaREare
 /// isIAREare
+/// <need to regenerate this, missing one>
 /// ```
 fn two_threads_work(counter: &Arc<AtomicUsize>) {
     counter.fetch_add(1, Ordering::SeqCst);
@@ -101,7 +102,7 @@ fn two_threads() {
     }
 
     // See `two_threads_work` for an illustration of all 16 interleavings.
-    assert_eq!(iterations.load(Ordering::SeqCst), 29);
+    assert_eq!(iterations.load(Ordering::SeqCst), 16);
 }
 
 #[test]
@@ -131,7 +132,7 @@ fn two_threads_depth_5() {
     }
 
     // See `two_threads_work` for an illustration of all 7 interleavings up to depth 5.
-    assert_eq!(iterations.load(Ordering::SeqCst), 8);
+    assert_eq!(iterations.load(Ordering::SeqCst), 7);
 }
 
 #[test]
@@ -156,7 +157,7 @@ fn yield_loop_one_thread() {
     }
 
     // 6 places we can run thread 0: before thread 1 starts, before each of the 4 yields, or last
-    assert_eq!(iterations.load(Ordering::SeqCst), 7);
+    assert_eq!(iterations.load(Ordering::SeqCst), 6);
 }
 
 #[test]
@@ -184,7 +185,7 @@ fn yield_loop_two_threads() {
 
     // 2 threads, 5 operations each (thread start + 4 yields)
     // 2*5 choose 5 = 252
-    assert_eq!(iterations.load(Ordering::SeqCst), 462);
+    assert_eq!(iterations.load(Ordering::SeqCst), 252);
 }
 
 #[test]
@@ -242,7 +243,7 @@ fn yield_loop_three_threads() {
         });
     }
 
-    assert_eq!(iterations.load(Ordering::SeqCst), 378378);
+    assert_eq!(iterations.load(Ordering::SeqCst), 50050);
 }
 
 #[test]

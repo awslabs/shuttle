@@ -167,10 +167,22 @@ impl<T> Channel<T> {
     }
 
     fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
-        thread::switch_task();
-
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
+
+        let mut should_block = self.sender_must_block(&state);
+        let blocking_send_changes_state = state.waiting_receivers.is_empty() || state.waiting_senders.is_empty();
+
+        // If the sender won't block, we need to allow for a switch to make the previous operation visible
+        // Also, because the sender blocking with no receivers/senders changes the state of the channel
+        // prior to blocking, we also need to make the previous operation visible *before* this state-change
+        // to ensure completeness
+        if !can_block || !should_block || blocking_send_changes_state {
+            drop(state);
+            thread::switch_task();
+            state = self.state.borrow_mut();
+            should_block = self.sender_must_block(&state); // After a switch channel state may have changed
+        }
 
         trace!(
             state = ?state,
@@ -183,7 +195,7 @@ impl<T> Channel<T> {
             return Err(TrySendError::Disconnected(message));
         }
 
-        if self.sender_must_block(&state) {
+        if should_block {
             if !can_block {
                 return Err(TrySendError::Full(message));
             }
@@ -275,10 +287,22 @@ impl<T> Channel<T> {
     }
 
     fn recv_internal(&self, can_block: bool) -> Result<T, TryRecvError> {
-        thread::switch_task();
-
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
+
+        let mut should_block = self.receiver_must_block(&state);
+        let blocking_recv_changes_state = state.waiting_receivers.is_empty() || state.waiting_senders.is_empty();
+
+        // If the receiver won't block, we need to allow for a switch to make the previous operation visible
+        // Also, because the receiver blocking with no senders/receivers changes the state of the channel
+        // prior to blocking, we also need to make the previous operation visible *before* this state-change
+        // to ensure completeness
+        if !can_block || !should_block || blocking_recv_changes_state {
+            drop(state);
+            thread::switch_task();
+            state = self.state.borrow_mut();
+            should_block = self.receiver_must_block(&state); // After a switch channel state may have changed
+        }
 
         trace!(
             state = ?state,
@@ -322,7 +346,7 @@ impl<T> Channel<T> {
             let _ = s.increment_clock();
         });
 
-        if self.receiver_must_block(&state) {
+        if should_block {
             state.waiting_receivers.push(me);
             trace!(
                 state = ?state,
