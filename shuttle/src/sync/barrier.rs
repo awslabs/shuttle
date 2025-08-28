@@ -98,9 +98,24 @@ impl Barrier {
 
     /// Blocks the current thread until all threads have rendezvoused here.
     pub fn wait(&self) -> BarrierWaitResult {
-        // If all tasks have already rendezvoused, we need to context switch once to allow the previous
-        // event to become visible. Otherwise it will become visible when we block
-        thread::switch_task();
+        let state = self.state.borrow_mut();
+        // The barrier will block if the number of current waiters *plus* an additional waiter
+        // for this thread is less than the bound
+        let will_block = state.waiters.len() + 1 < state.bound;
+        drop(state);
+
+        // If all tasks have already rendezvoused, we need to context switch once to allow the
+        // previous event to become visible before the epoch changes. Otherwise, we can omit the
+        // scheduling point if the wait commutes with other blocking waits (double-yield optimization,
+        // reasoning below).
+        //
+        // Blocking waits Y1 and Z on threads T1 and T2 always commute with each other because
+        // the waiters for a barrier are represented by an unordered set. Thus for both orderings
+        // `Y1 Z` and `Z Y1`, the state of the barrier is {T1, T2}. As a result, we never need to
+        // switch before blocking on a barrier wait.
+        if !will_block {
+            thread::switch_task();
+        }
         let mut state = self.state.borrow_mut();
         let my_epoch = state.epoch;
 

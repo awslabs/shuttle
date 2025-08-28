@@ -167,10 +167,13 @@ impl<T> Channel<T> {
     }
 
     fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
+        // Because channels are always fair wrt. waiting senders (waiting senders is an *ordered* list),
+        // blocking sends do not commute thus must always provide a switch before blocking
         thread::switch_task();
 
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
+        let should_block = self.sender_must_block(&state);
 
         trace!(
             state = ?state,
@@ -183,7 +186,7 @@ impl<T> Channel<T> {
             return Err(TrySendError::Disconnected(message));
         }
 
-        if self.sender_must_block(&state) {
+        if should_block {
             if !can_block {
                 return Err(TrySendError::Full(message));
             }
@@ -275,10 +278,13 @@ impl<T> Channel<T> {
     }
 
     fn recv_internal(&self, can_block: bool) -> Result<T, TryRecvError> {
+        // Because channels are always fair wrt. waiting receivers (waiting receivers is an *ordered* list),
+        // blocking receives do not commute thus must always provide a switch before blocking
         thread::switch_task();
 
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
+        let should_block = self.receiver_must_block(&state);
 
         trace!(
             state = ?state,
@@ -322,7 +328,7 @@ impl<T> Channel<T> {
             let _ = s.increment_clock();
         });
 
-        if self.receiver_must_block(&state) {
+        if should_block {
             state.waiting_receivers.push(me);
             trace!(
                 state = ?state,

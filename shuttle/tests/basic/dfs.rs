@@ -45,7 +45,7 @@ fn trivial_two_threads() {
         });
     }
 
-    assert_eq!(iterations.load(Ordering::SeqCst), 3);
+    assert_eq!(iterations.load(Ordering::SeqCst), 2);
 }
 
 /// We have two threads T0 and T1 with the following lifecycle (with letter denoting each step):
@@ -66,11 +66,27 @@ fn trivial_two_threads() {
 /// isIareARE
 /// isIarAeRE
 /// isIarAREe
-/// isIaAIreARE
-/// isIaAIrAeRE
-/// isIaAIrAREe
+/// isIaAreARE
+/// isIaArAeRE
+/// isIaArAREe
 /// isIAaREare
 /// isIAREare
+///
+///
+/// The missing (16th) interleaving is from the double-yield optimization for acquiring.
+/// Specifically, we only poll an uncontested acquire if it has *never* polled before.
+/// If we remove that optimization the following three interleavings where the *first* poll
+/// returns Pending but the *second* acquire is uncontested go from:
+/// isaIreARE
+/// isaIrAeRE
+/// isaIrAREe
+///
+/// to these four interleavings:
+/// isaIreAARE
+/// isaIrAAeRE
+/// isaIrAeARE
+/// isaIrAAREe
+
 /// ```
 fn two_threads_work(counter: &Arc<AtomicUsize>) {
     counter.fetch_add(1, Ordering::SeqCst);
@@ -100,8 +116,8 @@ fn two_threads() {
         runner.run(move || two_threads_work(&counter));
     }
 
-    // See `two_threads_work` for an illustration of all 16 interleavings.
-    assert_eq!(iterations.load(Ordering::SeqCst), 29);
+    // See `two_threads_work` for an illustration of all 15 interleavings.
+    assert_eq!(iterations.load(Ordering::SeqCst), 15);
 }
 
 #[test]
@@ -131,7 +147,7 @@ fn two_threads_depth_5() {
     }
 
     // See `two_threads_work` for an illustration of all 7 interleavings up to depth 5.
-    assert_eq!(iterations.load(Ordering::SeqCst), 8);
+    assert_eq!(iterations.load(Ordering::SeqCst), 7);
 }
 
 #[test]
@@ -156,7 +172,7 @@ fn yield_loop_one_thread() {
     }
 
     // 6 places we can run thread 0: before thread 1 starts, before each of the 4 yields, or last
-    assert_eq!(iterations.load(Ordering::SeqCst), 7);
+    assert_eq!(iterations.load(Ordering::SeqCst), 6);
 }
 
 #[test]
@@ -184,7 +200,7 @@ fn yield_loop_two_threads() {
 
     // 2 threads, 5 operations each (thread start + 4 yields)
     // 2*5 choose 5 = 252
-    assert_eq!(iterations.load(Ordering::SeqCst), 462);
+    assert_eq!(iterations.load(Ordering::SeqCst), 252);
 }
 
 #[test]
@@ -242,7 +258,7 @@ fn yield_loop_three_threads() {
         });
     }
 
-    assert_eq!(iterations.load(Ordering::SeqCst), 378378);
+    assert_eq!(iterations.load(Ordering::SeqCst), 50050);
 }
 
 #[test]

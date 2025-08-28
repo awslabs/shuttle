@@ -662,11 +662,38 @@ impl Future for Acquire<'_> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         assert!(!self.completed);
 
-        // Always switch at least once
-        if self.never_polled {
+        let will_succeed = self.waiter.has_permits.load(Ordering::SeqCst)
+            || self.semaphore.is_closed()
+            || self.semaphore.available_permits() >= self.waiter.num_permits;
+
+        // If the acquire will succeed on the first try, we need to context switch once to allow the previous
+        // event to become visible. If we won't succeed, then we still need to context switch if the act of
+        // blocking does not commute with other operations on `batch_semaphore` (double-yield optimization,
+        // reasoning below).
+        //
+        // Fair Semaphores: blocking adds the current task to an *ordered* waiter queue. Two blocking acquires
+        // *do not commute* because in one ordering the queue will be [T1 T2] and in the other ordering [T2 T1].
+        // Thus we cannot apply the double-yield optimization for fair semaphores.
+        //
+        // Unfair Semaphores: blocking adds the current task to an *unordered set* of waiters. Note that in the
+        // Shuttle implementation, this unordered set is still represented by a Vec. However, the semantics of
+        // an unfair semaphore in Shuttle should be the same as if it were using a set. To check if the double-
+        // yield is valid we check if each operation (Z) on the semaphore commutes with a blocking acquire (Y1):
+        //
+        //     - Blocking Acquire: in both orderings `Z Y1` and `Y1 Z`, the waiter set has the same members, thus
+        //       the operations commute.
+        //     - Try Acquire: the try-acquire will fail in both orderings without changing the state of the semaphore
+        //     - Release: if the release unblocks Y1, then the optimization is not applicable. Otherwise, it must
+        //       unblock another task in the waiter set. As waiter-set insertion and removal for disjoint elements
+        //       commutes, release operations also commute in this case.
+        //
+        // Thus we apply the double-yield optimization for *unfair* semaphores only
+        let blocking_is_not_commutative = self.semaphore.fairness == Fairness::StrictlyFair;
+
+        if self.never_polled && (will_succeed || blocking_is_not_commutative) {
             thread::switch_task();
-            self.never_polled = false;
         }
+        self.never_polled = false;
 
         if self.waiter.has_permits.load(Ordering::SeqCst) {
             assert!(!self.waiter.is_queued.load(Ordering::SeqCst));
