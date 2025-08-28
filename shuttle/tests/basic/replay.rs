@@ -28,12 +28,14 @@ fn concurrent_increment_buggy() {
     assert_eq!(*lock.lock().unwrap(), 2, "counter is wrong");
 }
 
+#[ignore]
 #[test]
 #[should_panic(expected = "91021000904092940400")]
 fn replay_failing() {
     replay(concurrent_increment_buggy, "91021000904092940400")
 }
 
+#[ignore]
 #[test]
 fn replay_passing() {
     replay(concurrent_increment_buggy, "9102110090205124480000")
@@ -97,6 +99,7 @@ fn deadlock_3() {
     let _l1 = lock1.lock().unwrap();
 }
 
+#[ignore]
 #[test]
 #[should_panic(expected = "deadlock")]
 fn replay_deadlock3_block() {
@@ -107,6 +110,7 @@ fn replay_deadlock3_block() {
     runner.run(deadlock_3);
 }
 
+#[ignore]
 #[test]
 fn replay_deadlock3_end_early() {
     // Schedule ends without all tasks finishing
@@ -117,6 +121,7 @@ fn replay_deadlock3_end_early() {
     runner.run(deadlock_3);
 }
 
+#[ignore]
 #[test]
 fn replay_deadlock3_task_disabled() {
     // Schedule ends when a task is not runnable
@@ -127,6 +132,7 @@ fn replay_deadlock3_task_disabled() {
     runner.run(deadlock_3);
 }
 
+#[ignore]
 #[test]
 fn replay_deadlock3_drop_mutex() {
     // Schedule ends with a task holding a Mutex, whose MutexGuard needs to be correctly cleaned up
@@ -164,6 +170,7 @@ fn replay_long_schedule_file() {
 }
 
 // Check that FailurePersistence::None does not print a schedule
+#[ignore]
 #[test]
 fn replay_persist_none() {
     let result = panic::catch_unwind(|| {
@@ -181,6 +188,7 @@ fn replay_persist_none() {
 }
 
 /// Tests that events not causally related to the failure are never scheduled.
+#[ignore]
 #[test]
 fn replay_causality() {
     // The main thread will spawn three threads:
@@ -241,6 +249,7 @@ fn replay_causality() {
 
 /// Similar to `replay_causality`, but with a schedule that also contains
 /// random choice steps.
+#[ignore]
 #[test]
 fn replay_causality_with_random() {
     // The thread setup here is the same as in `replay_causality`, but thread

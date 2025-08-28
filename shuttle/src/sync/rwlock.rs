@@ -1,6 +1,7 @@
 use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{TaskId, TaskSet};
+use crate::runtime::thread;
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -209,6 +210,9 @@ impl<T: ?Sized> RwLock<T> {
             drop(state);
 
             self.semaphore.acquire_blocking(typ.num_permits()).unwrap();
+        } else {
+            // we always need to allow for a context switch to make the previous event visible for completeness
+            thread::switch();
         }
 
         state = self.state.borrow_mut();
@@ -342,6 +346,8 @@ impl<T: Display + ?Sized> Display for RwLockReadGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
+        self.rwlock.semaphore.release(RwLockType::Read.num_permits());
+
         self.inner = None;
 
         let mut state = self.rwlock.state.borrow_mut();
@@ -359,8 +365,6 @@ impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
             state.holder = RwLockHolder::None;
         }
         drop(state);
-
-        self.rwlock.semaphore.release(RwLockType::Read.num_permits());
     }
 }
 
@@ -399,6 +403,8 @@ impl<T: Display + ?Sized> Display for RwLockWriteGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
+        self.rwlock.semaphore.release(RwLockType::Write.num_permits());
+
         self.inner = None;
 
         let mut state = self.rwlock.state.borrow_mut();
@@ -411,7 +417,5 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
         assert_eq!(state.holder, RwLockHolder::Write(self.me));
         state.holder = RwLockHolder::None;
         drop(state);
-
-        self.rwlock.semaphore.release(RwLockType::Write.num_permits());
     }
 }

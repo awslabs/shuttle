@@ -43,12 +43,11 @@ impl Thread {
 
     /// Atomically makes the handle's token available if it is not already.
     pub fn unpark(&self) {
+        thread::switch();
+
         ExecutionState::with(|s| {
             s.get_mut(self.id.task_id).unpark();
         });
-
-        // Making the token available is a yield point
-        thread::switch();
     }
 }
 
@@ -191,8 +190,6 @@ where
         ExecutionState::spawn_thread(f, stack_size, name.clone(), None, caller)
     };
 
-    thread::switch();
-
     let thread = Thread {
         id: ThreadId { task_id },
         name,
@@ -213,6 +210,11 @@ where
 {
     let ret = f();
 
+    if ExecutionState::with(|s| s.exit_current_truncates_execution()) {
+        // Exiting the last attached task can truncate the execution. To make the previous
+        // event visible before truncation, we need a scheduling point before exiting.
+        thread::switch();
+    }
     tracing::trace!("thread finished, dropping thread locals");
 
     // Run thread-local destructors before publishing the result, because
@@ -282,16 +284,26 @@ unsafe impl<T> Sync for JoinHandle<T> {}
 impl<T> JoinHandle<T> {
     /// Waits for the associated thread to finish.
     pub fn join(self) -> Result<T> {
-        ExecutionState::with(|state| {
+        // The switch before joining ensures that the preceding operation on the joiner is visible to be returned by the joinee
+        let will_block = !ExecutionState::with(|state| state.get(self.task_id).finished());
+        if !will_block {
+            thread::switch();
+        }
+
+        let should_block = ExecutionState::with(|state| {
             let me = state.current().id();
             let target = state.get_mut(self.task_id);
             if target.set_waiter(me) {
                 state.current_mut().block(false);
+                true
+            } else {
+                false
             }
         });
 
-        // TODO can we soundly skip the yield if the target thread has already finished?
-        thread::switch();
+        if should_block {
+            thread::switch();
+        }
 
         // Waiting thread inherits the clock of the finished thread
         ExecutionState::with(|state| {
@@ -341,7 +353,11 @@ pub fn current() -> Thread {
 
 /// Blocks unless or until the current thread's token is made available (may wake spuriously).
 pub fn park() {
-    let switch = ExecutionState::with(|s| s.current_mut().park());
+    let mut switch = ExecutionState::with(|s| !s.current().park_token_is_available());
+    if !switch {
+        thread::switch();
+    }
+    switch = ExecutionState::with(|s| s.current_mut().park());
 
     // We only need to context switch if the park token was unavailable. If it was available, then
     // any execution reachable by context switching here would also be reachable by having not
