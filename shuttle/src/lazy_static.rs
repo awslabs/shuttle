@@ -25,16 +25,10 @@ use std::marker::PhantomData;
 pub use crate::lazy_static;
 
 /// Shuttle's implementation of `lazy_static::Lazy` (aka the unstable `std::lazy::Lazy`).
-// Sadly, the fields of this thing need to be public because function pointers in const fns are
-// unstable, so an explicit instantiation is the only way to construct this struct. User code should
-// not rely on these fields.
 pub struct Lazy<T: Sync> {
-    #[doc(hidden)]
-    pub cell: Once,
-    #[doc(hidden)]
-    pub init: fn() -> T,
-    #[doc(hidden)]
-    pub _p: PhantomData<T>,
+    cell: Once,
+    init: fn() -> T,
+    _p: PhantomData<T>,
 }
 
 impl<T: Sync> std::fmt::Debug for Lazy<T> {
@@ -44,6 +38,15 @@ impl<T: Sync> std::fmt::Debug for Lazy<T> {
 }
 
 impl<T: Sync> Lazy<T> {
+    /// Constructs a new `Lazy` with a given function for lazy initialization.
+    pub const fn new(init: fn() -> T) -> Self {
+        Self {
+            cell: Once::new(),
+            init,
+            _p: PhantomData,
+        }
+    }
+
     /// Get a reference to the lazy value, initializing it first if necessary.
     pub fn get(&'static self) -> &'static T {
         // Safety: see the usage below
