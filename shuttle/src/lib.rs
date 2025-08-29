@@ -529,12 +529,7 @@ macro_rules! __lazy_static_internal {
 
                 #[inline(always)]
                 fn __stability() -> &'static $T {
-                    static LAZY: $crate::lazy_static::Lazy<$T> =
-                        $crate::lazy_static::Lazy {
-                            cell: $crate::sync::Once::new(),
-                            init: __static_ref_initialize,
-                            _p: std::marker::PhantomData,
-                        };
+                    static LAZY: $crate::lazy_static::Lazy<$T> = $crate::lazy_static::Lazy::new(__static_ref_initialize);
                     LAZY.get()
                 }
                 __stability()
