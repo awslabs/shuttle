@@ -62,9 +62,9 @@ pub use std::sync::atomic::Ordering;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
-use crate::sync::{ResourceSignature, TypedResourceSignature};
+use crate::sync::{ResourceSignatureData, TypedResourceSignature};
 use std::cell::RefCell;
-use std::panic::{RefUnwindSafe};
+use std::panic::RefUnwindSafe;
 
 static PRINTED_ORDERING_WARNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -142,7 +142,7 @@ impl<T> Atomic<T> {
         Self {
             inner: RefCell::new(v),
             clock: RefCell::new(None),
-            signature: TypedResourceSignature::Atomic(ResourceSignature::new_const()),
+            signature: TypedResourceSignature::Atomic(ResourceSignatureData::new_const()),
         }
     }
 }
@@ -283,11 +283,10 @@ mod tests {
         ];
 
         // Check all signatures are unique
-        for i in 0..signatures.len() {
-            for j in i + 1..signatures.len() {
-                assert_ne!(signatures[i], signatures[j]);
-            }
-        }
+        assert_eq!(
+            signatures.len(),
+            signatures.iter().collect::<std::collections::HashSet<_>>().len()
+        );
     }
 
     #[test]
@@ -309,7 +308,7 @@ mod tests {
             10,
         );
 
-        // Should have exactly 3 unique signatures across all iterations
+        // Should have exactly 2 unique signatures across all iterations
         assert_eq!(all_signatures.lock().unwrap().len(), 2);
     }
 }
