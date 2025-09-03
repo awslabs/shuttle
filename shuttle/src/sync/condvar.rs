@@ -7,7 +7,6 @@ use crate::sync::{MutexGuard, ResourceSignature, TypedResourceSignature};
 use assoc::AssocExt;
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::panic::Location;
 use std::sync::{LockResult, PoisonError};
 use std::time::Duration;
 use tracing::trace;
@@ -127,7 +126,7 @@ impl Condvar {
 
         Self {
             state: RefCell::new(state),
-            signature: TypedResourceSignature::Condvar(ResourceSignature::new_const(Location::caller())),
+            signature: TypedResourceSignature::Condvar(ResourceSignature::new_const()),
         }
     }
 

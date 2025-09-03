@@ -6,7 +6,6 @@ use crate::sync::TypedResourceSignature;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
-use std::panic::Location;
 use std::rc::Rc;
 use tracing::trace;
 
@@ -93,7 +92,7 @@ impl Barrier {
 
         Self {
             state: Rc::new(RefCell::new(state)),
-            signature: TypedResourceSignature::Barrier(ExecutionState::new_resource_signature(Location::caller())),
+            signature: TypedResourceSignature::Barrier(ExecutionState::new_resource_signature()),
         }
     }
 
