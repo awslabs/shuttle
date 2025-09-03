@@ -3,7 +3,6 @@ use crate::runtime::storage::StorageKey;
 use crate::runtime::task::clock::VectorClock;
 use crate::sync::{Mutex, ResourceSignature, TypedResourceSignature};
 use std::cell::{OnceCell, RefCell};
-use std::panic::Location;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
 use tracing::trace;
@@ -50,7 +49,7 @@ impl Once {
     pub const fn new() -> Self {
         Self {
             id: OnceCell::new(),
-            signature: TypedResourceSignature::Once(ResourceSignature::new_const(Location::caller())),
+            signature: TypedResourceSignature::Once(ResourceSignature::new_const()),
         }
     }
 

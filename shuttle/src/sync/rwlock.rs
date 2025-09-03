@@ -5,7 +5,7 @@ use crate::sync::{ResourceSignature, TypedResourceSignature};
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
-use std::panic::{Location, RefUnwindSafe, UnwindSafe};
+use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use tracing::trace;
 
@@ -65,7 +65,7 @@ impl<T> RwLock<T> {
             semaphore: BatchSemaphore::const_new_internal(
                 MAX_READS,
                 Fairness::Unfair,
-                TypedResourceSignature::RwLock(ResourceSignature::new_const(Location::caller())),
+                TypedResourceSignature::RwLock(ResourceSignature::new_const()),
             ),
             state: RefCell::new(state),
         }

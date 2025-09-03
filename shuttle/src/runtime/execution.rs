@@ -666,8 +666,9 @@ impl ExecutionState {
         Self::with(|state| state.context_switches)
     }
 
-    pub(crate) fn new_resource_signature(caller: &'static Location<'static>) -> ResourceSignature {
-        ExecutionState::with(|s| s.current_mut().signature.new_resource(caller))
+    #[track_caller]
+    pub(crate) fn new_resource_signature() -> ResourceSignature {
+        ExecutionState::with(|s| s.current_mut().signature.new_resource())
     }
 
     pub(crate) fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
