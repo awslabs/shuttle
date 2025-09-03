@@ -11,7 +11,7 @@ use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
@@ -42,41 +42,32 @@ thread_local! {
 
 #[derive(Debug, Default)]
 pub struct CurrentSchedule {
-    // SAFETY: There are two ways having an `UnsafeCell` could be unsafe:
-    //         1: Multiple threads are accessing the `UnsafeCell` at the same time, and at least one thread does a write.
-    //         2: We give out a reference or a pointer to the `UnsafeCell`, and that reference is used after the contents have been moved or freed.
-    //         These cannot occur, as Shuttle is single threaded, and we never give out a reference or a raw pointer.
-    current_schedule: UnsafeCell<Schedule>,
+    current_schedule: RefCell<Schedule>,
 }
 
 impl CurrentSchedule {
     fn init(schedule: Schedule) {
-        // SAFETY: Shuttle is single threaded, and we never give out references to `current_schedule`
-        unsafe { CURRENT_SCHEDULE.with(|cs| (*cs.current_schedule.get() = schedule)) }
+        CURRENT_SCHEDULE.with(|cs| *cs.current_schedule.borrow_mut() = schedule)
     }
 
     /// Add the given task ID as the next step of the schedule.
     fn push_task(tid: TaskId) {
-        // SAFETY: Shuttle is single threaded, and we never give out references to `current_schedule`
-        unsafe { CURRENT_SCHEDULE.with(|cs| (&mut *cs.current_schedule.get()).push_task(tid)) }
+        CURRENT_SCHEDULE.with(|cs| cs.current_schedule.borrow_mut().push_task(tid))
     }
 
     /// Add a choice of a random u64 value as the next step of the schedule
     fn push_random() {
-        // SAFETY: Shuttle is single threaded, and we never give out references to `current_schedule`
-        unsafe { CURRENT_SCHEDULE.with(|cs| (&mut *cs.current_schedule.get()).push_random()) }
+        CURRENT_SCHEDULE.with(|cs| cs.current_schedule.borrow_mut().push_random())
     }
 
     /// Return the number of steps in the schedule
     pub(crate) fn len() -> usize {
-        // SAFETY: Shuttle is single threaded, and we never give out references to `current_schedule`
-        unsafe { CURRENT_SCHEDULE.with(|cs| (*cs.current_schedule.get()).len()) }
+        CURRENT_SCHEDULE.with(|cs| (*cs.current_schedule.borrow()).len())
     }
 
     /// Returns a clone of the inner schedule
     pub(crate) fn get_schedule() -> Schedule {
-        // SAFETY: Shuttle is single threaded, and we never give out references to `current_schedule`
-        unsafe { CURRENT_SCHEDULE.with(|cs| (*cs.current_schedule.get()).clone()) }
+        CURRENT_SCHEDULE.with(|cs| (*cs.current_schedule.borrow()).clone())
     }
 }
 
@@ -113,7 +104,7 @@ impl Execution {
     }
 }
 
-fn backtrace_enabled() -> bool {
+pub(crate) fn backtrace_enabled() -> bool {
     std::env::var("RUST_BACKTRACE").is_ok() || std::env::var("RUST_LIB_BACKTRACE").is_ok()
 }
 
@@ -129,6 +120,17 @@ enum StepError {
     StepBoundExceeded,
     // Task panic and `config.immediately_return_on_panic` is set to `true`.
     TaskPanicEarlyReturn,
+}
+
+impl StepError {
+    fn persist_failure(&self, config: &Config) {
+        if let StepError::StepBoundExceeded = self {
+            if let MaxSteps::ContinueAfter(_) = config.max_steps {
+                return;
+            }
+        }
+        persist_failure(config);
+    }
 }
 
 impl Execution {
@@ -156,11 +158,11 @@ impl Execution {
                 match self.run_to_competion(config.immediately_return_on_panic) {
                     Ok(()) => {},
                     Err(e) => {
+                        e.persist_failure(config);
+
                         match e {
                             StepError::TaskFailure(payload) => {
-                                let task_name = ExecutionState::failing_task();
-                                persist_failure(config);
-                                eprintln!("test panicked in task '{task_name}'");
+                                eprintln!("test panicked in task '{}'", ExecutionState::failing_task());
 
                                 panic::resume_unwind(payload);
                             }
@@ -170,22 +172,8 @@ impl Execution {
                                     .tasks
                                     .iter()
                                     .filter(|t| !t.finished())
-                                    .map(|t| {
-                                        format!(
-                                            "{} (task {:?}{}{}){}",
-                                            t.name().unwrap_or_else(|| "<unknown>".to_string()),
-                                            t.id(),
-                                            if t.detached { ", detached" } else { "" },
-                                            if t.sleeping() { ", pending future" } else { "" },
-                                            if backtrace_enabled() {
-                                                format!("\nBacktrace:\n{:#?}\n", t.backtrace)
-                                            } else {
-                                                "".into()
-                                            }
-                                        )
-                                    })
+                                    .map(|t| t.format_for_deadlock())
                                     .collect::<Vec<_>>());
-                                persist_failure(config);
 
                                 // Collecting backtraces is expensive, so we only want to do it if the user opts in to collecting them.
                                 if !backtrace_enabled() {
@@ -194,21 +182,13 @@ impl Execution {
 
                                 panic!("deadlock! blocked tasks: [{}]", blocked_tasks.join(", "));
                             }
-                            StepError::SchedulingError => {
-                                persist_failure(config);
-                                panic!("no task was scheduled\nThis indicates an issue with the scheduler.");
-                            }
+                            StepError::SchedulingError => panic!("no task was scheduled\nThis indicates an issue with the scheduler."),
                             StepError::StepBoundExceeded => {
                                 if let MaxSteps::FailAfter(max_steps) = config.max_steps {
-                                    persist_failure(config);
                                     panic!("exceeded max_steps bound {max_steps}. this might be caused by an unfair schedule (e.g., a spin loop)?");
                                 }
                             }
-                            StepError::TaskPanicEarlyReturn => {
-                                persist_failure(config);
-
-                                panic::resume_unwind(Box::new("Task panicked, and early return is enabled."));
-                            },
+                            StepError::TaskPanicEarlyReturn => panic::resume_unwind(Box::new("Task panicked, and early return is enabled.")),
                         }
                     }}
 
@@ -246,7 +226,7 @@ impl Execution {
         });
     }
 
-    fn leave_task_span() {
+    fn exit_task_span() {
         // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
         ExecutionState::with(|state| {
             tracing::dispatcher::get_default(|subscriber| {
@@ -298,7 +278,7 @@ impl Execution {
 
                     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
 
-                    Execution::leave_task_span();
+                    Execution::exit_task_span();
 
                     result
                 }
@@ -312,14 +292,17 @@ impl Execution {
                     ExecutionState::with(|state| state.current_mut().finish());
                 }
                 // Task yielded
-                Ok(false) => {}
+                Ok(false) => {
+                    // We may have `switch`ed out of the task before we finished unwinding the stack (ie. a `drop` handler calls `switch`).
+                    // If `immediately_return_on_panic` is set, we will then return. If we don't do this, then we run the risk of panicking
+                    // again in some other task, which would result in the test aborting.
+                    if immediately_return_on_panic && std::thread::panicking() {
+                        ExecutionState::with(|state| state.current_task = ScheduledTask::Stopped);
+                        return Err(StepError::TaskPanicEarlyReturn);
+                    }
+                }
                 // Task failed
                 Err(e) => return Err(StepError::TaskFailure(e)),
-            }
-
-            if immediately_return_on_panic && std::thread::panicking() {
-                ExecutionState::with(|state| state.current_task = ScheduledTask::Stopped);
-                return Err(StepError::TaskPanicEarlyReturn);
             }
         }
     }

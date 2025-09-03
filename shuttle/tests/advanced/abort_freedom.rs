@@ -4,29 +4,20 @@ use shuttle::{Config, Runner};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-// check_dfs with immediately_return_on_panic set to true
-pub fn check_dfs<F>(f: F)
-where
-    F: Fn() + Send + Sync + 'static,
-{
-    use shuttle::scheduler::DfsScheduler;
-
-    let scheduler = DfsScheduler::new(None, false);
-
-    let mut config = Config::default();
-    config.immediately_return_on_panic = true;
-
-    let runner = Runner::new(scheduler, config);
-    runner.run(f);
-}
-
 // Similar to the test below. Tests that setting `immediately_return_on_panic` makes what would otherwise be an abort
 // into a oanic.
 #[test]
 // A drawback of the way this is done is that the panic payload is lost (thought it's still printed to stderr)
 #[should_panic(expected = "Task panicked, and early return is enabled.")]
 fn panic_handling_avoids_aborting() {
-    check_dfs(|| {
+    let scheduler = DfsScheduler::new(None, false);
+
+    let mut config = Config::default();
+    config.immediately_return_on_panic = true;
+
+    let runner = Runner::new(scheduler, config);
+
+    runner.run(|| {
         let _panic_on_drop = PanicOnDrop {};
         panic!("Cat goes purr");
     });

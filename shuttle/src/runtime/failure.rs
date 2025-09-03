@@ -17,13 +17,13 @@ use crate::{Config, FailurePersistence};
 
 // When we last persisted a schedule. Used so that we don't persist the same schedule twice.
 thread_local! {
-    static SCHEDULE_PERSITED_AT: Cell<usize> = const { Cell::new(0) };
+    static SCHEDULE_PERSISTED_AT: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Persist (to stderr or to file) a message describing how to replay a failing schedule.
 pub fn persist_failure(config: &Config) {
     // Don't serialize the same schedule twice.
-    if SCHEDULE_PERSITED_AT.get() == CurrentSchedule::len() {
+    if SCHEDULE_PERSISTED_AT.get() == CurrentSchedule::len() {
         return;
     }
 
@@ -51,7 +51,7 @@ pub fn persist_failure(config: &Config) {
         }
     }
 
-    SCHEDULE_PERSITED_AT.set(CurrentSchedule::len());
+    SCHEDULE_PERSISTED_AT.set(CurrentSchedule::len());
 }
 
 /// Persist the given serialized schedule to a file and return the new file's path. The file will be
