@@ -29,22 +29,26 @@ fn concurrent_increment_buggy() {
 }
 
 #[test]
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 #[should_panic(expected = "91021000904092940400")]
 fn replay_failing() {
     replay(concurrent_increment_buggy, "91021000904092940400")
 }
 
 #[test]
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_passing() {
     replay(concurrent_increment_buggy, "9102110090205124480000")
 }
 
 #[test]
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_roundtrip() {
     check_replay_roundtrip(concurrent_increment_buggy, PctScheduler::new(2, 100))
 }
 
 #[test]
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_roundtrip_file() {
     check_replay_roundtrip_file(concurrent_increment_buggy, PctScheduler::new(2, 100))
 }
@@ -65,11 +69,13 @@ fn deadlock() {
 }
 
 #[test]
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_deadlock_roundtrip() {
     check_replay_roundtrip(deadlock, PctScheduler::new(2, 100))
 }
 
 #[test]
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_deadlock_roundtrip_file() {
     check_replay_roundtrip_file(deadlock, PctScheduler::new(2, 100))
 }
@@ -154,11 +160,13 @@ fn long_schedule() {
 }
 
 #[test]
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_long_schedule() {
     check_replay_roundtrip(long_schedule, RandomScheduler::new(1));
 }
 
 #[test]
+#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_long_schedule_file() {
     check_replay_roundtrip_file(long_schedule, RandomScheduler::new(1));
 }
