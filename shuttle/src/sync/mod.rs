@@ -34,20 +34,20 @@ const CONST_CONTEXT_SIGNATURE: u64 = 0;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum TypedResourceSignature {
-    Atomic(ResourceSignature),
-    BatchSemaphore(ResourceSignature),
-    Barrier(ResourceSignature),
-    Condvar(ResourceSignature),
-    Mutex(ResourceSignature),
-    RwLock(ResourceSignature),
-    Once(ResourceSignature),
-    MpscChannel(ResourceSignature),
+    Atomic(ResourceSignatureData),
+    BatchSemaphore(ResourceSignatureData),
+    Barrier(ResourceSignatureData),
+    Condvar(ResourceSignatureData),
+    Mutex(ResourceSignatureData),
+    RwLock(ResourceSignatureData),
+    Once(ResourceSignatureData),
+    MpscChannel(ResourceSignatureData),
 }
 
-#[derive(Clone, Debug)]
 /// A unique signature for identifying resources in Shuttle tests.
 /// This is used internally to track and differentiate between different resource instances.
-pub(crate) struct ResourceSignature {
+#[derive(Clone, Debug)]
+pub(crate) struct ResourceSignatureData {
     static_create_location: &'static Location<'static>,
     parent_task_signature: u64,
     create_location_counter: u32,
@@ -55,24 +55,13 @@ pub(crate) struct ResourceSignature {
     signature_hash: u64,
 }
 
-const fn hash_bytes<'a>(hasher: &'a mut SipHasher, bytes: &'static [u8], index: usize) -> &'a mut SipHasher {
-    if index < bytes.len() {
-        hasher.write_u8(bytes[index]);
-        hash_bytes(hasher, bytes, index + 1)
-    } else {
-        hasher
-    }
-}
-
-impl ResourceSignature {
+impl ResourceSignatureData {
     #[track_caller]
     pub(crate) const fn new_const() -> Self {
         let static_create_location = Location::caller();
         let mut hasher = SipHasher::new();
         let file: &'static str = static_create_location.file();
-        // Location::hash is not const, so we need to loop over the bytes
-        // Tail recursive helper allows the loop to be unrolled to the length of the str
-        hash_bytes(&mut hasher, file.as_bytes(), 0);
+        hasher.hash(file.as_bytes());
         let static_create_location_hash = hasher.finish();
         hasher.write_u64(static_create_location_hash);
         hasher.write_u32(static_create_location.line());
@@ -123,7 +112,7 @@ impl ResourceSignature {
     }
 }
 
-impl Hash for ResourceSignature {
+impl Hash for ResourceSignatureData {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.static_create_location_hash().hash(state);
         self.parent_task_signature.hash(state);
@@ -131,10 +120,10 @@ impl Hash for ResourceSignature {
     }
 }
 
-impl PartialEq for ResourceSignature {
+impl PartialEq for ResourceSignatureData {
     fn eq(&self, other: &Self) -> bool {
         self.signature_hash() == other.signature_hash()
     }
 }
 
-impl Eq for ResourceSignature {}
+impl Eq for ResourceSignatureData {}

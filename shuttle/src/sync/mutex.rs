@@ -2,7 +2,7 @@ use crate::current;
 use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
 use crate::runtime::task::TaskId;
 use crate::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
-use crate::sync::{ResourceSignature, TypedResourceSignature};
+use crate::sync::{ResourceSignatureData, TypedResourceSignature};
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -31,10 +31,7 @@ impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
     #[track_caller]
     pub const fn new(value: T) -> Self {
-        Self::new_internal(
-            value,
-            TypedResourceSignature::Mutex(ResourceSignature::new_const()),
-        )
+        Self::new_internal(value, TypedResourceSignature::Mutex(ResourceSignatureData::new_const()))
     }
 
     pub(crate) const fn new_internal(value: T, signature: TypedResourceSignature) -> Self {

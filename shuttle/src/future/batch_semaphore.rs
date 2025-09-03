@@ -3,7 +3,7 @@ use crate::current;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{clock::VectorClock, TaskId};
 use crate::runtime::thread;
-use crate::sync::{ResourceSignature, TypedResourceSignature};
+use crate::sync::{ResourceSignatureData, TypedResourceSignature};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -355,7 +355,7 @@ impl BatchSemaphore {
         Self::const_new_internal(
             num_permits,
             fairness,
-            TypedResourceSignature::BatchSemaphore(ResourceSignature::new_const()),
+            TypedResourceSignature::BatchSemaphore(ResourceSignatureData::new_const()),
         )
     }
 
