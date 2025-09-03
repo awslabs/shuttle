@@ -1,7 +1,7 @@
 use crate::sync::atomic::Atomic;
 #[cfg(test)]
 use crate::sync::TypedResourceSignature;
-use std::{sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 
 /// A raw pointer type which can be safely shared between threads.
 pub struct AtomicPtr<T> {
@@ -35,9 +35,7 @@ impl<T> AtomicPtr<T> {
     /// Creates a new `AtomicPtr`.
     #[track_caller]
     pub const fn new(v: *mut T) -> Self {
-        Self {
-            inner: Atomic::new(v),
-        }
+        Self { inner: Atomic::new(v) }
     }
 
     /// Returns a mutable reference to the underlying pointer.

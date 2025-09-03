@@ -1,7 +1,7 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::storage::StorageKey;
 use crate::runtime::task::clock::VectorClock;
-use crate::sync::{Mutex, ResourceSignature, TypedResourceSignature};
+use crate::sync::{Mutex, ResourceSignatureData, TypedResourceSignature};
 use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
@@ -49,7 +49,7 @@ impl Once {
     pub const fn new() -> Self {
         Self {
             id: OnceCell::new(),
-            signature: TypedResourceSignature::Once(ResourceSignature::new_const()),
+            signature: TypedResourceSignature::Once(ResourceSignatureData::new_const()),
         }
     }
 

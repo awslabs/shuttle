@@ -1,7 +1,7 @@
 use crate::sync::atomic::Atomic;
 #[cfg(test)]
 use crate::sync::TypedResourceSignature;
-use std::{sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 
 /// A boolean type which can be safely shared between threads.
 pub struct AtomicBool {
@@ -30,9 +30,7 @@ impl AtomicBool {
     /// Creates a new atomic boolean.
     #[track_caller]
     pub const fn new(v: bool) -> Self {
-        Self {
-            inner: Atomic::new(v),
-        }
+        Self { inner: Atomic::new(v) }
     }
 
     /// Returns a mutable reference to the underlying boolean.
