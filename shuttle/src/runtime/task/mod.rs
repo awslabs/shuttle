@@ -336,7 +336,7 @@ impl Task {
 
         // Note: the tests for the task signature in [`crate::tests::basic::task`] depend on tracing the task signature and creation point here
         error_span!(parent: parent_span_id, "new_task", parent = ?parent_task_id, i = schedule_len).in_scope(
-            || event!(Level::INFO, task_id = ?task.id, signature = task.signature.signature_hash(), static_create_location = task.signature.static_create_location_hash(), "created task"),
+            || event!(Level::DEBUG, task_id = ?task.id, signature = task.signature.signature_hash(), static_create_location = task.signature.static_create_location_hash(), "created task"),
         );
 
         task
