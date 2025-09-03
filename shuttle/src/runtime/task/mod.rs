@@ -205,7 +205,9 @@ impl TaskSignature {
         }
     }
 
-    pub(crate) fn new_resource(&mut self, static_create_location: &'static Location<'static>) -> ResourceSignature {
+    #[track_caller]
+    pub(crate) fn new_resource(&mut self) -> ResourceSignature {
+        let static_create_location = Location::caller();
         let counter = self
             .child_counters
             .entry(static_create_location)

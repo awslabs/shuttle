@@ -64,7 +64,7 @@ use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
 use crate::sync::{ResourceSignature, TypedResourceSignature};
 use std::cell::RefCell;
-use std::panic::{Location, RefUnwindSafe};
+use std::panic::{RefUnwindSafe};
 
 static PRINTED_ORDERING_WARNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -130,7 +130,8 @@ unsafe impl<T: Sync> Sync for Atomic<T> {}
 impl<T: RefUnwindSafe> RefUnwindSafe for Atomic<T> {}
 
 impl<T> Atomic<T> {
-    const fn new(v: T, static_create_location: &'static Location<'static>) -> Self {
+    #[track_caller]
+    const fn new(v: T) -> Self {
         // Since this is a `const fn`, the clock associated with this Atomic is assigned a const value of None
         // (which represents all zeros).  At the time of creation of the atomic, however, we have more causal
         // knowledge (the value of the current thread's vector clock).  However, it should be safe to initialize
@@ -141,7 +142,7 @@ impl<T> Atomic<T> {
         Self {
             inner: RefCell::new(v),
             clock: RefCell::new(None),
-            signature: TypedResourceSignature::Atomic(ResourceSignature::new_const(static_create_location)),
+            signature: TypedResourceSignature::Atomic(ResourceSignature::new_const()),
         }
     }
 }

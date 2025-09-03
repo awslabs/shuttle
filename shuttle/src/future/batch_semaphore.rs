@@ -8,7 +8,6 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
-use std::panic::Location;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -332,7 +331,7 @@ impl BatchSemaphore {
         Self::new_internal(
             num_permits,
             fairness,
-            TypedResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature(Location::caller())),
+            TypedResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature()),
         )
     }
 
@@ -356,7 +355,7 @@ impl BatchSemaphore {
         Self::const_new_internal(
             num_permits,
             fairness,
-            TypedResourceSignature::BatchSemaphore(ResourceSignature::new_const(Location::caller())),
+            TypedResourceSignature::BatchSemaphore(ResourceSignature::new_const()),
         )
     }
 
@@ -635,7 +634,7 @@ impl Default for BatchSemaphore {
         Self::new_internal(
             Default::default(),
             Fairness::StrictlyFair,
-            TypedResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature(Location::caller())),
+            TypedResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature()),
         )
     }
 }

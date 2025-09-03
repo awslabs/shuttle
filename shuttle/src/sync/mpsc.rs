@@ -8,7 +8,6 @@ use crate::sync::TypedResourceSignature;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
-use std::panic::Location;
 use std::rc::Rc;
 use std::result::Result;
 pub use std::sync::mpsc::{RecvError, RecvTimeoutError, SendError, TryRecvError, TrySendError};
@@ -21,7 +20,7 @@ const MAX_INLINE_MESSAGES: usize = 32;
 /// Create an unbounded channel
 #[track_caller]
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
-    let channel = Arc::new(Channel::new(None, Location::caller()));
+    let channel = Arc::new(Channel::new(None));
     let sender = Sender {
         inner: Arc::clone(&channel),
     };
@@ -34,7 +33,7 @@ pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
 /// Create a bounded channel
 #[track_caller]
 pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
-    let channel = Arc::new(Channel::new(Some(bound), Location::caller()));
+    let channel = Arc::new(Channel::new(Some(bound)));
     let sender = SyncSender {
         inner: Arc::clone(&channel),
     };
@@ -110,7 +109,8 @@ impl<T> Debug for ChannelState<T> {
 }
 
 impl<T> Channel<T> {
-    fn new(bound: Option<usize>, caller: &'static Location<'static>) -> Self {
+    #[track_caller]
+    fn new(bound: Option<usize>) -> Self {
         let receiver_clock = if let Some(bound) = bound {
             let mut s = SmallVec::with_capacity(bound);
             for _ in 0..bound {
@@ -130,7 +130,7 @@ impl<T> Channel<T> {
                 waiting_senders: SmallVec::new(),
                 waiting_receivers: SmallVec::new(),
             })),
-            signature: TypedResourceSignature::MpscChannel(ExecutionState::new_resource_signature(caller)),
+            signature: TypedResourceSignature::MpscChannel(ExecutionState::new_resource_signature()),
         }
     }
 

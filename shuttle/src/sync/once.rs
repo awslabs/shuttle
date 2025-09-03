@@ -3,7 +3,6 @@ use crate::runtime::storage::StorageKey;
 use crate::runtime::task::clock::VectorClock;
 use crate::sync::{Mutex, ResourceSignature, TypedResourceSignature};
 use std::cell::RefCell;
-use std::panic::Location;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
 use std::sync::LazyLock;
@@ -66,7 +65,7 @@ impl Once {
                 assert_ne!(id, 0, "id overflow");
                 id
             }),
-            signature: TypedResourceSignature::Once(ResourceSignature::new_const(Location::caller())),
+            signature: TypedResourceSignature::Once(ResourceSignature::new_const()),
         }
     }
 

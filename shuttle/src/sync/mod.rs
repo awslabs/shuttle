@@ -65,7 +65,9 @@ const fn hash_bytes<'a>(hasher: &'a mut SipHasher, bytes: &'static [u8], index: 
 }
 
 impl ResourceSignature {
-    pub(crate) const fn new_const(static_create_location: &'static Location<'static>) -> Self {
+    #[track_caller]
+    pub(crate) const fn new_const() -> Self {
+        let static_create_location = Location::caller();
         let mut hasher = SipHasher::new();
         let file: &'static str = static_create_location.file();
         // Location::hash is not const, so we need to loop over the bytes

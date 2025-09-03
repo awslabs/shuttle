@@ -1,7 +1,7 @@
 use crate::sync::atomic::Atomic;
 #[cfg(test)]
 use crate::sync::TypedResourceSignature;
-use std::{panic::Location, sync::atomic::Ordering};
+use std::{sync::atomic::Ordering};
 
 /// A boolean type which can be safely shared between threads.
 pub struct AtomicBool {
@@ -31,7 +31,7 @@ impl AtomicBool {
     #[track_caller]
     pub const fn new(v: bool) -> Self {
         Self {
-            inner: Atomic::new(v, Location::caller()),
+            inner: Atomic::new(v),
         }
     }
 

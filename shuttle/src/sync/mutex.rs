@@ -6,7 +6,7 @@ use crate::sync::{ResourceSignature, TypedResourceSignature};
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
-use std::panic::{Location, RefUnwindSafe, UnwindSafe};
+use std::panic::{RefUnwindSafe, UnwindSafe};
 use tracing::trace;
 
 /// A mutex, the same as [`std::sync::Mutex`].
@@ -33,7 +33,7 @@ impl<T> Mutex<T> {
     pub const fn new(value: T) -> Self {
         Self::new_internal(
             value,
-            TypedResourceSignature::Mutex(ResourceSignature::new_const(Location::caller())),
+            TypedResourceSignature::Mutex(ResourceSignature::new_const()),
         )
     }
 

@@ -1,5 +1,4 @@
 use crate::sync::atomic::Atomic;
-use std::panic::Location;
 use std::sync::atomic::Ordering;
 
 macro_rules! atomic_int {
@@ -32,7 +31,7 @@ macro_rules! atomic_int {
             #[track_caller]
             pub const fn new(v: $int_type) -> Self {
                 Self {
-                    inner: Atomic::new(v, Location::caller()),
+                    inner: Atomic::new(v),
                 }
             }
 
