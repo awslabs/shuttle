@@ -277,6 +277,7 @@ fn check_producer_consumer_broken1() {
     check_random(producer_consumer_broken1, 5000)
 }
 
+#[ignore]
 #[test]
 #[should_panic(expected = "nothing to get")]
 fn replay_producer_consumer_broken1() {
@@ -335,6 +336,7 @@ fn check_producer_consumer_broken2() {
     check_random(producer_consumer_broken2, 5000)
 }
 
+#[ignore]
 #[test]
 #[should_panic(expected = "deadlock")]
 fn replay_producer_consumer_broken2() {

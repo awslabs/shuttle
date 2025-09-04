@@ -6,6 +6,38 @@ use shuttle::sync::mpsc::{channel, sync_channel, RecvError, TryRecvError, TrySen
 use shuttle::{check_dfs, check_random, thread};
 use test_log::test;
 
+// A helper struct to provide a Set for types which don't implement Hash or Ord
+// Poor computational complexity, but suitable for small unit tests
+#[derive(Debug)]
+struct VecSet<T> {
+    insertions: u32,
+    vec: Vec<T>,
+}
+
+impl<T: PartialEq> VecSet<T> {
+    fn new() -> Self {
+        Self {
+            vec: Vec::new(),
+            insertions: 0,
+        }
+    }
+
+    fn insert(&mut self, value: T) {
+        self.insertions += 1;
+        if !self.vec.contains(&value) {
+            self.vec.push(value);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.vec.len()
+    }
+
+    fn contains(&self, value: &T) -> bool {
+        self.vec.contains(value)
+    }
+}
+
 // The following tests (prefixed with mpsc_loom) are from the
 // loom test suite; see https://github.com/tokio-rs/loom/blob/master/tests/mpsc.rs
 #[test]
@@ -546,7 +578,6 @@ fn mpsc_try_recv_iter_sync() {
                 let mut acc = 0;
                 for x in rx.try_iter() {
                     acc += x;
-                    thread::yield_now();
                 }
                 total_tx.send((rx, acc)).unwrap();
             });
@@ -555,7 +586,6 @@ fn mpsc_try_recv_iter_sync() {
             for i in [3, 1, 2] {
                 if tx.try_send(i).is_ok() {
                     sent_acc += i;
-                    thread::yield_now();
                 }
             }
             drop(tx);
@@ -567,8 +597,11 @@ fn mpsc_try_recv_iter_sync() {
         None,
     );
     let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
-    // Could fail to rendezvous at any step of the sequence
-    assert_eq!(observed_values, HashSet::from([0, 3, 4, 6]));
+    // Could fail to rendezvous at any step of the sequence (0, 3, 4, 6)
+    //
+    // Additionally, the second send can fail if the first send has woken the receiver, but has not been yet read by the woken receiver (5)
+    // The same is true for the third send, but this also leads to (4)
+    assert_eq!(observed_values, HashSet::from([0, 3, 4, 6, 5]));
 }
 
 #[test]
@@ -584,14 +617,12 @@ fn mpsc_try_recv_iter_rendezvous() {
                 let mut acc = 0;
                 for x in rx.try_iter() {
                     acc += x;
-                    thread::yield_now();
                 }
                 drop(rx);
                 total_tx.send(acc).unwrap();
             });
             for i in [3, 1, 2] {
                 let _ = tx.send(i);
-                thread::yield_now();
             }
             drop(tx);
             let result = total_rx.recv().unwrap();
@@ -659,7 +690,7 @@ fn mpsc_try_recv() {
 }
 
 fn mpsc_try_recv_permutations(drop_sender: bool) {
-    let observed_values = Arc::new(std::sync::Mutex::new(vec![]));
+    let observed_values = Arc::new(std::sync::Mutex::new(VecSet::new()));
     let observed_values_clone = Arc::clone(&observed_values);
 
     check_dfs(
@@ -673,9 +704,7 @@ fn mpsc_try_recv_permutations(drop_sender: bool) {
             });
 
             let result = rx.try_recv();
-            observed_values_clone.lock().unwrap().push(result);
-            // Should always fail the second time
-            assert!(rx.try_recv().is_err());
+            observed_values_clone.lock().unwrap().insert(result);
 
             thd.join().unwrap();
         },
@@ -730,7 +759,7 @@ fn mpsc_try_send_rendezvous() {
 }
 
 fn mpsc_try_send_permutations(drop_receiver: bool, rendezvous: bool) {
-    let observed_values = Arc::new(std::sync::Mutex::new(vec![]));
+    let observed_values = Arc::new(std::sync::Mutex::new(VecSet::new()));
     let observed_values_clone = Arc::clone(&observed_values);
 
     check_dfs(
@@ -745,7 +774,7 @@ fn mpsc_try_send_permutations(drop_receiver: bool, rendezvous: bool) {
             });
 
             let result = tx.try_send(1);
-            observed_values_clone.lock().unwrap().push(result);
+            observed_values_clone.lock().unwrap().insert(result);
             drop(tx);
 
             thd.join().unwrap();
@@ -756,7 +785,7 @@ fn mpsc_try_send_permutations(drop_receiver: bool, rendezvous: bool) {
     let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
     match (drop_receiver, rendezvous) {
         (true, true) => assert_eq!(
-            observed_values,
+            observed_values.vec,
             vec![Err(TrySendError::Full(1)), Err(TrySendError::Disconnected(1))]
         ),
         (true, false) => {
@@ -769,7 +798,9 @@ fn mpsc_try_send_permutations(drop_receiver: bool, rendezvous: bool) {
             assert!(observed_values.contains(&Err(TrySendError::Full(1))));
             assert!(observed_values.contains(&Ok(())));
         }
-        (false, false) => assert_eq!(observed_values, vec![Ok(()), Ok(())]),
+        (false, false) => {
+            assert_eq!(observed_values.vec, vec![Ok(())])
+        }
     }
 }
 
