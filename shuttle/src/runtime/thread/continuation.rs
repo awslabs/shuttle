@@ -325,6 +325,7 @@ pub(crate) fn switch() {
             ContinuationInput::Resume => {}
         };
     }
+    ExecutionState::with(|s| Rc::clone(&s.time_model)).borrow_mut().step();
 }
 
 #[cfg(test)]
