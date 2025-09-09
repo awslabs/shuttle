@@ -57,6 +57,7 @@ annotation = ["vector-clocks", "shuttle-engine/annotation", "shuttle-schedulers/
 # are otherwise always enabled via a dev-dependency to ensure all *test* assertions utilizing vector
 # clocks behave correctly during testing
 bench-no-vector-clocks = ["shuttle-engine/bench-no-vector-clocks"]
+advanced-time-models = ["shuttle-engine/advanced-time-models"]
 
 [[bench]]
 name = "lock"
