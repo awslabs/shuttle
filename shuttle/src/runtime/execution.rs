@@ -5,6 +5,7 @@ use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::sync::time::{from_config, TimeModel};
 use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
@@ -280,6 +281,7 @@ pub(crate) struct ExecutionState {
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
+    pub(crate) time_model : Box<dyn TimeModel>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -305,6 +307,7 @@ impl ScheduledTask {
 
 impl ExecutionState {
     fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+        let time_model = from_config(config.time_model);
         Self {
             config,
             tasks: SmallVec::new(),
@@ -321,6 +324,7 @@ impl ExecutionState {
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
+            time_model,
         }
     }
 

@@ -195,6 +195,8 @@ mod runtime;
 
 pub use runtime::runner::{PortfolioRunner, Runner};
 
+use crate::sync::time::TimeModelConfig;
+
 /// Configuration parameters for Shuttle
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -240,6 +242,9 @@ pub struct Config {
     /// a `Subscriber` which overwrites on calls to `record()` and want to display the current step
     /// count.
     pub record_steps_in_span: bool,
+
+    /// The model of wall-clock time used by Shuttle
+    pub time_model : TimeModelConfig,
 }
 
 impl Config {
@@ -252,6 +257,7 @@ impl Config {
             max_time: None,
             silence_warnings: false,
             record_steps_in_span: false,
+            time_model: TimeModelConfig::NoTime,
         }
     }
 }
