@@ -5,6 +5,7 @@ use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::sync::time::TimeModel;
 use crate::sync::{ResourceSignature, ResourceType};
 use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
@@ -48,15 +49,21 @@ thread_local! {
 /// static variable, but clients get access to it by calling `ExecutionState::with`.
 pub(crate) struct Execution {
     scheduler: Rc<RefCell<dyn Scheduler>>,
+    time_model: Rc<RefCell<dyn TimeModel>>,
     initial_schedule: Schedule,
 }
 
 impl Execution {
     /// Construct a new execution that will use the given scheduler. The execution should then be
     /// invoked via its `run` method, which takes as input the closure for task 0.
-    pub(crate) fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+    pub(crate) fn new(
+        scheduler: Rc<RefCell<dyn Scheduler>>,
+        initial_schedule: Schedule,
+        time_model: Rc<RefCell<dyn TimeModel>>,
+    ) -> Self {
         Self {
             scheduler,
+            time_model,
             initial_schedule,
         }
     }
@@ -77,6 +84,7 @@ impl Execution {
         let state = RefCell::new(ExecutionState::new(
             config.clone(),
             Rc::clone(&self.scheduler),
+            Rc::clone(&self.time_model),
             self.initial_schedule.clone(),
         ));
 
@@ -95,6 +103,7 @@ impl Execution {
 
             // Cleanup the state before it goes out of `EXECUTION_STATE` scope
             ExecutionState::cleanup();
+            self.time_model.borrow_mut().reset();
         });
     }
 
@@ -281,6 +290,10 @@ pub(crate) struct ExecutionState {
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
+
+    // Counter for unique timing resource ids (Sleeps, Timeouts and Intervals)
+    pub(crate) timer_id_counter: u64,
+    pub(crate) time_model: Rc<RefCell<dyn TimeModel>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -305,7 +318,12 @@ impl ScheduledTask {
 }
 
 impl ExecutionState {
-    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+    fn new(
+        config: Config,
+        scheduler: Rc<RefCell<dyn Scheduler>>,
+        time_model: Rc<RefCell<dyn TimeModel>>,
+        initial_schedule: Schedule,
+    ) -> Self {
         Self {
             config,
             tasks: SmallVec::new(),
@@ -322,6 +340,8 @@ impl ExecutionState {
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
+            time_model,
+            timer_id_counter: 0,
         }
     }
 
@@ -329,10 +349,12 @@ impl ExecutionState {
     /// access to the state of the execution to influence scheduling (e.g. to register a task as
     /// blocked).
     #[inline]
+    #[track_caller]
     pub(crate) fn with<F, T>(f: F) -> T
     where
         F: FnOnce(&mut ExecutionState) -> T,
     {
+        trace!("ExecutionState::with from {}", Location::caller());
         Self::try_with(f).expect("Shuttle internal error: cannot access ExecutionState. are you trying to access a Shuttle primitive from outside a Shuttle test?")
     }
 
@@ -550,6 +572,8 @@ impl ExecutionState {
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().clear());
         LABELS.with(|cell| cell.borrow_mut().clear());
 
+        Self::with(|s| s.timer_id_counter = 0);
+
         #[cfg(debug_assertions)]
         Self::with(|state| state.has_cleaned_up = true);
 
@@ -666,9 +690,17 @@ impl ExecutionState {
         Self::with(|state| state.context_switches)
     }
 
+    pub(crate) fn num_tasks(&self) -> usize {
+        self.tasks.len()
+    }
+
     #[track_caller]
     pub(crate) fn new_resource_signature(resource_type: ResourceType) -> ResourceSignature {
         ExecutionState::with(|s| s.current_mut().signature.new_resource(resource_type))
+    }
+
+    pub(crate) fn num_runnable() -> usize {
+        Self::with(|state| state.tasks.iter().filter(|t| t.runnable()).count())
     }
 
     pub(crate) fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
