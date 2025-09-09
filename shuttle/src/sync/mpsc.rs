@@ -4,7 +4,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
-use crate::sync::TypedResourceSignature;
+use crate::sync::ResourceSignature;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -48,7 +48,7 @@ struct Channel<T> {
     bound: Option<usize>, // None for an unbounded channel, Some(k) for a bounded channel of size k
     state: Rc<RefCell<ChannelState<T>>>,
     #[allow(unused)]
-    signature: TypedResourceSignature,
+    signature: ResourceSignature,
 }
 
 // For tracking causality on channels, we timestamp each message with the clock of the sender.
@@ -130,7 +130,7 @@ impl<T> Channel<T> {
                 waiting_senders: SmallVec::new(),
                 waiting_receivers: SmallVec::new(),
             })),
-            signature: TypedResourceSignature::MpscChannel(ExecutionState::new_resource_signature()),
+            signature: ResourceSignature::MpscChannel(ExecutionState::new_resource_signature()),
         }
     }
 

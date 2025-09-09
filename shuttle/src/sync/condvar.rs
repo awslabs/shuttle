@@ -3,7 +3,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
-use crate::sync::{MutexGuard, ResourceSignatureData, TypedResourceSignature};
+use crate::sync::{MutexGuard, ResourceSignature, ResourceSignatureData};
 use assoc::AssocExt;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -17,7 +17,7 @@ use tracing::trace;
 pub struct Condvar {
     state: RefCell<CondvarState>,
     #[allow(unused)]
-    signature: TypedResourceSignature,
+    signature: ResourceSignature,
 }
 
 #[derive(Debug)]
@@ -126,7 +126,7 @@ impl Condvar {
 
         Self {
             state: RefCell::new(state),
-            signature: TypedResourceSignature::Condvar(ResourceSignatureData::new_const()),
+            signature: ResourceSignature::Condvar(ResourceSignatureData::new_const()),
         }
     }
 

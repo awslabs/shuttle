@@ -62,7 +62,7 @@ pub use std::sync::atomic::Ordering;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
-use crate::sync::{ResourceSignatureData, TypedResourceSignature};
+use crate::sync::{ResourceSignature, ResourceSignatureData};
 use std::cell::RefCell;
 use std::panic::RefUnwindSafe;
 
@@ -121,7 +121,7 @@ struct Atomic<T> {
     inner: RefCell<T>,
     clock: RefCell<Option<VectorClock>>, // wrapped in option to support the const new()
     #[allow(unused)]
-    signature: TypedResourceSignature,
+    signature: ResourceSignature,
 }
 
 // Safety: Atomic is never actually passed across true threads, only across continuations. The
@@ -142,7 +142,7 @@ impl<T> Atomic<T> {
         Self {
             inner: RefCell::new(v),
             clock: RefCell::new(None),
-            signature: TypedResourceSignature::Atomic(ResourceSignatureData::new_const()),
+            signature: ResourceSignature::Atomic(ResourceSignatureData::new_const()),
         }
     }
 }
@@ -242,7 +242,7 @@ impl<T: Copy + Eq> Atomic<T> {
     }
 
     #[cfg(test)]
-    fn signature(&self) -> TypedResourceSignature {
+    fn signature(&self) -> ResourceSignature {
         self.signature.clone()
     }
 }

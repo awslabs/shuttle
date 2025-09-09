@@ -1,7 +1,7 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::storage::StorageKey;
 use crate::runtime::task::clock::VectorClock;
-use crate::sync::{Mutex, ResourceSignatureData, TypedResourceSignature};
+use crate::sync::{Mutex, ResourceSignature, ResourceSignatureData};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
@@ -31,7 +31,7 @@ pub struct Once {
     // ```
     /// Unique identifier for this [`Once`], used as a key for the [`OnceInitState`] for this instance.
     id: LazyLock<usize>,
-    signature: TypedResourceSignature,
+    signature: ResourceSignature,
 }
 
 /// A `Once` cell can either be `Running`, in which case a `Mutex` mediates racing threads trying to
@@ -65,7 +65,7 @@ impl Once {
                 assert_ne!(id, 0, "id overflow");
                 id
             }),
-            signature: TypedResourceSignature::Once(ResourceSignatureData::new_const()),
+            signature: ResourceSignature::Once(ResourceSignatureData::new_const()),
         }
     }
 

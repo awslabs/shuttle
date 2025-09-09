@@ -1,6 +1,6 @@
 use crate::sync::atomic::Atomic;
 #[cfg(test)]
-use crate::sync::TypedResourceSignature;
+use crate::sync::ResourceSignature;
 use std::sync::atomic::Ordering;
 
 /// A boolean type which can be safely shared between threads.
@@ -144,7 +144,7 @@ impl AtomicBool {
     }
 
     #[cfg(test)]
-    pub(crate) fn signature(&self) -> TypedResourceSignature {
+    pub(crate) fn signature(&self) -> ResourceSignature {
         self.inner.signature()
     }
 }

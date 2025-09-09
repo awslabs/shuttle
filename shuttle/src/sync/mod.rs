@@ -22,7 +22,6 @@ pub use rwlock::RwLock;
 pub use rwlock::RwLockReadGuard;
 pub use rwlock::RwLockWriteGuard;
 
-use std::hash::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::panic::Location;
 pub use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
@@ -32,8 +31,14 @@ pub use std::sync::{Arc, Weak};
 
 const CONST_CONTEXT_SIGNATURE: u64 = 0;
 
+/// A stable signature for identifying resources in Shuttle tests.
+/// This is used internally to track and differentiate between different resource instances
+/// *across* shuttle iterations. This signature hash is not *guaranteed* to be unique (two
+/// different resources may have the same hash). In particular, resources which provide
+/// `const` constructors cannot provide any *runtime* context to their signatures, so any
+/// two resources created at the same source location will collide.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub(crate) enum TypedResourceSignature {
+pub(crate) enum ResourceSignature {
     Atomic(ResourceSignatureData),
     BatchSemaphore(ResourceSignatureData),
     Barrier(ResourceSignatureData),
@@ -44,8 +49,7 @@ pub(crate) enum TypedResourceSignature {
     MpscChannel(ResourceSignatureData),
 }
 
-/// A unique signature for identifying resources in Shuttle tests.
-/// This is used internally to track and differentiate between different resource instances.
+#[allow(unused)]
 #[derive(Clone, Debug)]
 pub(crate) struct ResourceSignatureData {
     static_create_location: &'static Location<'static>,
@@ -59,45 +63,32 @@ impl ResourceSignatureData {
     #[track_caller]
     pub(crate) const fn new_const() -> Self {
         let static_create_location = Location::caller();
-        let mut hasher = SipHasher::new();
-        let file: &'static str = static_create_location.file();
-        hasher.hash(file.as_bytes());
-        let static_create_location_hash = hasher.finish();
-        hasher.write_u64(static_create_location_hash);
-        hasher.write_u32(static_create_location.line());
-        hasher.write_u32(static_create_location.column());
-        let signature_hash = hasher.finish();
-
-        Self {
-            static_create_location,
-            parent_task_signature: CONST_CONTEXT_SIGNATURE,
-            static_create_location_hash,
-            create_location_counter: 1,
-            signature_hash,
-        }
+        Self::new(static_create_location, CONST_CONTEXT_SIGNATURE, 1)
     }
 
-    pub(crate) fn new(
+    pub(crate) const fn new(
         static_create_location: &'static Location<'static>,
         parent_task_signature: u64,
         create_location_counter: u32,
     ) -> Self {
-        let mut hasher = DefaultHasher::new();
-        let mut rs = Self {
+        let mut hasher = SipHasher::new();
+        let file: &'static str = static_create_location.file();
+        hasher.hash(file.as_bytes());
+        hasher.write_u32(static_create_location.line());
+        hasher.write_u32(static_create_location.column());
+        let static_create_location_hash = hasher.finish();
+        hasher.write_u64(static_create_location_hash);
+        hasher.write_u64(parent_task_signature);
+        hasher.write_u32(create_location_counter);
+        let signature_hash = hasher.finish();
+
+        Self {
             static_create_location,
             parent_task_signature,
-            static_create_location_hash: 0,
+            static_create_location_hash,
             create_location_counter,
-            signature_hash: 0,
-        };
-
-        rs.static_create_location.hash(&mut hasher);
-        rs.static_create_location_hash = hasher.finish();
-
-        rs.hash(&mut hasher);
-        rs.signature_hash = hasher.finish();
-
-        rs
+            signature_hash,
+        }
     }
 
     /// Hash of the static location within the source code where the task was spawned

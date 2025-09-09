@@ -3,7 +3,7 @@ use crate::current;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{clock::VectorClock, TaskId};
 use crate::runtime::thread;
-use crate::sync::{ResourceSignatureData, TypedResourceSignature};
+use crate::sync::{ResourceSignature, ResourceSignatureData};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -290,7 +290,7 @@ pub struct BatchSemaphore {
     state: RefCell<BatchSemaphoreState>,
     fairness: Fairness,
     #[allow(unused)]
-    signature: TypedResourceSignature,
+    signature: ResourceSignature,
 }
 
 /// Error returned from the [`BatchSemaphore::try_acquire`] function.
@@ -331,11 +331,11 @@ impl BatchSemaphore {
         Self::new_internal(
             num_permits,
             fairness,
-            TypedResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature()),
+            ResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature()),
         )
     }
 
-    pub(crate) fn new_internal(num_permits: usize, fairness: Fairness, signature: TypedResourceSignature) -> Self {
+    pub(crate) fn new_internal(num_permits: usize, fairness: Fairness, signature: ResourceSignature) -> Self {
         let state = RefCell::new(BatchSemaphoreState {
             id: Some(crate::annotations::record_semaphore_created()),
             waiters: VecDeque::new(),
@@ -355,14 +355,14 @@ impl BatchSemaphore {
         Self::const_new_internal(
             num_permits,
             fairness,
-            TypedResourceSignature::BatchSemaphore(ResourceSignatureData::new_const()),
+            ResourceSignature::BatchSemaphore(ResourceSignatureData::new_const()),
         )
     }
 
     pub(crate) const fn const_new_internal(
         num_permits: usize,
         fairness: Fairness,
-        signature: TypedResourceSignature,
+        signature: ResourceSignature,
     ) -> Self {
         let state = RefCell::new(BatchSemaphoreState {
             id: None,
@@ -634,7 +634,7 @@ impl Default for BatchSemaphore {
         Self::new_internal(
             Default::default(),
             Fairness::StrictlyFair,
-            TypedResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature()),
+            ResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature()),
         )
     }
 }
@@ -793,7 +793,7 @@ impl crate::annotations::WithName for BatchSemaphore {
 
 impl BatchSemaphore {
     #[cfg(test)]
-    pub(crate) fn signature(&self) -> &TypedResourceSignature {
+    pub(crate) fn signature(&self) -> &ResourceSignature {
         &self.signature
     }
 }

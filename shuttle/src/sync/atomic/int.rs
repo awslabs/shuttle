@@ -180,7 +180,7 @@ macro_rules! atomic_int {
             }
 
             #[cfg(test)]
-            pub(crate) fn signature(&self) -> crate::sync::TypedResourceSignature {
+            pub(crate) fn signature(&self) -> crate::sync::ResourceSignature {
                 self.inner.signature()
             }
         }

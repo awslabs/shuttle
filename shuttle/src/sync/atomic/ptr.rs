@@ -1,6 +1,6 @@
 use crate::sync::atomic::Atomic;
 #[cfg(test)]
-use crate::sync::TypedResourceSignature;
+use crate::sync::ResourceSignature;
 use std::sync::atomic::Ordering;
 
 /// A raw pointer type which can be safely shared between threads.
@@ -129,7 +129,7 @@ impl<T> AtomicPtr<T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn signature(&self) -> TypedResourceSignature {
+    pub(crate) fn signature(&self) -> ResourceSignature {
         self.inner.signature()
     }
 }
