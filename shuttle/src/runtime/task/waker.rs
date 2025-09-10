@@ -38,7 +38,7 @@ unsafe fn raw_waker_wake(data: *const ()) {
             return;
         }
 
-        waiter.wake();
+        waiter.wake_pending();
     });
 }
 

@@ -2,7 +2,12 @@
 //!
 //! Timing primitives allow Shuttle tests to interact with wall-clock time in a deterministic manner
 
-use std::{cmp::Reverse, collections::BinaryHeap, rc::Rc, time::Duration};
+use std::{
+    cmp::{max, Reverse},
+    collections::BinaryHeap,
+    rc::Rc,
+    time::Duration,
+};
 
 use crate::{
     current::TaskId,
@@ -59,6 +64,8 @@ pub fn from_config(config: TimeModelConfig) -> Box<dyn TimeModel> {
 pub trait TimeModel {
     /// sleep
     fn sleep(&mut self, duration: Duration);
+    /// wake the next sleeping task if all tasks are blocked
+    fn wake_next(&mut self);
     /// reset
     fn reset(&mut self);
     /// step
@@ -87,6 +94,24 @@ impl ConstantSteppedModel {
             waiters: BinaryHeap::new(),
         }
     }
+
+    fn unblock_expired(&mut self, state: &mut ExecutionState) {
+        while let Some(id) = self
+            .waiters
+            .peek()
+            .map(|Reverse((t, id))| {
+                if *t <= self.current_time_elapsed {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+        {
+            _ = self.waiters.pop();
+            state.get_mut(id).unblock();
+        }
+    }
 }
 
 impl TimeModel for ConstantSteppedModel {
@@ -104,21 +129,7 @@ impl TimeModel for ConstantSteppedModel {
 
     fn step(&mut self) {
         self.current_time_elapsed += self.current_step_size;
-        while let Some(id) = self
-            .waiters
-            .peek()
-            .map(|Reverse((t, id))| {
-                if *t <= self.current_time_elapsed {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
-            .flatten()
-        {
-            _ = self.waiters.pop();
-            ExecutionState::with(|s| s.get_mut(id).unblock());
-        }
+        ExecutionState::with(|s| self.unblock_expired(s));
     }
 
     fn reset(&mut self) {
@@ -131,6 +142,14 @@ impl TimeModel for ConstantSteppedModel {
         Instant {
             simulated_time_since_start: self.current_time_elapsed,
         }
+    }
+
+    fn wake_next(&mut self) {
+        if let Some(Reverse((time, _))) = self.waiters.peek() {
+            self.current_time_elapsed = max(self.current_time_elapsed, *time);
+        }
+
+        ExecutionState::with(|s| self.unblock_expired(s));
     }
 }
 
