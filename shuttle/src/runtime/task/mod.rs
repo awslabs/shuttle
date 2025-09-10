@@ -214,12 +214,12 @@ impl TaskSignature {
 
     /// Combined signature of the static location and dynamic context
     /// context where the task was spawned.
-    pub(crate) fn signature_hash(self: &TaskSignature) -> u64 {
+    pub(crate) fn signature_hash(&self) -> u64 {
         self.signature_hash
     }
 
     /// Signature hash of the parent of this task
-    pub(crate) fn parent_signature_hash(self: &TaskSignature) -> u64 {
+    pub(crate) fn parent_signature_hash(&self) -> u64 {
         self.parent_signature_hash
     }
 }

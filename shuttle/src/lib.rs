@@ -327,9 +327,9 @@ pub fn check_urw<F>(f: F, iterations: usize)
 where
     F: Fn() + Send + Sync + 'static,
 {
-    use crate::scheduler::UniformRandomScheduler;
+    use crate::scheduler::UrwRandomScheduler;
 
-    let runner = Runner::new(UniformRandomScheduler::new(iterations), Default::default());
+    let runner = Runner::new(UrwRandomScheduler::new(iterations), Default::default());
     runner.run(f);
 }
 

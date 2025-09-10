@@ -7,20 +7,31 @@ use rand::seq::SliceRandom;
 use rand::{RngCore, SeedableRng};
 use rand_pcg::Pcg64Mcg;
 use std::collections::{HashMap, HashSet};
-use tracing::{info, trace, warn};
+use tracing::{trace, warn};
 
-/// A scheduler which implements Uniform Random Walk (URW) from "Selectively Uniform Concurrency Testing" by Huan Zhao,
-/// Dylan Wolff, Umang Mathur, and Abhik Roychoudhury - [ASPLOS '25](https://dl.acm.org/doi/abs/10.1145/3669940.3707214).
-/// The URW algorithm samples all interleavings *uniformly* given an accurate estimate of the number of events which will
-/// take place on each task. This implementation uses a single trial run of the program to generate these estimates.
-/// During the trial run, it uses vanilla random walk for scheduling (identical to [`crate::scheduler::RandomScheduler`]).
-/// As discussed in the paper, the event count for a task is equal to the number of scheduling points remaining on that
-/// task added to the sum of event counts over each of the task's yet-to-be-spawned children.
+type SignatureHash = u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(unused)]
+enum URWState {
+    Estimating,
+    EstimatedNotInitialized,
+    Initialized,
+}
+
+/// A scheduler which implements Uniform Random Walk (URW).
 ///
-/// The RNG used is contained within the scheduler, allowing it to be reused across executions in order to get different
-/// random schedules each time
+/// The URW algorithm comes from the paper "Selectively Uniform Concurrency Testing", Huan Zhao, Dylan Wolff,
+/// Umang Mathur, and Abhik Roychoudhury, ASPLOS 2025. This algorithm samples all interleavings *uniformly* given
+/// an accurate estimate of the number of events which will take place on each task. This implementation uses a
+/// single trial run of the program to generate these estimates. During the trial run, it uses vanilla random walk
+/// for scheduling (identical to [`crate::scheduler::RandomScheduler`]). As discussed in the paper, the event count
+/// for a task is equal to the number of scheduling points remaining on that task added to the sum of event counts
+/// over each of the task's yet-to-be-spawned children.
+///
+/// [Selectively Uniform Concurrency Testing]: https://dl.acm.org/doi/abs/10.1145/3669940.3707214
 #[derive(Debug)]
-pub struct UniformRandomScheduler {
+pub struct UrwRandomScheduler {
     max_iterations: usize,
     rng: Pcg64Mcg,
     iterations: usize,
@@ -28,12 +39,17 @@ pub struct UniformRandomScheduler {
     /// Number of events remaining on each task in the current execution
     task_event_counts: Option<Vec<usize>>,
     /// Event count estimates for each task by signature
-    signature_event_counts: HashMap<u64, usize>,
+    signature_event_counts: HashMap<SignatureHash, usize>,
+    /// Minimum number events observed for a task
+    min_event_count: usize,
     /// Indicates a parent-child relation between the task with signature .0 and .1
-    signature_parents: Vec<(u64, u64)>,
+    signature_parents: Vec<(SignatureHash, SignatureHash)>,
+    /// The current state of the scheduler
+    #[allow(unused)]
+    state: URWState,
 }
 
-impl UniformRandomScheduler {
+impl UrwRandomScheduler {
     /// Construct a new UniformRandomScheduler with a freshly seeded RNG.
     pub fn new(max_iterations: usize) -> Self {
         Self::new_from_seed(OsRng.next_u64(), max_iterations)
@@ -47,7 +63,7 @@ impl UniformRandomScheduler {
         let seed = match seed_env {
             Ok(s) => match s.as_str().parse::<u64>() {
                 Ok(seed) => {
-                    tracing::info!(
+                    tracing::trace!(
                         "Initializing UniformRandomScheduler with the seed provided by SHUTTLE_RANDOM_SEED: {}",
                         seed
                     );
@@ -67,7 +83,9 @@ impl UniformRandomScheduler {
             data_source: RandomDataSource::initialize(seed),
             task_event_counts: None,
             signature_event_counts: HashMap::new(),
+            min_event_count: usize::MAX,
             signature_parents: Vec::new(),
+            state: URWState::Estimating,
         }
     }
 
@@ -77,7 +95,7 @@ impl UniformRandomScheduler {
     }
 }
 
-impl Scheduler for UniformRandomScheduler {
+impl Scheduler for UrwRandomScheduler {
     fn new_execution(&mut self) -> Option<Schedule> {
         if self.iterations >= self.max_iterations {
             self.signature_event_counts.clear();
@@ -88,20 +106,9 @@ impl Scheduler for UniformRandomScheduler {
             if self.events_counted_but_not_initialized() {
                 // If we have never initialized the event counts before, we need to aggregate the count estimates
                 // from each child task to its parents
-                info!("Finished estimation of event counts for URW");
-                info!(
+                trace!("Finished estimation of event counts for URW");
+                trace!(
                     "Estimated event counts for URW (pre-parent subsumption): {:?}",
-                    self.signature_event_counts
-                );
-                // Iterating in reverse spawn order to ensure counts are propagated to grandparents correctly
-                for (parent_sig, child_sig) in self.signature_parents.iter().rev() {
-                    let child_ct = *self.signature_event_counts.get(child_sig).unwrap();
-                    self.signature_event_counts
-                        .entry(*parent_sig)
-                        .and_modify(|parent_ct| *parent_ct += child_ct);
-                }
-                info!(
-                    "Estimated event counts for URW (post-parent subsumption): {:?}",
                     self.signature_event_counts
                 );
 
@@ -114,6 +121,21 @@ impl Scheduler for UniformRandomScheduler {
                         .collect::<HashSet<_>>()
                         .len()
                         == self.signature_event_counts.len()
+                );
+
+                // Iterating in reverse spawn order to ensure counts are propagated to grandparents correctly
+                for (parent_sig, child_sig) in self.signature_parents.iter().rev() {
+                    let child_ct = *self.signature_event_counts.get(child_sig).unwrap();
+                    self.signature_event_counts
+                        .entry(*parent_sig)
+                        .and_modify(|parent_ct| *parent_ct += child_ct);
+                }
+
+                self.min_event_count = *self.signature_event_counts.values().min().unwrap();
+
+                trace!(
+                    "Estimated event counts for URW (post-parent subsumption): {:?}",
+                    self.signature_event_counts
                 );
 
                 self.task_event_counts = Some(Vec::new());
@@ -144,12 +166,12 @@ impl Scheduler for UniformRandomScheduler {
                         .signature_event_counts
                         .get(&t.signature.signature_hash())
                         .unwrap_or_else(|| {
-                            // TODO: we can probably handle unseen tasks less naively than estimating a single event
+                            // TODO: we can probably handle unseen tasks less naively than estimating the min event count
                             warn!(
                                 "No event count for spawn of task with signature {}",
                                 t.signature.signature_hash()
                             );
-                            &1
+                            &self.min_event_count
                         });
                     task_event_counts.push(child_events);
                     if let Some(ptid) = t.parent_task_id() {
@@ -160,6 +182,7 @@ impl Scheduler for UniformRandomScheduler {
                     panic!("TID's expected to be spawned in ascending order in increments of 1");
                 }
                 // Any runnable task must have at least one remaining event
+                // This is ensured by using `saturating_sub` when decrementing the event counts
                 assert!(task_event_counts[tid] >= 1);
             }
 

@@ -24,7 +24,7 @@ pub use random::RandomScheduler;
 pub use replay::ReplayScheduler;
 pub use round_robin::RoundRobinScheduler;
 pub use uncontrolled_nondeterminism::UncontrolledNondeterminismCheckScheduler;
-pub use urw::UniformRandomScheduler;
+pub use urw::UrwRandomScheduler;
 
 /// A `Schedule` determines the order in which tasks are to be executed
 // TODO would be nice to make this generic in the type of `seed`, but for now all our seeds are u64s
