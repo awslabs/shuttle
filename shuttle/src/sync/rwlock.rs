@@ -62,7 +62,7 @@ impl<T> RwLock<T> {
 
         Self {
             inner: std::sync::RwLock::new(value),
-            semaphore: BatchSemaphore::const_new_internal(
+            semaphore: BatchSemaphore::const_new_with_signature(
                 MAX_READS,
                 Fairness::Unfair,
                 ResourceSignature::RwLock(ResourceSignatureData::new_const()),

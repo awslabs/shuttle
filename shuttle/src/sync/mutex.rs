@@ -38,7 +38,7 @@ impl<T> Mutex<T> {
         let state = MutexState { holder: None };
         Self {
             state: RefCell::new(state),
-            semaphore: BatchSemaphore::const_new_internal(1, Fairness::Unfair, signature),
+            semaphore: BatchSemaphore::const_new_with_signature(1, Fairness::Unfair, signature),
             inner: std::sync::Mutex::new(value),
         }
     }

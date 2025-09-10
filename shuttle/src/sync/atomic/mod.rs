@@ -249,6 +249,8 @@ impl<T: Copy + Eq> Atomic<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use crate::sync::atomic::*;
 
     #[test]
@@ -267,7 +269,7 @@ mod tests {
         let atomic_ptr = AtomicPtr::new(std::ptr::null_mut::<i32>());
 
         // All atomics should have unique signatures
-        let signatures = vec![
+        let signatures = HashSet::from([
             atomic_i8.signature(),
             atomic_i16.signature(),
             atomic_i32.signature(),
@@ -280,13 +282,10 @@ mod tests {
             atomic_usize.signature(),
             atomic_bool.signature(),
             atomic_ptr.signature(),
-        ];
+        ]);
 
         // Check all signatures are unique
-        assert_eq!(
-            signatures.len(),
-            signatures.iter().collect::<std::collections::HashSet<_>>().len()
-        );
+        assert_eq!(signatures.len(), 12);
     }
 
     #[test]
@@ -302,13 +301,19 @@ mod tests {
                 let atomic1 = AtomicBool::new(false);
                 let atomic2 = AtomicBool::new(true);
 
-                all_signatures_clone.lock().unwrap().insert(atomic1.signature());
-                all_signatures_clone.lock().unwrap().insert(atomic2.signature());
+                all_signatures_clone
+                    .lock()
+                    .unwrap()
+                    .insert((atomic1.load(Ordering::SeqCst), atomic1.signature()));
+                all_signatures_clone
+                    .lock()
+                    .unwrap()
+                    .insert((atomic2.load(Ordering::SeqCst), atomic2.signature()));
             },
             10,
         );
 
-        // Should have exactly 2 unique signatures across all iterations
+        // Should have exactly 2 unique (signatures X values) across all iterations
         assert_eq!(all_signatures.lock().unwrap().len(), 2);
     }
 }

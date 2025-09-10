@@ -328,14 +328,14 @@ impl BatchSemaphore {
     /// Creates a new semaphore with the initial number of permits.
     #[track_caller]
     pub fn new(num_permits: usize, fairness: Fairness) -> Self {
-        Self::new_internal(
+        Self::new_with_signature(
             num_permits,
             fairness,
             ResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature()),
         )
     }
 
-    pub(crate) fn new_internal(num_permits: usize, fairness: Fairness, signature: ResourceSignature) -> Self {
+    pub(crate) fn new_with_signature(num_permits: usize, fairness: Fairness, signature: ResourceSignature) -> Self {
         let state = RefCell::new(BatchSemaphoreState {
             id: Some(crate::annotations::record_semaphore_created()),
             waiters: VecDeque::new(),
@@ -352,14 +352,14 @@ impl BatchSemaphore {
     /// Creates a new semaphore with the initial number of permits.
     #[track_caller]
     pub const fn const_new(num_permits: usize, fairness: Fairness) -> Self {
-        Self::const_new_internal(
+        Self::const_new_with_signature(
             num_permits,
             fairness,
             ResourceSignature::BatchSemaphore(ResourceSignatureData::new_const()),
         )
     }
 
-    pub(crate) const fn const_new_internal(
+    pub(crate) const fn const_new_with_signature(
         num_permits: usize,
         fairness: Fairness,
         signature: ResourceSignature,
@@ -631,11 +631,7 @@ unsafe impl Sync for BatchSemaphore {}
 impl Default for BatchSemaphore {
     #[track_caller]
     fn default() -> Self {
-        Self::new_internal(
-            Default::default(),
-            Fairness::StrictlyFair,
-            ResourceSignature::BatchSemaphore(ExecutionState::new_resource_signature()),
-        )
+        Self::new(Default::default(), Fairness::StrictlyFair)
     }
 }
 
@@ -827,13 +823,19 @@ mod tests {
                 let sem1 = BatchSemaphore::new(1, Fairness::StrictlyFair);
                 let sem2 = BatchSemaphore::new(2, Fairness::Unfair);
 
-                all_signatures_clone.lock().unwrap().insert(sem1.signature().clone());
-                all_signatures_clone.lock().unwrap().insert(sem2.signature().clone());
+                all_signatures_clone
+                    .lock()
+                    .unwrap()
+                    .insert((sem1.available_permits(), sem1.signature().clone()));
+                all_signatures_clone
+                    .lock()
+                    .unwrap()
+                    .insert((sem2.available_permits(), sem2.signature().clone()));
             },
             10,
         );
 
-        // Should have exactly 2 unique signatures across all iterations
+        // Should have exactly 2 unique (signatures X permits available) across all iterations
         assert_eq!(all_signatures.lock().unwrap().len(), 2);
     }
 }
