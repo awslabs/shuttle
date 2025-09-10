@@ -244,7 +244,7 @@ pub struct Config {
     pub record_steps_in_span: bool,
 
     /// The model of wall-clock time used by Shuttle
-    pub time_model : TimeModelConfig,
+    pub time_model: TimeModelConfig,
 }
 
 impl Config {

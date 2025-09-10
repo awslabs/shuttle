@@ -5,6 +5,7 @@ use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use std::marker::PhantomData;
 use std::panic::Location;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -320,10 +321,12 @@ pub fn yield_now() {
     thread::switch();
 }
 
-/// Puts the current thread to sleep for at least the specified amount of time.
-// Note that Shuttle does not model time, so this behaves just like a context switch.
-pub fn sleep(_dur: Duration) {
-    thread::switch();
+/// Puts the current thread to sleep
+/// Behavior of this function depends on the TimeModel provided to Shuttle
+pub fn sleep(dur: Duration) {
+    ExecutionState::with(|s| Rc::clone(&s.time_model))
+        .borrow_mut()
+        .sleep(dur);
 }
 
 /// Get a handle to the thread that invokes it

@@ -261,6 +261,7 @@ pub(crate) fn switch() {
         let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
         assert!(matches!(r, ContinuationInput::Resume));
     }
+    ExecutionState::with(|s| Rc::clone(&s.time_model)).borrow_mut().step();
 }
 
 #[cfg(test)]

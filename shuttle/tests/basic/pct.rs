@@ -18,7 +18,7 @@ fn figure5() {
 
     thread::spawn(move || {
         for _ in 0..TEST_LENGTH {
-            thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_nanos(1));
         }
 
         *lock_clone.lock().unwrap() = 1;
@@ -78,7 +78,7 @@ fn yield_spin_loop(use_yield: bool) {
             if use_yield {
                 thread::yield_now();
             } else {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
         }
     });
@@ -110,21 +110,21 @@ fn figure1a_pct() {
 
         thread::spawn(move || {
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
             *t1.lock().unwrap() = Some(1);
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
         });
 
         thread::spawn(move || {
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
             let _ = t2.lock().unwrap().expect("null dereference");
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
         });
     });
@@ -141,7 +141,7 @@ fn figure1b(num_threads: usize) {
     for _ in 0..num_threads - 2 {
         thread::spawn(|| {
             for _ in 0..5 {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
         });
     }
@@ -149,17 +149,17 @@ fn figure1b(num_threads: usize) {
     // Main worker threads take 10 steps each
     thread::spawn(move || {
         for _ in 0..5 {
-            thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_nanos(1));
         }
         *x1.lock().unwrap() = None;
         for _ in 0..4 {
-            thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_nanos(1));
         }
     });
 
     thread::spawn(move || {
         for _ in 0..4 {
-            thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_nanos(1));
         }
         let b = {
             let b = x2.lock().unwrap().is_some();
@@ -169,7 +169,7 @@ fn figure1b(num_threads: usize) {
             let _ = x2.lock().unwrap().expect("null dereference");
         }
         for _ in 0..4 {
-            thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_nanos(1));
         }
     });
 }
@@ -216,30 +216,30 @@ fn figure_1c() {
 
         thread::spawn(move || {
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
             let a = a1.lock().unwrap();
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
             let b = b1.lock().unwrap();
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
             assert_eq!(*a + *b, 0)
         });
 
         thread::spawn(move || {
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
             let b = b2.lock().unwrap();
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
             let a = a2.lock().unwrap();
             for _ in 0..COUNT {
-                thread::sleep(Duration::from_millis(1));
+                thread::sleep(Duration::from_nanos(1));
             }
             assert_eq!(*a + *b, 0);
         });

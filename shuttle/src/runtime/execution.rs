@@ -5,7 +5,7 @@ use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::sync::time::{from_config, TimeModel};
+use crate::sync::time::{ConstantSteppedModel, ConstantTimeDistribution, TimeModel};
 use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
@@ -18,6 +18,7 @@ use std::future::Future;
 use std::panic::{self, Location};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{trace, Span};
 
 #[allow(deprecated)]
@@ -48,6 +49,7 @@ thread_local! {
 /// static variable, but clients get access to it by calling `ExecutionState::with`.
 pub(crate) struct Execution {
     scheduler: Rc<RefCell<dyn Scheduler>>,
+    time_model: Rc<RefCell<dyn TimeModel>>,
     initial_schedule: Schedule,
 }
 
@@ -57,6 +59,9 @@ impl Execution {
     pub(crate) fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
         Self {
             scheduler,
+            time_model: Rc::new(RefCell::new(ConstantSteppedModel::new(ConstantTimeDistribution::new(
+                Duration::from_micros(10),
+            )))),
             initial_schedule,
         }
     }
@@ -77,6 +82,7 @@ impl Execution {
         let state = RefCell::new(ExecutionState::new(
             config.clone(),
             Rc::clone(&self.scheduler),
+            Rc::clone(&self.time_model),
             self.initial_schedule.clone(),
         ));
 
@@ -93,6 +99,7 @@ impl Execution {
             // Run the test to completion
             while self.step(config) {}
 
+            self.time_model.borrow_mut().reset();
             // Cleanup the state before it goes out of `EXECUTION_STATE` scope
             ExecutionState::cleanup();
         });
@@ -281,7 +288,8 @@ pub(crate) struct ExecutionState {
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
-    pub(crate) time_model : Box<dyn TimeModel>,
+    #[allow(unused)]
+    pub(crate) time_model: Rc<RefCell<dyn TimeModel>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -306,8 +314,12 @@ impl ScheduledTask {
 }
 
 impl ExecutionState {
-    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
-        let time_model = from_config(config.time_model);
+    fn new(
+        config: Config,
+        scheduler: Rc<RefCell<dyn Scheduler>>,
+        time_model: Rc<RefCell<dyn TimeModel>>,
+        initial_schedule: Schedule,
+    ) -> Self {
         Self {
             config,
             tasks: SmallVec::new(),
