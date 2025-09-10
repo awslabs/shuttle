@@ -9,16 +9,16 @@ use rand_pcg::Pcg64Mcg;
 use std::collections::{HashMap, HashSet};
 use tracing::{info, trace, warn};
 
-/// A scheduler which implements Uniform Random Walk (URW) from "Selectively Uniform Concurrency Testing" by
-/// Huan Zhao, Dylan Wolff, Umang Mathur, and Abhik Roychoudhury - ASPLOS '25. The URW algorithm samples
-/// all interleavings *uniformly* given an accurate estimate of the number of events which will take place
-/// on each task. This implementation uses a single trial run of the program to generate these estimates.
-/// During the trial run, it uses vanilla random walk (the same algorithm as [`crate::scheduler::RandomScheduler`]).
-/// As discussed in the paper, parent Tasks subsume the count estimates of each child until the child is spawned.
+/// A scheduler which implements Uniform Random Walk (URW) from "Selectively Uniform Concurrency Testing" by Huan Zhao,
+/// Dylan Wolff, Umang Mathur, and Abhik Roychoudhury - [ASPLOS '25](https://dl.acm.org/doi/abs/10.1145/3669940.3707214).
+/// The URW algorithm samples all interleavings *uniformly* given an accurate estimate of the number of events which will
+/// take place on each task. This implementation uses a single trial run of the program to generate these estimates.
+/// During the trial run, it uses vanilla random walk for scheduling (identical to [`crate::scheduler::RandomScheduler`]).
+/// As discussed in the paper, the event count for a task is equal to the number of scheduling points remaining on that
+/// task added to the sum of event counts over each of the task's yet-to-be-spawned children.
 ///
-/// The RNG used is contained within the scheduler, allowing it to be reused across executions in
-/// order to get different random schedules each time. The scheduler has an optional bias towards
-/// remaining on the current task.
+/// The RNG used is contained within the scheduler, allowing it to be reused across executions in order to get different
+/// random schedules each time
 #[derive(Debug)]
 pub struct UniformRandomScheduler {
     max_iterations: usize,
