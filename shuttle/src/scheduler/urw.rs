@@ -9,7 +9,14 @@ use rand_pcg::Pcg64Mcg;
 use std::collections::{HashMap, HashSet};
 use tracing::{trace, warn};
 
-type SignatureHash = u64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SignatureHash(u64);
+
+impl From<u64> for SignatureHash {
+    fn from(value: u64) -> Self {
+        SignatureHash(value)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum UrwSchedulerState {
@@ -88,6 +95,8 @@ impl UrwRandomScheduler {
     }
 
     fn initialize_estimates_from_observed_counts(&mut self) {
+        assert_eq!(self.state, UrwSchedulerState::Estimating);
+
         // If we have never initialized the event counts before, we need to aggregate the count estimates
         // from each child task to its parents
         trace!("Finished estimation of event counts for URW");
@@ -138,7 +147,7 @@ impl UrwRandomScheduler {
                 // Spawn: should remove child events from the parent and map remaining events to the correct task id
                 let child_events = *self
                     .signature_event_counts
-                    .get(&t.signature.signature_hash())
+                    .get(&t.signature.signature_hash().into())
                     .unwrap_or_else(|| {
                         // TODO: we can probably handle unseen tasks less naively than estimating the min event count
                         warn!(
@@ -204,12 +213,14 @@ impl Scheduler for UrwRandomScheduler {
 
                 // If we don't have event counts yet, use the current run to estimate event counts (1-shot)
                 self.signature_event_counts
-                    .entry(t.signature.signature_hash())
+                    .entry(t.signature.signature_hash().into())
                     .and_modify(|c| *c += 1)
                     .or_insert_with(|| {
                         // Spawn
-                        self.signature_parents
-                            .push((t.signature.parent_signature_hash(), t.signature.signature_hash()));
+                        self.signature_parents.push((
+                            t.signature.parent_signature_hash().into(),
+                            t.signature.signature_hash().into(),
+                        ));
                         1
                     });
 
