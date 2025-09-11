@@ -321,6 +321,18 @@ where
     runner.run(f);
 }
 
+/// Run the given function under a *uniformly* random scheduler for some number of iterations.
+/// Each iteration will run a (potentially) different randomized schedule.
+pub fn check_urw<F>(f: F, iterations: usize)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    use crate::scheduler::UrwRandomScheduler;
+
+    let runner = Runner::new(UrwRandomScheduler::new(iterations), Default::default());
+    runner.run(f);
+}
+
 /// Run the given function under a randomized concurrency scheduler for some number of iterations.
 /// Each iteration will run a (potentially) different randomized schedule.
 pub fn check_random<F>(f: F, iterations: usize)
