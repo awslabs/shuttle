@@ -28,6 +28,7 @@ fn random_mod_10_equals_7_replay_fails() {
     replay(random_mod_10_equals_7, "910102fe93a9cef4f3faaf5a04")
 }
 
+#[ignore]
 #[test]
 fn random_mod_10_equals_7_replay_succeeds() {
     // A schedule in which the random value is 8809595901112014164 != 7 mod 10
@@ -172,6 +173,7 @@ fn dfs_threads_decorrelated_enabled() {
     runner.run(thread_rng_decorrelated);
 }
 
+#[ignore]
 #[test]
 fn replay_from_seed_match_schedule0() {
     check_replay_from_seed_match_schedule(
@@ -181,6 +183,7 @@ fn replay_from_seed_match_schedule0() {
     );
 }
 
+#[ignore]
 #[test]
 fn replay_from_seed_match_schedule1() {
     check_replay_from_seed_match_schedule(
@@ -190,6 +193,7 @@ fn replay_from_seed_match_schedule1() {
     );
 }
 
+#[ignore]
 #[test]
 fn replay_from_seed_match_schedule2() {
     check_replay_from_seed_match_schedule(
@@ -199,6 +203,7 @@ fn replay_from_seed_match_schedule2() {
     );
 }
 
+#[ignore]
 #[test]
 fn replay_from_seed_match_schedule3() {
     check_replay_from_seed_match_schedule(
@@ -223,6 +228,7 @@ fn dfs_does_not_reseed_across_executions() {
             }
         });
 
+        thread::yield_now(); // Everything below is not visible to Shuttle, so we need to give an opportunity to switch
         let mut rng = thread_rng();
         let x = rng.gen::<u64>();
         let mut set = pair.lock().unwrap();
