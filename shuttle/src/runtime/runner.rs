@@ -135,7 +135,7 @@ impl<S: Scheduler + 'static, T: TimeModel + 'static> Runner<S, T> {
 /// A `PortfolioRunner` is the same as a `Runner`, except that it can run multiple different
 /// schedulers (a "portfolio" of schedulers) in parallel. If any of the schedulers finds a failing
 /// execution of the test, the entire run fails.
-pub struct PortfolioRunner<T: ?Sized + TimeModel + Clone + Send> {
+pub struct PortfolioRunner<T: TimeModel + Clone + Send> {
     schedulers: Vec<Box<dyn Scheduler + Send + 'static>>,
     time_model: Box<T>,
     stop_on_first_failure: bool,
