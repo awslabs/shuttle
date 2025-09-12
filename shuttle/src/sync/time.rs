@@ -5,11 +5,11 @@
 use std::{
     cmp::{max, Reverse},
     collections::BinaryHeap,
+    ops::{Add, AddAssign, Sub, SubAssign},
     rc::Rc,
-    time::Duration,
 };
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{current::TaskId, runtime::execution::ExecutionState};
 
@@ -71,6 +71,10 @@ pub trait TimeModel {
     fn step(&mut self);
     /// instant
     fn instant(&self) -> Instant;
+    /// pause
+    fn pause(&mut self);
+    /// resume
+    fn resume(&mut self);
 }
 
 /// A time model where time advances by a constant amount for each step
@@ -95,18 +99,13 @@ impl ConstantSteppedModel {
     }
 
     fn unblock_expired(&mut self, state: &mut ExecutionState) {
-        while let Some(id) = self
-            .waiters
-            .peek()
-            .map(|Reverse((t, id))| {
-                if *t <= self.current_time_elapsed {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
-            .flatten()
-        {
+        while let Some(id) = self.waiters.peek().and_then(|Reverse((t, id))| {
+            if *t <= self.current_time_elapsed {
+                Some(*id)
+            } else {
+                None
+            }
+        }) {
             _ = self.waiters.pop();
             state.get_mut(id).unblock();
         }
@@ -114,12 +113,16 @@ impl ConstantSteppedModel {
 }
 
 impl TimeModel for ConstantSteppedModel {
+    fn pause(&mut self) {
+        warn!("Pausing stepped model has no effect")
+    }
+
+    fn resume(&mut self) {
+        warn!("Resuming stepped model has no effect")
+    }
+
     fn sleep(&mut self, duration: Duration) {
         debug!("sleep");
-        // TODO: sleeping should not cause deadlocks
-        // Hack 1: don't sleep if only one runnable task, should get some tests passing
-        // Eventually, we need another TaskState which is Sleeping (rename sleep to something else)
-        // Execution state can fast-forward the time to unblock sleepers if no tasks are runnable
         if duration < self.current_step_size {
             return;
         }
@@ -157,21 +160,45 @@ impl TimeModel for ConstantSteppedModel {
     }
 }
 
+/// A Shuttle Duration for stepped time
+pub type Duration = std::time::Duration;
+
 /// Simulated instant, measured from the start of the execution
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Instant {
     simulated_time_since_start: Duration,
 }
 
+// SAFETY: Instant is never actually passed across threads, only across continuations.
+// The Duration type is Send + Sync, so Instant can be as well.
+unsafe impl Send for Instant {}
+unsafe impl Sync for Instant {}
+
 impl Instant {
-    #[allow(unused)]
     fn duration_since(&self, earlier: Instant) -> Duration {
         self.simulated_time_since_start - earlier.simulated_time_since_start
     }
 
     #[allow(unused)]
+    fn checked_duration_since(&self, earlier: Instant) -> Option<Duration> {
+        if self.simulated_time_since_start > earlier.simulated_time_since_start {
+            Some(self.duration_since(earlier))
+        } else {
+            None
+        }
+    }
+
+    fn saturating_duration_since(&self, earlier: Instant) -> Duration {
+        if self.simulated_time_since_start > earlier.simulated_time_since_start {
+            self.duration_since(earlier)
+        } else {
+            Duration::from_nanos(0)
+        }
+    }
+
+    #[allow(unused)]
     fn elapsed(&self) -> Duration {
-        self.simulated_time_since_start
+        self.duration_since(Instant::now())
     }
 
     #[allow(unused)]
@@ -179,5 +206,45 @@ impl Instant {
         let tm = ExecutionState::with(|s| Rc::clone(&s.time_model));
         let r = tm.borrow_mut().instant();
         r
+    }
+}
+
+impl Add<Duration> for Instant {
+    type Output = Instant;
+
+    fn add(self, other: Duration) -> Instant {
+        Instant {
+            simulated_time_since_start: self.simulated_time_since_start + other,
+        }
+    }
+}
+
+impl AddAssign<Duration> for Instant {
+    fn add_assign(&mut self, other: Duration) {
+        self.simulated_time_since_start += other;
+    }
+}
+
+impl Sub<Duration> for Instant {
+    type Output = Instant;
+
+    fn sub(self, other: Duration) -> Instant {
+        Instant {
+            simulated_time_since_start: self.simulated_time_since_start - other,
+        }
+    }
+}
+
+impl Sub<Instant> for Instant {
+    type Output = Duration;
+
+    fn sub(self, other: Instant) -> Duration {
+        self.saturating_duration_since(other)
+    }
+}
+
+impl SubAssign<Duration> for Instant {
+    fn sub_assign(&mut self, other: Duration) {
+        self.simulated_time_since_start -= other;
     }
 }
