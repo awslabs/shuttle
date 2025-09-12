@@ -38,20 +38,21 @@ const CONST_CONTEXT_SIGNATURE: u64 = 0;
 /// `const` constructors cannot provide any *runtime* context to their signatures, so any
 /// two resources created at the same source location will collide.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub(crate) enum ResourceSignature {
-    Atomic(ResourceSignatureData),
-    BatchSemaphore(ResourceSignatureData),
-    Barrier(ResourceSignatureData),
-    Condvar(ResourceSignatureData),
-    Mutex(ResourceSignatureData),
-    RwLock(ResourceSignatureData),
-    Once(ResourceSignatureData),
-    MpscChannel(ResourceSignatureData),
+pub(crate) enum ResourceType {
+    Atomic,
+    BatchSemaphore,
+    Barrier,
+    Condvar,
+    Mutex,
+    RwLock,
+    Once,
+    MpscChannel,
 }
 
 #[allow(unused)]
 #[derive(Clone, Debug)]
-pub(crate) struct ResourceSignatureData {
+pub(crate) struct ResourceSignature {
+    resource_type: ResourceType,
     static_create_location: &'static Location<'static>,
     parent_task_signature: u64,
     create_location_counter: u32,
@@ -59,14 +60,15 @@ pub(crate) struct ResourceSignatureData {
     signature_hash: u64,
 }
 
-impl ResourceSignatureData {
+impl ResourceSignature {
     #[track_caller]
-    pub(crate) const fn new_const() -> Self {
+    pub(crate) const fn new_const(resource_type: ResourceType) -> Self {
         let static_create_location = Location::caller();
-        Self::new(static_create_location, CONST_CONTEXT_SIGNATURE, 1)
+        Self::new(resource_type, static_create_location, CONST_CONTEXT_SIGNATURE, 1)
     }
 
     pub(crate) const fn new(
+        resource_type: ResourceType,
         static_create_location: &'static Location<'static>,
         parent_task_signature: u64,
         create_location_counter: u32,
@@ -83,6 +85,7 @@ impl ResourceSignatureData {
         let signature_hash = hasher.finish();
 
         Self {
+            resource_type,
             static_create_location,
             parent_task_signature,
             static_create_location_hash,
@@ -103,7 +106,7 @@ impl ResourceSignatureData {
     }
 }
 
-impl Hash for ResourceSignatureData {
+impl Hash for ResourceSignature {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.static_create_location_hash().hash(state);
         self.parent_task_signature.hash(state);
@@ -111,10 +114,10 @@ impl Hash for ResourceSignatureData {
     }
 }
 
-impl PartialEq for ResourceSignatureData {
+impl PartialEq for ResourceSignature {
     fn eq(&self, other: &Self) -> bool {
         self.signature_hash() == other.signature_hash()
     }
 }
 
-impl Eq for ResourceSignatureData {}
+impl Eq for ResourceSignature {}

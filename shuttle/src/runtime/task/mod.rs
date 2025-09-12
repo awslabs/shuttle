@@ -5,7 +5,7 @@ use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::{ContinuationPool, PooledContinuation};
-use crate::sync::ResourceSignatureData;
+use crate::sync::{ResourceSignature, ResourceType};
 use crate::thread::LocalKey;
 use bitvec::prelude::*;
 use std::any::Any;
@@ -206,7 +206,7 @@ impl TaskSignature {
     }
 
     #[track_caller]
-    pub(crate) fn new_resource(&mut self) -> ResourceSignatureData {
+    pub(crate) fn new_resource(&mut self, resource_type: ResourceType) -> ResourceSignature {
         let static_create_location = Location::caller();
         let counter = self
             .child_counters
@@ -214,7 +214,7 @@ impl TaskSignature {
             .and_modify(|c| *c += 1)
             .or_insert(1);
 
-        ResourceSignatureData::new(static_create_location, self.signature_hash, *counter)
+        ResourceSignature::new(resource_type, static_create_location, self.signature_hash, *counter)
     }
 
     /// Hash of the static location within the source code where the task was spawned

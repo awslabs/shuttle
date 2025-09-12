@@ -2,7 +2,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
-use crate::sync::ResourceSignature;
+use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
@@ -92,7 +92,7 @@ impl Barrier {
 
         Self {
             state: Rc::new(RefCell::new(state)),
-            signature: ResourceSignature::Barrier(ExecutionState::new_resource_signature()),
+            signature: ExecutionState::new_resource_signature(ResourceType::Barrier),
         }
     }
 

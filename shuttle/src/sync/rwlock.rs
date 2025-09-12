@@ -1,7 +1,7 @@
 use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{TaskId, TaskSet};
-use crate::sync::{ResourceSignature, ResourceSignatureData};
+use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -65,7 +65,7 @@ impl<T> RwLock<T> {
             semaphore: BatchSemaphore::const_new_with_signature(
                 MAX_READS,
                 Fairness::Unfair,
-                ResourceSignature::RwLock(ResourceSignatureData::new_const()),
+                ResourceSignature::new_const(ResourceType::RwLock),
             ),
             state: RefCell::new(state),
         }

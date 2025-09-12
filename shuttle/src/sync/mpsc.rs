@@ -4,7 +4,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
-use crate::sync::ResourceSignature;
+use crate::sync::{ResourceSignature, ResourceType};
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -130,7 +130,7 @@ impl<T> Channel<T> {
                 waiting_senders: SmallVec::new(),
                 waiting_receivers: SmallVec::new(),
             })),
-            signature: ResourceSignature::MpscChannel(ExecutionState::new_resource_signature()),
+            signature: ExecutionState::new_resource_signature(ResourceType::MpscChannel),
         }
     }
 

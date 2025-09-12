@@ -62,7 +62,7 @@ pub use std::sync::atomic::Ordering;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
-use crate::sync::{ResourceSignature, ResourceSignatureData};
+use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::panic::RefUnwindSafe;
 
@@ -142,7 +142,7 @@ impl<T> Atomic<T> {
         Self {
             inner: RefCell::new(v),
             clock: RefCell::new(None),
-            signature: ResourceSignature::Atomic(ResourceSignatureData::new_const()),
+            signature: ResourceSignature::new_const(ResourceType::Atomic),
         }
     }
 }
