@@ -22,6 +22,7 @@ pub use rwlock::RwLock;
 pub use rwlock::RwLockReadGuard;
 pub use rwlock::RwLockWriteGuard;
 
+use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
 use std::panic::Location;
 pub use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
@@ -50,7 +51,7 @@ pub(crate) enum ResourceType {
 }
 
 #[allow(unused)]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct ResourceSignature {
     resource_type: ResourceType,
     static_create_location: &'static Location<'static>,
@@ -103,6 +104,39 @@ impl ResourceSignature {
     /// context where the task was spawned.
     pub(crate) fn signature_hash(&self) -> u64 {
         self.signature_hash
+    }
+}
+
+impl Debug for ResourceSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceSignature")
+            .field("type", &self.resource_type)
+            .field("static_create_location", &self.static_create_location)
+            .field("parent_task_signature", &self.parent_task_signature)
+            .field("create_location_counter", &self.create_location_counter)
+            .finish()
+    }
+}
+
+impl Display for ResourceSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let suffix = match self.create_location_counter {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        };
+        write!(
+            f,
+            "{:?}[ {:?}{}@{}:{:?}:{:?} on {} ]",
+            self.resource_type,
+            self.create_location_counter,
+            suffix,
+            self.static_create_location.file(),
+            self.static_create_location.line(),
+            self.static_create_location.column(),
+            self.parent_task_signature,
+        )
     }
 }
 
