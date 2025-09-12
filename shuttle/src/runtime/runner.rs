@@ -3,6 +3,7 @@ use crate::runtime::task::{Task, TaskId};
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::sync::time::{ConstantSteppedModel, ConstantTimeDistribution, TimeModel};
 use crate::Config;
 use std::cell::RefCell;
 use std::fmt;
@@ -12,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{span, Level};
 
 // A helper struct which on `drop` exits all current spans, then enters the span which was entered when it was constructed.
@@ -52,18 +53,35 @@ impl Drop for ResetSpanOnDrop {
 /// function as many times as dictated by the scheduler; each execution has its scheduling decisions
 /// resolved by the scheduler, which can make different choices for each execution.
 #[derive(Debug)]
-pub struct Runner<S: ?Sized + Scheduler> {
+pub struct Runner<S: ?Sized + Scheduler, T: ?Sized + TimeModel> {
     scheduler: Rc<RefCell<MetricsScheduler<S>>>,
+    time_model: Rc<RefCell<T>>,
     config: Config,
 }
 
-impl<S: Scheduler + 'static> Runner<S> {
+impl<S: Scheduler + 'static> Runner<S, ConstantSteppedModel> {
     /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
     pub fn new(scheduler: S, config: Config) -> Self {
         let metrics_scheduler = MetricsScheduler::new(scheduler);
 
         Self {
             scheduler: Rc::new(RefCell::new(metrics_scheduler)),
+            time_model: Rc::new(RefCell::new(ConstantSteppedModel::new(ConstantTimeDistribution::new(
+                Duration::from_micros(10),
+            )))),
+            config,
+        }
+    }
+}
+
+impl<S: Scheduler + 'static, T: TimeModel + 'static> Runner<S, T> {
+    /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
+    pub fn new_with_time_model(scheduler: S, time_model: T, config: Config) -> Self {
+        let metrics_scheduler = MetricsScheduler::new(scheduler);
+
+        Self {
+            scheduler: Rc::new(RefCell::new(metrics_scheduler)),
+            time_model: Rc::new(RefCell::new(time_model)),
             config,
         }
     }
@@ -96,7 +114,7 @@ impl<S: Scheduler + 'static> Runner<S> {
                     Some(s) => s,
                 };
 
-                let execution = Execution::new(self.scheduler.clone(), schedule);
+                let execution = Execution::new(self.scheduler.clone(), schedule, self.time_model.clone());
                 let f = Arc::clone(&f);
 
                 // This is a slightly lazy way to ensure that everything outside of the "execution" span gets
@@ -117,19 +135,36 @@ impl<S: Scheduler + 'static> Runner<S> {
 /// A `PortfolioRunner` is the same as a `Runner`, except that it can run multiple different
 /// schedulers (a "portfolio" of schedulers) in parallel. If any of the schedulers finds a failing
 /// execution of the test, the entire run fails.
-pub struct PortfolioRunner {
+pub struct PortfolioRunner<T: ?Sized + TimeModel + Clone + Send> {
     schedulers: Vec<Box<dyn Scheduler + Send + 'static>>,
+    time_model: Box<T>,
     stop_on_first_failure: bool,
     config: Config,
 }
-
-impl PortfolioRunner {
+impl PortfolioRunner<ConstantSteppedModel> {
     /// Construct a new `PortfolioRunner` with no schedulers. If `stop_on_first_failure` is true,
     /// all schedulers will be terminated as soon as any fails; if false, they will keep running
     /// and potentially find multiple bugs.
     pub fn new(stop_on_first_failure: bool, config: Config) -> Self {
         Self {
             schedulers: Vec::new(),
+            time_model: Box::new(ConstantSteppedModel::new(ConstantTimeDistribution::new(
+                Duration::from_micros(10),
+            ))),
+            stop_on_first_failure,
+            config,
+        }
+    }
+}
+
+impl<T: TimeModel + Clone + Send + 'static> PortfolioRunner<T> {
+    /// Construct a new `PortfolioRunner` with no schedulers. If `stop_on_first_failure` is true,
+    /// all schedulers will be terminated as soon as any fails; if false, they will keep running
+    /// and potentially find multiple bugs.
+    pub fn new_with_time_model(stop_on_first_failure: bool, time_model: T, config: Config) -> Self {
+        Self {
+            schedulers: Vec::new(),
+            time_model: Box::new(time_model),
             stop_on_first_failure,
             config,
         }
@@ -167,10 +202,11 @@ impl PortfolioRunner {
                 let stop_signal = stop_signal.clone();
                 let config = config.clone();
 
+                let tm = (*self.time_model).clone();
                 thread::spawn(move || {
                     let scheduler = PortfolioStoppableScheduler { scheduler, stop_signal };
 
-                    let runner = Runner::new(scheduler, config);
+                    let runner = Runner::new_with_time_model(scheduler, tm, config);
 
                     span!(Level::ERROR, "job", i).in_scope(|| {
                         let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| runner.run(move || f())));
@@ -209,8 +245,7 @@ impl PortfolioRunner {
         }
     }
 }
-
-impl fmt::Debug for PortfolioRunner {
+impl<T: TimeModel + Clone + Send> fmt::Debug for PortfolioRunner<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("PortfolioRunner")
             .field("schedulers", &self.schedulers.len())

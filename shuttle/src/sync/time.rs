@@ -85,6 +85,8 @@ pub struct ConstantSteppedModel {
     waiters: BinaryHeap<Reverse<(Duration, TaskId)>>,
 }
 
+unsafe impl Send for ConstantSteppedModel {}
+
 impl ConstantSteppedModel {
     /// Create a ConstantSteppedModel
     pub fn new(distribution: ConstantTimeDistribution) -> Self {

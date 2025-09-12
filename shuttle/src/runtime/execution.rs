@@ -5,7 +5,7 @@ use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::sync::time::{ConstantSteppedModel, ConstantTimeDistribution, TimeModel};
+use crate::sync::time::TimeModel;
 use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
@@ -18,7 +18,6 @@ use std::future::Future;
 use std::panic::{self, Location};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{trace, Span};
 
 #[allow(deprecated)]
@@ -56,12 +55,14 @@ pub(crate) struct Execution {
 impl Execution {
     /// Construct a new execution that will use the given scheduler. The execution should then be
     /// invoked via its `run` method, which takes as input the closure for task 0.
-    pub(crate) fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+    pub(crate) fn new(
+        scheduler: Rc<RefCell<dyn Scheduler>>,
+        initial_schedule: Schedule,
+        time_model: Rc<RefCell<dyn TimeModel>>,
+    ) -> Self {
         Self {
             scheduler,
-            time_model: Rc::new(RefCell::new(ConstantSteppedModel::new(ConstantTimeDistribution::new(
-                Duration::from_micros(10),
-            )))),
+            time_model,
             initial_schedule,
         }
     }
