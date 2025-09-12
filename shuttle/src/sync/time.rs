@@ -9,10 +9,9 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    current::TaskId,
-    runtime::{execution::ExecutionState, thread},
-};
+use tracing::debug;
+
+use crate::{current::TaskId, runtime::execution::ExecutionState};
 
 /// A distribution of times which can be sampled
 pub trait TimeDistribution {
@@ -116,18 +115,22 @@ impl ConstantSteppedModel {
 
 impl TimeModel for ConstantSteppedModel {
     fn sleep(&mut self, duration: Duration) {
+        debug!("sleep");
         // TODO: sleeping should not cause deadlocks
         // Hack 1: don't sleep if only one runnable task, should get some tests passing
         // Eventually, we need another TaskState which is Sleeping (rename sleep to something else)
         // Execution state can fast-forward the time to unblock sleepers if no tasks are runnable
+        if duration < self.current_step_size {
+            return;
+        }
         let wake_time = self.current_time_elapsed + duration;
         let item = (wake_time, ExecutionState::with(|s| s.current().id()));
         self.waiters.push(Reverse(item));
         ExecutionState::with(|s| s.current_mut().block(false));
-        thread::switch();
     }
 
     fn step(&mut self) {
+        debug!("step");
         self.current_time_elapsed += self.current_step_size;
         ExecutionState::with(|s| self.unblock_expired(s));
     }
@@ -145,6 +148,7 @@ impl TimeModel for ConstantSteppedModel {
     }
 
     fn wake_next(&mut self) {
+        debug!("wake next");
         if let Some(Reverse((time, _))) = self.waiters.peek() {
             self.current_time_elapsed = max(self.current_time_elapsed, *time);
         }

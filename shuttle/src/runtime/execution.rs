@@ -681,6 +681,10 @@ impl ExecutionState {
         Self::with(|state| state.context_switches)
     }
 
+    pub(crate) fn num_runnable() -> usize {
+        Self::with(|state| state.tasks.iter().filter(|t| t.runnable()).count())
+    }
+
     pub(crate) fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
         self.storage
             .get(key.into())

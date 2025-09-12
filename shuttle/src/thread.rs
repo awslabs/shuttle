@@ -324,9 +324,9 @@ pub fn yield_now() {
 /// Puts the current thread to sleep
 /// Behavior of this function depends on the TimeModel provided to Shuttle
 pub fn sleep(dur: Duration) {
-    ExecutionState::with(|s| Rc::clone(&s.time_model))
-        .borrow_mut()
-        .sleep(dur);
+    let time_model = ExecutionState::with(|s| Rc::clone(&s.time_model));
+    time_model.borrow_mut().sleep(dur);
+    thread::switch();
 }
 
 /// Get a handle to the thread that invokes it
