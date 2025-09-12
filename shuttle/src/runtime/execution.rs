@@ -99,9 +99,9 @@ impl Execution {
             // Run the test to completion
             while self.step(config) {}
 
-            self.time_model.borrow_mut().reset();
             // Cleanup the state before it goes out of `EXECUTION_STATE` scope
             ExecutionState::cleanup();
+            self.time_model.borrow_mut().reset();
         });
     }
 

@@ -59,7 +59,6 @@ pub fn from_config(config: TimeModelConfig) -> Box<dyn TimeModel> {
 }
 
 /// A time model determines how Shuttle models wall-clock time
-#[allow(unused)]
 pub trait TimeModel {
     /// sleep
     fn sleep(&mut self, duration: Duration);
@@ -78,7 +77,6 @@ pub trait TimeModel {
 }
 
 /// A time model where time advances by a constant amount for each step
-#[allow(unused)]
 #[derive(Clone, Debug)]
 pub struct ConstantSteppedModel {
     distribution: ConstantTimeDistribution,
@@ -175,12 +173,23 @@ unsafe impl Send for Instant {}
 unsafe impl Sync for Instant {}
 
 impl Instant {
-    fn duration_since(&self, earlier: Instant) -> Duration {
+    /// Converts a Tokio Instant to a std::Instant. This is a no-op for Shuttle Instants
+    pub fn into_std(self) -> Instant {
+        self
+    }
+
+    /// Converts a std::Instant to a Tokio Instant. This is a no-op for Shuttle Instants
+    pub fn from_std(other: Instant) -> Instant {
+        other
+    }
+
+    /// Returns the amount of time elapsed from another instant to this one
+    pub fn duration_since(&self, earlier: Instant) -> Duration {
         self.simulated_time_since_start - earlier.simulated_time_since_start
     }
 
-    #[allow(unused)]
-    fn checked_duration_since(&self, earlier: Instant) -> Option<Duration> {
+    /// Returns the amount of time elapsed from another instant to this one, or None if that instant is later than this one.
+    pub fn checked_duration_since(&self, earlier: Instant) -> Option<Duration> {
         if self.simulated_time_since_start > earlier.simulated_time_since_start {
             Some(self.duration_since(earlier))
         } else {
@@ -188,7 +197,8 @@ impl Instant {
         }
     }
 
-    fn saturating_duration_since(&self, earlier: Instant) -> Duration {
+    /// Returns the amount of time elapsed from another instant to this one, or zero duration if that instant is later than this one.
+    pub fn saturating_duration_since(&self, earlier: Instant) -> Duration {
         if self.simulated_time_since_start > earlier.simulated_time_since_start {
             self.duration_since(earlier)
         } else {
@@ -196,13 +206,13 @@ impl Instant {
         }
     }
 
-    #[allow(unused)]
-    fn elapsed(&self) -> Duration {
-        self.duration_since(Instant::now())
+    /// Returns the amount of time elapsed since this instant was created
+    pub fn elapsed(&self) -> Duration {
+        Instant::now().duration_since(*self)
     }
 
-    #[allow(unused)]
-    fn now() -> Instant {
+    /// Returns an instant corresponding to "now"
+    pub fn now() -> Instant {
         let tm = ExecutionState::with(|s| Rc::clone(&s.time_model));
         let r = tm.borrow_mut().instant();
         r
