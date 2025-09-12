@@ -3,7 +3,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
-use crate::sync::MutexGuard;
+use crate::sync::{MutexGuard, ResourceSignature, ResourceType};
 use assoc::AssocExt;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -16,6 +16,8 @@ use tracing::trace;
 #[derive(Debug)]
 pub struct Condvar {
     state: RefCell<CondvarState>,
+    #[allow(unused)]
+    signature: ResourceSignature,
 }
 
 #[derive(Debug)]
@@ -115,6 +117,7 @@ enum CondvarWaitStatus {
 // and can run in any order (because they are all contending on the same mutex).
 impl Condvar {
     /// Creates a new condition variable which is ready to be waited on and notified.
+    #[track_caller]
     pub const fn new() -> Self {
         let state = CondvarState {
             waiters: Vec::new(),
@@ -123,6 +126,7 @@ impl Condvar {
 
         Self {
             state: RefCell::new(state),
+            signature: ResourceSignature::new_const(ResourceType::Condvar),
         }
     }
 
@@ -306,5 +310,21 @@ impl WaitTimeoutResult {
     /// Returns `true` if the wait was known to have timed out.
     pub fn timed_out(&self) -> bool {
         self.0
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_resource_signature_condvar() {
+        crate::check_random(
+            || {
+                let condvar1 = Condvar::new();
+                let condvar2 = Condvar::new();
+                assert_ne!(condvar1.signature, condvar2.signature);
+            },
+            1,
+        );
     }
 }

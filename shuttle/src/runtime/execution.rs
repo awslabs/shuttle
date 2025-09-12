@@ -5,6 +5,7 @@ use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::sync::{ResourceSignature, ResourceType};
 use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
@@ -663,6 +664,11 @@ impl ExecutionState {
 
     pub(crate) fn context_switches() -> usize {
         Self::with(|state| state.context_switches)
+    }
+
+    #[track_caller]
+    pub(crate) fn new_resource_signature(resource_type: ResourceType) -> ResourceSignature {
+        ExecutionState::with(|s| s.current_mut().signature.new_resource(resource_type))
     }
 
     pub(crate) fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {

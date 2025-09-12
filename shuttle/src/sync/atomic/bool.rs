@@ -1,4 +1,6 @@
 use crate::sync::atomic::Atomic;
+#[cfg(test)]
+use crate::sync::ResourceSignature;
 use std::sync::atomic::Ordering;
 
 /// A boolean type which can be safely shared between threads.
@@ -26,6 +28,7 @@ impl std::fmt::Debug for AtomicBool {
 
 impl AtomicBool {
     /// Creates a new atomic boolean.
+    #[track_caller]
     pub const fn new(v: bool) -> Self {
         Self { inner: Atomic::new(v) }
     }
@@ -138,5 +141,10 @@ impl AtomicBool {
     /// debugging scenarios where we might want to just print this atomic's value).
     pub unsafe fn raw_load(&self) -> bool {
         self.inner.raw_load()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn signature(&self) -> ResourceSignature {
+        self.inner.signature()
     }
 }

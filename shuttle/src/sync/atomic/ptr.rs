@@ -1,4 +1,6 @@
 use crate::sync::atomic::Atomic;
+#[cfg(test)]
+use crate::sync::ResourceSignature;
 use std::sync::atomic::Ordering;
 
 /// A raw pointer type which can be safely shared between threads.
@@ -31,6 +33,7 @@ unsafe impl<T> Sync for AtomicPtr<T> {}
 
 impl<T> AtomicPtr<T> {
     /// Creates a new `AtomicPtr`.
+    #[track_caller]
     pub const fn new(v: *mut T) -> Self {
         Self { inner: Atomic::new(v) }
     }
@@ -123,5 +126,10 @@ impl<T> AtomicPtr<T> {
     /// debugging scenarios where we might want to just print this atomic's value).
     pub unsafe fn raw_load(&self) -> *mut T {
         self.inner.raw_load()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn signature(&self) -> ResourceSignature {
+        self.inner.signature()
     }
 }

@@ -1,6 +1,7 @@
 use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{TaskId, TaskSet};
+use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -53,6 +54,7 @@ impl RwLockType {
 
 impl<T> RwLock<T> {
     /// Create a new instance of an `RwLock<T>` which is unlocked.
+    #[track_caller]
     pub const fn new(value: T) -> Self {
         let state = RwLockState {
             holder: RwLockHolder::None,
@@ -60,7 +62,11 @@ impl<T> RwLock<T> {
 
         Self {
             inner: std::sync::RwLock::new(value),
-            semaphore: BatchSemaphore::const_new(MAX_READS, Fairness::Unfair),
+            semaphore: BatchSemaphore::const_new_with_signature(
+                MAX_READS,
+                Fairness::Unfair,
+                ResourceSignature::new_const(ResourceType::RwLock),
+            ),
             state: RefCell::new(state),
         }
     }
@@ -413,5 +419,22 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
         drop(state);
 
         self.rwlock.semaphore.release(RwLockType::Write.num_permits());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_resource_signature_rwlock() {
+        crate::check_random(
+            || {
+                let rwlock1 = RwLock::new(0);
+                let rwlock2 = RwLock::new(0);
+                assert_ne!(rwlock1.semaphore.signature(), rwlock2.semaphore.signature());
+            },
+            1,
+        );
     }
 }
