@@ -1,5 +1,5 @@
 use shuttle::scheduler::{DfsScheduler, RandomScheduler};
-use shuttle::sync::time::{ConstantSteppedModel, ConstantTimeDistribution, Duration, Instant};
+use shuttle::sync::time::constant_stepped::{ConstantSteppedTimeModel, ConstantTimeDistribution, Duration, Instant};
 use shuttle::thread;
 use shuttle::{Config, Runner};
 use std::sync::{Arc, Mutex};
@@ -7,7 +7,7 @@ use tracing::trace;
 
 #[test]
 fn test_stepped_blocking_sleep() {
-    let time_model = ConstantSteppedModel::new(ConstantTimeDistribution::new(Duration::from_micros(10)));
+    let time_model = ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(Duration::from_micros(10)));
     let scheduler = RandomScheduler::new(10);
     let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
     runner.run(|| {
@@ -32,7 +32,7 @@ fn test_stepped_elapsed_time() {
 
     let time_step = Duration::from_micros(10);
 
-    let time_model = ConstantSteppedModel::new(ConstantTimeDistribution::new(time_step));
+    let time_model = ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(time_step));
     let scheduler = DfsScheduler::new(None, false);
     let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
 

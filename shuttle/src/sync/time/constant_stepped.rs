@@ -1,6 +1,4 @@
-//! Time
-//!
-//! Timing primitives allow Shuttle tests to interact with wall-clock time in a deterministic manner
+//! Constant stepped time model
 
 use std::{
     cmp::{max, Reverse},
@@ -13,82 +11,21 @@ use tracing::{debug, warn};
 
 use crate::{current::TaskId, runtime::execution::ExecutionState};
 
-/// A distribution of times which can be sampled
-pub trait TimeDistribution {
-    /// Sample a duration from the given distribution
-    fn sample(&self) -> Duration;
-}
-
-/// A constant distrubution; each sample returns the same time
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct ConstantTimeDistribution {
-    /// The time that will be returned on sampling
-    pub time: Duration,
-}
-
-impl ConstantTimeDistribution {
-    /// Create a new constant time distribution
-    pub fn new(time: Duration) -> Self {
-        Self { time }
-    }
-}
-
-impl TimeDistribution for ConstantTimeDistribution {
-    fn sample(&self) -> Duration {
-        self.time
-    }
-}
-
-/// The time model used by Shuttle primitives
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub enum TimeModelConfig {
-    /// Each execution step of Shuttle advances the global time by a constant. That constant
-    /// is sampled at the *beginning* of each Shuttle test iteration from a given distribution.
-    ConstantStepped(ConstantTimeDistribution),
-    /// Time is not advanced by Shuttle; `sleep` and related functions are a single scheduling
-    /// point which may execute immediately or be delayed arbitrarily. This is the default time model.
-    NoTime,
-}
-
-/// create a TimeModel corresponding to the config
-pub fn from_config(config: TimeModelConfig) -> Box<dyn TimeModel> {
-    match config {
-        TimeModelConfig::ConstantStepped(distribution) => Box::new(ConstantSteppedModel::new(distribution)),
-        TimeModelConfig::NoTime => unimplemented!(),
-    }
-}
-
-/// A time model determines how Shuttle models wall-clock time
-pub trait TimeModel {
-    /// sleep
-    fn sleep(&mut self, duration: Duration);
-    /// wake the next sleeping task if all tasks are blocked
-    fn wake_next(&mut self);
-    /// reset
-    fn reset(&mut self);
-    /// step
-    fn step(&mut self);
-    /// instant
-    fn instant(&self) -> Instant;
-    /// pause
-    fn pause(&mut self);
-    /// resume
-    fn resume(&mut self);
-}
+use super::{TimeDistribution, TimeModel};
 
 /// A time model where time advances by a constant amount for each step
 #[derive(Clone, Debug)]
-pub struct ConstantSteppedModel {
+pub struct ConstantSteppedTimeModel {
     distribution: ConstantTimeDistribution,
     current_step_size: Duration,
     current_time_elapsed: Duration,
     waiters: BinaryHeap<Reverse<(Duration, TaskId)>>,
 }
 
-unsafe impl Send for ConstantSteppedModel {}
+unsafe impl Send for ConstantSteppedTimeModel {}
 
-impl ConstantSteppedModel {
-    /// Create a ConstantSteppedModel
+impl ConstantSteppedTimeModel {
+    /// Create a ConstantSteppedTimeModel
     pub fn new(distribution: ConstantTimeDistribution) -> Self {
         Self {
             distribution,
@@ -112,7 +49,7 @@ impl ConstantSteppedModel {
     }
 }
 
-impl TimeModel for ConstantSteppedModel {
+impl TimeModel<Instant, Duration> for ConstantSteppedTimeModel {
     fn pause(&mut self) {
         warn!("Pausing stepped model has no effect")
     }
@@ -157,6 +94,26 @@ impl TimeModel for ConstantSteppedModel {
         }
 
         ExecutionState::with(|s| self.unblock_expired(s));
+    }
+}
+
+/// A constant distrubution; each sample returns the same time
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct ConstantTimeDistribution {
+    /// The time that will be returned on sampling
+    pub time: Duration,
+}
+
+impl ConstantTimeDistribution {
+    /// Create a new constant time distribution
+    pub fn new(time: Duration) -> Self {
+        Self { time }
+    }
+}
+
+impl TimeDistribution<Duration> for ConstantTimeDistribution {
+    fn sample(&self) -> Duration {
+        self.time
     }
 }
 
