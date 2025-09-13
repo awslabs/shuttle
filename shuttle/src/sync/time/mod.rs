@@ -27,3 +27,36 @@ pub trait TimeModel<I, D> {
     /// resume
     fn resume(&mut self);
 }
+
+/// A Shuttle Duration
+pub trait Duration: Clone + Copy {
+    /// Create a duration from seconds
+    fn from_secs(secs: u64) -> Self;
+    /// Create a duration from milliseconds
+    fn from_millis(millis: u64) -> Self;
+    /// Get duration as seconds
+    fn as_secs(&self) -> u64;
+    /// Get duration as milliseconds
+    fn as_millis(&self) -> u128;
+}
+
+/// A Shuttle Instant
+pub trait Instant: Clone + Copy {
+    /// The duration type associated with this instant
+    type Duration: Duration;
+
+    /// Returns an instant corresponding to "now"
+    fn now() -> Self;
+    /// Returns the amount of time elapsed since this instant
+    fn elapsed(&self) -> Self::Duration;
+    /// Returns the amount of time elapsed from another instant to this one
+    fn duration_since(&self, earlier: Self) -> Self::Duration {
+        self.checked_duration_since(earlier).unwrap()
+    }
+    /// Returns the amount of time elapsed from another instant to this one, or None if that instant is later
+    fn checked_duration_since(&self, earlier: Self) -> Option<Self::Duration>;
+    /// Add a duration to this instant
+    fn checked_add(&self, duration: Self::Duration) -> Option<Self>;
+    /// Subtract a duration from this instant
+    fn checked_sub(&self, duration: Self::Duration) -> Option<Self>;
+}

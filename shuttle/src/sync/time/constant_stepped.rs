@@ -120,6 +120,24 @@ impl TimeDistribution<Duration> for ConstantTimeDistribution {
 /// A Shuttle Duration for stepped time
 pub type Duration = std::time::Duration;
 
+impl super::Duration for Duration {
+    fn from_secs(secs: u64) -> Self {
+        Duration::from_secs(secs)
+    }
+
+    fn from_millis(millis: u64) -> Self {
+        Duration::from_millis(millis)
+    }
+
+    fn as_secs(&self) -> u64 {
+        self.as_secs()
+    }
+
+    fn as_millis(&self) -> u128 {
+        self.as_millis()
+    }
+}
+
 /// Simulated instant, measured from the start of the execution
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Instant {
@@ -215,5 +233,29 @@ impl Sub<Instant> for Instant {
 impl SubAssign<Duration> for Instant {
     fn sub_assign(&mut self, other: Duration) {
         self.simulated_time_since_start -= other;
+    }
+}
+
+impl super::Instant for Instant {
+    type Duration = Duration;
+
+    fn now() -> Self {
+        Instant::now()
+    }
+
+    fn elapsed(&self) -> Self::Duration {
+        self.elapsed()
+    }
+
+    fn checked_duration_since(&self, earlier: Self) -> Option<Self::Duration> {
+        self.checked_duration_since(earlier)
+    }
+
+    fn checked_add(&self, duration: Self::Duration) -> Option<Self> {
+        Some(*self + duration)
+    }
+
+    fn checked_sub(&self, duration: Self::Duration) -> Option<Self> {
+        Some(*self - duration)
     }
 }
