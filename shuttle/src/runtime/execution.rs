@@ -6,7 +6,7 @@ use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, 
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::thread::thread_fn;
-use crate::{Config, MaxSteps};
+use crate::{backtrace_enabled, Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -59,10 +59,6 @@ impl Execution {
             initial_schedule,
         }
     }
-}
-
-fn backtrace_enabled() -> bool {
-    std::env::var("RUST_BACKTRACE").is_ok() || std::env::var("RUST_LIB_BACKTRACE").is_ok()
 }
 
 impl Execution {
@@ -133,10 +129,9 @@ impl Execution {
                                     t.id(),
                                     if t.detached { ", detached" } else { "" },
                                     if t.sleeping() { ", pending future" } else { "" },
-                                    if backtrace_enabled() {
-                                        format!("\nBacktrace:\n{:#?}\n", t.backtrace)
-                                    } else {
-                                        "".into()
+                                    match &t.backtrace {
+                                        Some(backtrace) => format!("\nBacktrace:\n{:#?}\n", backtrace),
+                                        None => "".into(),
                                     }
                                 )
                             })
@@ -144,7 +139,7 @@ impl Execution {
 
                         // Collecting backtraces is expensive, so we only want to do it if the user opts in to collecting them.
                         if !backtrace_enabled() {
-                            eprintln!("Test deadlocked, and `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` are not set. If either of those are set then the backtrace of each task will be collected and printed as part of the panic message.")
+                            eprintln!("Test deadlocked, and {} is not set. If either of those are set then the backtrace of each task will be collected and printed as part of the panic message.", crate::CAPTURE_BACKTRACE)
                         }
 
                         NextStep::Failure(
