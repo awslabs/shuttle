@@ -246,7 +246,7 @@ impl Config {
     /// Create a new default configuration
     pub fn new() -> Self {
         Self {
-            stack_size: 0x8000,
+            stack_size: 0xf000,
             failure_persistence: FailurePersistence::Print,
             max_steps: MaxSteps::FailAfter(1_000_000),
             max_time: None,
