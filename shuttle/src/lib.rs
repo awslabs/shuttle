@@ -455,7 +455,23 @@ where
 /// If this environment variable is set, then Shuttle will capture the backtrace of each task and display
 /// the backtraces in the panic message.
 /// Capturing backtraces is quite expensive, so this should onluy be set wehn debugging a failing test.
-pub const CAPTURE_BACKTRACE: &'static str = "SHUTTLE_CAPTURE_BACKTRACE";
+pub const CAPTURE_BACKTRACE: &str = "SHUTTLE_CAPTURE_BACKTRACE";
+
+/// The random seed used to initialize either the [`crate::scheduler::RandomScheduler`] or
+/// [`crate::scheduler::PctScheduler`]
+pub const RANDOM_SEED: &str = "SHUTTLE_RANDOM_SEED";
+
+/// If this is set, then warnings about Shuttle's modelling of weak memory and differences between Shuttle's
+/// version of LazyStatic and the regular version of LazyStatic will not be emitted.
+pub const SILENCE_WARNINGS: &str = "SHUTTLE_SILENCE_WARNINGS";
+
+/// Used in the [`crate::scheduler::AnnotationScheduler`] to specify where to write the annotations.
+pub const ANNOTATION_FILE: &str = "SHUTTLE_ANNOTATION_FILE";
+
+#[cfg(feature = "annotation")]
+pub(crate) fn annotation_file() -> String {
+    std::env::var(ANNOTATION_FILE).unwrap_or_else(|_| "annotated.json".to_string())
+}
 
 pub(crate) fn backtrace_enabled() -> bool {
     std::env::var(CAPTURE_BACKTRACE).is_ok()

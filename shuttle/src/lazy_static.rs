@@ -19,6 +19,7 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::storage::StorageKey;
 use crate::sync::Once;
+use crate::SILENCE_WARNINGS;
 use std::marker::PhantomData;
 
 // `use lazy_static::lazy_static;` is valid, thus `use shuttle::lazy_static::lazy_static;` should be as well.
@@ -124,7 +125,7 @@ fn maybe_warn_about_drop(silence_warnings: bool) {
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
-        if silence_warnings || std::env::var("SHUTTLE_SILENCE_WARNINGS").is_ok() {
+        if silence_warnings || std::env::var(SILENCE_WARNINGS).is_ok() {
             return;
         }
 

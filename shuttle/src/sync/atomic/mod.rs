@@ -62,6 +62,7 @@ pub use std::sync::atomic::Ordering;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
+use crate::SILENCE_WARNINGS;
 use std::cell::RefCell;
 use std::panic::RefUnwindSafe;
 
@@ -77,7 +78,7 @@ fn maybe_warn_about_ordering(order: Ordering) {
             .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
         {
-            if std::env::var("SHUTTLE_SILENCE_ORDERING_WARNING").is_ok() {
+            if std::env::var(SILENCE_WARNINGS).is_ok() {
                 return;
             }
 

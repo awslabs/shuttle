@@ -303,7 +303,7 @@ cfg_if::cfg_if! {
                 };
                 let json = serde_json::to_string(&state).unwrap();
                 std::fs::write(
-                    std::env::var("SHUTTLE_ANNOTATION_FILE").unwrap_or_else(|_| "annotated.json".to_string()),
+                    annotation_file(),
                     json,
                 )
                 .unwrap();
