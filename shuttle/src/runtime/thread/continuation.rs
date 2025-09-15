@@ -177,6 +177,7 @@ impl Drop for Continuation {
             ContinuationState::Running | ContinuationState::Ready => {
                 // If already panicking or at the end of the execution, don't worry about cleaning up resources
                 // on individual coroutines which are still in-flight
+                /*
                 if std::thread::panicking() || ExecutionState::with(|s| s.in_cleanup()) {
                     unsafe {
                         self.coroutine.force_reset();
@@ -187,6 +188,9 @@ impl Drop for Continuation {
                     // it is probably good to panic here if `force_unwind` fails so that we know about it
                     self.coroutine.force_unwind();
                 }
+                */
+
+                self.coroutine.force_unwind();
             }
             ContinuationState::Exited => {
                 // Already exited, nothing to do

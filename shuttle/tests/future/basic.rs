@@ -12,6 +12,33 @@ async fn add(a: u32, b: u32) -> u32 {
     a + b
 }
 
+
+struct B {}
+
+impl Drop for B {
+    fn drop(&mut self) {
+        panic!();
+    }
+}
+
+
+#[test]
+fn get_abort() {
+    check_random(
+        move || {
+            future::spawn(async {
+                let _b = B{};
+                loop {
+                    shuttle::thread::yield_now();
+                }
+        });
+
+        shuttle::thread::yield_now();
+        },
+        100,
+    );
+}
+
 #[test]
 fn async_fncall() {
     check_dfs(

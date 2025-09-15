@@ -2,6 +2,7 @@
 members = [
     "shuttle",
     "shuttle_sync",
+    "generator-rs",
 ]
 
 resolver = "2"
