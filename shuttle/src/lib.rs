@@ -475,6 +475,16 @@ where
     runner.run(f);
 }
 
+/// If this environment variable is set, then Shuttle will capture the backtrace of each task and display
+/// the backtraces in the panic message.
+/// Capturing backtraces is quite expensive, so this should onluy be set wehn debugging a failing test.
+pub const CAPTURE_BACKTRACE: &'static str = "SHUTTLE_CAPTURE_BACKTRACE";
+
+/// Whether capturing backtraces is enabled or not
+pub fn backtrace_enabled() -> bool {
+    std::env::var(CAPTURE_BACKTRACE).is_ok()
+}
+
 /// Declare a new thread local storage key of type [`LocalKey`](crate::thread::LocalKey).
 #[macro_export]
 macro_rules! thread_local {

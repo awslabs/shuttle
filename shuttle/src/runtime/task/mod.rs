@@ -1,3 +1,4 @@
+use crate::backtrace_enabled;
 use crate::current::get_name_for_task;
 use crate::runtime::execution::{ExecutionState, TASK_ID_TO_TAGS};
 use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
@@ -295,8 +296,10 @@ pub struct Task {
     #[allow(deprecated)]
     tag: Option<Arc<dyn Tag>>,
 
-    // If `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is set then this will be populated on task block.
-    pub(crate) backtrace: Backtrace,
+    /// If [`crate::CAPTURE_BACKTRACE`] is set then this will be populated on task block.
+    /// If the test then fails, then each task's backtrace will be printed.
+    pub(crate) backtrace: Option<Backtrace>,
+
     /// The signature of a Task; this is an identifier that is *not* guaranteed to be unique but should be *mostly*
     /// stable across iterations in a single Shuttle test. Tasks with the same signature are very likely to exhibit
     /// similar behavior
@@ -349,7 +352,7 @@ impl Task {
             span_stack,
             local_storage: StorageMap::new(),
             tag: None,
-            backtrace: Backtrace::disabled(),
+            backtrace: None,
             signature,
         };
 
@@ -481,16 +484,22 @@ impl Task {
     /// permitted to spuriously wake up the thread (though it will still not count as a live thread
     /// for deadlock detection purposes for as long as it remains blocked).
     pub(crate) fn block(&mut self, allow_spurious_wakeups: bool) {
-        // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
-        self.backtrace = Backtrace::capture();
+        self.backtrace = if backtrace_enabled() {
+            Some(Backtrace::force_capture())
+        } else {
+            None
+        };
 
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
 
     pub(crate) fn sleep(&mut self) {
-        // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
-        self.backtrace = Backtrace::capture();
+        self.backtrace = if backtrace_enabled() {
+            Some(Backtrace::force_capture())
+        } else {
+            None
+        };
 
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Sleeping;
@@ -646,7 +655,7 @@ impl Task {
     }
 
     pub(crate) fn format_for_deadlock(&self) -> String {
-        use crate::runtime::execution::backtrace_enabled;
+        use crate::backtrace_enabled;
         format!(
             "{} (task {:?}{}{}){}",
             self.name().unwrap_or_else(|| "<unknown>".to_string()),
