@@ -131,7 +131,7 @@ impl Execution {
                                     if t.detached { ", detached" } else { "" },
                                     if t.sleeping() { ", pending future" } else { "" },
                                     match &t.backtrace {
-                                        Some(backtrace) => format!("\nBacktrace:\n{:#?}\n", backtrace),
+                                        Some(backtrace) => format!("\nBacktrace:\n{backtrace:#?}\n"),
                                         None => "".into(),
                                     }
                                 )
