@@ -66,6 +66,9 @@ pub trait TimeModelShape {
 
 /// A Shuttle Duration
 pub trait ShuttleModelDuration: Clone + Copy {
+    /// The Instant type associated with this instant
+    type DurationModelInstant: ShuttleModelInstant<InstantModelDuration = Self>;
+
     /// Create a duration from seconds
     fn from_secs(secs: u64) -> Self;
     /// Create a duration from milliseconds
@@ -81,7 +84,7 @@ pub trait ShuttleModelDuration: Clone + Copy {
 /// A Shuttle Instant
 pub trait ShuttleModelInstant: Clone + Copy {
     /// The duration type associated with this instant
-    type InstantModelDuration: ShuttleModelDuration;
+    type InstantModelDuration: ShuttleModelDuration<DurationModelInstant = Self>;
 
     /// Returns an instant corresponding to "now"
     fn now() -> Self;

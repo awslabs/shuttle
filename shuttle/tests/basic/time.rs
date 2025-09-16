@@ -8,7 +8,9 @@ use tracing::trace;
 
 #[test]
 fn test_stepped_blocking_sleep() {
-    let time_model = TimeModel::ConstantSteppedTimeModel(ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(Duration::from_micros(10))));
+    let time_model = TimeModel::ConstantSteppedTimeModel(ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(
+        Duration::from_micros(10),
+    )));
     let scheduler = RandomScheduler::new(10);
     let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
     runner.run(|| {
@@ -33,7 +35,9 @@ fn test_stepped_elapsed_time() {
 
     let time_step = Duration::from_micros(10);
 
-    let time_model = TimeModel::ConstantSteppedTimeModel(ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(Duration::from_micros(10))));
+    let time_model = TimeModel::ConstantSteppedTimeModel(ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(
+        Duration::from_micros(10),
+    )));
     let scheduler = DfsScheduler::new(None, false);
     let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
 

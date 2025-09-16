@@ -3,10 +3,14 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
-use crate::sync::time::ShuttleModelDuration;
+use crate::sync::time::{ShuttleModelDuration, ShuttleModelInstant};
+use pin_project::pin_project;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::panic::Location;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 pub use std::thread::{panicking, Result};
@@ -326,6 +330,67 @@ pub fn yield_now() {
 pub fn sleep(dur: impl ShuttleModelDuration) {
     dur.sleep();
     thread::switch();
+}
+
+/// Returns a future which sleeps until the duration has elapsed
+pub async fn tokio_sleep(dur: impl ShuttleModelDuration) {
+    dur.sleep();
+    thread::switch();
+}
+
+/// Future which infinitely yields every duration
+pub async fn tokio_interval(dur: impl ShuttleModelDuration) {
+    loop {
+        tokio_sleep(dur).await;
+    }
+}
+
+// pub fn timeout<F>(f : F, d : impl ShuttleModelDuration) -> Timeout<F, _>
+// where F: Future {
+//     Timeout {
+//         start: None,
+//         duration: d,
+//         future: f,
+//     }
+// }
+
+/// Timeout a future
+#[pin_project]
+#[derive(Debug)]
+pub struct Timeout<T, D>
+where
+    T: Future,
+    D: ShuttleModelDuration + PartialOrd,
+{
+    start: Option<D::DurationModelInstant>,
+    duration: D,
+    #[pin]
+    future: T,
+}
+
+/// Elapsed time error variant
+#[derive(Debug, Clone, Copy)]
+pub struct Elapsed;
+
+impl<T, D> Future for Timeout<T, D>
+where
+    T: Future,
+    D: ShuttleModelDuration + PartialOrd,
+{
+    type Output = std::result::Result<T::Output, Elapsed>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let start = this.start.get_or_insert_with(|| D::DurationModelInstant::now());
+        if start.elapsed() > *this.duration {
+            return Poll::Ready(Err(Elapsed));
+        }
+
+        match this.future.poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(x) => Poll::Ready(Ok(x)),
+        }
+    }
 }
 
 /// Get a handle to the thread that invokes it
