@@ -13,7 +13,7 @@ fn test_stepped_blocking_sleep() {
     let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
     runner.run(|| {
         let start = Instant::now();
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(50) + Duration::from_millis(50));
         let elapsed = start.elapsed();
         assert!(elapsed >= Duration::from_millis(100));
     });

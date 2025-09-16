@@ -74,6 +74,8 @@ pub trait ShuttleModelDuration: Clone + Copy {
     fn as_secs(&self) -> u64;
     /// Get duration as milliseconds
     fn as_millis(&self) -> u128;
+    /// sleep
+    fn sleep(&self);
 }
 
 /// A Shuttle Instant

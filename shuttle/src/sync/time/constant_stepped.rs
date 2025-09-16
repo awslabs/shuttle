@@ -124,6 +124,14 @@ impl TimeDistribution<Duration> for ConstantTimeDistribution {
 pub type Duration = std::time::Duration;
 
 impl super::ShuttleModelDuration for Duration {
+    fn sleep(self : &Duration) {
+        let tm = ExecutionState::with(|s| Rc::clone(&s.time_model));
+        let mut tm_borrow = tm.borrow_mut();
+        match &mut *tm_borrow {
+            super::TimeModel::ConstantSteppedTimeModel(model) => model.sleep(self.clone()),
+        };
+    }
+
     fn from_secs(secs: u64) -> Self {
         Duration::from_secs(secs)
     }

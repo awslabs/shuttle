@@ -3,6 +3,7 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
+use crate::sync::time::ShuttleModelDuration;
 use std::marker::PhantomData;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -322,8 +323,8 @@ pub fn yield_now() {
 
 /// Puts the current thread to sleep
 /// Behavior of this function depends on the TimeModel provided to Shuttle
-pub fn sleep(_dur: Duration) {
-    // TODO remove
+pub fn sleep(dur: impl ShuttleModelDuration) {
+    dur.sleep();
     thread::switch();
 }
 
