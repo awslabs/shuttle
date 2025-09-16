@@ -103,6 +103,7 @@ fn test_timeout_expired() {
     let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
     runner.run(|| {
         shuttle::future::block_on(async {
+            let start = Instant::now();
             let result = thread::tokio_timeout(
                 async {
                     thread::tokio_sleep(Duration::from_millis(100)).await;
@@ -111,6 +112,9 @@ fn test_timeout_expired() {
                 Duration::from_millis(50),
             )
             .await;
+            trace!("elapsed time according to model {:?}", start);
+            // TODO: do we expect the elapsed time to be less than 100ms?
+            // assert!(start.elapsed() < Duration::from_millis(100))
             assert!(result.is_err());
         });
     });

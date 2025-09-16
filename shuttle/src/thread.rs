@@ -433,7 +433,13 @@ where
 
         match this.future.poll(cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(x) => Poll::Ready(Ok(x)),
+            Poll::Ready(x) => {
+                if start.elapsed() > *this.duration {
+                    return Poll::Ready(Err(Elapsed));
+                } else {
+                    Poll::Ready(Ok(x))
+                }
+            }
         }
     }
 }
