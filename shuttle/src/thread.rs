@@ -3,9 +3,16 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
+use crate::sync::time::{ShuttleModelDuration, ShuttleModelInstant};
+use pin_project::pin_project;
+use std::fmt::Debug;
+use std::future::Future;
 use std::marker::PhantomData;
+use std::ops::Add;
 use std::panic::Location;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 pub use std::thread::{panicking, Result};
@@ -320,10 +327,121 @@ pub fn yield_now() {
     thread::switch();
 }
 
-/// Puts the current thread to sleep for at least the specified amount of time.
-// Note that Shuttle does not model time, so this behaves just like a context switch.
-pub fn sleep(_dur: Duration) {
+/// Puts the current thread to sleep
+/// Behavior of this function depends on the TimeModel provided to Shuttle
+pub fn sleep(dur: impl ShuttleModelDuration) {
+    dur.sleep();
     thread::switch();
+}
+
+/// Returns a future which sleeps until the duration has elapsed
+pub async fn tokio_sleep(dur: impl ShuttleModelDuration) {
+    dur.sleep();
+    thread::switch();
+}
+
+/// Tokio interval
+pub fn tokio_interval<D>(dur: D) -> Interval<D>
+where
+    D: ShuttleModelDuration + PartialOrd + Add<Output = D>,
+{
+    Interval {
+        start: None,
+        ticks: 0,
+        duration: dur,
+    }
+}
+
+/// Timeout a future
+#[pin_project]
+#[derive(Debug)]
+pub struct Interval<D>
+where
+    D: ShuttleModelDuration + PartialOrd + Add<Output = D>,
+{
+    start: Option<D::DurationModelInstant>,
+    ticks: usize,
+    duration: D,
+}
+
+impl<D> Interval<D>
+where
+    D: ShuttleModelDuration + PartialOrd + Add<Output = D> + Debug,
+{
+    /// tick
+    pub async fn tick(&mut self) -> D::DurationModelInstant {
+        let start = self.start.get_or_insert_with(|| D::DurationModelInstant::now());
+        let mut total_duration = D::from_millis(0);
+        for _ in 1..=self.ticks {
+            total_duration = total_duration + self.duration;
+        }
+        self.ticks += 1;
+        let end = start.checked_add(total_duration).unwrap();
+        let now = D::DurationModelInstant::now();
+        if let Some(sleep_time) = end.checked_duration_since(now) {
+            sleep_time.sleep();
+            thread::switch();
+        }
+        end
+    }
+}
+
+/// Timeout a future
+pub fn tokio_timeout<F, D>(f: F, d: D) -> Timeout<F, D>
+where
+    F: Future,
+    D: ShuttleModelDuration + PartialOrd,
+{
+    Timeout {
+        start: None,
+        duration: d,
+        future: f,
+    }
+}
+
+/// Timeout a future
+#[pin_project]
+#[derive(Debug)]
+pub struct Timeout<T, D>
+where
+    T: Future,
+    D: ShuttleModelDuration + PartialOrd,
+{
+    start: Option<D::DurationModelInstant>,
+    duration: D,
+    #[pin]
+    future: T,
+}
+
+/// Elapsed time error variant
+#[derive(Debug, Clone, Copy)]
+pub struct Elapsed;
+
+impl<T, D> Future for Timeout<T, D>
+where
+    T: Future,
+    D: ShuttleModelDuration + PartialOrd,
+{
+    type Output = std::result::Result<T::Output, Elapsed>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let start = this.start.get_or_insert_with(|| D::DurationModelInstant::now());
+        if start.elapsed() > *this.duration {
+            return Poll::Ready(Err(Elapsed));
+        }
+
+        match this.future.poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(x) => {
+                if start.elapsed() > *this.duration {
+                    return Poll::Ready(Err(Elapsed));
+                } else {
+                    Poll::Ready(Ok(x))
+                }
+            }
+        }
+    }
 }
 
 /// Get a handle to the thread that invokes it

@@ -3,6 +3,10 @@ use crate::runtime::task::{Task, TaskId};
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::sync::time::{
+    constant_stepped::{ConstantSteppedTimeModel, ConstantTimeDistribution},
+    TimeModel,
+};
 use crate::Config;
 use std::cell::RefCell;
 use std::fmt;
@@ -54,6 +58,7 @@ impl Drop for ResetSpanOnDrop {
 #[derive(Debug)]
 pub struct Runner<S: ?Sized + Scheduler> {
     scheduler: Rc<RefCell<MetricsScheduler<S>>>,
+    time_model: Rc<RefCell<TimeModel>>,
     config: Config,
 }
 
@@ -64,6 +69,22 @@ impl<S: Scheduler + 'static> Runner<S> {
 
         Self {
             scheduler: Rc::new(RefCell::new(metrics_scheduler)),
+            time_model: Rc::new(RefCell::new(TimeModel::ConstantSteppedTimeModel(
+                ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(std::time::Duration::from_micros(10))),
+            ))),
+            config,
+        }
+    }
+}
+
+impl<S: Scheduler + 'static> Runner<S> {
+    /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
+    pub fn new_with_time_model(scheduler: S, time_model: TimeModel, config: Config) -> Self {
+        let metrics_scheduler = MetricsScheduler::new(scheduler);
+
+        Self {
+            scheduler: Rc::new(RefCell::new(metrics_scheduler)),
+            time_model: Rc::new(RefCell::new(time_model)),
             config,
         }
     }
@@ -96,7 +117,7 @@ impl<S: Scheduler + 'static> Runner<S> {
                     Some(s) => s,
                 };
 
-                let execution = Execution::new(self.scheduler.clone(), schedule);
+                let execution = Execution::new(self.scheduler.clone(), schedule, self.time_model.clone());
                 let f = Arc::clone(&f);
 
                 // This is a slightly lazy way to ensure that everything outside of the "execution" span gets
@@ -119,10 +140,10 @@ impl<S: Scheduler + 'static> Runner<S> {
 /// execution of the test, the entire run fails.
 pub struct PortfolioRunner {
     schedulers: Vec<Box<dyn Scheduler + Send + 'static>>,
+    time_model: Box<TimeModel>,
     stop_on_first_failure: bool,
     config: Config,
 }
-
 impl PortfolioRunner {
     /// Construct a new `PortfolioRunner` with no schedulers. If `stop_on_first_failure` is true,
     /// all schedulers will be terminated as soon as any fails; if false, they will keep running
@@ -130,6 +151,23 @@ impl PortfolioRunner {
     pub fn new(stop_on_first_failure: bool, config: Config) -> Self {
         Self {
             schedulers: Vec::new(),
+            time_model: Box::new(TimeModel::ConstantSteppedTimeModel(ConstantSteppedTimeModel::new(
+                ConstantTimeDistribution::new(std::time::Duration::from_micros(10)),
+            ))),
+            stop_on_first_failure,
+            config,
+        }
+    }
+}
+
+impl PortfolioRunner {
+    /// Construct a new `PortfolioRunner` with no schedulers. If `stop_on_first_failure` is true,
+    /// all schedulers will be terminated as soon as any fails; if false, they will keep running
+    /// and potentially find multiple bugs.
+    pub fn new_with_time_model(stop_on_first_failure: bool, time_model: TimeModel, config: Config) -> Self {
+        Self {
+            schedulers: Vec::new(),
+            time_model: Box::new(time_model),
             stop_on_first_failure,
             config,
         }
@@ -167,10 +205,11 @@ impl PortfolioRunner {
                 let stop_signal = stop_signal.clone();
                 let config = config.clone();
 
+                let tm = (*self.time_model).clone();
                 thread::spawn(move || {
                     let scheduler = PortfolioStoppableScheduler { scheduler, stop_signal };
 
-                    let runner = Runner::new(scheduler, config);
+                    let runner = Runner::new_with_time_model(scheduler, tm, config);
 
                     span!(Level::ERROR, "job", i).in_scope(|| {
                         let ret = panic::catch_unwind(panic::AssertUnwindSafe(|| runner.run(move || f())));
@@ -209,7 +248,6 @@ impl PortfolioRunner {
         }
     }
 }
-
 impl fmt::Debug for PortfolioRunner {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("PortfolioRunner")
