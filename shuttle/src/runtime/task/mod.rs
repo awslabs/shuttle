@@ -392,7 +392,7 @@ impl Task {
                 let waker = ExecutionState::with(|state| state.current_mut().waker());
                 let cx = &mut Context::from_waker(&waker);
                 while future.as_mut().poll(cx).is_pending() {
-                    ExecutionState::with(|state| state.current_mut().make_pending_unless_woken());
+                    ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
                     thread::switch();
                 }
             }),
@@ -428,8 +428,8 @@ impl Task {
         }
     }
 
-    pub(crate) fn is_pending(&self) -> bool {
-        self.state == TaskState::FuturePending
+    pub(crate) fn sleeping(&self) -> bool {
+        self.state == TaskState::Sleeping
     }
 
     pub(crate) fn finished(&self) -> bool {
@@ -460,12 +460,12 @@ impl Task {
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
 
-    pub(crate) fn make_pending(&mut self) {
+    pub(crate) fn sleep(&mut self) {
         // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
         self.backtrace = Backtrace::capture();
 
         assert!(self.state != TaskState::Finished);
-        self.state = TaskState::FuturePending;
+        self.state = TaskState::Sleeping;
     }
 
     pub(crate) fn unblock(&mut self) {
@@ -486,23 +486,23 @@ impl Task {
         self.state = TaskState::Finished;
     }
 
-    /// Potentially put this task to FuturePending after it was polled by the executor, unless someone has
+    /// Potentially put this task to sleep after it was polled by the executor, unless someone has
     /// called its waker first.
     ///
     /// A synchronous Task should never call this, because we want threads to be enabled-by-default
     /// to avoid bugs where Shuttle incorrectly omits a potential execution.
-    pub(crate) fn make_pending_unless_woken(&mut self) {
+    pub(crate) fn sleep_unless_woken(&mut self) {
         let was_woken = std::mem::replace(&mut self.woken, false);
         if !was_woken {
-            self.make_pending();
+            self.sleep();
         }
     }
 
     /// Remember that our waker has been called, and so we should not block the next time the
-    /// executor tries to make us pending.
-    pub(super) fn wake_pending(&mut self) {
+    /// executor tries to put us to sleep.
+    pub(super) fn wake(&mut self) {
         self.woken = true;
-        if self.state == TaskState::FuturePending {
+        if self.state == TaskState::Sleeping {
             self.unblock();
         }
     }
@@ -625,7 +625,7 @@ pub(crate) enum TaskState {
     /// Blocked in a synchronization operation
     Blocked { allow_spurious_wakeups: bool },
     /// A `Future` that returned `Pending` is waiting to be woken up
-    FuturePending,
+    Sleeping,
     /// Task has finished
     Finished,
 }

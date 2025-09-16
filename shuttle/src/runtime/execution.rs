@@ -141,7 +141,7 @@ impl Execution {
                                     t.name().unwrap_or_else(|| "<unknown>".to_string()),
                                     t.id(),
                                     if t.detached { ", detached" } else { "" },
-                                    if t.is_pending() { ", pending future" } else { "" },
+                                    if t.sleeping() { ", pending future" } else { "" },
                                     if backtrace_enabled() {
                                         format!("\nBacktrace:\n{:#?}\n", t.backtrace)
                                     } else {
