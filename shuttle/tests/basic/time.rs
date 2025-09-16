@@ -76,3 +76,88 @@ fn test_stepped_elapsed_time() {
         greater_count
     );
 }
+
+#[test]
+fn test_tokio_sleep() {
+    let time_model = TimeModel::ConstantSteppedTimeModel(ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(
+        Duration::from_micros(10),
+    )));
+    let scheduler = RandomScheduler::new(10);
+    let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
+    runner.run(|| {
+        shuttle::future::block_on(async {
+            let start = Instant::now();
+            thread::tokio_sleep(Duration::from_millis(50)).await;
+            let elapsed = start.elapsed();
+            assert!(elapsed >= Duration::from_millis(50));
+        });
+    });
+}
+
+#[test]
+fn test_timeout_expired() {
+    let time_model = TimeModel::ConstantSteppedTimeModel(ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(
+        Duration::from_micros(10),
+    )));
+    let scheduler = RandomScheduler::new(10);
+    let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
+    runner.run(|| {
+        shuttle::future::block_on(async {
+            let result = thread::tokio_timeout(
+                async {
+                    thread::tokio_sleep(Duration::from_millis(100)).await;
+                    42
+                },
+                Duration::from_millis(50),
+            )
+            .await;
+            assert!(result.is_err());
+        });
+    });
+}
+
+#[test]
+fn test_timeout_not_expired() {
+    let time_model = TimeModel::ConstantSteppedTimeModel(ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(
+        Duration::from_micros(10),
+    )));
+    let scheduler = RandomScheduler::new(10);
+    let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
+    runner.run(|| {
+        shuttle::future::block_on(async {
+            let result = thread::tokio_timeout(
+                async {
+                    thread::tokio_sleep(Duration::from_millis(20)).await;
+                    42
+                },
+                Duration::from_millis(50),
+            )
+            .await;
+            assert_eq!(result.unwrap(), 42);
+        });
+    });
+}
+
+#[test]
+fn test_tokio_interval() {
+    let time_model = TimeModel::ConstantSteppedTimeModel(ConstantSteppedTimeModel::new(ConstantTimeDistribution::new(
+        Duration::from_micros(10),
+    )));
+    let scheduler = RandomScheduler::new(10);
+    let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
+    runner.run(|| {
+        shuttle::future::block_on(async {
+            let mut interval = thread::tokio_interval(Duration::from_millis(10));
+            let start = Instant::now();
+            interval.tick().await;
+            let first_tick = start.elapsed();
+            interval.tick().await;
+            let second_tick = start.elapsed();
+            interval.tick().await;
+            let third_tick = start.elapsed();
+            assert_eq!(first_tick, Duration::from_millis(0));
+            assert!(second_tick > Duration::from_millis(10));
+            assert!(third_tick > Duration::from_millis(20));
+        });
+    });
+}

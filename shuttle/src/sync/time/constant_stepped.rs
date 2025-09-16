@@ -63,7 +63,7 @@ impl TimeModelShape for ConstantSteppedTimeModel {
 
     fn sleep(&mut self, duration: Self::TimeModelDuration) {
         debug!("sleep");
-        if duration < self.current_step_size {
+        if duration == Duration::from_secs(0) {
             return;
         }
         let wake_time = self.current_time_elapsed + duration;

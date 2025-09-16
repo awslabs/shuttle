@@ -5,8 +5,10 @@ use crate::runtime::task::TaskId;
 use crate::runtime::thread;
 use crate::sync::time::{ShuttleModelDuration, ShuttleModelInstant};
 use pin_project::pin_project;
+use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::ops::Add;
 use std::panic::Location;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -338,15 +340,54 @@ pub async fn tokio_sleep(dur: impl ShuttleModelDuration) {
     thread::switch();
 }
 
-/// Future which infinitely yields every duration
-pub async fn tokio_interval(dur: impl ShuttleModelDuration) {
-    loop {
-        tokio_sleep(dur).await;
+/// Tokio interval
+pub fn tokio_interval<D>(dur: D) -> Interval<D>
+where
+    D: ShuttleModelDuration + PartialOrd + Add<Output = D>,
+{
+    Interval {
+        start: None,
+        ticks: 0,
+        duration: dur,
     }
 }
 
 /// Timeout a future
-pub fn timeout<F, D>(f: F, d: D) -> Timeout<F, D>
+#[pin_project]
+#[derive(Debug)]
+pub struct Interval<D>
+where
+    D: ShuttleModelDuration + PartialOrd + Add<Output = D>,
+{
+    start: Option<D::DurationModelInstant>,
+    ticks: usize,
+    duration: D,
+}
+
+impl<D> Interval<D>
+where
+    D: ShuttleModelDuration + PartialOrd + Add<Output = D> + Debug,
+{
+    /// tick
+    pub async fn tick(&mut self) -> D::DurationModelInstant {
+        let start = self.start.get_or_insert_with(|| D::DurationModelInstant::now());
+        let mut total_duration = D::from_millis(0);
+        for _ in 1..=self.ticks {
+            total_duration = total_duration + self.duration;
+        }
+        self.ticks += 1;
+        let end = start.checked_add(total_duration).unwrap();
+        let now = D::DurationModelInstant::now();
+        if let Some(sleep_time) = end.checked_duration_since(now) {
+            sleep_time.sleep();
+            thread::switch();
+        }
+        end
+    }
+}
+
+/// Timeout a future
+pub fn tokio_timeout<F, D>(f: F, d: D) -> Timeout<F, D>
 where
     F: Future,
     D: ShuttleModelDuration + PartialOrd,
