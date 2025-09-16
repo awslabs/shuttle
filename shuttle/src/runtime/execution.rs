@@ -5,10 +5,7 @@ use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::sync::time::{
-    constant_stepped::{Duration as ShuttleDuration, Instant as ShuttleInstant},
-    TimeModel,
-};
+use crate::sync::time::TimeModel;
 use crate::thread::thread_fn;
 use crate::{Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
@@ -51,7 +48,7 @@ thread_local! {
 /// static variable, but clients get access to it by calling `ExecutionState::with`.
 pub(crate) struct Execution {
     scheduler: Rc<RefCell<dyn Scheduler>>,
-    time_model: Rc<RefCell<dyn TimeModel<ShuttleInstant, ShuttleDuration>>>,
+    time_model: Rc<RefCell<TimeModel>>,
     initial_schedule: Schedule,
 }
 
@@ -61,7 +58,7 @@ impl Execution {
     pub(crate) fn new(
         scheduler: Rc<RefCell<dyn Scheduler>>,
         initial_schedule: Schedule,
-        time_model: Rc<RefCell<dyn TimeModel<ShuttleInstant, ShuttleDuration>>>,
+        time_model: Rc<RefCell<TimeModel>>,
     ) -> Self {
         Self {
             scheduler,
@@ -293,7 +290,7 @@ pub(crate) struct ExecutionState {
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
     #[allow(unused)]
-    pub(crate) time_model: Rc<RefCell<dyn TimeModel<ShuttleInstant, ShuttleDuration>>>,
+    pub(crate) time_model: Rc<RefCell<TimeModel>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -321,7 +318,7 @@ impl ExecutionState {
     fn new(
         config: Config,
         scheduler: Rc<RefCell<dyn Scheduler>>,
-        time_model: Rc<RefCell<dyn TimeModel<ShuttleInstant, ShuttleDuration>>>,
+        time_model: Rc<RefCell<TimeModel>>,
         initial_schedule: Schedule,
     ) -> Self {
         Self {

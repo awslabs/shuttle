@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 
 use crate::{current::TaskId, runtime::execution::ExecutionState};
 
-use super::{TimeDistribution, TimeModel};
+use super::{TimeDistribution, TimeModelShape};
 
 /// A time model where time advances by a constant amount for each step
 #[derive(Clone, Debug)]
@@ -49,7 +49,10 @@ impl ConstantSteppedTimeModel {
     }
 }
 
-impl TimeModel<Instant, Duration> for ConstantSteppedTimeModel {
+impl TimeModelShape for ConstantSteppedTimeModel {
+    type TimeModelInstant = Instant;
+    type TimeModelDuration = Duration;
+
     fn pause(&mut self) {
         warn!("Pausing stepped model has no effect")
     }
@@ -58,7 +61,7 @@ impl TimeModel<Instant, Duration> for ConstantSteppedTimeModel {
         warn!("Resuming stepped model has no effect")
     }
 
-    fn sleep(&mut self, duration: Duration) {
+    fn sleep(&mut self, duration: Self::TimeModelDuration) {
         debug!("sleep");
         if duration < self.current_step_size {
             return;
@@ -81,7 +84,7 @@ impl TimeModel<Instant, Duration> for ConstantSteppedTimeModel {
         self.waiters.clear();
     }
 
-    fn instant(&self) -> Instant {
+    fn instant(&self) -> Self::TimeModelInstant {
         Instant {
             simulated_time_since_start: self.current_time_elapsed,
         }
@@ -120,7 +123,7 @@ impl TimeDistribution<Duration> for ConstantTimeDistribution {
 /// A Shuttle Duration for stepped time
 pub type Duration = std::time::Duration;
 
-impl super::Duration for Duration {
+impl super::ShuttleModelDuration for Duration {
     fn from_secs(secs: u64) -> Self {
         Duration::from_secs(secs)
     }
@@ -191,8 +194,9 @@ impl Instant {
     /// Returns an instant corresponding to "now"
     pub fn now() -> Instant {
         let tm = ExecutionState::with(|s| Rc::clone(&s.time_model));
-        let r = tm.borrow_mut().instant();
-        r
+        match &mut *tm.borrow_mut() {
+            super::TimeModel::SteppedTimeModel(model) => model.instant(),
+        }
     }
 }
 
@@ -236,26 +240,26 @@ impl SubAssign<Duration> for Instant {
     }
 }
 
-impl super::Instant for Instant {
-    type Duration = Duration;
+impl super::ShuttleModelInstant for Instant {
+    type InstantModelDuration = Duration;
 
     fn now() -> Self {
         Instant::now()
     }
 
-    fn elapsed(&self) -> Self::Duration {
+    fn elapsed(&self) -> Self::InstantModelDuration {
         self.elapsed()
     }
 
-    fn checked_duration_since(&self, earlier: Self) -> Option<Self::Duration> {
+    fn checked_duration_since(&self, earlier: Self) -> Option<Self::InstantModelDuration> {
         self.checked_duration_since(earlier)
     }
 
-    fn checked_add(&self, duration: Self::Duration) -> Option<Self> {
+    fn checked_add(&self, duration: Self::InstantModelDuration) -> Option<Self> {
         Some(*self + duration)
     }
 
-    fn checked_sub(&self, duration: Self::Duration) -> Option<Self> {
+    fn checked_sub(&self, duration: Self::InstantModelDuration) -> Option<Self> {
         Some(*self - duration)
     }
 }

@@ -2,6 +2,8 @@
 //!
 //! Timing primitives allow Shuttle tests to interact with wall-clock time in a deterministic manner
 
+use crate::sync::time::constant_stepped::ConstantSteppedTimeModel;
+
 pub mod constant_stepped;
 
 /// A distribution of times which can be sampled
@@ -11,9 +13,41 @@ pub trait TimeDistribution<D> {
 }
 
 /// A time model determines how Shuttle models wall-clock time
-pub trait TimeModel<I, D> {
+#[allow(unused)]
+#[derive(Clone, Debug)]
+pub enum TimeModel {
+    /// A time model which increments the global time by a constant on each scheduling step
+    ConstantSteppedTimeModel(ConstantSteppedTimeModel),
+}
+
+#[allow(unused)]
+impl TimeModel {
+    pub(crate) fn step(&mut self) {
+        match self {
+            TimeModel::ConstantSteppedTimeModel(model) => model.step(),
+        }
+    }
+
+    pub(crate) fn reset(&mut self) {
+        match self {
+            TimeModel::ConstantSteppedTimeModel(model) => model.reset(),
+        }
+    }
+
+    pub(crate) fn wake_next(&mut self) {
+        match self {
+            TimeModel::ConstantSteppedTimeModel(model) => model.wake_next(),
+        }
+    }
+}
+
+/// The trait implemented by each TimeModel
+pub trait TimeModelShape {
+    type TimeModelInstant: ShuttleModelInstant;
+    type TimeModelDuration: ShuttleModelDuration;
+
     /// sleep
-    fn sleep(&mut self, duration: D);
+    fn sleep(&mut self, duration: Self::TimeModelDuration);
     /// wake the next sleeping task if all tasks are blocked
     fn wake_next(&mut self);
     /// reset
@@ -21,7 +55,7 @@ pub trait TimeModel<I, D> {
     /// step
     fn step(&mut self);
     /// instant
-    fn instant(&self) -> I;
+    fn instant(&self) -> Self::TimeModelInstant;
     /// pause
     fn pause(&mut self);
     /// resume
@@ -29,7 +63,7 @@ pub trait TimeModel<I, D> {
 }
 
 /// A Shuttle Duration
-pub trait Duration: Clone + Copy {
+pub trait ShuttleModelDuration: Clone + Copy {
     /// Create a duration from seconds
     fn from_secs(secs: u64) -> Self;
     /// Create a duration from milliseconds
@@ -41,22 +75,22 @@ pub trait Duration: Clone + Copy {
 }
 
 /// A Shuttle Instant
-pub trait Instant: Clone + Copy {
+pub trait ShuttleModelInstant: Clone + Copy {
     /// The duration type associated with this instant
-    type Duration: Duration;
+    type InstantModelDuration: ShuttleModelDuration;
 
     /// Returns an instant corresponding to "now"
     fn now() -> Self;
     /// Returns the amount of time elapsed since this instant
-    fn elapsed(&self) -> Self::Duration;
+    fn elapsed(&self) -> Self::InstantModelDuration;
     /// Returns the amount of time elapsed from another instant to this one
-    fn duration_since(&self, earlier: Self) -> Self::Duration {
+    fn duration_since(&self, earlier: Self) -> Self::InstantModelDuration {
         self.checked_duration_since(earlier).unwrap()
     }
     /// Returns the amount of time elapsed from another instant to this one, or None if that instant is later
-    fn checked_duration_since(&self, earlier: Self) -> Option<Self::Duration>;
+    fn checked_duration_since(&self, earlier: Self) -> Option<Self::InstantModelDuration>;
     /// Add a duration to this instant
-    fn checked_add(&self, duration: Self::Duration) -> Option<Self>;
+    fn checked_add(&self, duration: Self::InstantModelDuration) -> Option<Self>;
     /// Subtract a duration from this instant
-    fn checked_sub(&self, duration: Self::Duration) -> Option<Self>;
+    fn checked_sub(&self, duration: Self::InstantModelDuration) -> Option<Self>;
 }
