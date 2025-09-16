@@ -345,14 +345,18 @@ pub async fn tokio_interval(dur: impl ShuttleModelDuration) {
     }
 }
 
-// pub fn timeout<F>(f : F, d : impl ShuttleModelDuration) -> Timeout<F, _>
-// where F: Future {
-//     Timeout {
-//         start: None,
-//         duration: d,
-//         future: f,
-//     }
-// }
+/// Timeout a future
+pub fn timeout<F, D>(f: F, d: D) -> Timeout<F, D>
+where
+    F: Future,
+    D: ShuttleModelDuration + PartialOrd,
+{
+    Timeout {
+        start: None,
+        duration: d,
+        future: f,
+    }
+}
 
 /// Timeout a future
 #[pin_project]
