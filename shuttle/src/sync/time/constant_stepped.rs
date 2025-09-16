@@ -193,10 +193,13 @@ impl Instant {
 
     /// Returns an instant corresponding to "now"
     pub fn now() -> Instant {
-        let tm = ExecutionState::with(|s| Rc::clone(&s.time_model));
-        match &mut *tm.borrow_mut() {
-            super::TimeModel::SteppedTimeModel(model) => model.instant(),
-        }
+        ExecutionState::with(|s| {
+            let tm = Rc::clone(&s.time_model);
+            let mut tm_borrow = tm.borrow_mut();
+            match &mut *tm_borrow {
+                super::TimeModel::ConstantSteppedTimeModel(model) => model.instant(),
+            }
+        })
     }
 }
 

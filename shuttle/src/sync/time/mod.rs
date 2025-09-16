@@ -43,7 +43,9 @@ impl TimeModel {
 
 /// The trait implemented by each TimeModel
 pub trait TimeModelShape {
+    /// The associated Instant type for this TimeModel
     type TimeModelInstant: ShuttleModelInstant;
+    /// The associated Duration type for this TimeModel
     type TimeModelDuration: ShuttleModelDuration;
 
     /// sleep

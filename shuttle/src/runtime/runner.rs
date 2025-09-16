@@ -77,7 +77,7 @@ impl<S: Scheduler + 'static> Runner<S> {
     }
 }
 
-impl<S: Scheduler> Runner<S> {
+impl<S: Scheduler + 'static> Runner<S> {
     /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
     pub fn new_with_time_model(scheduler: S, time_model: TimeModel, config: Config) -> Self {
         let metrics_scheduler = MetricsScheduler::new(scheduler);
