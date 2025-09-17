@@ -162,6 +162,7 @@ pub(crate) struct TaskSignature {
     /// The task creation stack is a tuple of (create location, number of tasks created at that location in the parent)
     task_creation_stack: Vec<(&'static Location<'static>, u32)>,
     spawn_call_site_hash: u64,
+    parent_signature_hash: u64,
     signature_hash: u64,
     child_counters: HashMap<&'static Location<'static>, u32>,
 }
@@ -177,6 +178,7 @@ impl TaskSignature {
         Self {
             task_creation_stack,
             spawn_call_site_hash: hasher.finish(),
+            parent_signature_hash: 0,
             signature_hash,
             child_counters: HashMap::new(),
         }
@@ -199,6 +201,7 @@ impl TaskSignature {
 
         Self {
             task_creation_stack,
+            parent_signature_hash: self.signature_hash,
             spawn_call_site_hash,
             signature_hash: hasher.finish(),
             child_counters: HashMap::new(),
@@ -224,8 +227,13 @@ impl TaskSignature {
 
     /// Combined signature of the static location and dynamic context
     /// context where the task was spawned.
-    pub(crate) fn signature_hash(self: &TaskSignature) -> u64 {
+    pub(crate) fn signature_hash(&self) -> u64 {
         self.signature_hash
+    }
+
+    /// Signature hash of the parent of this task
+    pub(crate) fn parent_signature_hash(&self) -> u64 {
+        self.parent_signature_hash
     }
 }
 
@@ -248,6 +256,7 @@ impl Eq for TaskSignature {}
 #[derive(Debug)]
 pub struct Task {
     pub(super) id: TaskId,
+    pub(super) parent_task_id: Option<TaskId>,
     pub(super) state: TaskState,
     pub(super) detached: bool,
     park_state: ParkState,
@@ -326,6 +335,7 @@ impl Task {
 
         let mut task = Self {
             id,
+            parent_task_id,
             state: TaskState::Runnable,
             continuation,
             clock,
@@ -424,6 +434,11 @@ impl Task {
     /// Returns the identifier of this task.
     pub fn id(&self) -> TaskId {
         self.id
+    }
+
+    /// Returns the identifier of the task that spawned this task.
+    pub fn parent_task_id(&self) -> Option<TaskId> {
+        self.parent_task_id
     }
 
     pub(crate) fn runnable(&self) -> bool {
