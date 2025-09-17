@@ -644,6 +644,22 @@ impl Task {
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().insert(self.id(), tag.clone()));
         self.tag.replace(tag)
     }
+
+    pub(crate) fn format_for_deadlock(&self) -> String {
+        use crate::runtime::execution::backtrace_enabled;
+        format!(
+            "{} (task {:?}{}{}){}",
+            self.name().unwrap_or_else(|| "<unknown>".to_string()),
+            self.id(),
+            if self.detached { ", detached" } else { "" },
+            if self.sleeping() { ", pending future" } else { "" },
+            if backtrace_enabled() {
+                format!("\nBacktrace:\n{:#?}\n", self.backtrace)
+            } else {
+                "".into()
+            }
+        )
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]

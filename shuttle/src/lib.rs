@@ -240,6 +240,16 @@ pub struct Config {
     /// a `Subscriber` which overwrites on calls to `record()` and want to display the current step
     /// count.
     pub record_steps_in_span: bool,
+
+    // EXPERIMENTAL; may be removed in the future. May also be changed to an enum to force biased scheduling.
+    /// By default (when this is `false`) when a task panics we will serialize the schedule, then
+    /// continue scheduling until the panicking task has fully unwound its stack, and only then return.
+    /// This is somewhat wasteful, and also exposes us to more chances of having the entire test abort,
+    /// as we are running test code with `std::thread::panicking` (thus a second panic will be an abort).
+    /// Setting this to `true` will cause scheduling to stop as soon as a task panics. Note that the chance of
+    /// an abort (after serializing the schedule) is still present, as we will resume the unwind, and may panic
+    /// while calling drop handlers.
+    pub immediately_return_on_panic: bool,
 }
 
 impl Config {
@@ -252,6 +262,7 @@ impl Config {
             max_time: None,
             silence_warnings: false,
             record_steps_in_span: false,
+            immediately_return_on_panic: false,
         }
     }
 }
