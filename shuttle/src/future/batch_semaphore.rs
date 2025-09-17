@@ -3,6 +3,7 @@ use crate::current;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{clock::VectorClock, TaskId};
 use crate::runtime::thread;
+use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -288,6 +289,8 @@ impl BatchSemaphoreState {
 pub struct BatchSemaphore {
     state: RefCell<BatchSemaphoreState>,
     fairness: Fairness,
+    #[allow(unused)]
+    signature: ResourceSignature,
 }
 
 /// Error returned from the [`BatchSemaphore::try_acquire`] function.
@@ -323,25 +326,55 @@ impl std::error::Error for AcquireError {}
 
 impl BatchSemaphore {
     /// Creates a new semaphore with the initial number of permits.
+    #[track_caller]
     pub fn new(num_permits: usize, fairness: Fairness) -> Self {
+        Self::new_with_signature(
+            num_permits,
+            fairness,
+            ExecutionState::new_resource_signature(ResourceType::BatchSemaphore),
+        )
+    }
+
+    pub(crate) fn new_with_signature(num_permits: usize, fairness: Fairness, signature: ResourceSignature) -> Self {
         let state = RefCell::new(BatchSemaphoreState {
             id: Some(crate::annotations::record_semaphore_created()),
             waiters: VecDeque::new(),
             permits_available: PermitsAvailable::new(num_permits),
             closed: false,
         });
-        Self { state, fairness }
+        Self {
+            state,
+            fairness,
+            signature,
+        }
     }
 
     /// Creates a new semaphore with the initial number of permits.
+    #[track_caller]
     pub const fn const_new(num_permits: usize, fairness: Fairness) -> Self {
+        Self::const_new_with_signature(
+            num_permits,
+            fairness,
+            ResourceSignature::new_const(ResourceType::BatchSemaphore),
+        )
+    }
+
+    pub(crate) const fn const_new_with_signature(
+        num_permits: usize,
+        fairness: Fairness,
+        signature: ResourceSignature,
+    ) -> Self {
         let state = RefCell::new(BatchSemaphoreState {
             id: None,
             waiters: VecDeque::new(),
             permits_available: PermitsAvailable::const_new(num_permits),
             closed: false,
         });
-        Self { state, fairness }
+        Self {
+            state,
+            fairness,
+            signature,
+        }
     }
 
     /// Returns the current number of available permits.
@@ -596,6 +629,7 @@ unsafe impl Send for BatchSemaphore {}
 unsafe impl Sync for BatchSemaphore {}
 
 impl Default for BatchSemaphore {
+    #[track_caller]
     fn default() -> Self {
         Self::new(Default::default(), Fairness::StrictlyFair)
     }
@@ -750,5 +784,58 @@ impl crate::annotations::WithName for BatchSemaphore {
     fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self {
         (&self).with_name_and_kind(name, kind);
         self
+    }
+}
+
+impl BatchSemaphore {
+    #[cfg(test)]
+    pub(crate) fn signature(&self) -> &ResourceSignature {
+        &self.signature
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_resource_signature_batch_semaphore() {
+        crate::check_random(
+            || {
+                let sem1 = BatchSemaphore::new(1, Fairness::Unfair);
+                let sem2 = BatchSemaphore::new(1, Fairness::Unfair);
+                assert_ne!(sem1.signature, sem2.signature);
+            },
+            1,
+        );
+    }
+
+    #[test]
+    fn batch_semaphore_signatures_consistent_across_shuttle_iterations() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+
+        let all_signatures = Arc::new(Mutex::new(HashSet::new()));
+        let all_signatures_clone = all_signatures.clone();
+
+        crate::check_random(
+            move || {
+                let sem1 = BatchSemaphore::new(1, Fairness::StrictlyFair);
+                let sem2 = BatchSemaphore::new(2, Fairness::Unfair);
+
+                all_signatures_clone
+                    .lock()
+                    .unwrap()
+                    .insert((sem1.available_permits(), sem1.signature().clone()));
+                all_signatures_clone
+                    .lock()
+                    .unwrap()
+                    .insert((sem2.available_permits(), sem2.signature().clone()));
+            },
+            10,
+        );
+
+        // Should have exactly 2 unique (signatures X permits available) across all iterations
+        assert_eq!(all_signatures.lock().unwrap().len(), 2);
     }
 }

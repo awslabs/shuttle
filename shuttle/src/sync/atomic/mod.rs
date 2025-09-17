@@ -62,6 +62,7 @@ pub use std::sync::atomic::Ordering;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
+use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::panic::RefUnwindSafe;
 
@@ -119,6 +120,8 @@ pub use std::sync::atomic::compiler_fence;
 struct Atomic<T> {
     inner: RefCell<T>,
     clock: RefCell<Option<VectorClock>>, // wrapped in option to support the const new()
+    #[allow(unused)]
+    signature: ResourceSignature,
 }
 
 // Safety: Atomic is never actually passed across true threads, only across continuations. The
@@ -127,6 +130,7 @@ unsafe impl<T: Sync> Sync for Atomic<T> {}
 impl<T: RefUnwindSafe> RefUnwindSafe for Atomic<T> {}
 
 impl<T> Atomic<T> {
+    #[track_caller]
     const fn new(v: T) -> Self {
         // Since this is a `const fn`, the clock associated with this Atomic is assigned a const value of None
         // (which represents all zeros).  At the time of creation of the atomic, however, we have more causal
@@ -138,6 +142,7 @@ impl<T> Atomic<T> {
         Self {
             inner: RefCell::new(v),
             clock: RefCell::new(None),
+            signature: ResourceSignature::new_const(ResourceType::Atomic),
         }
     }
 }
@@ -234,5 +239,81 @@ impl<T: Copy + Eq> Atomic<T> {
             let self_clock = self.clock.borrow();
             s.update_clock(self_clock.as_ref().unwrap());
         });
+    }
+
+    #[cfg(test)]
+    fn signature(&self) -> ResourceSignature {
+        self.signature.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use crate::sync::atomic::*;
+
+    #[test]
+    fn unique_resource_signatures() {
+        let atomic_i8 = AtomicI8::new(0);
+        let atomic_i16 = AtomicI16::new(0);
+        let atomic_i32 = AtomicI32::new(0);
+        let atomic_i64 = AtomicI64::new(0);
+        let atomic_isize = AtomicIsize::new(0);
+        let atomic_u8 = AtomicU8::new(0);
+        let atomic_u16 = AtomicU16::new(0);
+        let atomic_u32 = AtomicU32::new(0);
+        let atomic_u64 = AtomicU64::new(0);
+        let atomic_usize = AtomicUsize::new(0);
+        let atomic_bool = AtomicBool::new(false);
+        let atomic_ptr = AtomicPtr::new(std::ptr::null_mut::<i32>());
+
+        // All atomics should have unique signatures
+        let signatures = HashSet::from([
+            atomic_i8.signature(),
+            atomic_i16.signature(),
+            atomic_i32.signature(),
+            atomic_i64.signature(),
+            atomic_isize.signature(),
+            atomic_u8.signature(),
+            atomic_u16.signature(),
+            atomic_u32.signature(),
+            atomic_u64.signature(),
+            atomic_usize.signature(),
+            atomic_bool.signature(),
+            atomic_ptr.signature(),
+        ]);
+
+        // Check all signatures are unique
+        assert_eq!(signatures.len(), 12);
+    }
+
+    #[test]
+    fn atomic_signatures_consistent_across_shuttle_iterations() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+
+        let all_signatures = Arc::new(Mutex::new(HashSet::new()));
+        let all_signatures_clone = all_signatures.clone();
+
+        crate::check_random(
+            move || {
+                let atomic1 = AtomicBool::new(false);
+                let atomic2 = AtomicBool::new(true);
+
+                all_signatures_clone
+                    .lock()
+                    .unwrap()
+                    .insert((atomic1.load(Ordering::SeqCst), atomic1.signature()));
+                all_signatures_clone
+                    .lock()
+                    .unwrap()
+                    .insert((atomic2.load(Ordering::SeqCst), atomic2.signature()));
+            },
+            10,
+        );
+
+        // Should have exactly 2 unique (signatures X values) across all iterations
+        assert_eq!(all_signatures.lock().unwrap().len(), 2);
     }
 }

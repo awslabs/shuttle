@@ -2,6 +2,7 @@ use crate::current;
 use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
 use crate::runtime::task::TaskId;
 use crate::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
+use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -28,11 +29,16 @@ struct MutexState {
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
+    #[track_caller]
     pub const fn new(value: T) -> Self {
+        Self::new_internal(value, ResourceSignature::new_const(ResourceType::Mutex))
+    }
+
+    pub(crate) const fn new_internal(value: T, signature: ResourceSignature) -> Self {
         let state = MutexState { holder: None };
         Self {
             state: RefCell::new(state),
-            semaphore: BatchSemaphore::const_new(1, Fairness::Unfair),
+            semaphore: BatchSemaphore::const_new_with_signature(1, Fairness::Unfair, signature),
             inner: std::sync::Mutex::new(value),
         }
     }
@@ -229,5 +235,22 @@ impl<T> crate::annotations::WithName for Mutex<T> {
     fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self {
         (&self).with_name_and_kind(name, kind);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_resource_signature_mutex() {
+        crate::check_random(
+            || {
+                let mutex1 = Mutex::new(0);
+                let mutex2 = Mutex::new(0);
+                assert_ne!(mutex1.semaphore.signature(), mutex2.semaphore.signature());
+            },
+            1,
+        );
     }
 }

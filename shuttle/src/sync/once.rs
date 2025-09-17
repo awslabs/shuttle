@@ -1,7 +1,7 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::storage::StorageKey;
 use crate::runtime::task::clock::VectorClock;
-use crate::sync::Mutex;
+use crate::sync::{Mutex, ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
@@ -31,6 +31,7 @@ pub struct Once {
     // ```
     /// Unique identifier for this [`Once`], used as a key for the [`OnceInitState`] for this instance.
     id: LazyLock<usize>,
+    signature: ResourceSignature,
 }
 
 /// A `Once` cell can either be `Running`, in which case a `Mutex` mediates racing threads trying to
@@ -54,6 +55,7 @@ impl Once {
     /// Creates a new `Once` value.
     #[must_use]
     #[allow(clippy::new_without_default)]
+    #[track_caller]
     pub const fn new() -> Self {
         static NEXT_ID: StdAtomicUsize = StdAtomicUsize::new(1);
 
@@ -63,6 +65,7 @@ impl Once {
                 assert_ne!(id, 0, "id overflow");
                 id
             }),
+            signature: ResourceSignature::new_const(ResourceType::Once),
         }
     }
 
@@ -120,7 +123,10 @@ impl Once {
         let lock = ExecutionState::with(|state| {
             // Initialize the state of the `Once` cell if we're the first thread to try
             if self.get_state(state).is_none() {
-                self.init_state(state, OnceInitState::Running(Rc::new(Mutex::new(false))));
+                self.init_state(
+                    state,
+                    OnceInitState::Running(Rc::new(Mutex::new_internal(false, self.signature.clone()))),
+                );
             }
 
             let init = self.get_state(state).expect("must be initialized by this point");
@@ -197,5 +203,22 @@ impl OnceState {
 impl From<&Once> for StorageKey {
     fn from(once: &Once) -> Self {
         StorageKey(once.id(), 0x2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unique_resource_signature_once() {
+        crate::check_random(
+            || {
+                let once1 = Once::new();
+                let once2 = Once::new();
+                assert_ne!(once1.signature, once2.signature);
+            },
+            1,
+        );
     }
 }
