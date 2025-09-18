@@ -1,9 +1,9 @@
 //! A counting semaphore supporting both async and sync operations.
-use crate::current;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{clock::VectorClock, TaskId};
 use crate::runtime::thread;
 use crate::sync::{ResourceSignature, ResourceType};
+use crate::{backtrace_enabled, current};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -697,7 +697,7 @@ impl Future for Acquire<'_> {
         }
         self.never_polled = false;
 
-        if self.waiter.has_permits.load(Ordering::SeqCst) {
+        let out = if self.waiter.has_permits.load(Ordering::SeqCst) {
             assert!(!self.waiter.is_queued.load(Ordering::SeqCst));
             self.completed = true;
             trace!("Acquire::poll for waiter {:?} with permits", self.waiter);
@@ -790,7 +790,18 @@ impl Future for Acquire<'_> {
                 // No progress made, future is still pending.
                 Poll::Pending
             }
+        };
+        if matches!(out, Poll::Pending) {
+            // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
+            ExecutionState::with(|state| {
+                state.current_mut().backtrace = if backtrace_enabled() {
+                    Some(std::backtrace::Backtrace::force_capture())
+                } else {
+                    None
+                }
+            })
         }
+        out
     }
 }
 

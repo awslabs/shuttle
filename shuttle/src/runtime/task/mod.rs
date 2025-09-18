@@ -505,12 +505,6 @@ impl Task {
     }
 
     pub(crate) fn sleep(&mut self) {
-        self.backtrace = if backtrace_enabled() {
-            Some(Backtrace::force_capture())
-        } else {
-            None
-        };
-
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Sleeping;
     }
