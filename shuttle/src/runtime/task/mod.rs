@@ -489,9 +489,6 @@ impl Task {
     }
 
     pub(crate) fn sleep(&mut self) {
-        // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
-        self.backtrace = Backtrace::capture();
-
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Sleeping;
     }

@@ -169,6 +169,10 @@ impl<T> Future for JoinHandle<T> {
             Poll::Ready(result)
         } else {
             lock.waker = Some(cx.waker().clone());
+
+            // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
+            ExecutionState::with(|state| state.current_mut().backtrace = std::backtrace::Backtrace::capture());
+
             Poll::Pending
         }
     }

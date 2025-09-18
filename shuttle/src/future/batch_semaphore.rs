@@ -660,7 +660,8 @@ impl Future for Acquire<'_> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         assert!(!self.completed);
-        if self.waiter.has_permits.load(Ordering::SeqCst) {
+
+        let out = if self.waiter.has_permits.load(Ordering::SeqCst) {
             assert!(!self.waiter.is_queued.load(Ordering::SeqCst));
             self.completed = true;
             trace!("Acquire::poll for waiter {:?} with permits", self.waiter);
@@ -755,7 +756,12 @@ impl Future for Acquire<'_> {
                 // No progress made, future is still pending.
                 Poll::Pending
             }
+        };
+        if matches!(out, Poll::Pending) {
+            // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
+            ExecutionState::with(|state| state.current_mut().backtrace = std::backtrace::Backtrace::capture());
         }
+        out
     }
 }
 
