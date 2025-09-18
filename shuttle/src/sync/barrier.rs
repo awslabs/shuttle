@@ -99,13 +99,10 @@ impl Barrier {
     /// Blocks the current thread until all threads have rendezvoused here.
     pub fn wait(&self) -> BarrierWaitResult {
         let state = self.state.borrow_mut();
-        let will_block = state.waiters.len() < state.bound;
         drop(state);
         // If all tasks have already rendezvoused, we need to context switch once to allow the previous
         // event to become visible. Otherwise it will become visible when we block
-        if !will_block {
-            thread::switch_task();
-        }
+        thread::switch_task();
         let mut state = self.state.borrow_mut();
         let my_epoch = state.epoch;
 

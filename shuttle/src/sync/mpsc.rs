@@ -168,18 +168,9 @@ impl<T> Channel<T> {
     }
 
     fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
-        let mut should_block = self.sender_must_block();
-        let blocking_send_changes_state =
-            self.state.borrow().waiting_receivers.is_empty() || self.state.borrow().waiting_senders.is_empty();
+        thread::switch_task();
 
-        // If the sender won't block, we need to allow for a switch to make the previous operation visible
-        // Also, because the sender blocking with no receivers/senders changes the state of the channel
-        // prior to blocking, we also need to make the previous operation visible *before* this state-change
-        // to ensure completeness
-        if !can_block || !should_block || blocking_send_changes_state {
-            thread::switch_task();
-            should_block = self.sender_must_block(); // After a switch channel state may have changed
-        }
+        let should_block = self.sender_must_block();
 
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
@@ -288,18 +279,9 @@ impl<T> Channel<T> {
     }
 
     fn recv_internal(&self, can_block: bool) -> Result<T, TryRecvError> {
-        let mut should_block = self.receiver_must_block();
-        let blocking_recv_changes_state =
-            self.state.borrow().waiting_receivers.is_empty() || self.state.borrow().waiting_senders.is_empty();
+        thread::switch_task();
 
-        // If the receiver won't block, we need to allow for a switch to make the previous operation visible
-        // Also, because the receiver blocking with no senders/receivers changes the state of the channel
-        // prior to blocking, we also need to make the previous operation visible *before* this state-change
-        // to ensure completeness
-        if !can_block || !should_block || blocking_recv_changes_state {
-            thread::switch_task();
-            should_block = self.receiver_must_block(); // After a switch channel state may have changed
-        }
+        let should_block = self.receiver_must_block();
 
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();

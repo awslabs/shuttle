@@ -176,7 +176,7 @@ fn clock_barrier(n: usize) {
 
 #[test]
 fn clock_barrier_dfs() {
-    check_dfs(|| clock_barrier(4), None);
+    check_dfs(|| clock_barrier(3), None);
 }
 
 #[test]

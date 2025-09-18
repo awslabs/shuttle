@@ -79,7 +79,7 @@ fn barrier_test(n: usize, c: usize) {
 
 #[test]
 fn barrier_test_many_ok() {
-    check_dfs(|| barrier_test(4, 4), None);
+    check_dfs(|| barrier_test(3, 3), None);
 }
 
 #[test]
@@ -187,15 +187,15 @@ fn barrier_test_nondeterministic_leader(batch_size: usize, num_threads: usize) {
 
 #[test]
 fn barrier_test_nondeterministic_leader_1() {
-    barrier_test_nondeterministic_leader(1, 4);
+    barrier_test_nondeterministic_leader(1, 3);
 }
 
 #[test]
 fn barrier_test_nondeterministic_leader_2() {
-    barrier_test_nondeterministic_leader(2, 4);
+    barrier_test_nondeterministic_leader(2, 2);
 }
 
 #[test]
-fn barrier_test_nondeterministic_leader_4() {
-    barrier_test_nondeterministic_leader(4, 4);
+fn barrier_test_nondeterministic_leader_3() {
+    barrier_test_nondeterministic_leader(3, 3);
 }

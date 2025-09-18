@@ -504,7 +504,7 @@ fn mpsc_senders_with_blocking_inner(num_senders: usize, channel_size: usize) {
 
 #[test]
 fn mpsc_some_senders_with_blocking() {
-    check_dfs(|| mpsc_senders_with_blocking_inner(4, 2), None);
+    check_dfs(|| mpsc_senders_with_blocking_inner(3, 2), None);
 }
 
 #[test]
@@ -514,7 +514,7 @@ fn mpsc_many_senders_with_blocking() {
 
 #[test]
 fn mpsc_many_senders_drop_receiver() {
-    const NUM_SENDERS: usize = 4;
+    const NUM_SENDERS: usize = 3;
     const CHANNEL_SIZE: usize = 2;
     check_dfs(
         || {

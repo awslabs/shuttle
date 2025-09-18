@@ -464,10 +464,6 @@ impl Task {
         self.state == TaskState::Finished
     }
 
-    pub(crate) fn is_detached(&self) -> bool {
-        self.detached
-    }
-
     pub(crate) fn detach(&mut self) {
         self.detached = true;
     }
@@ -596,9 +592,6 @@ impl Task {
         self.local_storage.pop()
     }
 
-    pub(crate) fn park_token_is_available(&self) -> bool {
-        self.park_state.token_available
-    }
     /// Park the task if its park token is unavailable. If the task blocks, then it will be woken up
     /// when the token becomes available or spuriously without consuming the token (see the
     /// documentation for [`std::thread::park`], which says that "it may also return spuriously,

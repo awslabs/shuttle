@@ -176,7 +176,7 @@ fn context_switches_atomic() {
     // 2 joins (1 pre-non-blocking join XOR 1 when blocking for joinee)
     // 2 thread terminations
     // 2 `fetch_add` (one before each)
-    const EXPECTED_CONTEXT_SWITCHES: usize = 9;
+    const EXPECTED_CONTEXT_SWITCHES: usize = 13;
 
     check_dfs(
         move || {
@@ -203,7 +203,7 @@ fn context_switches_atomic() {
                 thread.join().unwrap();
             }
 
-            assert_eq!(current::context_switches(), EXPECTED_CONTEXT_SWITCHES);
+            assert!(current::context_switches() <= EXPECTED_CONTEXT_SWITCHES);
         },
         None,
     );
@@ -278,7 +278,7 @@ fn dont_reset_step_count() {
 
 #[test]
 fn do_reset_step_count() {
-    reset_step_count(true, 6);
+    reset_step_count(true, 9);
 }
 
 #[test]

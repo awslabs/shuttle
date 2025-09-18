@@ -661,18 +661,9 @@ impl Future for Acquire<'_> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         assert!(!self.completed);
-        let will_succeed = self.waiter.has_permits.load(Ordering::SeqCst)
-            || self.semaphore.is_closed()
-            || self.semaphore.available_permits() >= self.waiter.num_permits;
 
-        let blocking_changes_state = self.semaphore.fairness == Fairness::StrictlyFair;
-        // If the acquire will succeed on the first try, we need to context switch once to allow the previous
-        // event to become visible. If we won't succeed, then we still need to context switch if the act of
-        // blocking is a visible operation. This is true for fair semaphores because the order of the waiter
-        // queue is affected by blocking. In the case of unfair semaphores, if the semaphore has no permits
-        // available, the extra waiter doesn't affect other tasks -- all waiters and active tasks will race
-        // to acquire permits when the current holder releases.
-        if !self.has_polled && (will_succeed || blocking_changes_state) {
+        // Always switch at least once
+        if !self.has_polled {
             thread::switch_task();
         }
         self.has_polled = true;
