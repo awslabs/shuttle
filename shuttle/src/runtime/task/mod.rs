@@ -251,6 +251,107 @@ impl PartialEq for TaskSignature {
 
 impl Eq for TaskSignature {}
 
+pub(crate) type Loc = &'static Location<'static>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Event<'a> {
+    AtomicRead(&'a ResourceSignature, Loc),
+    AtomicWrite(&'a ResourceSignature, Loc),
+    AtomicReadWrite(&'a ResourceSignature, Loc),
+    BatchSemaphoreAcq(&'a ResourceSignature, Loc),
+    BatchSemaphoreRel(&'a ResourceSignature, Loc),
+    BarrierWait(&'a ResourceSignature, Loc),
+    CondvarWait(&'a ResourceSignature, Loc),
+    CondvarNotify(Loc),
+    Park(Loc),
+    Unpark(&'a TaskSignature, Loc),
+    ChannelSend(&'a ResourceSignature, Loc),
+    ChannelRecv(&'a ResourceSignature, Loc),
+    Spawn(&'a TaskSignature),
+    Yield(Loc),
+    Sleep(Loc),
+    Exit,
+    Join(&'a TaskSignature, Loc),
+    Unknown,
+}
+
+impl<'a> Event<'a> {
+    #[track_caller]
+    pub(crate) fn atomic_read(sig: &'a ResourceSignature) -> Self {
+        Self::AtomicRead(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn atomic_write(sig: &'a ResourceSignature) -> Self {
+        Self::AtomicWrite(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn atomic_read_write(sig: &'a ResourceSignature) -> Self {
+        Self::AtomicReadWrite(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn batch_semaphore_acq(sig: &'a ResourceSignature) -> Self {
+        Self::BatchSemaphoreAcq(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn batch_semaphore_rel(sig: &'a ResourceSignature) -> Self {
+        Self::BatchSemaphoreRel(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn barrier_wait(sig: &'a ResourceSignature) -> Self {
+        Self::BarrierWait(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn condvar_wait(sig: &'a ResourceSignature) -> Self {
+        Self::CondvarWait(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn condvar_notify() -> Self {
+        Self::CondvarNotify(Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn park() -> Self {
+        Self::Park(Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn unpark(sig: &'a TaskSignature) -> Self {
+        Self::Unpark(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn channel_send(sig: &'a ResourceSignature) -> Self {
+        Self::ChannelSend(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn channel_recv(sig: &'a ResourceSignature) -> Self {
+        Self::ChannelRecv(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn yield_now() -> Self {
+        Self::Yield(Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn sleep() -> Self {
+        Self::Sleep(Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn join(sig: &'a TaskSignature) -> Self {
+        Self::Join(sig, Location::caller())
+    }
+}
+
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
 #[derive(Debug)]
@@ -270,6 +371,8 @@ pub struct Task {
     waker: Waker,
     // Remember whether the waker was invoked while we were running
     woken: bool,
+
+    next_event: Event<'static>,
 
     name: Option<String>,
 
@@ -342,6 +445,7 @@ impl Task {
             waiter: None,
             waker,
             woken: false,
+            next_event: Event::Unknown,
             detached: false,
             park_state: ParkState::default(),
             name,
@@ -416,7 +520,7 @@ impl Task {
                 let cx = &mut Context::from_waker(&waker);
                 while future.as_mut().poll(cx).is_pending() {
                     ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
-                    thread::switch();
+                    thread::switch_keep_event();
                 }
             }),
             stack_size,
@@ -462,6 +566,10 @@ impl Task {
 
     pub(crate) fn finished(&self) -> bool {
         self.state == TaskState::Finished
+    }
+
+    pub(crate) fn is_detached(&self) -> bool {
+        self.detached
     }
 
     pub(crate) fn detach(&mut self) {
@@ -592,6 +700,9 @@ impl Task {
         self.local_storage.pop()
     }
 
+    pub(crate) fn park_token_is_available(&self) -> bool {
+        self.park_state.token_available
+    }
     /// Park the task if its park token is unavailable. If the task blocks, then it will be woken up
     /// when the token becomes available or spuriously without consuming the token (see the
     /// documentation for [`std::thread::park`], which says that "it may also return spuriously,
@@ -643,6 +754,19 @@ impl Task {
     pub(crate) fn set_tag(&mut self, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().insert(self.id(), tag.clone()));
         self.tag.replace(tag)
+    }
+
+    /// Get the next_event with a downcast lifetime tied to self.
+    pub(crate) fn next_event(&self) -> &Event<'_> {
+        unsafe { std::mem::transmute(&self.next_event) }
+    }
+
+    pub(crate) unsafe fn set_next_event(&mut self, event: Event<'_>) {
+        self.next_event = unsafe { std::mem::transmute::<Event<'_>, Event<'static>>(event) };
+    }
+
+    pub(crate) fn unset_next_event(&mut self) {
+        self.next_event = Event::Unknown;
     }
 }
 

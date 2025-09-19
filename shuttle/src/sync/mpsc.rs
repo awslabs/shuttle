@@ -2,7 +2,7 @@
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{Event, TaskId, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
 use crate::sync::{ResourceSignature, ResourceType};
 use smallvec::SmallVec;
@@ -47,7 +47,6 @@ pub fn sync_channel<T>(bound: usize) -> (SyncSender<T>, Receiver<T>) {
 struct Channel<T> {
     bound: Option<usize>, // None for an unbounded channel, Some(k) for a bounded channel of size k
     state: Rc<RefCell<ChannelState<T>>>,
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -134,10 +133,12 @@ impl<T> Channel<T> {
         }
     }
 
+    #[track_caller]
     fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
         self.send_internal(message, false)
     }
 
+    #[track_caller]
     fn send(&self, message: T) -> Result<(), SendError<T>> {
         self.send_internal(message, true).map_err(|e| match e {
             TrySendError::Full(_) => unreachable!(),
@@ -145,21 +146,11 @@ impl<T> Channel<T> {
         })
     }
 
-    fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
-        let me = ExecutionState::me();
-        let mut state = self.state.borrow_mut();
+    fn is_rendezvous(&self) -> bool {
+        self.bound == Some(0)
+    }
 
-        trace!(
-            state = ?state,
-            "sender {:?} starting send on channel {:p}",
-            me,
-            self,
-        );
-        if state.known_receivers == 0 {
-            // No receivers are left, so the channel is disconnected.  Stop and return failure.
-            return Err(TrySendError::Disconnected(message));
-        }
-
+    fn sender_must_block(&self, state: &ChannelState<T>) -> bool {
         let (is_rendezvous, is_full) = if let Some(bound) = self.bound {
             // For a rendezvous channel (bound = 0), "is_full" holds when there is a message in the channel.
             // For a non-rendezvous channel (bound > 0), "is_full" holds when the capacity is reached.
@@ -173,10 +164,40 @@ impl<T> Channel<T> {
         //    the channel is full (as defined above)
         //    there are already waiting senders
         //    this is a rendezvous channel and there are no waiting receivers
-        let sender_should_block =
-            is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty());
+        is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty())
+    }
 
-        if sender_should_block {
+    #[track_caller]
+    fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
+        let me = ExecutionState::me();
+        let mut state = self.state.borrow_mut();
+
+        let mut should_block = self.sender_must_block(&state);
+        let blocking_send_changes_state = state.waiting_receivers.is_empty() || state.waiting_senders.is_empty();
+
+        // If the sender won't block, we need to allow for a switch to make the previous operation visible
+        // Also, because the sender blocking with no receivers/senders changes the state of the channel
+        // prior to blocking, we also need to make the previous operation visible *before* this state-change
+        // to ensure completeness
+        if !can_block || !should_block || blocking_send_changes_state {
+            drop(state);
+            thread::switch(Event::channel_send(&self.signature));
+            state = self.state.borrow_mut();
+            should_block = self.sender_must_block(&state); // After a switch channel state may have changed
+        }
+
+        trace!(
+            state = ?state,
+            "sender {:?} starting send on channel {:p}",
+            me,
+            self,
+        );
+        if state.known_receivers == 0 {
+            // No receivers are left, so the channel is disconnected.  Stop and return failure.
+            return Err(TrySendError::Disconnected(message));
+        }
+
+        if should_block {
             if !can_block {
                 return Err(TrySendError::Full(message));
             }
@@ -191,7 +212,7 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
-            thread::switch();
+            thread::switch(Event::channel_send(&self.signature));
 
             state = self.state.borrow_mut();
             trace!(
@@ -225,7 +246,7 @@ impl<T> Channel<T> {
 
                 // When a sender successfully sends on a rendezvous channel, it knows that the receiver will perform
                 // the matching receive, so we need to update the sender's clock with the receiver's.
-                if is_rendezvous {
+                if self.is_rendezvous() {
                     let recv_clock = s.get_clock(tid).clone();
                     s.update_clock(&recv_clock);
                 }
@@ -239,7 +260,7 @@ impl<T> Channel<T> {
             }
         }
 
-        if !is_rendezvous {
+        if !self.is_rendezvous() {
             if let Some(receiver_clock) = &mut state.receiver_clock {
                 let recv_clock = receiver_clock.remove(0);
                 ExecutionState::with(|s| s.update_clock(&recv_clock));
@@ -249,6 +270,7 @@ impl<T> Channel<T> {
         Ok(())
     }
 
+    #[track_caller]
     fn recv(&self) -> Result<T, RecvError> {
         self.recv_internal(true).map_err(|e| match e {
             TryRecvError::Disconnected => RecvError,
@@ -256,13 +278,36 @@ impl<T> Channel<T> {
         })
     }
 
+    #[track_caller]
     fn try_recv(&self) -> Result<T, TryRecvError> {
         self.recv_internal(false)
     }
 
+    fn receiver_must_block(&self, state: &ChannelState<T>) -> bool {
+        // The receiver should block in any of the following situations:
+        //    the channel is empty
+        //    there are waiting receivers
+        state.messages.is_empty() || !state.waiting_receivers.is_empty()
+    }
+
+    #[track_caller]
     fn recv_internal(&self, can_block: bool) -> Result<T, TryRecvError> {
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
+
+        let mut should_block = self.receiver_must_block(&state);
+        let blocking_recv_changes_state = state.waiting_receivers.is_empty() || state.waiting_senders.is_empty();
+
+        // If the receiver won't block, we need to allow for a switch to make the previous operation visible
+        // Also, because the receiver blocking with no senders/receivers changes the state of the channel
+        // prior to blocking, we also need to make the previous operation visible *before* this state-change
+        // to ensure completeness
+        if !can_block || !should_block || blocking_recv_changes_state {
+            drop(state);
+            thread::switch(Event::channel_recv(&self.signature));
+            state = self.state.borrow_mut();
+            should_block = self.receiver_must_block(&state); // After a switch channel state may have changed
+        }
 
         trace!(
             state = ?state,
@@ -275,10 +320,9 @@ impl<T> Channel<T> {
             return Err(TryRecvError::Disconnected);
         }
 
-        let is_rendezvous = self.bound == Some(0);
         // If this is a rendezvous channel, and the channel is empty, and there are waiting senders,
         // notify the first waiting sender
-        if is_rendezvous && state.messages.is_empty() {
+        if self.is_rendezvous() && state.messages.is_empty() {
             if let Some(&tid) = state.waiting_senders.first() {
                 // Note: another receiver may have unblocked the sender already
                 ExecutionState::with(|s| s.get_mut(tid).unblock());
@@ -289,7 +333,7 @@ impl<T> Channel<T> {
         }
 
         // Handle the try_recv case, accounting for the number of msgs available and already waiting receivers.
-        if !is_rendezvous && !can_block && state.waiting_receivers.len() >= state.messages.len() {
+        if !self.is_rendezvous() && !can_block && state.waiting_receivers.len() >= state.messages.len() {
             return Err(TryRecvError::Empty);
         }
 
@@ -307,10 +351,6 @@ impl<T> Channel<T> {
             let _ = s.increment_clock();
         });
 
-        // The receiver should block in any of the following situations:
-        //    the channel is empty
-        //    there are waiting receivers
-        let should_block = state.messages.is_empty() || !state.waiting_receivers.is_empty();
         if should_block {
             state.waiting_receivers.push(me);
             trace!(
@@ -322,7 +362,7 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
-            thread::switch();
+            thread::switch(Event::channel_recv(&self.signature));
 
             state = self.state.borrow_mut();
             trace!(
