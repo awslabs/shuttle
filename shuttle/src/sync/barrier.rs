@@ -98,6 +98,14 @@ impl Barrier {
 
     /// Blocks the current thread until all threads have rendezvoused here.
     pub fn wait(&self) -> BarrierWaitResult {
+        let state = self.state.borrow_mut();
+        let will_block = state.waiters.len() < state.bound;
+        drop(state);
+        // If all tasks have already rendezvoused, we need to context switch once to allow the previous
+        // event to become visible. Otherwise it will become visible when we block
+        if !will_block {
+            thread::switch_task();
+        }
         let mut state = self.state.borrow_mut();
         let my_epoch = state.epoch;
 
@@ -114,7 +122,9 @@ impl Barrier {
 
         if state.waiters.len() < state.bound {
             trace!(waiters=?state.waiters, epoch=my_epoch, "blocked on barrier {:?}", self);
+            drop(state);
             ExecutionState::with(|s| s.current_mut().block(false));
+            thread::switch_task();
         } else {
             trace!(waiters=?state.waiters, epoch=my_epoch, "releasing waiters on barrier {:?}", self);
 
@@ -146,11 +156,8 @@ impl Barrier {
                     t.unblock();
                 }
             });
+            drop(state);
         };
-
-        drop(state);
-
-        thread::switch();
 
         // Try to remove the leader token for this epoch. If true, then the token was present and
         // we are the leader. Any future attempts to remove the token will return false.

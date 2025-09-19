@@ -108,7 +108,7 @@ fn spawn_random_amount_of_threads_mutex_rng(rng: &Mutex<StdRng>, max_threads: u6
 #[should_panic = "possible nondeterminism: current execution should have ended"]
 fn panic_should_have_ended() {
     let scheduler = DfsScheduler::new(None, true);
-    let rng = Mutex::new(StdRng::seed_from_u64(123));
+    let rng = Mutex::new(StdRng::seed_from_u64(12345));
     check_uncontrolled_nondeterminism_custom_scheduler_and_config(
         move || spawn_random_amount_of_threads_mutex_rng(&rng, 2),
         scheduler,
