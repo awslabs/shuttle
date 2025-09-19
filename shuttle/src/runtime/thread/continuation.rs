@@ -11,7 +11,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::panic::Location;
 use std::rc::Rc;
+use tracing::trace;
 
 scoped_thread_local! {
     pub(crate) static CONTINUATION_POOL: ContinuationPool
@@ -255,8 +257,20 @@ impl std::fmt::Debug for PooledContinuation {
 unsafe impl Send for PooledContinuation {}
 
 /// Possibly yield back to the executor to perform a context switch.
-pub(crate) fn switch() {
+/// This function should be called *before* any visible operation.
+/// If each visible operation has a scheduling point before it, then there will
+/// be a potential context switch *in between* any pair of visible operations, which
+/// is a necessary condition for Shuttle's completeness.
+///
+/// Putting scheduling points before visible operations, rather than after, has the
+/// advantage of giving the scheduling algorithm additional information to make scheduling
+/// decisions based on what is about to happen on each task. The disadvantage of this
+/// approach is that it can lead to double-yields for blocking operations, to be addressed in
+/// the future.
+#[track_caller]
+pub(crate) fn switch_task() {
     crate::annotations::record_tick();
+    trace!("switch from {}", Location::caller());
     if ExecutionState::maybe_yield() {
         let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
         assert!(matches!(r, ContinuationInput::Resume));

@@ -43,12 +43,11 @@ impl Thread {
 
     /// Atomically makes the handle's token available if it is not already.
     pub fn unpark(&self) {
+        thread::switch_task();
+
         ExecutionState::with(|s| {
             s.get_mut(self.id.task_id).unpark();
         });
-
-        // Making the token available is a yield point
-        thread::switch();
     }
 }
 
@@ -91,6 +90,8 @@ impl<'scope> Scope<'scope, '_> {
             move || {
                 let ret = f();
 
+                thread::switch_task();
+
                 finished.store(true, Ordering::Relaxed);
 
                 if self.num_running_threads.fetch_sub(1, Ordering::Relaxed) == 1 {
@@ -103,7 +104,7 @@ impl<'scope> Scope<'scope, '_> {
 
         // SAFETY: main task is blocked until all scoped closures complete so all captured references remain valid
         ScopedJoinHandle {
-            handle: unsafe { spawn_named_unchecked(scope_closure, None, None, Location::caller()) },
+            handle: unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) },
             finished,
             _marker: PhantomData,
         }
@@ -130,7 +131,7 @@ where
     if scope.num_running_threads.load(Ordering::Relaxed) != 0 {
         tracing::info!("thread blocked, waiting for completion of scoped threads");
         ExecutionState::with(|s| s.current_mut().block(false));
-        thread::switch();
+        thread::switch_task();
     }
 
     ret
@@ -163,7 +164,7 @@ where
 {
     // SAFETY: F is static so all captured references must be `static and therefore
     // will outlive the spawned continuation
-    unsafe { spawn_named_unchecked(f, name, stack_size, caller) }
+    unsafe { spawn_named_unchecked(f, name, stack_size, true, caller) }
 }
 
 /// Must ensure all captured references in f are valid for at least as long as the spawned continuation will run
@@ -171,6 +172,7 @@ unsafe fn spawn_named_unchecked<F, T>(
     f: F,
     name: Option<String>,
     stack_size: Option<usize>,
+    switch_before_exit: bool,
     caller: &'static Location<'static>,
 ) -> JoinHandle<T>
 where
@@ -185,13 +187,11 @@ where
         let result = std::sync::Arc::clone(&result);
 
         // Allocate `thread_fn` on the heap and assume a `'static` bound.
-        let f: Box<dyn FnOnce()> = Box::new(move || thread_fn(f, result));
+        let f: Box<dyn FnOnce()> = Box::new(move || thread_fn(f, switch_before_exit, result));
         let f: Box<dyn FnOnce() + 'static> = unsafe { std::mem::transmute(f) };
 
         ExecutionState::spawn_thread(f, stack_size, name.clone(), None, caller)
     };
-
-    thread::switch();
 
     let thread = Thread {
         id: ThreadId { task_id },
@@ -207,11 +207,18 @@ where
 
 /// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
 /// stores the result of the thread in the given lock.
-pub(crate) fn thread_fn<F, T>(f: F, result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>)
-where
+pub(crate) fn thread_fn<F, T>(
+    f: F,
+    switch_before_exit: bool,
+    result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>,
+) where
     F: FnOnce() -> T,
 {
     let ret = f();
+
+    if switch_before_exit {
+        thread::switch_task();
+    }
 
     tracing::trace!("thread finished, dropping thread locals");
 
@@ -282,16 +289,23 @@ unsafe impl<T> Sync for JoinHandle<T> {}
 impl<T> JoinHandle<T> {
     /// Waits for the associated thread to finish.
     pub fn join(self) -> Result<T> {
-        ExecutionState::with(|state| {
+        // TODO can we soundly skip the yield if the target thread has already finished?
+        thread::switch_task();
+
+        let should_block = ExecutionState::with(|state| {
             let me = state.current().id();
             let target = state.get_mut(self.task_id);
             if target.set_waiter(me) {
                 state.current_mut().block(false);
+                true
+            } else {
+                false
             }
         });
 
-        // TODO can we soundly skip the yield if the target thread has already finished?
-        thread::switch();
+        if should_block {
+            thread::switch_task();
+        }
 
         // Waiting thread inherits the clock of the finished thread
         ExecutionState::with(|state| {
@@ -317,13 +331,13 @@ pub fn yield_now() {
     let waker = ExecutionState::with(|state| state.current().waker());
     waker.wake_by_ref();
     ExecutionState::request_yield();
-    thread::switch();
+    thread::switch_task();
 }
 
 /// Puts the current thread to sleep for at least the specified amount of time.
 // Note that Shuttle does not model time, so this behaves just like a context switch.
 pub fn sleep(_dur: Duration) {
-    thread::switch();
+    thread::switch_task();
 }
 
 /// Get a handle to the thread that invokes it
@@ -341,6 +355,7 @@ pub fn current() -> Thread {
 
 /// Blocks unless or until the current thread's token is made available (may wake spuriously).
 pub fn park() {
+    thread::switch_task();
     let switch = ExecutionState::with(|s| s.current_mut().park());
 
     // We only need to context switch if the park token was unavailable. If it was available, then
@@ -351,7 +366,7 @@ pub fn park() {
     // context would result in spurious wakeups triggering nearly every time.
     if switch {
         ExecutionState::request_yield();
-        thread::switch();
+        thread::switch_task();
     }
 }
 
