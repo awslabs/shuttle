@@ -49,8 +49,8 @@ fn trivial_two_threads() {
 }
 
 /// We have two threads T0 and T1 with the following lifecycle (with letter denoting each step):
-/// * T0: (i) initializes, spawns T1 (s), acquires lock (a), releases lock (r), finishes (e)
-/// * T1:                (I) initializes, acquires lock (A), releases lock (R), finishes (E)
+/// * T0: initializes (i), spawns T1 (s), acquires lock (a), releases lock (r), finishes (e)
+/// * T1:                initializes (I), acquires lock (A), releases lock (R), finishes (E)
 ///
 /// Additionally, T0 and T1 may block before acquiring the lock, which show up as duplicate acquires.
 ///

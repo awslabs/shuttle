@@ -135,6 +135,11 @@ impl Condvar {
         let me = ExecutionState::me();
 
         // Release the lock, which allows for a switch *before* unlocking, but not after
+        // This is because the MutexGuard internally calls `batch_semaphore::release` when it
+        // unlocks via it's drop handler. `release` itself is a visible operation, so it provides
+        // it's own scheduling point prior to releasing the mutex. As all scheduling points are
+        // *only before* visible operations, anything done after this point is not visible until
+        // we switch ourselves
         let mutex = guard.unlock();
         // Unlocked, but no other task has run yet. We thus block ourselves and switch
         let mut state = self.state.borrow_mut();

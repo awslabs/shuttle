@@ -641,7 +641,7 @@ pub struct Acquire<'a> {
     waiter: Arc<Waiter>,
     semaphore: &'a BatchSemaphore,
     completed: bool, // Has the future completed yet?
-    has_polled: bool,
+    never_polled: bool,
 }
 
 impl<'a> Acquire<'a> {
@@ -651,7 +651,7 @@ impl<'a> Acquire<'a> {
             waiter,
             semaphore,
             completed: false,
-            has_polled: false,
+            never_polled: true,
         }
     }
 }
@@ -663,10 +663,10 @@ impl Future for Acquire<'_> {
         assert!(!self.completed);
 
         // Always switch at least once
-        if !self.has_polled {
+        if self.never_polled {
             thread::switch_task();
+            self.never_polled = false;
         }
-        self.has_polled = true;
 
         if self.waiter.has_permits.load(Ordering::SeqCst) {
             assert!(!self.waiter.is_queued.load(Ordering::SeqCst));

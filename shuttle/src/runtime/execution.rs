@@ -86,7 +86,7 @@ impl Execution {
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
             ExecutionState::spawn_main_thread(
-                Box::new(move || thread_fn(f, Default::default())),
+                Box::new(move || thread_fn(f, true, Default::default())),
                 config.stack_size,
                 caller,
             );

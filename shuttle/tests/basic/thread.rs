@@ -14,7 +14,7 @@ fn thread_yield_point() {
 
     // We want to see executions that include both threads running first.
     // Spawn no longer itself produces a switch, but accessing any Shuttle primitive will allow
-    // either thread to run it's visible operations first.
+    // either thread to run its visible operations first.
     check_random(
         move || {
             let flag = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));

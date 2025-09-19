@@ -187,11 +187,7 @@ where
         let result = std::sync::Arc::clone(&result);
 
         // Allocate `thread_fn` on the heap and assume a `'static` bound.
-        let f: Box<dyn FnOnce()> = if switch_before_exit {
-            Box::new(move || thread_fn(f, result))
-        } else {
-            Box::new(move || thread_fn_no_switch(f, result))
-        };
+        let f: Box<dyn FnOnce()> = Box::new(move || thread_fn(f, switch_before_exit, result));
         let f: Box<dyn FnOnce() + 'static> = unsafe { std::mem::transmute(f) };
 
         ExecutionState::spawn_thread(f, stack_size, name.clone(), None, caller)
@@ -209,7 +205,21 @@ where
     }
 }
 
-pub(crate) fn thread_fn_cleanup<T>(ret: T, result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>) {
+/// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
+/// stores the result of the thread in the given lock.
+pub(crate) fn thread_fn<F, T>(
+    f: F,
+    switch_before_exit: bool,
+    result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>,
+) where
+    F: FnOnce() -> T,
+{
+    let ret = f();
+
+    if switch_before_exit {
+        thread::switch_task();
+    }
+
     tracing::trace!("thread finished, dropping thread locals");
 
     // Run thread-local destructors before publishing the result, because
@@ -233,31 +243,6 @@ pub(crate) fn thread_fn_cleanup<T>(ret: T, result: std::sync::Arc<std::sync::Mut
             state.get_mut(waiter).unblock();
         }
     });
-}
-
-/// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
-/// stores the result of the thread in the given lock.
-pub(crate) fn thread_fn<F, T>(f: F, result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>)
-where
-    F: FnOnce() -> T,
-{
-    let ret = f();
-
-    thread::switch_task();
-
-    thread_fn_cleanup(ret, result);
-}
-
-/// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
-/// stores the result of the thread in the given lock. Caller must allow for a context switch before
-/// the thread exits
-pub(crate) fn thread_fn_no_switch<F, T>(f: F, result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>)
-where
-    F: FnOnce() -> T,
-{
-    let ret = f();
-
-    thread_fn_cleanup(ret, result);
 }
 
 /// An owned permission to join on a scoped thread (block on its termination).

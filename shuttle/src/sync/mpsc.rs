@@ -149,8 +149,7 @@ impl<T> Channel<T> {
         self.bound == Some(0)
     }
 
-    fn sender_must_block(&self) -> bool {
-        let state = self.state.borrow();
+    fn sender_must_block(&self, state: &ChannelState<T>) -> bool {
         let (is_rendezvous, is_full) = if let Some(bound) = self.bound {
             // For a rendezvous channel (bound = 0), "is_full" holds when there is a message in the channel.
             // For a non-rendezvous channel (bound > 0), "is_full" holds when the capacity is reached.
@@ -170,8 +169,6 @@ impl<T> Channel<T> {
     fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
         thread::switch_task();
 
-        let should_block = self.sender_must_block();
-
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
 
@@ -186,7 +183,7 @@ impl<T> Channel<T> {
             return Err(TrySendError::Disconnected(message));
         }
 
-        if should_block {
+        if self.sender_must_block(&state) {
             if !can_block {
                 return Err(TrySendError::Full(message));
             }
@@ -270,8 +267,7 @@ impl<T> Channel<T> {
         self.recv_internal(false)
     }
 
-    fn receiver_must_block(&self) -> bool {
-        let state = self.state.borrow_mut();
+    fn receiver_must_block(&self, state: &ChannelState<T>) -> bool {
         // The receiver should block in any of the following situations:
         //    the channel is empty
         //    there are waiting receivers
@@ -280,8 +276,6 @@ impl<T> Channel<T> {
 
     fn recv_internal(&self, can_block: bool) -> Result<T, TryRecvError> {
         thread::switch_task();
-
-        let should_block = self.receiver_must_block();
 
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
@@ -328,7 +322,7 @@ impl<T> Channel<T> {
             let _ = s.increment_clock();
         });
 
-        if should_block {
+        if self.receiver_must_block(&state) {
             state.waiting_receivers.push(me);
             trace!(
                 state = ?state,
