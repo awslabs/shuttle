@@ -171,7 +171,9 @@ impl<T> Channel<T> {
         let mut state = self.state.borrow_mut();
 
         let mut should_block = self.sender_must_block(&state);
-        let blocking_send_changes_state = state.waiting_receivers.is_empty() || state.waiting_senders.is_empty();
+        // Because channels are always fair wrt. waiting senders (waiting senders is an *ordered* list),
+        // blocking changes the state of the channel and thus is always a visible operation
+        let blocking_send_changes_state = true;
 
         // If the sender won't block, we need to allow for a switch to make the previous operation visible
         // Also, because the sender blocking with no receivers/senders changes the state of the channel
@@ -291,7 +293,9 @@ impl<T> Channel<T> {
         let mut state = self.state.borrow_mut();
 
         let mut should_block = self.receiver_must_block(&state);
-        let blocking_recv_changes_state = state.waiting_receivers.is_empty() || state.waiting_senders.is_empty();
+        // Because channels are always fair wrt. waiting receivers (waiting receivers is an *ordered* list),
+        // blocking changes the state of the channel and thus is always a visible operation
+        let blocking_recv_changes_state = true;
 
         // If the receiver won't block, we need to allow for a switch to make the previous operation visible
         // Also, because the receiver blocking with no senders/receivers changes the state of the channel
