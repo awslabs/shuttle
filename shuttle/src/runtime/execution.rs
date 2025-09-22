@@ -383,10 +383,9 @@ impl ExecutionState {
             if single_unfinished_attached && unfinished_attached {
                 // there are more than one unfinished attached tasks, so one exiting won't truncate
                 return false;
-            } else {
-                single_unfinished_attached = true;
             }
 
+            single_unfinished_attached |= unfinished_attached;
             has_unfinished_detached |= !t.finished() && t.detached;
         }
         has_unfinished_detached && single_unfinished_attached

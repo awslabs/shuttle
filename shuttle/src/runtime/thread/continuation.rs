@@ -271,7 +271,7 @@ unsafe impl Send for PooledContinuation {}
 /// As an optimization, the switch *before* the blocking operation can be conditionally
 /// omitted to avoid switching twice for the same operation iff (1) the operation *will*
 /// block in the current context and (2) if the act of blocking does not affect other tasks.
-/// For example, a blocking Channel send does not satisfy (2) if there are not already
+/// For example, a blocking rendezvous Channel send does not satisfy (2) if there are not already
 /// other blocking senders on the channel -- prior to the sender blocking, `try_recv` will
 /// fail, but after the sender blocks, `try_recv` succeeds. Thus the act of blocking itself
 /// is a visible operation, meaning that both scheduling points are necessary for complete
