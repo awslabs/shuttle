@@ -62,8 +62,8 @@ pub use std::sync::atomic::Ordering;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::thread;
-use crate::sync::{ResourceSignature, ResourceType};
 use crate::silence_warnings;
+use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::panic::RefUnwindSafe;
 
