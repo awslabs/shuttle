@@ -161,31 +161,28 @@ impl<T: Copy + Eq> Atomic<T> {
     fn load(&self, order: Ordering) -> T {
         maybe_warn_about_ordering(order);
 
-        thread::switch();
+        thread::switch_task();
         self.exhale_clock();
         let value = *self.inner.borrow();
-        thread::switch();
         value
     }
 
     fn store(&self, val: T, order: Ordering) {
         maybe_warn_about_ordering(order);
 
-        thread::switch();
+        thread::switch_task();
         self.inhale_clock();
         *self.inner.borrow_mut() = val;
-        thread::switch();
     }
 
     fn swap(&self, mut val: T, order: Ordering) -> T {
         maybe_warn_about_ordering(order);
 
         // swap behaves like { let x = load() ; store(val) ; x }
-        thread::switch();
+        thread::switch_task();
         self.exhale_clock(); // for the load
         self.inhale_clock(); // for the store
         std::mem::swap(&mut *self.inner.borrow_mut(), &mut val);
-        thread::switch();
         val
     }
 
@@ -198,7 +195,7 @@ impl<T: Copy + Eq> Atomic<T> {
 
         // fetch_update behaves like (ignoring error): { let x = load() ; store(f(x)); x }
         // in the error case, there is no store, so the register does not inherit the clock of the caller
-        thread::switch();
+        thread::switch_task();
         self.exhale_clock(); // for the load()
         let current = *self.inner.borrow();
         let ret = if let Some(new) = f(current) {
@@ -208,7 +205,6 @@ impl<T: Copy + Eq> Atomic<T> {
         } else {
             Err(current)
         };
-        thread::switch();
         ret
     }
 

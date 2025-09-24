@@ -3,6 +3,7 @@ use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
+use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::sync::{ResourceSignature, ResourceType};
@@ -85,7 +86,7 @@ impl Execution {
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
             ExecutionState::spawn_main_thread(
-                Box::new(move || thread_fn(f, Default::default())),
+                Box::new(move || thread_fn(f, true, Default::default())),
                 config.stack_size,
                 caller,
             );
@@ -442,6 +443,7 @@ impl ExecutionState {
     where
         F: Future<Output = ()> + 'static,
     {
+        thread::switch_task();
         let task_id = Self::with(|state| {
             let schedule_len = state.current_schedule.len();
             let parent_span_id = state.top_level_span.id();
@@ -484,6 +486,7 @@ impl ExecutionState {
         mut initial_clock: Option<VectorClock>,
         caller: &'static Location<'static>,
     ) -> TaskId {
+        thread::switch_task();
         let task_id = Self::with(|state| {
             let parent_span_id = state.top_level_span.id();
             let task_id = TaskId(state.tasks.len());
