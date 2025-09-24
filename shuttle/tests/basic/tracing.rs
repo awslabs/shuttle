@@ -60,7 +60,7 @@ fn tracing_nested_spans_panic_mod_5(number: usize) {
                     warn!("incrementing from {}", *locked);
                     *locked += 1;
                 }
-                if number % 5 == 0 {
+                if number.is_multiple_of(5) {
                     panic!();
                 }
             })

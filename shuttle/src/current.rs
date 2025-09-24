@@ -91,7 +91,7 @@ pub fn set_name_for_task(task_id: TaskId, task_name: impl Into<TaskName>) -> Opt
         state
             .get_mut(task_id)
             .step_span
-            .record("task", format!("{:?}", task_name));
+            .record("task", format!("{task_name:?}"));
     });
     set_label_for_task::<TaskName>(task_id, task_name)
 }
