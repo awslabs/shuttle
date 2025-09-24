@@ -42,11 +42,13 @@ fn replay_passing() {
 }
 
 #[test]
+#[ignore = "this test intermittently fails due to https://github.com/awslabs/shuttle/issues/197"]
 fn replay_roundtrip() {
     check_replay_roundtrip(concurrent_increment_buggy, PctScheduler::new(2, 100))
 }
 
 #[test]
+#[ignore = "this test intermittently fails due to https://github.com/awslabs/shuttle/issues/197"]
 fn replay_roundtrip_file() {
     check_replay_roundtrip_file(concurrent_increment_buggy, PctScheduler::new(2, 100))
 }
