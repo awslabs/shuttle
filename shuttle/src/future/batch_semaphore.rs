@@ -675,10 +675,8 @@ impl Future for Acquire<'_> {
         // *do not commute* because in one ordering the queue will be [T1 T2] and in the other ordering [T2 T1].
         // Thus we cannot apply the double-yield optimization for fair semaphores.
         //
-        // Unfair Semaphores: blocking adds the current task to an *unordered set* of waiters. Note that in the
-        // Shuttle implementation, this unordered set is still represented by a Vec. However, the semantics of
-        // an unfair semaphore in Shuttle should be the same as if it were using a set. To check if the double-
-        // yield is valid we check if each operation (Z) on the semaphore commutes with a blocking acquire (Y1):
+        // Unfair Semaphores: blocking adds the current task to an *unordered set* of waiters. To check if the
+        // double-yield is valid we check if each operation (Z) on the semaphore commutes with a blocking acquire (Y1):
         //
         //     - Blocking Acquire: in both orderings `Z Y1` and `Y1 Z`, the waiter set has the same members, thus
         //       the operations commute.
