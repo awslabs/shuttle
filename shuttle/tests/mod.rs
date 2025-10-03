@@ -1,5 +1,6 @@
 #![deny(warnings)]
 
+mod advanced;
 mod basic;
 mod data;
 mod demo;
