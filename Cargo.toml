@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "shuttle",
+    "shuttle_rand_08",
     "shuttle_sync",
 ]
 
