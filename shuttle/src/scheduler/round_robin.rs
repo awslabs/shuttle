@@ -21,6 +21,12 @@ impl RoundRobinScheduler {
             data_source: RandomDataSource::initialize(0),
         }
     }
+
+    /// Construct a new RoundRobinScheduler from configuration.
+    pub fn from_config(config: &config::Config) -> Self {
+        let iterations = config.get_int("scheduler.iterations").unwrap_or(1) as usize;
+        Self::new(iterations)
+    }
 }
 
 impl Scheduler for RoundRobinScheduler {

@@ -1,6 +1,6 @@
-use shuttle::scheduler::PctScheduler;
+use shuttle::scheduler::{PctScheduler, RoundRobinScheduler};
 use shuttle::sync::{mpsc::channel, RwLock};
-use shuttle::{check, check_dfs, check_random, thread, Runner};
+use shuttle::{check_dfs, check_random, thread, Runner};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, TryLockError};
@@ -77,8 +77,10 @@ fn deadlock() {
 #[test]
 #[should_panic(expected = "deadlock")]
 fn deadlock_default() {
+    let runner = Runner::new(RoundRobinScheduler::new(1), Default::default());
+
     // Round-robin should always fail this deadlock test
-    check(deadlock);
+    runner.run(deadlock);
 }
 
 #[test]

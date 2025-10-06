@@ -1,0 +1,62 @@
+# Shuttle Configuration Example
+# This file demonstrates available configuration options for Shuttle
+
+# Stack size for each thread (in bytes)
+stack_size = 32768
+
+# How to persist failing schedules: "none", "print", or "file"
+failure_persistence = "print"
+
+# Optional: Directory path for file persistence (only used when failure_persistence = "file")
+# failure_persistence_path = "./shuttle_failures"
+
+# Maximum number of steps before taking action (0 means no limit when max_steps_behavior = "none")
+max_steps = 1000000
+
+# What to do when max_steps is reached: "fail", "continue", or "none"
+max_steps_behavior = "fail"
+
+# Optional: Maximum time in seconds for a single test iteration
+# max_time_secs = 60
+
+# Suppress warning messages
+silence_warnings = false
+
+# Record execution steps in tracing spans
+record_steps_in_span = false
+
+# Return immediately when a panic occurs (vs continuing to explore other schedules)
+immediately_return_on_panic = false
+
+# Enable metrics collection
+enable_metrics = false
+
+# Check for uncontrolled nondeterminism
+check_uncontrolled_nondeterminism = false
+
+# Scheduler configuration
+[scheduler]
+# Scheduler type: "random", "pct", "dfs", "replay", "round_robin", or "urw"
+# Additional schedulers can be registered using the scheduler registry
+type = "random"
+
+# Number of iterations to run
+iterations = 100
+
+# Optional: Random seed for reproducible runs
+seed = 42
+
+# PCT-specific: Number of priority change points
+depth = 3
+
+# DFS-specific: Maximum iterations before stopping
+max_iterations = 10000
+
+# DFS-specific: Allow random data generation
+allow_random_data = false
+
+# Replay-specific: Path to schedule file
+schedule_file = "./schedule.json"
+
+# Replay-specific: Inline schedule string
+schedule = "..."

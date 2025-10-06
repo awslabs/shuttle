@@ -38,6 +38,17 @@ impl PctScheduler {
         Self::new_from_seed(OsRng.next_u64(), max_depth, max_iterations)
     }
 
+    /// Construct a new PctScheduler from configuration.
+    pub fn from_config(config: &config::Config) -> Self {
+        let depth = config.get_int("scheduler.depth").unwrap_or(3) as usize;
+        let iterations = config.get_int("scheduler.iterations").unwrap_or(100) as usize;
+        if let Ok(seed) = config.get_int("scheduler.seed") {
+            Self::new_from_seed(seed as u64, depth, iterations)
+        } else {
+            Self::new(depth, iterations)
+        }
+    }
+
     /// Construct a new PCTScheduler with a given seed.
     ///
     /// If the `SHUTTLE_RANDOM_SEED` environment variable is set, then that seed will be used instead.

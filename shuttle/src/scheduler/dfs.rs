@@ -38,6 +38,13 @@ impl DfsScheduler {
         }
     }
 
+    /// Construct a new DfsScheduler from configuration.
+    pub fn from_config(config: &config::Config) -> Self {
+        let max_iterations = config.get_int("scheduler.max_iterations").ok().map(|i| i as usize);
+        let allow_random_data = config.get_bool("scheduler.allow_random_data").unwrap_or(false);
+        Self::new(max_iterations, allow_random_data)
+    }
+
     /// Check if there are any scheduling points at or below the `index`th level that have remaining
     /// schedulable tasks to explore.
     // TODO probably should memoize this -- at each iteration, just need to know the largest i

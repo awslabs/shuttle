@@ -1,6 +1,6 @@
 use shuttle::{
-    check, check_dfs, current,
-    scheduler::{DfsScheduler, RandomScheduler},
+    check_dfs, current,
+    scheduler::{DfsScheduler, RandomScheduler, RoundRobinScheduler},
     thread, Config, MaxSteps, Runner,
 };
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -15,7 +15,9 @@ fn basic_scheduler_test() {
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = Arc::clone(&counter);
 
-    check(move || {
+    let runner = Runner::new(RoundRobinScheduler::new(1), Default::default());
+
+    runner.run(move || {
         counter.fetch_add(1, Ordering::SeqCst);
         let counter_clone = Arc::clone(&counter);
         thread::spawn(move || {

@@ -2,6 +2,7 @@
 
 mod advanced;
 mod basic;
+mod config;
 mod data;
 mod demo;
 mod future;
