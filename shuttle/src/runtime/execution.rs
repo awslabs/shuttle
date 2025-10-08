@@ -365,6 +365,15 @@ impl ScheduledTask {
     }
 }
 
+/// Error type for when an `ExecutionState::with` fails
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum ExecutionStateBorrowError {
+    /// `ExecutionState` is currently not set
+    NotSet,
+    /// We are trying to borrow `ExecutionState` while it is already borrowed
+    AlreadyBorrowed,
+}
+
 impl ExecutionState {
     fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>) -> Self {
         Self {
@@ -389,30 +398,46 @@ impl ExecutionState {
     /// access to the state of the execution to influence scheduling (e.g. to register a task as
     /// blocked).
     #[inline]
+    #[track_caller]
     pub(crate) fn with<F, T>(f: F) -> T
     where
         F: FnOnce(&mut ExecutionState) -> T,
     {
-        Self::try_with(f).expect("Shuttle internal error: cannot access ExecutionState. are you trying to access a Shuttle primitive from outside a Shuttle test?")
+        Self::try_with(f).unwrap_or_else(|e| {
+            eprintln!("`ExecutionState::try_with` failed with error: {e:?}");
+            eprintln!(
+                "Backtrace for `with`: {:#?}",
+                std::backtrace::Backtrace::force_capture()
+            );
+            match e {
+                ExecutionStateBorrowError::AlreadyBorrowed => panic!("`ExecutionState::with` panicked because `ExecutionState` is already borrowed."),
+                ExecutionStateBorrowError::NotSet => panic!("`ExecutionState::with` panicked because `ExecutionState` is not set. Are you accessing a Shuttle primitive outside of a Shuttle test?"),
+            }
+        })
     }
 
     /// Like `with`, but returns None instead of panicking if there is no current ExecutionState or
     /// if the current ExecutionState is already borrowed.
     #[inline]
-    pub(crate) fn try_with<F, T>(f: F) -> Option<T>
+    #[track_caller]
+    pub(crate) fn try_with<F, T>(f: F) -> Result<T, ExecutionStateBorrowError>
     where
         F: FnOnce(&mut ExecutionState) -> T,
     {
+        trace!(
+            "ExecutionState::try_with called from {:?}",
+            std::panic::Location::caller()
+        );
         if EXECUTION_STATE.is_set() {
             EXECUTION_STATE.with(|cell| {
                 if let Ok(mut state) = cell.try_borrow_mut() {
-                    Some(f(&mut state))
+                    Ok(f(&mut state))
                 } else {
-                    None
+                    Err(ExecutionStateBorrowError::AlreadyBorrowed)
                 }
             })
         } else {
-            None
+            Err(ExecutionStateBorrowError::NotSet)
         }
     }
 
@@ -683,7 +708,7 @@ impl ExecutionState {
                 "<unknown>".into()
             }
         })
-        .unwrap_or_else(|| "ExecutionState is either not set or currently borrowed. This should not happen".to_string())
+        .unwrap_or_else(|e| format!("Tried to get ExecutionState, but got the following error: {e:?}"))
     }
 
     /// Generate a random u64 from the current scheduler and return it.

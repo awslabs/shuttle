@@ -87,12 +87,15 @@ pub fn set_name_for_task(task_id: TaskId, task_name: impl Into<TaskName>) -> Opt
     // when running with something like the `tracing_subscriber::fmt` subscriber.
     // This either has to be lived with, or the task name should be set via the `ChildLabelFn` mechanism, or a different subscriber should be used
     // (if this is done, then `record_steps_in_span` should be set to true as well), or Shuttle will have to be chanegd to recreate the Span
-    ExecutionState::try_with(|state| {
+    let res = ExecutionState::try_with(|state| {
         state
             .get_mut(task_id)
             .step_span
             .record("task", format!("{task_name:?}"));
     });
+    if let Err(e) = res {
+        tracing::error!("`set_name_for_task` failed with error: {e:?}");
+    }
     set_label_for_task::<TaskName>(task_id, task_name)
 }
 
