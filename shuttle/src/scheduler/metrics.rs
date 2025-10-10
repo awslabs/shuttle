@@ -70,7 +70,7 @@ impl<S: Scheduler> Scheduler for MetricsScheduler<S> {
         if self.iterations > 0 {
             self.record_and_reset_metrics();
 
-            if self.iterations % self.iteration_divisor == 0 {
+            if self.iterations.is_multiple_of(self.iteration_divisor) {
                 info!(iterations = self.iterations);
 
                 if self.iterations == self.iteration_divisor * 10 {

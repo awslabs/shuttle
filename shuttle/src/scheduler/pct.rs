@@ -2,6 +2,7 @@ use crate::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
 use crate::scheduler::data::random::RandomDataSource;
 use crate::scheduler::data::DataSource;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::seed_from_env;
 use rand::rngs::OsRng;
 use rand::seq::{index::sample, SliceRandom};
 use rand::{Rng, RngCore, SeedableRng};
@@ -44,20 +45,7 @@ impl PctScheduler {
     pub fn new_from_seed(seed: u64, max_depth: usize, max_iterations: usize) -> Self {
         assert!(max_depth > 0);
 
-        let seed_env = std::env::var("SHUTTLE_RANDOM_SEED");
-        let seed = match seed_env {
-            Ok(s) => match s.as_str().parse::<u64>() {
-                Ok(seed) => {
-                    tracing::info!(
-                        "Initializing PctScheduler with the seed provided by SHUTTLE_RANDOM_SEED: {}",
-                        seed
-                    );
-                    seed
-                }
-                Err(err) => panic!("The seed provided by SHUTTLE_RANDOM_SEED is not a valid u64: {err}"),
-            },
-            Err(_) => seed,
-        };
+        let seed = seed_from_env(seed);
 
         let rng = Pcg64Mcg::seed_from_u64(seed);
 
