@@ -1,0 +1,5 @@
+# DFS scheduler configuration
+[scheduler]
+type = "dfs"
+max_iterations = 100
+allow_random_data = false

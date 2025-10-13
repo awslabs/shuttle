@@ -60,6 +60,16 @@ impl UrwRandomScheduler {
         Self::new_from_seed(OsRng.next_u64(), max_iterations)
     }
 
+    /// Construct a new UrwRandomScheduler from configuration.
+    pub fn from_config(config: &config::Config) -> Self {
+        let iterations = config.get_int("scheduler.iterations").unwrap_or(100) as usize;
+        if let Ok(seed) = config.get_int("scheduler.seed") {
+            Self::new_from_seed(seed as u64, iterations)
+        } else {
+            Self::new(iterations)
+        }
+    }
+
     /// Construct a UniformRandomScheduler with a given seed.
     /// Two UniformRandomSchedulers initialized with the same seed will make the same scheduling decisions when executing the same workloads.
     /// If the `SHUTTLE_RANDOM_SEED` environment variable is set, then that seed will be used instead.

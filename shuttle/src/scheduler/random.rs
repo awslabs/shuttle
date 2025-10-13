@@ -52,6 +52,16 @@ impl RandomScheduler {
         Self::new_from_seed(OsRng.next_u64(), max_iterations)
     }
 
+    /// Construct a new RandomScheduler from configuration.
+    pub fn from_config(config: &config::Config) -> Self {
+        let iterations = config.get_int("scheduler.iterations").unwrap_or(100) as usize;
+        if let Ok(seed) = config.get_int("scheduler.seed") {
+            Self::new_from_seed(seed as u64, iterations)
+        } else {
+            Self::new(iterations)
+        }
+    }
+
     /// Construct a new RandomScheduler with a given seed.
     ///
     /// Two RandomSchedulers initialized with the same seed will make the same scheduling decisions
