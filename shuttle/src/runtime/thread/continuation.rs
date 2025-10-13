@@ -37,14 +37,14 @@ unsafe impl Send for ContinuationFunction {}
 
 /// Inputs that we can pass to a continuation.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum ContinuationInput {
+pub(crate) enum ContinuationInput {
     Resume,
     Exit,
 }
 
 /// Outputs that a continuation can pass back to us
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum ContinuationOutput {
+pub(crate) enum ContinuationOutput {
     Yielded,
     Finished(*const Yielder<ContinuationInput, ContinuationOutput>),
     Exited,
@@ -76,7 +76,6 @@ impl Continuation {
                 // Move the whole `ContinuationFunction`, not just its field (Rust 2021 thing)
                 let _ = &function;
 
-                // eprintln!("Yielder {:?}", yielder as *const _);
                 loop {
                     // Tell the caller we've finished the previous user function (or if this is our
                     // first time around the loop, the caller below expects us to pretend we've
@@ -95,13 +94,15 @@ impl Continuation {
             })
         };
 
-        // Resume the coroutine once to get it into the loop
+        // Resume the coroutine once to get it into the loop. Because the continuations are kept in a pool and reused,
+        // this requires us to exfiltrate the yielder from the closure passed in to Coroutine::with_stack and persist it
+        // for the lifetime of the continuation's inner function. The yielder exfiltration happens below on the first suspend
+        // of the coroutine
         let yielder = match coroutine.resume(ContinuationInput::Resume) {
             CoroutineResult::Yield(ContinuationOutput::Finished(yielder)) => yielder,
-            _ => panic!("Coroutine should yield the yielder on first resume"),
+            _ => panic!("Coroutine should yield a pointer to its `corosensei::Yielder` from the first resume"),
         };
 
-        // eprintln!("Yielder ret {:?}", yielder as *const _);
         Self {
             coroutine,
             yielder,
@@ -139,11 +140,11 @@ impl Continuation {
         self.state = ContinuationState::Running;
         match self.coroutine.resume(input) {
             CoroutineResult::Yield(output) => {
-                match output {
-                    ContinuationOutput::Finished(_) => self.state = ContinuationState::FinishedIteration,
-                    ContinuationOutput::Yielded => self.state = ContinuationState::Ready,
-                    ContinuationOutput::Exited => self.state = ContinuationState::Exited,
-                }
+                self.state = match output {
+                    ContinuationOutput::Finished(_) => ContinuationState::FinishedIteration,
+                    ContinuationOutput::Yielded => ContinuationState::Ready,
+                    ContinuationOutput::Exited => ContinuationState::Exited,
+                };
                 output
             }
             CoroutineResult::Return(output) => {
@@ -154,9 +155,12 @@ impl Continuation {
     }
 
     /// A continuation is reusable if it has completed running a user function and is waiting
-    /// to resume. A continuation isn't reusable if it's still inside the user function `f`
-    /// (for example, if the DFS scheduler terminated a path early, a function might not have
-    /// completed, and resuming it will take us to somewhere arbitrary in user code).
+    /// to be initialized with a new one. A continuation isn't reusable if it's still inside the user
+    /// function `f` (Ready or Running), as changing it's inner function would leak the currently
+    /// executing context. We also do not consider Initialized coroutines to be reusable to avoid
+    /// accidentally overwriting a continuation before it has had a chance to run. Continuations which
+    /// have Exited, are not reusable as they have broken out of the loop where their inner functions
+    /// can be replaced.
     fn reusable(&self) -> bool {
         self.state == ContinuationState::NotReady || self.state == ContinuationState::FinishedIteration
     }
@@ -178,6 +182,10 @@ impl Drop for Continuation {
                 // If already panicking or at the end of the execution, don't worry about cleaning up resources
                 // on individual coroutines which are still in-flight
                 if std::thread::panicking() {
+                    // SAFETY: `force_reset` leaks the coroutine. However, given that the execution is *already* panicking
+                    // at this point and will soon exit due to the original panic, this is unlikely to cause issues. Leaking
+                    // the corouting here also avoids most tricky issues with scheduling points in drop handlers during a panic,
+                    // which can often result in difficult-to-debug aborts from double-panics.
                     unsafe {
                         self.coroutine.force_reset();
                     }
@@ -214,7 +222,6 @@ impl ContinuationPool {
     fn acquire_inner(&self, stack_size: usize) -> PooledContinuation {
         // TODO add a check to ensure that if we recycled a continuation, its
         // TODO allocated stack size is at least the requested `stack_size`
-
         let continuation = self
             .continuations
             .borrow_mut()
@@ -231,7 +238,7 @@ impl ContinuationPool {
 /// A thin wrapper around a `Continuation` that returns it to a `ContinuationPool`
 /// when dropped, but only if it's reusable.
 pub(crate) struct PooledContinuation {
-    pub continuation: Option<Continuation>,
+    continuation: Option<Continuation>,
     queue: Rc<RefCell<VecDeque<Continuation>>>,
 }
 
@@ -272,7 +279,10 @@ pub(crate) fn switch() {
     crate::annotations::record_tick();
     if ExecutionState::maybe_yield() {
         let yielder = ExecutionState::with(|state| state.current().yielder);
-        // println!("switch @ {:?}", yielder);
+
+        // SAFETY: A yielder reference will be valid for the lifetime of the continuation (see `corosensei::Coroutine::with_stack`)
+        // The yielder field is stored on the Task, whose lifetime is necessarily subsumed by the lifetime of the continuation which contains it.
+        // As a result, the task struct cannot contain an invalidated pointer to it's yielder. There are no mutable references to the yielder.
         match unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded) {
             ContinuationInput::Exit => panic!("unexpected exit continuation"),
             ContinuationInput::Resume => {}
@@ -286,7 +296,6 @@ mod tests {
     use crate::Config;
 
     #[test]
-    #[ignore = "needs to update for corosensei"]
     fn reusable_continuation_drop() {
         let pool = ContinuationPool::new();
         let config: Config = Default::default();
@@ -295,6 +304,7 @@ mod tests {
         c.initialize(Box::new(|| {
             let _ = 1 + 1;
         }));
+        let yielder = c.yielder;
 
         let r = c.resume();
         assert!(r, "continuation only has one step");
@@ -307,8 +317,10 @@ mod tests {
         );
 
         let mut c = pool.acquire_inner(config.stack_size);
-        c.initialize(Box::new(|| {
-            switch(); // Use our switch function instead of direct generator yield
+        c.initialize(Box::new(move || {
+            // We use the yielder directly here because we are not in a Shuttle execution
+            // for `continuation::switch`, which requires access to `ExecutionState`
+            unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded);
             let _ = 1 + 1;
         }));
 

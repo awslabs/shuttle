@@ -4,10 +4,10 @@ use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
 use crate::runtime::thread;
-use crate::sync::{ResourceSignature, ResourceType};
 use crate::runtime::thread::continuation::{
     ContinuationInput, ContinuationOutput, ContinuationPool, PooledContinuation,
 };
+use crate::sync::{ResourceSignature, ResourceType};
 use crate::thread::LocalKey;
 use bitvec::prelude::*;
 use corosensei::Yielder;
