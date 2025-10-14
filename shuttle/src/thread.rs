@@ -104,6 +104,10 @@ impl<'scope> Scope<'scope, '_> {
             }
         };
 
+        // Note: Scoped threads wrap their inner function in some additional logic (above) to update the `finished` variable on termination.
+        // This logic is expected to run atomically with scoped thread termination, so there *cannot* be a switch after the atomic store.
+        // To avoid violating this invariant, we pass `switch_before_exit = false` (below). Instead, we provide our own context switch on exit
+        // (above) in the `scope_closure` *before* setting `finished` to be `true`.
         // SAFETY: main task is blocked until all scoped closures complete so all captured references remain valid
         ScopedJoinHandle {
             handle: unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) },
@@ -209,6 +213,9 @@ where
 
 /// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
 /// stores the result of the thread in the given lock.
+/// The `switch_before_exit` parameter will provide a conditional scheduling point after the inner
+/// function has completed. If this parameter is set to `false`, then this function should be wrapped
+/// in another function which provides a conditional scheduling point before the task exits.
 pub(crate) fn thread_fn<F, T>(
     f: F,
     switch_before_exit: bool,
