@@ -114,7 +114,7 @@ impl Continuation {
     /// Provide a new function for the continuation to execute. The continuation must
     /// be in reusable state.
     pub fn initialize(&mut self, fun: Box<dyn FnOnce()>) {
-        debug_assert!(self.reusable(), "shouldn't replace a function before it runs");
+        debug_assert!(self.reusable(), "shouldn't replace a function before it completes");
 
         let old = self.function.0.replace(Some(fun));
         debug_assert!(old.is_none(), "shouldn't replace a function before it runs");
@@ -162,7 +162,9 @@ impl Continuation {
     /// have Exited, are not reusable as they have broken out of the loop where their inner functions
     /// can be replaced.
     fn reusable(&self) -> bool {
-        self.state == ContinuationState::NotReady || self.state == ContinuationState::FinishedIteration
+        self.state == ContinuationState::NotReady
+            || self.state == ContinuationState::FinishedIteration
+            || self.state == ContinuationState::Initialized
     }
 }
 
@@ -318,8 +320,10 @@ mod tests {
 
         let mut c = pool.acquire_inner(config.stack_size);
         c.initialize(Box::new(move || {
-            // We use the yielder directly here because we are not in a Shuttle execution
-            // for `continuation::switch`, which requires access to `ExecutionState`
+            // SAFETY: We must use the yielder directly here because we are not in a Shuttle execution
+            // for `continuation::switch`, which requires access to `ExecutionState`. This is safe because
+            // the yielder's lifetime is valid as long as the continuation has not `Exited`, and the
+            // continuation cannot have exited if it is executing its current function.
             unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded);
             let _ = 1 + 1;
         }));
