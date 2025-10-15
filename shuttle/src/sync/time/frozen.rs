@@ -100,8 +100,8 @@ impl TimeModel for FrozenTimeModel {
 
     fn step(&mut self) {}
 
-    fn reset(&mut self) {
-        self.inner.reset();
+    fn new_execution(&mut self) {
+        self.inner.new_execution();
         self.expired.clear();
         self.triggers.clear();
     }

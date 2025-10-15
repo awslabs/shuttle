@@ -5,7 +5,7 @@ use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::sync::time::TimeModel;
+use crate::sync::time::{get_time_model, TimeModel};
 use crate::sync::{ResourceSignature, ResourceType};
 use crate::thread::thread_fn;
 use crate::{backtrace_enabled, Config, MaxSteps};
@@ -136,6 +136,15 @@ impl StepError {
     }
 }
 
+/// While there are no runnable tasks and tasks are able to be woken by the time model, continually wakes tasks.
+/// The TimeModel's `wake_next` method is called in a loop in case there are stale wakers which do not actually
+/// result in a newly runnable task when woken. Requires access to the ExecutionState to obtain a reference to the
+/// time model.
+fn wake_sleepers_until_runnable() {
+    let tm = get_time_model();
+    while ExecutionState::num_runnable() == 0 && tm.borrow_mut().wake_next() {}
+}
+
 impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
@@ -254,12 +263,7 @@ impl Execution {
     #[inline]
     fn run_to_competion(&mut self, immediately_return_on_panic: bool) -> Result<(), StepError> {
         loop {
-            // While there are no runnable tasks and tasks are able to be woken by the time model, continue waking tasks
-            while ExecutionState::num_runnable() == 0
-                && ExecutionState::with(|s| Rc::clone(&s.time_model))
-                    .borrow_mut()
-                    .wake_next()
-                {}
+            wake_sleepers_until_runnable();
             let next_step: Option<Rc<RefCell<PooledContinuation>>> = ExecutionState::with(|state| {
                 state.schedule()?;
                 state.advance_to_next_task();
@@ -650,12 +654,7 @@ impl ExecutionState {
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
     pub(crate) fn maybe_yield() -> bool {
-        // While there are no runnable tasks and tasks are able to be woken by the time model, continue waking tasks
-        while ExecutionState::num_runnable() == 0
-            && ExecutionState::with(|s| Rc::clone(&s.time_model))
-                .borrow_mut()
-                .wake_next()
-        {}
+        wake_sleepers_until_runnable();
 
         Self::with(|state| {
             if std::thread::panicking() {

@@ -4,7 +4,7 @@ use std::{
     task::Waker,
 };
 
-use tracing::{debug, warn};
+use tracing::{trace, warn};
 
 use crate::{current::TaskId, runtime::execution::ExecutionState};
 
@@ -73,12 +73,12 @@ impl TimeModel for ConstantSteppedTimeModel {
     }
 
     fn step(&mut self) {
-        debug!("step");
         self.current_time_elapsed += self.current_step_size;
+        trace!("time step to {:?}", self.current_time_elapsed);
         self.unblock_expired();
     }
 
-    fn reset(&mut self) {
+    fn new_execution(&mut self) {
         self.current_step_size = self.distribution.sample();
         self.current_time_elapsed = std::time::Duration::from_secs(0);
         self.waiters.clear();

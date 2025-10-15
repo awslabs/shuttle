@@ -5,6 +5,7 @@
 #![allow(deprecated)]
 
 use crate::runtime::execution::ExecutionState;
+use crate::sync::time::get_time_model;
 use generator::{Generator, Gn};
 use scoped_tls::scoped_thread_local;
 use std::cell::{Cell, RefCell};
@@ -262,7 +263,7 @@ pub(crate) fn switch() {
         let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
         assert!(matches!(r, ContinuationInput::Resume));
     }
-    ExecutionState::with(|s| Rc::clone(&s.time_model)).borrow_mut().step();
+    get_time_model().borrow_mut().step()
 }
 
 #[cfg(test)]
