@@ -51,7 +51,7 @@ pub trait TimeModel: std::fmt::Debug {
     /// Called when all tasks are blocked to resolve timing based deadlocks (all unblocked tasks are sleeping).
     fn wake_next(&mut self) -> bool;
     /// Reset the TimeModel state for the next Shuttle iteration
-    fn reset(&mut self);
+    fn new_execution(&mut self);
     /// Callback after each scheduling step to allow the TimeModel to update itself
     fn step(&mut self);
     /// Used to create the TimeModel's Instant struct in functions like Instant::now()
@@ -71,7 +71,8 @@ pub trait TimeModel: std::fmt::Debug {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-/// Provides a reference to the current TimeModel for this execution
+/// Provides a reference to the current TimeModel for this execution.
+/// Uses `Rc::clone` so that ExecutionState isn't already borrowed when running most TimeModel methods
 pub fn get_time_model() -> Rc<RefCell<dyn TimeModel>> {
     ExecutionState::with(|s| Rc::clone(&s.time_model))
 }

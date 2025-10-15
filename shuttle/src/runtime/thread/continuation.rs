@@ -1,6 +1,7 @@
 use crate::runtime::execution::ExecutionState;
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
+use crate::sync::time::get_time_model;
 use scoped_tls::scoped_thread_local;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -325,7 +326,7 @@ pub(crate) fn switch() {
             ContinuationInput::Resume => {}
         };
     }
-    ExecutionState::with(|s| Rc::clone(&s.time_model)).borrow_mut().step();
+    get_time_model().borrow_mut().step()
 }
 
 #[cfg(test)]

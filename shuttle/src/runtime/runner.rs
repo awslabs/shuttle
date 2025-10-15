@@ -111,6 +111,7 @@ impl<S: Scheduler + 'static, T: TimeModel + 'static> Runner<S, T> {
                     None => break,
                     Some(s) => s,
                 };
+                self.time_model.borrow_mut().new_execution();
 
                 let execution = Execution::new(self.scheduler.clone(), schedule, self.time_model.clone());
                 let f = Arc::clone(&f);
