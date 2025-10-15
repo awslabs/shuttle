@@ -5,6 +5,7 @@
 #![allow(deprecated)]
 
 use crate::runtime::execution::ExecutionState;
+use crate::sync::time::get_time_model;
 use generator::{Generator, Gn};
 use scoped_tls::scoped_thread_local;
 use std::cell::{Cell, RefCell};
@@ -257,10 +258,12 @@ unsafe impl Send for PooledContinuation {}
 /// Possibly yield back to the executor to perform a context switch.
 pub(crate) fn switch() {
     crate::annotations::record_tick();
+
     if ExecutionState::maybe_yield() {
         let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
         assert!(matches!(r, ContinuationInput::Resume));
     }
+    get_time_model().borrow_mut().step()
 }
 
 #[cfg(test)]
