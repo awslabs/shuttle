@@ -61,12 +61,15 @@ pub struct AbortHandle {
 impl AbortHandle {
     /// Abort the task associated with the handle.
     pub fn abort(&self) {
-        ExecutionState::try_with(|state| {
+        let res = ExecutionState::try_with(|state| {
             if !state.is_finished() {
                 let task = state.get_mut(self.task_id);
                 task.abort();
             }
         });
+        if let Err(e) = res {
+            tracing::error!("`AbortHandle::abort` failed with error: {e:?}");
+        }
     }
 
     /// Returns `true` if this task is finished, otherwise returns `false`.
@@ -109,12 +112,15 @@ impl<T> Default for JoinHandleInner<T> {
 impl<T> JoinHandle<T> {
     /// Abort the task associated with the handle.
     pub fn abort(&self) {
-        ExecutionState::try_with(|state| {
+        let res = ExecutionState::try_with(|state| {
             if !state.is_finished() {
                 let task = state.get_mut(self.task_id);
                 task.abort();
             }
         });
+        if let Err(e) = res {
+            tracing::error!("`JoinHandle::abort` failed with error: {e:?}");
+        }
     }
 
     /// Returns `true` if this task is finished, otherwise returns `false`.
