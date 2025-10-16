@@ -7,4 +7,4 @@ edition = "2024"
 shuttle = [ "dep:shuttle" ]
 
 [dependencies]
-shuttle = { version = "*", path = "../shuttle", optional = true }
+shuttle = { version = "*", path = "../../shuttle", optional = true }
