@@ -11,7 +11,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::panic::Location;
 use std::rc::Rc;
+use tracing::trace;
 
 scoped_thread_local! {
     pub(crate) static CONTINUATION_POOL: ContinuationPool
@@ -254,9 +256,44 @@ impl std::fmt::Debug for PooledContinuation {
 // Safety: these aren't sent across real threads
 unsafe impl Send for PooledContinuation {}
 
-/// Possibly yield back to the executor to perform a context switch.
+/// Possibly yield back to the executor to perform a context switch.  This function should be
+/// called *before* any visible operation. If each visible operation has a scheduling point
+/// before it, then there will be a potential context switch *in between* any pair of visible
+/// operations, which is a necessary condition for completeness.
+///
+/// Putting scheduling points before visible operations, rather than after, has the advantage
+/// of giving the scheduling algorithm additional information to make scheduling decisions
+/// based on what is about to happen on each task. The disadvantage of this approach is that it
+/// is more difficult to avoid double-yields for blocking operations, explained below.
+///
+/// In addition to the scheduling point before the operation begins, blocking operations will
+/// result in a *second* context switch if the current thread is blocked. As an optimization,
+/// the switch *before* the blocking operation can be conditionally omitted to avoid switching
+/// twice for the same operation iff (1) the operation *will* block and (2) if the act of
+/// blocking *commutes* with all other operations on that resource.
+///
+/// Reasoning: We can consider a blocking operation (`Y`) such as acquiring a mutex as two
+/// sub-operations (`Y1`) blocking and (`Y2`) proceeding after being unblocked. The double-yield
+/// optimization omits the scheduling point before `Y1`. For arbitrary events `X` and `Z` and
+/// intra-thread orderings `T1: X Y1 Y2` and `T2: Z`, we have four interleavings:
+///
+/// `X Z Y1 Y2`
+/// `X Y1 Z Y2`
+/// `Z X Y1 Y2`
+/// `X Y1 Y2 Z`
+///
+/// Note that the first interleaving is *not observable* if we omit the scheduling point before `Y1`.
+/// Thus to maintain behavioral completeness when omitting this scheduling point, all states
+/// observable from the first schedule must also be observable in one of the other schedules.
+///
+/// Observe that if `Y1` and `Z` commute, then the first two schedules are behaviorally equivalent,
+/// thus the optimization is safe. So, to ensure the safety of the double-yield optimization for an
+/// operation `Y1`, it suffices to check that `Y1` commutes with all operations `Z` on the same resource,
+/// as operations on other resources should commute trivially.
+#[track_caller]
 pub(crate) fn switch() {
     crate::annotations::record_tick();
+    trace!("switch from {}", Location::caller());
     if ExecutionState::maybe_yield() {
         let r = generator::yield_(ContinuationOutput::Yielded).unwrap();
         assert!(matches!(r, ContinuationInput::Resume));

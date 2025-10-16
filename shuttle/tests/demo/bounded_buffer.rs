@@ -227,5 +227,8 @@ fn test_bounded_buffer_minimal_deadlock() {
 #[test]
 #[should_panic(expected = "deadlock")]
 fn test_bounded_buffer_minimal_deadlock_replay() {
-    replay(bounded_buffer_minimal, "910219e6c5a886c7a1f2d29e01106050a42ddb12455102")
+    replay(
+        bounded_buffer_minimal,
+        "910228b4d9dee0deaddaee970100440aa64d93a44dc9b62d8914254a",
+    )
 }

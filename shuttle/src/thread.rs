@@ -43,12 +43,11 @@ impl Thread {
 
     /// Atomically makes the handle's token available if it is not already.
     pub fn unpark(&self) {
+        thread::switch();
+
         ExecutionState::with(|s| {
             s.get_mut(self.id.task_id).unpark();
         });
-
-        // Making the token available is a yield point
-        thread::switch();
     }
 }
 
@@ -91,6 +90,10 @@ impl<'scope> Scope<'scope, '_> {
             move || {
                 let ret = f();
 
+                if ExecutionState::with(|s| s.exit_current_truncates_execution()) {
+                    thread::switch();
+                }
+
                 finished.store(true, Ordering::Relaxed);
 
                 if self.num_running_threads.fetch_sub(1, Ordering::Relaxed) == 1 {
@@ -101,9 +104,13 @@ impl<'scope> Scope<'scope, '_> {
             }
         };
 
+        // Note: Scoped threads wrap their inner function in some additional logic (above) to update the `finished` variable on termination.
+        // This logic is expected to run atomically with scoped thread termination, so there *cannot* be a switch after the atomic store.
+        // To avoid violating this invariant, we pass `switch_before_exit = false` (below). Instead, we provide our own context switch on exit
+        // (above) in the `scope_closure` *before* setting `finished` to be `true`.
         // SAFETY: main task is blocked until all scoped closures complete so all captured references remain valid
         ScopedJoinHandle {
-            handle: unsafe { spawn_named_unchecked(scope_closure, None, None, Location::caller()) },
+            handle: unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) },
             finished,
             _marker: PhantomData,
         }
@@ -163,7 +170,7 @@ where
 {
     // SAFETY: F is static so all captured references must be `static and therefore
     // will outlive the spawned continuation
-    unsafe { spawn_named_unchecked(f, name, stack_size, caller) }
+    unsafe { spawn_named_unchecked(f, name, stack_size, true, caller) }
 }
 
 /// Must ensure all captured references in f are valid for at least as long as the spawned continuation will run
@@ -171,6 +178,7 @@ unsafe fn spawn_named_unchecked<F, T>(
     f: F,
     name: Option<String>,
     stack_size: Option<usize>,
+    switch_before_exit: bool,
     caller: &'static Location<'static>,
 ) -> JoinHandle<T>
 where
@@ -185,13 +193,11 @@ where
         let result = std::sync::Arc::clone(&result);
 
         // Allocate `thread_fn` on the heap and assume a `'static` bound.
-        let f: Box<dyn FnOnce()> = Box::new(move || thread_fn(f, result));
+        let f: Box<dyn FnOnce()> = Box::new(move || thread_fn(f, switch_before_exit, result));
         let f: Box<dyn FnOnce() + 'static> = unsafe { std::mem::transmute(f) };
 
         ExecutionState::spawn_thread(f, stack_size, name.clone(), None, caller)
     };
-
-    thread::switch();
 
     let thread = Thread {
         id: ThreadId { task_id },
@@ -207,11 +213,23 @@ where
 
 /// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
 /// stores the result of the thread in the given lock.
-pub(crate) fn thread_fn<F, T>(f: F, result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>)
-where
+/// The `switch_before_exit` parameter will provide a conditional scheduling point after the inner
+/// function has completed. If this parameter is set to `false`, then this function should be wrapped
+/// in another function which provides a conditional scheduling point before the task exits.
+pub(crate) fn thread_fn<F, T>(
+    f: F,
+    switch_before_exit: bool,
+    result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>,
+) where
     F: FnOnce() -> T,
 {
     let ret = f();
+
+    if switch_before_exit && ExecutionState::with(|s| s.exit_current_truncates_execution()) {
+        // Exiting the last attached task can truncate the execution. To make the previous
+        // event visible before truncation, we need a scheduling point before exiting.
+        thread::switch();
+    }
 
     tracing::trace!("thread finished, dropping thread locals");
 
@@ -282,16 +300,26 @@ unsafe impl<T> Sync for JoinHandle<T> {}
 impl<T> JoinHandle<T> {
     /// Waits for the associated thread to finish.
     pub fn join(self) -> Result<T> {
-        ExecutionState::with(|state| {
+        let is_finished = ExecutionState::with(|state| state.get(self.task_id).finished());
+        // If the joinee task is finished then the joiner will not block
+        if is_finished {
+            thread::switch();
+        }
+
+        let should_block = ExecutionState::with(|state| {
             let me = state.current().id();
             let target = state.get_mut(self.task_id);
             if target.set_waiter(me) {
                 state.current_mut().block(false);
+                true
+            } else {
+                false
             }
         });
 
-        // TODO can we soundly skip the yield if the target thread has already finished?
-        thread::switch();
+        if should_block {
+            thread::switch();
+        }
 
         // Waiting thread inherits the clock of the finished thread
         ExecutionState::with(|state| {

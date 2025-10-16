@@ -464,6 +464,10 @@ impl Task {
         self.state == TaskState::Finished
     }
 
+    pub(crate) fn is_detached(&self) -> bool {
+        self.detached
+    }
+
     pub(crate) fn detach(&mut self) {
         self.detached = true;
     }

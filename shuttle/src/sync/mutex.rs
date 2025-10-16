@@ -1,6 +1,7 @@
 use crate::current;
 use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
 use crate::runtime::task::TaskId;
+use crate::runtime::thread;
 use crate::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use crate::sync::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
@@ -66,6 +67,9 @@ impl<T: ?Sized> Mutex<T> {
             drop(state);
 
             self.semaphore.acquire_blocking(1).unwrap();
+        } else {
+            // we always need to allow for a context switch to make the previous event visible for completeness
+            thread::switch();
         }
 
         state = self.state.borrow_mut();
@@ -185,16 +189,15 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
+        // Release a permit (this is a yield point)
+        self.mutex.semaphore.release(1);
+
         // Release the inner mutex
         self.inner = None;
 
         let mut state = self.mutex.state.borrow_mut();
         trace!(semaphore=?self.mutex.semaphore, "releasing mutex {:p}", self.mutex);
         state.holder = None;
-        drop(state);
-
-        // Release a permit (this is a yield point)
-        self.mutex.semaphore.release(1);
     }
 }
 

@@ -107,7 +107,7 @@ fn deadlock_3() {
 #[should_panic(expected = "deadlock")]
 fn replay_deadlock3_block() {
     // Reproduce deadlock
-    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 2, 0, 0, 1, 2]);
+    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 0, 1, 0, 2, 2, 1]);
     let scheduler = ReplayScheduler::new_from_schedule(schedule);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(deadlock_3);
@@ -133,10 +133,11 @@ fn replay_deadlock3_task_disabled() {
     runner.run(deadlock_3);
 }
 
+#[ignore = "this test aborts due to an issue with panic handling on exit with the generators library -- can be removed when we switch to corosensei"]
 #[test]
 fn replay_deadlock3_drop_mutex() {
     // Schedule ends with a task holding a Mutex, whose MutexGuard needs to be correctly cleaned up
-    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 1, 2]);
+    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 0, 1, 0]);
     let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
     scheduler.set_allow_incomplete();
     let runner = Runner::new(scheduler, Default::default());
@@ -206,7 +207,7 @@ fn replay_causality() {
     let flag_clone = Arc::clone(&flag);
 
     let result = panic::catch_unwind(|| {
-        let schedule = Schedule::new_from_task_ids(0, vec![0, 1, 0, 2, 0, 3, 0, 1, 1, 2, 2]);
+        let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 1, 0, 0, 3, 2, 0, 1, 2, 2]);
         let mut scheduler = ReplayScheduler::new_from_schedule(schedule);
         scheduler.set_target_clock(&[2, 2, 1]);
         let mut config = Config::new();
@@ -260,16 +261,17 @@ fn replay_causality_with_random() {
         // failure being replayed).
         let mut schedule = Schedule::new(0);
         schedule.push_task(0.into());
+        schedule.push_task(0.into());
+        schedule.push_task(1.into());
         schedule.push_task(1.into());
         schedule.push_task(0.into());
-        schedule.push_task(2.into());
         schedule.push_task(0.into());
         schedule.push_task(3.into());
         schedule.push_random();
         schedule.push_random();
         schedule.push_random();
+        schedule.push_task(2.into());
         schedule.push_task(0.into());
-        schedule.push_task(1.into());
         schedule.push_task(1.into());
         schedule.push_task(2.into());
         schedule.push_task(2.into());
