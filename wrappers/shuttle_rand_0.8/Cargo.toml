@@ -1,0 +1,24 @@
+[package]
+name = "shuttle-rand"
+version = "0.8.5"
+edition = "2024"
+
+[features]
+shuttle = [ "dep:shuttle", "dep:shuttle-rand-inner" ]
+
+alloc = ["rand-orig/alloc", "shuttle-rand-inner/alloc"]
+default = [ "rand-orig/default", "shuttle-rand-inner/default" ]
+getrandom = [ "rand-orig/getrandom", "shuttle-rand-inner/getrandom" ]
+min_const_gen = [ "rand-orig/min_const_gen", "shuttle-rand-inner/min_const_gen" ]
+nightly = [ "rand-orig/nightly", "shuttle-rand-inner/nightly" ]
+serde1 = [ "rand-orig/serde1", "shuttle-rand-inner/serde1" ]
+simd_support = [ "rand-orig/simd_support", "shuttle-rand-inner/simd_support" ]
+small_rng = [ "rand-orig/small_rng", "shuttle-rand-inner/small_rng" ]
+std = [ "rand-orig/std", "shuttle-rand-inner/std" ]
+std_rng = [ "rand-orig/std_rng", "shuttle-rand-inner/std_rng" ]
+
+[dependencies]
+cfg-if = "1.0"
+rand-orig = { package = "rand", version = "0.8" }
+shuttle-rand-inner = { path = "./shuttle_rand_inner", version = "0.1", optional = true }
+shuttle = { path = "../../shuttle", version = "*", optional = true }
