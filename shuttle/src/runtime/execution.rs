@@ -8,7 +8,7 @@ use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::sync::{ResourceSignature, ResourceType};
 use crate::thread::thread_fn;
-use crate::{Config, MaxSteps};
+use crate::{backtrace_enabled, Config, MaxSteps};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -105,10 +105,6 @@ impl Execution {
     }
 }
 
-pub(crate) fn backtrace_enabled() -> bool {
-    std::env::var("RUST_BACKTRACE").is_ok() || std::env::var("RUST_LIB_BACKTRACE").is_ok()
-}
-
 #[derive(Debug)]
 enum StepError {
     // Contains the panic payload of the task that failed.
@@ -178,7 +174,7 @@ impl Execution {
 
                                 // Collecting backtraces is expensive, so we only want to do it if the user opts in to collecting them.
                                 if !backtrace_enabled() {
-                                    eprintln!("Test deadlocked, and `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` are not set. If either of those are set then the backtrace of each task will be collected and printed as part of the panic message.")
+                                    eprintln!("Test deadlocked, and {} is not set. If either of those are set then the backtrace of each task will be collected and printed as part of the panic message.", crate::CAPTURE_BACKTRACE)
                                 }
 
                                 panic!("deadlock! blocked tasks: [{}]", blocked_tasks.join(", "));

@@ -124,7 +124,7 @@ fn maybe_warn_about_drop(silence_warnings: bool) {
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
     {
-        if silence_warnings || std::env::var("SHUTTLE_SILENCE_WARNINGS").is_ok() {
+        if silence_warnings || crate::silence_warnings() {
             return;
         }
 

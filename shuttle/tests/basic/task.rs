@@ -45,7 +45,7 @@ impl Subscriber for SignatureSubscriber {
             impl Visit for SignatureVisitor {
                 fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
                     if field.name() == "task_id" {
-                        self.task_id = Some(format!("{:?}", value));
+                        self.task_id = Some(format!("{value:?}"));
                     }
                 }
                 fn record_u64(&mut self, field: &Field, value: u64) {
@@ -102,8 +102,7 @@ pub fn check_any_n_same_signatures(signatures: &SigCounterMap, expected_count: u
     assert_eq!(
         worker_signatures.len(),
         1,
-        "Should have exactly one signature appearing {} times",
-        expected_count
+        "Should have exactly one signature appearing {expected_count} times"
     );
     trace!(
         "{} tasks have the same signature: {}",
@@ -122,8 +121,7 @@ pub fn check_exactly_n_different_signatures(signatures: &SigCounterMap, expected
     assert_eq!(
         unique_signatures.len(),
         expected_count,
-        "Should have {} different signatures",
-        expected_count
+        "Should have {expected_count} different signatures"
     );
     trace!(
         "All {} tasks have different signatures: {:?}",
