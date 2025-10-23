@@ -210,8 +210,8 @@ pub(crate) use shuttle_engine::silence_warnings;
 
 // Re-export check/replay functions from shuttle-schedulers
 pub use shuttle_schedulers::{
-    check, check_dfs, check_pct, check_random, check_random_with_seed, check_uncontrolled_nondeterminism, check_urw,
-    replay, replay_from_file,
+    check, check_dfs, check_pct, check_pos, check_random, check_random_with_seed, check_uncontrolled_nondeterminism,
+    check_urw, replay, replay_from_file,
 };
 
 #[cfg(feature = "annotation")]
