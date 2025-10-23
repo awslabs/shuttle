@@ -660,8 +660,10 @@ impl ExecutionState {
             if std::thread::panicking() && !state.in_cleanup {
                 return true;
             }
+
             debug_assert!(
-                matches!(state.current_task, ScheduledTask::Some(_)) && state.next_task == ScheduledTask::None,
+                matches!(state.current_task, ScheduledTask::Some(_) | ScheduledTask::Finished)
+                    && state.next_task == ScheduledTask::None,
                 "we're inside a task and scheduler should not yet have run"
             );
 
