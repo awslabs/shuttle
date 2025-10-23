@@ -356,6 +356,18 @@ where
     runner.run(f);
 }
 
+/// Run the given function under the randomized POS scheduler for some number of iterations.
+/// Each iteration will run a (potentially) different randomized schedule.
+pub fn check_pos<F>(f: F, iterations: usize)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    use crate::scheduler::PosScheduler;
+
+    let runner = Runner::new(PosScheduler::new(iterations), Default::default());
+    runner.run(f);
+}
+
 /// Run function `f` using `RandomScheduler` initialized with the provided `seed` for the given
 /// `iterations`.
 /// This makes generating the random seed for each execution independent from `RandomScheduler`.

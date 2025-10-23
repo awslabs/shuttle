@@ -61,6 +61,7 @@ pub use std::sync::atomic::Ordering;
 
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::clock::VectorClock;
+use crate::runtime::task::Event;
 use crate::runtime::thread;
 use crate::silence_warnings;
 use crate::sync::{ResourceSignature, ResourceType};
@@ -121,7 +122,6 @@ pub use std::sync::atomic::compiler_fence;
 struct Atomic<T> {
     inner: RefCell<T>,
     clock: RefCell<Option<VectorClock>>, // wrapped in option to support the const new()
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -159,34 +159,38 @@ impl<T: Copy + Eq> Atomic<T> {
         self.inner.into_inner()
     }
 
+    #[track_caller]
     fn load(&self, order: Ordering) -> T {
         maybe_warn_about_ordering(order);
 
-        thread::switch();
+        thread::switch(Event::atomic_read(&self.signature));
         self.exhale_clock();
         let value = *self.inner.borrow();
         value
     }
 
+    #[track_caller]
     fn store(&self, val: T, order: Ordering) {
         maybe_warn_about_ordering(order);
 
-        thread::switch();
+        thread::switch(Event::atomic_write(&self.signature));
         self.inhale_clock();
         *self.inner.borrow_mut() = val;
     }
 
+    #[track_caller]
     fn swap(&self, mut val: T, order: Ordering) -> T {
         maybe_warn_about_ordering(order);
 
         // swap behaves like { let x = load() ; store(val) ; x }
-        thread::switch();
+        thread::switch(Event::atomic_read_write(&self.signature));
         self.exhale_clock(); // for the load
         self.inhale_clock(); // for the store
         std::mem::swap(&mut *self.inner.borrow_mut(), &mut val);
         val
     }
 
+    #[track_caller]
     fn fetch_update<F>(&self, set_order: Ordering, fetch_order: Ordering, mut f: F) -> Result<T, T>
     where
         F: FnMut(T) -> Option<T>,
@@ -196,7 +200,7 @@ impl<T: Copy + Eq> Atomic<T> {
 
         // fetch_update behaves like (ignoring error): { let x = load() ; store(f(x)); x }
         // in the error case, there is no store, so the register does not inherit the clock of the caller
-        thread::switch();
+        thread::switch(Event::atomic_read_write(&self.signature));
         self.exhale_clock(); // for the load()
         let current = *self.inner.borrow();
         let ret = if let Some(new) = f(current) {

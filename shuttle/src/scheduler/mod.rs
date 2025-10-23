@@ -5,6 +5,7 @@ mod annotation;
 mod data;
 mod dfs;
 mod pct;
+mod pos;
 mod random;
 mod replay;
 mod round_robin;
@@ -20,6 +21,7 @@ pub use annotation::AnnotationScheduler;
 pub use data::{DataSource, RandomDataSource};
 pub use dfs::DfsScheduler;
 pub use pct::PctScheduler;
+pub use pos::PosScheduler;
 pub use random::RandomScheduler;
 pub use replay::ReplayScheduler;
 pub use round_robin::RoundRobinScheduler;
@@ -103,12 +105,12 @@ pub trait Scheduler {
     ///
     /// The list of runnable tasks is guaranteed to be non-empty. If `current_task` is `None`, the
     /// execution has not yet begun.
-    fn next_task(
+    fn next_task<'a>(
         &mut self,
-        runnable_tasks: &[&Task],
+        runnable_tasks: &'a [&'a Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
-    ) -> Option<TaskId>;
+    ) -> Option<&'a Task>;
 
     /// Choose the next u64 value to return to the currently running task.
     fn next_u64(&mut self) -> u64;
@@ -119,12 +121,12 @@ impl Scheduler for Box<dyn Scheduler + Send> {
         self.as_mut().new_execution()
     }
 
-    fn next_task(
+    fn next_task<'a>(
         &mut self,
-        runnable_tasks: &[&Task],
+        runnable_tasks: &'a [&'a Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
-    ) -> Option<TaskId> {
+    ) -> Option<&'a Task> {
         self.as_mut().next_task(runnable_tasks, current_task, is_yielding)
     }
 

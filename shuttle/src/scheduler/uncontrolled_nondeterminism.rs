@@ -58,12 +58,12 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
         out
     }
 
-    fn next_task(
+    fn next_task<'a>(
         &mut self,
-        runnable_tasks: &[&Task],
+        runnable_tasks: &'a [&'a Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
-    ) -> Option<TaskId> {
+    ) -> Option<&'a Task> {
         if self.recording {
             let choice = self.scheduler.next_task(runnable_tasks, current_task, is_yielding);
             let runnable_ids = runnable_tasks
@@ -71,7 +71,7 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
                 .map(|t| t.id())
                 .collect::<SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>>();
             self.previous_schedule
-                .push(ScheduleRecord::Task(choice, runnable_ids, is_yielding));
+                .push(ScheduleRecord::Task(choice.map(|t| t.id()), runnable_ids, is_yielding));
 
             choice
         } else {
@@ -99,7 +99,7 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
 
                     self.current_step += 1;
 
-                    *maybe_id
+                    maybe_id.and_then(|id| runnable_tasks.iter().find(|t| t.id() == id).copied())
                 }
                 ScheduleRecord::Random(_) => {
                     panic!("possible nondeterminism: next step was context switch, but recording expected random number generation")
