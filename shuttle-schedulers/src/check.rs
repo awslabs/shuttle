@@ -3,7 +3,7 @@ use shuttle_engine::{Config, Runner};
 #[cfg(feature = "annotation")]
 use crate::AnnotationScheduler;
 use crate::{
-    DfsScheduler, PctScheduler, RandomScheduler, ReplayScheduler, RoundRobinScheduler,
+    DfsScheduler, PctScheduler, PosScheduler, RandomScheduler, ReplayScheduler, RoundRobinScheduler,
     UncontrolledNondeterminismCheckScheduler, UrwRandomScheduler,
 };
 
@@ -34,6 +34,16 @@ where
     F: Fn() + Send + Sync + 'static,
 {
     let runner = Runner::new(RandomScheduler::new(iterations), Default::default());
+    runner.run(f);
+}
+
+/// Run the given function under the randomized POS scheduler for some number of iterations.
+/// Each iteration will run a (potentially) different randomized schedule.
+pub fn check_pos<F>(f: F, iterations: usize)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    let runner = Runner::new(PosScheduler::new(iterations), Default::default());
     runner.run(f);
 }
 
