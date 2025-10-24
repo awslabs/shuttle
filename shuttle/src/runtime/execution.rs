@@ -388,11 +388,7 @@ impl ScheduledTask {
 }
 
 impl ExecutionState {
-    fn new(
-        config: Config,
-        scheduler: Rc<RefCell<dyn Scheduler>>,
-        time_model: Rc<RefCell<dyn TimeModel>>,
-    ) -> Self {
+    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, time_model: Rc<RefCell<dyn TimeModel>>) -> Self {
         Self {
             config,
             tasks: SmallVec::new(),

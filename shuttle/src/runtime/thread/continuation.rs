@@ -1,7 +1,7 @@
 use crate::runtime::execution::ExecutionState;
+use crate::sync::time::get_time_model;
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
-use crate::sync::time::get_time_model;
 use scoped_tls::scoped_thread_local;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;

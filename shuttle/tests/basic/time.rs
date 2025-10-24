@@ -213,7 +213,7 @@ fn test_frozen_trigger_timeouts() {
         assert!(!spin_switch_and_get_any(|| woken.load(Ordering::SeqCst)));
 
         // Trigger timeouts for tasks with "target" label
-        trigger_timeouts(|labels| labels.get::<TaskType>().map_or(false, |t| t.0 == "target"));
+        trigger_timeouts(|labels| labels.get::<TaskType>().is_some_and(|t| t.0 == "target"));
 
         // Verify the task completed after trigger_timeouts
         assert!(spin_switch_and_get_any(|| woken.load(Ordering::SeqCst)));
@@ -251,7 +251,7 @@ fn test_frozen_trigger_timeouts_async_timeout() {
         assert!(!spin_switch_and_get_any(|| timeout_triggered.load(Ordering::SeqCst)));
 
         // Trigger timeouts for tasks with "target" label
-        trigger_timeouts(|labels| labels.get::<TaskType>().map_or(false, |t| t.0 == "target"));
+        trigger_timeouts(|labels| labels.get::<TaskType>().is_some_and(|t| t.0 == "target"));
 
         // Verify the timeout was triggered
         assert!(spin_switch_and_get_any(|| timeout_triggered.load(Ordering::SeqCst)));
@@ -285,7 +285,7 @@ fn test_frozen_trigger_timeouts_selective() {
         assert!(!spin_switch_and_get_any(|| other_woken.load(Ordering::SeqCst)));
 
         // Trigger timeouts only for "target" tasks, not "other" tasks
-        trigger_timeouts(|labels| labels.get::<TaskType>().map_or(false, |t| t.0 == "target"));
+        trigger_timeouts(|labels| labels.get::<TaskType>().is_some_and(|t| t.0 == "target"));
 
         // Verify the "other" task is still sleeping (not woken by selective trigger)
         assert!(!spin_switch_and_get_any(|| other_woken.load(Ordering::SeqCst)));
