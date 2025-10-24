@@ -193,10 +193,14 @@ pub mod scheduler;
 
 mod runtime;
 
+use std::path::Path;
+use std::path::PathBuf;
+
 pub use runtime::runner::{PortfolioRunner, Runner};
+pub use scheduler::registry::{register_scheduler, SchedulerFactory};
 
 /// Configuration parameters for Shuttle
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct Config {
     /// Stack size allocated for each thread
@@ -265,6 +269,43 @@ impl Config {
             immediately_return_on_panic: false,
         }
     }
+
+    /// Create Config for a single Shuttle test from a global config::Config
+    pub fn from_global_config(settings: &config::Config) -> Self {
+        Self::try_from_global_config(settings).expect("Failed to load configuration")
+    }
+
+    fn try_from_global_config(global_config: &config::Config) -> Result<Self, config::ConfigError> {
+        let stack_size = global_config.get_int("stack_size")? as usize;
+        let failure_persistence = FailurePersistence::variant_from_string(
+            &global_config.get_string("failure_persistence")?,
+            global_config
+                .get_string("failure_persistence_path")
+                .ok()
+                .map(PathBuf::from),
+        );
+        let max_steps = MaxSteps::variant_from_string(
+            &global_config.get_string("max_steps_behavior")?,
+            global_config.get_int("max_steps")? as usize,
+        );
+        let max_time = global_config
+            .get_int("max_time_secs")
+            .ok()
+            .map(|s| std::time::Duration::from_secs(s as u64));
+        let silence_warnings = global_config.get_bool("silence_warnings")?;
+        let record_steps_in_span = global_config.get_bool("record_steps_in_span")?;
+        let immediately_return_on_panic = global_config.get_bool("immediately_return_on_panic")?;
+
+        Ok(Self {
+            stack_size,
+            failure_persistence,
+            max_steps,
+            max_time,
+            silence_warnings,
+            record_steps_in_span,
+            immediately_return_on_panic,
+        })
+    }
 }
 
 impl Default for Config {
@@ -288,6 +329,25 @@ pub enum FailurePersistence {
     Print,
     /// Persist schedules as files in the given directory, or the current directory if None.
     File(Option<std::path::PathBuf>),
+}
+
+impl FailurePersistence {
+    fn variant_to_string(&self) -> &str {
+        match self {
+            FailurePersistence::None => "none",
+            FailurePersistence::Print => "print",
+            FailurePersistence::File(_) => "file",
+        }
+    }
+
+    fn variant_from_string(s: &str, path: Option<std::path::PathBuf>) -> Self {
+        match s {
+            "none" => FailurePersistence::None,
+            "file" => FailurePersistence::File(path),
+            "print" => FailurePersistence::Print,
+            _ => panic!("Unexpected failure_persistence: {s}"),
+        }
+    }
 }
 
 /// Specifies an upper bound on the number of steps a single iteration of a Shuttle test can take,
@@ -319,17 +379,153 @@ pub enum MaxSteps {
     ContinueAfter(usize),
 }
 
-/// Run the given function once under a round-robin concurrency scheduler.
-// TODO consider removing this -- round robin scheduling is never what you want.
-#[doc(hidden)]
+impl MaxSteps {
+    fn variant_to_string(&self) -> &str {
+        match self {
+            MaxSteps::None => "none",
+            MaxSteps::FailAfter(_) => "fail",
+            MaxSteps::ContinueAfter(_) => "continue",
+        }
+    }
+
+    fn variant_from_string(s: &str, value: usize) -> Self {
+        match s {
+            "none" => MaxSteps::None,
+            "fail" => MaxSteps::FailAfter(value),
+            "continue" => MaxSteps::ContinueAfter(value),
+            _ => panic!("Unexpected max_steps_behavior: {s}"),
+        }
+    }
+}
+
+fn should_check_uncontrolled_nondeterminism(global_config: &config::Config) -> bool {
+    global_config.get_bool("check_uncontrolled_nondeterminism").unwrap()
+}
+
+fn should_enable_metrics(global_config: &config::Config) -> bool {
+    global_config.get_bool("enable_metrics").unwrap()
+}
+
+/// Run the given function once under the globally configured Shuttle scheduler.
+///
+/// # Configuration Sources
+///
+/// Configuration is loaded in the following order (later sources override earlier ones):
+/// 1. Default values from [`Config::default`]
+/// 2. TOML file (path determined by `SHUTTLE_CONFIG_FILE` env var or `shuttle.toml` by default)
+/// 3. Environment variables with the `SHUTTLE.` prefix
+///
+/// # Environment Variables
+///
+/// Any configuration option can be overridden via environment variables using the pattern
+/// `SHUTTLE.<KEY>`. Nested fields (such as scheduler-specific configuration) are also delineated
+/// by `.`s. For example:
+/// - `SHUTTLE.STACK_SIZE=65536` sets the stack size
+/// - `SHUTTLE.SCHEDULER.TYPE=random` sets the scheduler type
+/// - `SHUTTLE.SCHEDULER.ITERATIONS=200` sets the number of iterations
+///
+/// # Custom Schedulers
+///
+/// Custom scheduler implementations can be registered with [`register_scheduler`] to make them
+/// available via configuration. This allows custom schedulers to be used with `check` without
+/// modifying test code:
+///
+/// ```no_run
+/// use shuttle::scheduler::{Schedule, Scheduler, Task, TaskId};
+/// use shuttle::register_scheduler;
+///
+/// struct MyScheduler;
+/// impl Scheduler for MyScheduler {
+///     fn new_execution(&mut self) -> Option<Schedule> { Some(Schedule::new(0)) }
+///     fn next_task(&mut self, runnable: &[&Task], _: Option<TaskId>, _: bool) -> Option<TaskId> {
+///         runnable.first().map(|t| t.id())
+///     }
+///     fn next_u64(&mut self) -> u64 { 0 }
+/// }
+///
+/// register_scheduler("my_scheduler", |_config| Box::new(MyScheduler));
+/// ```
+///
+/// # Example
+///
+/// ```no_run
+/// use shuttle::sync::{Arc, Mutex};
+/// use shuttle::thread;
+///
+/// // Set the config file path via environment variable
+/// std::env::set_var("SHUTTLE_CONFIG_FILE", "shuttle_config_example.toml");
+///
+/// shuttle::check(|| {
+///     let lock = Arc::new(Mutex::new(0u64));
+///     let lock2 = lock.clone();
+///
+///     thread::spawn(move || {
+///         *lock.lock().unwrap() = 1;
+///     });
+///
+///     let _ = *lock2.lock().unwrap();
+/// });
+/// ```
 pub fn check<F>(f: F)
 where
     F: Fn() + Send + Sync + 'static,
 {
-    use crate::scheduler::RoundRobinScheduler;
+    let global_config = load_global_config();
+    let config = Config::from_global_config(&global_config);
+    let scheduler_type = global_config
+        .get_string("scheduler.type")
+        .expect("No scheduler type found in global config!");
+    let mut scheduler = scheduler::registry::create_scheduler(&scheduler_type, &global_config);
+    if should_enable_metrics(&global_config) {
+        scheduler = Box::new(scheduler::metrics::MetricsScheduler::new(scheduler));
+    }
+    if should_check_uncontrolled_nondeterminism(&global_config) {
+        scheduler = Box::new(scheduler::UncontrolledNondeterminismCheckScheduler::new(scheduler));
+    }
 
-    let runner = Runner::new(RoundRobinScheduler::new(1), Default::default());
+    let runner = Runner::new(scheduler, config);
     runner.run(f);
+}
+
+/// Load configuration from TOML files and environment variables
+#[doc(hidden)]
+pub fn load_global_config() -> config::Config {
+    load_global_config_from(None::<&str>)
+}
+
+/// Load configuration from TOML files and environment variables with an optional file path
+#[doc(hidden)]
+pub fn load_global_config_from<P: AsRef<Path>>(config_path: Option<P>) -> config::Config {
+    try_load_global_config_from(config_path).expect("Failed to load configuration")
+}
+
+fn try_load_global_config_from<P: AsRef<Path>>(config_path: Option<P>) -> Result<config::Config, config::ConfigError> {
+    let defaults = Config::default();
+
+    let max_steps_value = match defaults.max_steps {
+        MaxSteps::None => 0_i128,
+        MaxSteps::FailAfter(n) | MaxSteps::ContinueAfter(n) => n as i128,
+    };
+    let max_steps_behavior = defaults.max_steps.variant_to_string();
+
+    let config_path = config_path
+        .map(|p| p.as_ref().to_path_buf())
+        .or_else(|| std::env::var("SHUTTLE_CONFIG_FILE").ok().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("shuttle"));
+
+    config::Config::builder()
+        .set_default("stack_size", defaults.stack_size as i128)?
+        .set_default("failure_persistence", defaults.failure_persistence.variant_to_string())?
+        .set_default("max_steps", max_steps_value)?
+        .set_default("max_steps_behavior", max_steps_behavior)?
+        .set_default("silence_warnings", defaults.silence_warnings)?
+        .set_default("record_steps_in_span", defaults.record_steps_in_span)?
+        .set_default("immediately_return_on_panic", defaults.immediately_return_on_panic)?
+        .set_default("enable_metrics", false)?
+        .set_default("check_uncontrolled_nondeterminism", false)?
+        .add_source(config::File::from(config_path.as_path()).required(false))
+        .add_source(config::Environment::with_prefix("SHUTTLE").separator("."))
+        .build()
 }
 
 /// Run the given function under a *uniformly* random scheduler for some number of iterations.

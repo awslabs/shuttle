@@ -21,6 +21,18 @@ pub struct ReplayScheduler {
 }
 
 impl ReplayScheduler {
+    /// Construct a new ReplayScheduler from configuration.
+    pub fn from_config(config: &config::Config) -> Self {
+        if let Ok(path) = config.get_string("scheduler.schedule_file") {
+            Self::new_from_file(path).expect("failed to load schedule from file")
+        } else {
+            let schedule = config
+                .get_string("scheduler.schedule")
+                .expect("replay scheduler requires 'scheduler.schedule' or 'scheduler.schedule_file' config");
+            Self::new_from_encoded(&schedule)
+        }
+    }
+
     /// Given an encoded schedule, construct a new [`ReplayScheduler`] that will execute threads in
     /// the order specified in the schedule.
     pub fn new_from_encoded(encoded_schedule: &str) -> Self {
