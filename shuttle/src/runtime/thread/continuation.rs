@@ -164,9 +164,7 @@ impl Continuation {
     /// have Exited, are not reusable as they have broken out of the loop where their inner functions
     /// can be replaced.
     fn reusable(&self) -> bool {
-        self.state == ContinuationState::NotReady
-            || self.state == ContinuationState::FinishedIteration
-            || self.state == ContinuationState::Initialized
+        self.state == ContinuationState::NotReady || self.state == ContinuationState::FinishedIteration
     }
 }
 
