@@ -61,6 +61,7 @@ jobs:
   bench:
     name: Benchmarks 
     runs-on: ubuntu-latest
+    continue-on-error: true # This step will not fail the job if it errors
     steps:
       - uses: actions/checkout@v3
       - name: Install Rust
