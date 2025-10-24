@@ -255,6 +255,132 @@ impl PartialEq for TaskSignature {
 
 impl Eq for TaskSignature {}
 
+pub(crate) type Loc = &'static Location<'static>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Event<'a> {
+    AtomicRead(&'a ResourceSignature, Loc),
+    AtomicWrite(&'a ResourceSignature, Loc),
+    AtomicReadWrite(&'a ResourceSignature, Loc),
+    BatchSemaphoreAcq(&'a ResourceSignature, Loc),
+    BatchSemaphoreRel(&'a ResourceSignature, Loc),
+    BarrierWait(&'a ResourceSignature, Loc),
+    CondvarWait(&'a ResourceSignature, Loc),
+    CondvarNotify(Loc),
+    Park(Loc),
+    Unpark(&'a TaskSignature, Loc),
+    ChannelSend(&'a ResourceSignature, Loc),
+    ChannelRecv(&'a ResourceSignature, Loc),
+    Spawn(&'a TaskSignature),
+    Yield(Loc),
+    Sleep(Loc),
+    Exit,
+    Join(&'a TaskSignature, Loc),
+    Unknown,
+}
+
+impl<'a> std::fmt::Display for Event<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Event::AtomicRead(_, loc) => write!(f, "AtomicRead at {}", loc),
+            Event::AtomicWrite(_, loc) => write!(f, "AtomicWrite at {}", loc),
+            Event::AtomicReadWrite(_, loc) => write!(f, "AtomicReadWrite at {}", loc),
+            Event::BatchSemaphoreAcq(_, loc) => write!(f, "BatchSemaphoreAcq at {}", loc),
+            Event::BatchSemaphoreRel(_, loc) => write!(f, "BatchSemaphoreRel at {}", loc),
+            Event::BarrierWait(_, loc) => write!(f, "BarrierWait at {}", loc),
+            Event::CondvarWait(_, loc) => write!(f, "CondvarWait at {}", loc),
+            Event::CondvarNotify(loc) => write!(f, "CondvarNotify at {}", loc),
+            Event::Park(loc) => write!(f, "Park at {}", loc),
+            Event::Unpark(_, loc) => write!(f, "Unpark at {}", loc),
+            Event::ChannelSend(_, loc) => write!(f, "ChannelSend at {}", loc),
+            Event::ChannelRecv(_, loc) => write!(f, "ChannelRecv at {}", loc),
+            Event::Spawn(sig) => write!(f, "Spawn at {}", sig.task_creation_stack.last().unwrap().0),
+            Event::Yield(loc) => write!(f, "Yield at {}", loc),
+            Event::Sleep(loc) => write!(f, "Sleep at {}", loc),
+            Event::Exit => write!(f, "Exit"),
+            Event::Join(_, loc) => write!(f, "Join at {}", loc),
+            Event::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+impl<'a> Event<'a> {
+    #[track_caller]
+    pub(crate) fn atomic_read(sig: &'a ResourceSignature) -> Self {
+        Self::AtomicRead(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn atomic_write(sig: &'a ResourceSignature) -> Self {
+        Self::AtomicWrite(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn atomic_read_write(sig: &'a ResourceSignature) -> Self {
+        Self::AtomicReadWrite(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn batch_semaphore_acq(sig: &'a ResourceSignature) -> Self {
+        Self::BatchSemaphoreAcq(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn batch_semaphore_rel(sig: &'a ResourceSignature) -> Self {
+        Self::BatchSemaphoreRel(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn barrier_wait(sig: &'a ResourceSignature) -> Self {
+        Self::BarrierWait(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn condvar_wait(sig: &'a ResourceSignature) -> Self {
+        Self::CondvarWait(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn condvar_notify() -> Self {
+        Self::CondvarNotify(Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn park() -> Self {
+        Self::Park(Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn unpark(sig: &'a TaskSignature) -> Self {
+        Self::Unpark(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn channel_send(sig: &'a ResourceSignature) -> Self {
+        Self::ChannelSend(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn channel_recv(sig: &'a ResourceSignature) -> Self {
+        Self::ChannelRecv(sig, Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn yield_now() -> Self {
+        Self::Yield(Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn sleep() -> Self {
+        Self::Sleep(Location::caller())
+    }
+
+    #[track_caller]
+    pub(crate) fn join(sig: &'a TaskSignature) -> Self {
+        Self::Join(sig, Location::caller())
+    }
+}
+
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
 #[derive(Debug)]
@@ -275,6 +401,8 @@ pub struct Task {
     waker: Waker,
     // Remember whether the waker was invoked while we were running
     woken: bool,
+
+    next_event: Event<'static>,
 
     name: Option<String>,
 
@@ -351,6 +479,7 @@ impl Task {
             waiter: None,
             waker,
             woken: false,
+            next_event: Event::Unknown,
             detached: false,
             park_state: ParkState::default(),
             name,
@@ -425,7 +554,7 @@ impl Task {
                 let cx = &mut Context::from_waker(&waker);
                 while future.as_mut().poll(cx).is_pending() {
                     ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
-                    thread::switch();
+                    thread::switch_keeping_current_event();
                 }
             }),
             stack_size,
@@ -678,6 +807,27 @@ impl Task {
                 "".into()
             }
         )
+    }
+
+    /// Get the next_event with a downcast lifetime tied to self. This prevents the caller from
+    /// borrowing as `'static`, which is only used to avoid borrow-checker issues and spurious
+    /// lifetime annotations on the Task struct
+    /// SAFETY: The borrowed lifetime should not extend past resuming the task after a switch
+    pub(crate) fn next_event(&self) -> &Event<'_> {
+        unsafe { std::mem::transmute(&self.next_event) }
+    }
+
+    /// Transmutes an Event reference to a `'static` lifetime to avoid borrow checker issues when
+    /// switching coroutines
+    /// SAFETY: For this to be safe, the next event must be unset with `unset_next_event` before
+    /// the actual lifetime of the event expires. In general, as long as the event is unset when
+    /// the task is resumed, this will be safe.
+    pub(crate) unsafe fn set_next_event(&mut self, event: Event<'_>) {
+        self.next_event = unsafe { std::mem::transmute::<Event<'_>, Event<'static>>(event) };
+    }
+
+    pub(crate) fn unset_next_event(&mut self) {
+        self.next_event = Event::Unknown;
     }
 }
 
