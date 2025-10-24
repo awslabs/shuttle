@@ -246,8 +246,17 @@ pub(crate) struct PooledContinuation {
 
 impl Drop for PooledContinuation {
     fn drop(&mut self) {
-        let c = self.continuation.take().unwrap();
+        let mut c = self.continuation.take().unwrap();
         if c.reusable() {
+            self.queue.borrow_mut().push_back(c);
+        } else if matches!(c.state, ContinuationState::Initialized) {
+            // A continuation which has been initialized but not run cannot be immediately reused.
+            // This is because arguments and captures may already have been moved into the function,
+            // and thus these moved objects won't be dropped until the function itself has been
+            // dropped. Thus we must drop the inner function before reusing it.
+            let old = c.function.0.replace(None);
+            c.state = ContinuationState::NotReady;
+            drop(old);
             self.queue.borrow_mut().push_back(c);
         }
     }
