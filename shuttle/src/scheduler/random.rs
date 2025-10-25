@@ -82,6 +82,9 @@ impl Scheduler for RandomScheduler {
         } else {
             self.iterations += 1;
             let seed = self.data_source.reinitialize();
+            if let Ok(path) = std::env::var("SHUTTLE_ALWAYS_PERSIST_SEED") {
+                std::fs::write(path, seed.to_string()).expect("Failed to write seed to file");
+            }
             self.rng = Pcg64Mcg::seed_from_u64(seed);
             self.current_seed.update(seed);
             Some(Schedule::new(seed))
