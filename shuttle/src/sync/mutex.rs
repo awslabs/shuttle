@@ -1,6 +1,6 @@
 use crate::current;
 use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
-use crate::runtime::task::TaskId;
+use crate::runtime::task::{Event, TaskId};
 use crate::runtime::thread;
 use crate::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use crate::sync::{ResourceSignature, ResourceType};
@@ -69,7 +69,7 @@ impl<T: ?Sized> Mutex<T> {
             self.semaphore.acquire_blocking(1).unwrap();
         } else {
             // we always need to allow for a context switch to make the previous event visible for completeness
-            thread::switch();
+            thread::switch(Event::Unknown);
         }
 
         state = self.state.borrow_mut();
