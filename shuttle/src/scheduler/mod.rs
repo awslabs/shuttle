@@ -6,6 +6,8 @@ mod data;
 mod dfs;
 mod pct;
 mod random;
+/// Global registry for custom schedulers
+pub mod registry;
 mod replay;
 mod round_robin;
 mod uncontrolled_nondeterminism;
