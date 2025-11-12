@@ -394,7 +394,11 @@ impl BatchSemaphore {
     /// permits and notifies all pending waiters.
     pub fn close(&self) {
         thread::switch();
+        self.close_no_scheduling_point();
+    }
 
+    /// Closes the semaphore without invoking `thread::switch`
+    pub fn close_no_scheduling_point(&self) {
         self.init_object_id();
         let mut state = self.state.borrow_mut();
         if state.closed {
