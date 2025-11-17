@@ -8,7 +8,7 @@ use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::sync::{ResourceSignature, ResourceType};
 use crate::thread::thread_fn;
-use crate::{backtrace_enabled, Config, MaxSteps};
+use crate::{backtrace_enabled, Config, MaxSteps, UNGRACEFUL_SHUTDOWN_CONFIG};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -142,6 +142,7 @@ impl Execution {
 
         init_panic_hook(config.clone());
         CurrentSchedule::init(self.initial_schedule.clone());
+        UNGRACEFUL_SHUTDOWN_CONFIG.set(config.ungraceful_shutdown_config);
 
         EXECUTION_STATE.set(&state, move || {
             // Spawn `f` as the first task
@@ -152,7 +153,7 @@ impl Execution {
             );
 
                 // Run the test to completion
-                match self.run_to_competion(config.immediately_return_on_panic) {
+                match self.run_to_competion(UNGRACEFUL_SHUTDOWN_CONFIG.get().immediately_return_on_panic) {
                     Ok(()) => {},
                     Err(e) => {
                         e.persist_failure(config);

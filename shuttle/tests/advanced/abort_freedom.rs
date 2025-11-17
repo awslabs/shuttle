@@ -1,3 +1,4 @@
+use shuttle::future::batch_semaphore::BatchSemaphore;
 use shuttle::scheduler::DfsScheduler;
 use shuttle::sync::Mutex;
 use shuttle::{Config, Runner};
@@ -13,7 +14,7 @@ fn panic_handling_avoids_aborting() {
     let scheduler = DfsScheduler::new(None, false);
 
     let mut config = Config::default();
-    config.immediately_return_on_panic = true;
+    config.ungraceful_shutdown_config.immediately_return_on_panic = true;
 
     let runner = Runner::new(scheduler, config);
 
@@ -80,5 +81,27 @@ fn max_steps_panic_during_drop() {
 
         let _item1 = pool.get();
         let _item2 = pool.get();
+    });
+}
+
+#[test]
+#[should_panic(expected = "Panic message")]
+fn panic_handling_moved_function_gets_leaked() {
+    let scheduler = DfsScheduler::new(None, false);
+
+    let config = Config::default();
+
+    let runner = Runner::new(scheduler, config);
+
+    runner.run(|| {
+        let _panic_on_drop = PanicOnDrop {};
+        shuttle::thread::spawn(move || {
+            let _panic_on_drop = _panic_on_drop;
+            // We block ourself. `_panic_on_drop` won't be dropped until we hit the panic
+            // in the main thread.
+            let semaphore = BatchSemaphore::new(0, shuttle::future::batch_semaphore::Fairness::StrictlyFair);
+            semaphore.acquire_blocking(1).unwrap();
+        });
+        panic!("Panic message");
     });
 }
