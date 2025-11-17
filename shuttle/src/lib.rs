@@ -193,6 +193,8 @@ pub mod scheduler;
 
 mod runtime;
 
+use std::cell::Cell;
+
 pub use runtime::runner::{PortfolioRunner, Runner};
 
 /// Configuration parameters for Shuttle
@@ -241,7 +243,46 @@ pub struct Config {
     /// count.
     pub record_steps_in_span: bool,
 
-    // EXPERIMENTAL; may be removed in the future. May also be changed to an enum to force biased scheduling.
+    /// The config to define how to handle ungraceful shutdowns, ie. when the test panics.
+    pub ungraceful_shutdown_config: UngracefulShutdownConfig,
+}
+
+std::thread_local! {
+    pub(crate) static UNGRACEFUL_SHUTDOWN_CONFIG: Cell<UngracefulShutdownConfig> = const { Cell::new(UngracefulShutdownConfig::new()) };
+}
+
+#[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
+/// What to do with the continuation function when a task panics.
+/// Modelled as a non-exhaustive enum because there are a couple of unimplemented behaviors, such as
+/// returning the continuation function, or sending the function to a "sacrificial" thread to be dropped
+pub enum ContinuationFunctionBehavior {
+    /// Drop the continuation function when a task panics.
+    Drop,
+    /// Leak the continuation function when a task panics.
+    Leak,
+}
+
+impl ContinuationFunctionBehavior {
+    /// Create a new default `ContinuationFunctionBehavior`
+    pub const fn new() -> Self {
+        // This is the default because most Shuttle tests are not written in a "collect" mode, meaning
+        // the volume of leaks is low, and because we already default to leaking the continuation itself (via
+        // `force_reset`), which is a much bigger memory leak.
+        Self::Leak
+    }
+}
+
+impl Default for ContinuationFunctionBehavior {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+#[non_exhaustive]
+/// The config to define how to handle ungraceful shutdowns, ie. when the test panics.
+pub struct UngracefulShutdownConfig {
     /// By default (when this is `false`) when a task panics we will serialize the schedule, then
     /// continue scheduling until the panicking task has fully unwound its stack, and only then return.
     /// This is somewhat wasteful, and also exposes us to more chances of having the entire test abort,
@@ -250,6 +291,25 @@ pub struct Config {
     /// an abort (after serializing the schedule) is still present, as we will resume the unwind, and may panic
     /// while calling drop handlers.
     pub immediately_return_on_panic: bool,
+
+    /// What to do with the continuation function when it is dropped after a panic.
+    pub continuation_function_behavior: ContinuationFunctionBehavior,
+}
+
+impl UngracefulShutdownConfig {
+    /// Create a new default `UngracefulShutdownConfig`
+    pub const fn new() -> Self {
+        Self {
+            immediately_return_on_panic: false,
+            continuation_function_behavior: ContinuationFunctionBehavior::new(),
+        }
+    }
+}
+
+impl Default for UngracefulShutdownConfig {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Config {
@@ -262,7 +322,7 @@ impl Config {
             max_time: None,
             silence_warnings: false,
             record_steps_in_span: false,
-            immediately_return_on_panic: false,
+            ungraceful_shutdown_config: UngracefulShutdownConfig::default(),
         }
     }
 }
