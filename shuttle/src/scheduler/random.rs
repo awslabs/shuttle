@@ -91,8 +91,13 @@ impl Scheduler for RandomScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[&Task], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
-        Some(runnable.choose(&mut self.rng).unwrap().id())
+    fn next_task<'a>(
+        &mut self,
+        runnable: &'a [&'a Task],
+        _current: Option<TaskId>,
+        _is_yielding: bool,
+    ) -> Option<&'a Task> {
+        Some(*runnable.choose(&mut self.rng).unwrap())
     }
 
     fn next_u64(&mut self) -> u64 {
