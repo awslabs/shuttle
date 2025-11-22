@@ -1,4 +1,4 @@
-//! This is the "inner" crate implementing [`rand` version 0.8] support for [`Shuttle`].
+//! This is the "impl" crate implementing [`rand` version 0.8] support for [`Shuttle`].
 //! This crate should not be depended on directly, the intended way to use this crate is via
 //! the `shuttle-rand` crate and feature flag `shuttle`.
 //!
