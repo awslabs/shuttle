@@ -1,6 +1,6 @@
-//! This is the "inner" crate implementing [`rand` version 0.8] support for [`Shuttle`].
-//! This crate should not be depended on directly, the intended way to use this crate is via
-//! the `shuttle-rand` crate and feature flag `shuttle`.
+//! This crate contains Shuttle's internal implementations of the `rand` crate.
+//! Do not depend on this crate directly. Use the `shuttle-rand` crate, which conditionally
+//! exposes these implementations with the `shuttle` feature or the original crate without it.
 //!
 //! [`Shuttle`]: <https://crates.io/crates/shuttle>
 //!
