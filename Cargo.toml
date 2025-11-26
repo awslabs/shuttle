@@ -4,6 +4,13 @@ members = [
     "wrappers/shuttle_rand_0.8",
     "wrappers/shuttle_sync",
     "wrappers/lazy_static",
+    "wrappers/tokio/impls/tokio",
+    "wrappers/tokio/impls/tokio-macros",
+    "wrappers/tokio/impls/tokio-stream",
+    "wrappers/tokio/impls/tokio-test",
+    "wrappers/tokio/impls/tokio-util",
+    "wrappers/tokio/wrappers/shuttle-tokio",
+    "wrappers/tokio/wrappers/shuttle-tokio-stream",
 ]
 
 resolver = "2"
