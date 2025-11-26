@@ -19,8 +19,8 @@
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "shuttle")] {
-        pub use shuttle_rand_inner::*;
+        pub use shuttle_rand_impl::*;
     } else {
-        pub use rand_orig::*;
+        pub use rand::*;
     }
 }
