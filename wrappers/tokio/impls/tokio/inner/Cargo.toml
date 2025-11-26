@@ -1,0 +1,52 @@
+[package]
+name = "shuttle-tokio-impl-inner"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Include nothing by default
+default = []
+
+# enable everything
+full = []
+
+fs = []
+io-util = []
+# stdin, stdout, stderr
+io-std = []
+macros = []
+net = []
+process = []
+# Includes basic task execution capabilities
+rt = []
+rt-multi-thread = []
+signal = []
+sync = []
+test-util = []
+time = []
+# Unstable feature. Requires `--cfg tokio_unstable` to enable.
+io-uring = []
+# Unstable feature. Requires `--cfg tokio_unstable` to enable.
+taskdump = []
+
+[dependencies]
+criterion = { version = "0.5", features = [
+    "async",
+    "async_tokio",
+    "html_reports",
+] }
+futures = "0.3.24"
+pin-project = "1.0.12"
+regex = "1.10.1"
+shuttle = { version = "*", path = "../../../../../shuttle" }
+smallvec = "1.6.1"
+test-log = { version = "0.2.11", default-features = false, features = [
+    "trace",
+] }
+tracing = { version = "0.1.21", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.9", features = ["env-filter"] }
+tokio = { version = "1.42", features = ["macros", "time", "sync"] }
+tokio-macros = { package = "shuttle-tokio-macros-impl", path = "../../tokio-macros", version = "*" }
+
+[dev-dependencies]
+assert_matches = "1.5"

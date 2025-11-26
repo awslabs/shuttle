@@ -1,0 +1,34 @@
+[package]
+name = "shuttle-tokio-util-impl"
+version = "0.1.0" # Forked from "0.7.11"
+edition = "2021"
+
+publish = false
+
+[features]
+# Shorthand for enabling everything
+full = ["codec", "compat", "io-util", "time", "net", "rt"]
+
+net = ["tokio/net"]
+compat = []
+codec = ["tokio-util-orig/codec"]
+time = ["tokio/time"]
+io = []
+io-util = ["io", "tokio/rt", "tokio/io-util"]
+rt = ["tokio/rt", "tokio/sync"]
+
+__docs_rs = []
+
+[dependencies]
+pin-project-lite = "0.2.11"
+tokio = { version = "*", package = "shuttle-tokio-impl", path = "../tokio", features = ["sync"] }
+shuttle = { path = "../../../../shuttle", version = "*" }
+tokio-util-orig = { version = "0.7.11", package = "tokio-util" }
+
+[dev-dependencies]
+tokio-util = { path = ".", package = "shuttle-tokio-util-impl", features = ["full"] }
+tokio = { package = "shuttle-tokio-impl", path = "../tokio", features = ["full"] }
+tokio-test = { package = "shuttle-tokio-test-impl", path = "../tokio-test" }
+tokio-stream = { package = "shuttle-tokio-stream-impl", path = "../tokio-stream" }
+
+futures-test = "0.3.5"
