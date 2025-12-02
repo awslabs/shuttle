@@ -647,7 +647,7 @@ impl ExecutionState {
         let (mut tasks, final_state) = Self::with(|state| {
             state.in_cleanup = true;
             assert!(state.current_task == ScheduledTask::Stopped || state.current_task == ScheduledTask::Finished);
-            (std::mem::replace(&mut state.tasks, SmallVec::new()), state.current_task)
+            (std::mem::take(&mut state.tasks), state.current_task)
         });
 
         for task in tasks.drain(..) {
