@@ -10,9 +10,10 @@
     attr(deny(warnings, rust_2018_idioms), allow(dead_code, unused_variables))
 ))]
 
-//! This is the "impl" crate implementing [`tokio-stream`] support for [`Shuttle`].
-//! This crate should not be depended on directly, the intended way to use this crate is via
-//! the `shuttle-tokio-stream` crate and feature flag `shuttle`.
+//! This crate contains [`Shuttle`] internal implementations of the [`tokio-stream`] crate.
+//! Do not depend on this crate directly. Use the `shuttle-tokio-stream` crate instead, which
+//! exposes these Shuttle-compatible implementations when the `shuttle` feature is enabled,
+//! or the original tokio-stream functionality when the feature is disabled.
 //!
 //! [`Shuttle`]: <https://crates.io/crates/shuttle>
 //!

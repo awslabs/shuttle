@@ -1,8 +1,8 @@
 //! This file is based on [tokio-macros/src/entry.rs](https://github.com/tokio-rs/tokio/blob/master/tokio-macros/src/entry.rs),
-//! but has had the following changes applied:
-//! 1. Things we don't care about (RuntimeFlavor, UnhandledPanic etc) has been removed
-//! 2. Crate name resolution has been improved (in part just to be better, in part to support the wrapper scheme).
-//! 3. The produced output becomes a `shuttle_tokio::check()` on the function body.
+//! but has had the following changes applied. All changes are labeled with `SHUTTLE_CHANGES` markers:
+//! 1. Unsupported features (RuntimeFlavor, UnhandledPanic, etc.) have been removed
+//! 2. Crate name resolution has been improved to support package renaming and the wrapper scheme
+//! 3. The macro output wraps the function body in a `shuttle_tokio::check()` call instead of setting up a tokio runtime
 
 use proc_macro2::{Span, TokenStream, TokenTree};
 use proc_macro_crate::{crate_name, FoundCrate};
@@ -119,6 +119,7 @@ fn get_env_usize(s: &str, default: usize) -> usize {
     get_env(s, default)
 }
 
+// SHUTTLE_CHANGES
 // Slightly modified from the version in Tokio. Part which sets up the runtime is removed.
 // The one in Tokio follows a `let body = quote! {}` scheme, this one wraps the body directly.
 fn parse_knobs(mut input: ItemFn, is_test: bool) -> TokenStream {
@@ -137,9 +138,9 @@ fn parse_knobs(mut input: ItemFn, is_test: bool) -> TokenStream {
         (start, end)
     };
 
-    // CHANGED
-    // Changed wrt how Tokio does it. They do it in a way which afaict does not allow package renaming.
-    // Checks for the `shuttle-tokio` package, `shuttle-tokio-impl` or `shuttle-tokio-impl-inner` is imported, and uses the first one found.
+    // SHUTTLE_CHANGES
+    // Changed from how Tokio does it. Tokio's approach does not allow package renaming.
+    // This checks for an import of one of `shuttle-tokio`, `shuttle-tokio-impl`, or `shuttle-tokio-impl-inner`, and uses the first one found.
     let found_crate = crate_name("shuttle-tokio").unwrap_or_else(|_| {
         crate_name("shuttle-tokio-impl").unwrap_or_else(|_|{
             crate_name("shuttle-tokio-impl-inner")

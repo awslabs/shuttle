@@ -1,4 +1,5 @@
-//! This file is lifted from [tokio-stream/src/stream_map.rs](https://github.com/tokio-rs/tokio/blob/9e94fa7e15cfe6ebbd06e9ebad4642896620d924/tokio-stream/src/stream_map.rs), and has had the following changes applied to it:
+// SHUTTLE_CHANGES
+//! This file is derived from [tokio-stream/src/stream_map.rs](https://github.com/tokio-rs/tokio/blob/9e94fa7e15cfe6ebbd06e9ebad4642896620d924/tokio-stream/src/stream_map.rs), and has had the following changes applied to it:
 //! 1. Examples removed.
 //! 2. Custom rand implementation removed. See CHANGED below.
 use crate::Stream;
@@ -203,7 +204,7 @@ where
 {
     /// Polls the next value, includes the vec entry index
     fn poll_next_entry(&mut self, cx: &mut Context<'_>) -> Poll<Option<(usize, V::Item)>> {
-        // CHANGED wrt Tokio
+        // SHUTTLE_CHANGES: Uses Shuttle's controlled `thread_rng` for deterministic replay
         let start = if self.entries.len() == 0 {
             0
         } else {

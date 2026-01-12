@@ -41,7 +41,8 @@
 use shuttle::sync::Arc;
 
 // NOTE: Different from Tokio.
-// SEE: https://sim.amazon.com/issues/P140452448
+// This implementation uses tokio::sync::Mutex instead of std::sync::Mutex to avoid
+// internal consistency violations in Shuttle.
 // NOTE: Uncomment the `TryLockError` parts below (2 branches in `with_locked_node_and_parent`) if we swap back to std::sync.
 use tokio::sync::{Mutex, MutexGuard};
 
