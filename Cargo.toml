@@ -1,8 +1,9 @@
 [workspace]
 members = [
     "shuttle",
-    "wrappers/shuttle_rand_0.8",
-    "wrappers/shuttle_sync",
+    "wrappers/rand_0.8",
+    "wrappers/sync",
+    "wrappers/parking_lot",
 ]
 
 resolver = "2"
