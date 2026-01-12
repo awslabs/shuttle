@@ -1,0 +1,27 @@
+name: Bench
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  RUSTFLAGS: -Dwarnings
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: Benchmarks 
+    runs-on: ubuntu-latest
+    continue-on-error: true # This step will not fail the job if it errors
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Rust
+        run: rustup update stable
+      - uses: boa-dev/criterion-compare-action@v3
+        with:
+          cwd: "shuttle"
+          features: "bench-no-vector-clocks"
+          branchName: ${{ github.base_ref }}
