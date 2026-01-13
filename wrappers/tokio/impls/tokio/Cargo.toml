@@ -33,3 +33,7 @@ taskdump = ["tokio-orig/taskdump", "shuttle-tokio-impl-inner/taskdump"]
 cfg-if = "1.0"
 tokio-orig = { package = "tokio", version = "1.43" }
 shuttle-tokio-impl-inner = { version = "0.1.0", path = "./inner" }
+
+[dev-dependencies]
+shuttle = { version = "*", path = "../../../../shuttle" }
+futures = "0.3.15"

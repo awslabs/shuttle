@@ -1,11 +1,11 @@
 // Rate limiter test demonstrating a subtle concurrency bug that Shuttle can catch
 // This is based on the example from the Shuttle blog post
 
-use shuttle::future::block_on;
 use shuttle::check_random;
+use shuttle::future::block_on;
+use shuttle_tokio_impl::spawn;
 use shuttle_tokio_impl::sync::Mutex;
 use shuttle_tokio_impl::time::sleep;
-use shuttle_tokio_impl::spawn;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -62,36 +62,33 @@ impl Drop for RateLimitPermit {
 // This test RELIABLY catches the bug
 #[test]
 fn test_async_rate_limiter_shuttle() {
-    check_random(|| {
-        block_on(async {
-            let limiter = Arc::new(AsyncRateLimiter::new(5));
-            let mut handles = vec![];
+    check_random(
+        || {
+            block_on(async {
+                let limiter = Arc::new(AsyncRateLimiter::new(5));
+                let mut handles = vec![];
 
-            // Spawn 10 async tasks all trying to acquire permits
-            // Only 5 should succeed
-            for _ in 0..10 {
-                let limiter = limiter.clone();
-                handles.push(spawn(async move {
-                    limiter.try_acquire().await
-                }));
-            }
+                // Spawn 10 async tasks all trying to acquire permits
+                // Only 5 should succeed
+                for _ in 0..10 {
+                    let limiter = limiter.clone();
+                    handles.push(spawn(async move { limiter.try_acquire().await }));
+                }
 
-            let results: Vec<_> = futures::future::join_all(handles)
-                .await
-                .into_iter()
-                .map(|r| r.unwrap())
-                .collect();
+                let results: Vec<_> = futures::future::join_all(handles)
+                    .await
+                    .into_iter()
+                    .map(|r| r.unwrap())
+                    .collect();
 
-            let successful = results.iter().filter(|r| r.is_ok()).count();
+                let successful = results.iter().filter(|r| r.is_ok()).count();
 
-            // Shuttle will find an interleaving where this assertion fails
-            assert!(
-                successful <= 5,
-                "allowed {} requests, but max is 5!",
-                successful
-            );
-        })
-    }, 100);
+                // Shuttle will find an interleaving where this assertion fails
+                assert!(successful <= 5, "allowed {} requests, but max is 5!", successful);
+            })
+        },
+        100,
+    );
 }
 
 // Fixed async implementation: check and increment in the same critical section
@@ -142,32 +139,29 @@ impl Drop for RateLimitPermitFixed {
 // Shuttle test for the fixed version - should always pass
 #[test]
 fn test_async_rate_limiter_fixed_shuttle() {
-    check_random(|| {
-        block_on(async {
-            let limiter = Arc::new(AsyncRateLimiterFixed::new(5));
-            let mut handles = vec![];
+    check_random(
+        || {
+            block_on(async {
+                let limiter = Arc::new(AsyncRateLimiterFixed::new(5));
+                let mut handles = vec![];
 
-            for _ in 0..10 {
-                let limiter = limiter.clone();
-                handles.push(spawn(async move {
-                    limiter.try_acquire().await
-                }));
-            }
+                for _ in 0..10 {
+                    let limiter = limiter.clone();
+                    handles.push(spawn(async move { limiter.try_acquire().await }));
+                }
 
-            let results: Vec<_> = futures::future::join_all(handles)
-                .await
-                .into_iter()
-                .map(|r| r.unwrap())
-                .collect();
+                let results: Vec<_> = futures::future::join_all(handles)
+                    .await
+                    .into_iter()
+                    .map(|r| r.unwrap())
+                    .collect();
 
-            let successful = results.iter().filter(|r| r.is_ok()).count();
+                let successful = results.iter().filter(|r| r.is_ok()).count();
 
-            // This should always pass because the fix is correct
-            assert!(
-                successful <= 5,
-                "allowed {} requests, but max is 5!",
-                successful
-            );
-        })
-    }, 100);
+                // This should always pass because the fix is correct
+                assert!(successful <= 5, "allowed {} requests, but max is 5!", successful);
+            })
+        },
+        100,
+    );
 }

@@ -1,7 +1,10 @@
 use shuttle::future::block_on;
 use shuttle::sync::atomic::{AtomicUsize, Ordering};
 use shuttle::sync::Arc;
-use tokio::time::{sleep, Duration};
+use shuttle_tokio_impl::time::{sleep, Duration};
+
+// Needed because of a limitation in the `tokio::test` macro
+use tokio_orig as tokio;
 
 struct AsyncConnectionPool {
     active_count: Arc<AtomicUsize>,
@@ -19,22 +22,24 @@ impl AsyncConnectionPool {
     async fn acquire_connection(&self) -> Result<AsyncConnection, &'static str> {
         // Small delay before check to reduce race window
         sleep(Duration::from_nanos(100)).await;
-        
+
         let count = self.active_count.load(Ordering::SeqCst);
-        
+
         if count >= self.max_connections {
             return Err("connection pool exhausted");
         }
-        
+
         // Small delay after check to reduce race window
         sleep(Duration::from_nanos(100)).await;
-        
+
         self.active_count.store(count + 1, Ordering::SeqCst);
-        
+
         // Simulate async connection setup work
         sleep(Duration::from_micros(1)).await;
-        
-        Ok(AsyncConnection { pool: self.active_count.clone() })
+
+        Ok(AsyncConnection {
+            pool: self.active_count.clone(),
+        })
     }
 }
 
@@ -50,27 +55,28 @@ impl Drop for AsyncConnection {
 
 #[test]
 fn test_async_connection_limit_shuttle() {
-    shuttle::check_random(|| {
-        block_on(async {
-            let pool = Arc::new(AsyncConnectionPool::new(5));
-            let mut handles = vec![];
-            
-            for _ in 0..10 {
-                let pool = pool.clone();
-                handles.push(tokio::spawn(async move {
-                    pool.acquire_connection().await
-                }));
-            }
-            
-            let mut results = vec![];
-            for handle in handles {
-                results.push(handle.await.unwrap());
-            }
-            
-            let successful = results.iter().filter(|r| r.is_ok()).count();
-            assert!(successful <= 5, "allowed too many connections!");
-        })
-    }, 100);
+    shuttle::check_random(
+        || {
+            block_on(async {
+                let pool = Arc::new(AsyncConnectionPool::new(5));
+                let mut handles = vec![];
+
+                for _ in 0..10 {
+                    let pool = pool.clone();
+                    handles.push(shuttle_tokio_impl::spawn(async move { pool.acquire_connection().await }));
+                }
+
+                let mut results = vec![];
+                for handle in handles {
+                    results.push(handle.await.unwrap());
+                }
+
+                let successful = results.iter().filter(|r| r.is_ok()).count();
+                assert!(successful <= 5, "allowed too many connections!");
+            })
+        },
+        100,
+    );
 }
 
 // Traditional version using original tokio
@@ -93,19 +99,21 @@ impl StdAsyncConnectionPool {
     async fn acquire_connection(&self) -> Result<StdAsyncConnection, &'static str> {
         // Small delay before check to reduce race window
         tokio_orig::time::sleep(tokio_orig::time::Duration::from_nanos(100)).await;
-        
+
         let count = self.active_count.load(StdOrdering::SeqCst);
-        
+
         if count >= self.max_connections {
             return Err("connection pool exhausted");
         }
-        
+
         // Small delay after check to reduce race window
         tokio_orig::time::sleep(tokio_orig::time::Duration::from_nanos(100)).await;
-        
+
         self.active_count.store(count + 1, StdOrdering::SeqCst);
-        
-        Ok(StdAsyncConnection { pool: self.active_count.clone() })
+
+        Ok(StdAsyncConnection {
+            pool: self.active_count.clone(),
+        })
     }
 }
 
@@ -124,20 +132,18 @@ async fn test_async_connection_limit_traditional() {
     for _ in 0..100 {
         let pool = StdArc::new(StdAsyncConnectionPool::new(5));
         let mut handles = vec![];
-        
+
         // Reduce to 6 tasks (just 1 over limit) to make race less likely
         for _ in 0..6 {
             let pool = pool.clone();
-            handles.push(tokio_orig::spawn(async move {
-                pool.acquire_connection().await
-            }));
+            handles.push(tokio_orig::spawn(async move { pool.acquire_connection().await }));
         }
-        
+
         let mut results = vec![];
         for handle in handles {
             results.push(handle.await.unwrap());
         }
-        
+
         let successful = results.iter().filter(|r| r.is_ok()).count();
         assert!(successful <= 5, "allowed too many connections!");
     }
