@@ -75,6 +75,7 @@ impl<S: Scheduler + 'static> Runner<S> {
     where
         F: Fn() + Send + Sync + 'static,
     {
+        println!("=== Calling run");
         let _span_drop_guard = ResetSpanOnDrop::new();
         // Share continuations across executions to avoid reallocating them
         // TODO it would be a lot nicer if this were a more generic "context" thing that we passed

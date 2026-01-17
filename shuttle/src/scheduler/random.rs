@@ -50,7 +50,7 @@ impl Drop for CurrentSeedDropGuard {
 impl RandomScheduler {
     /// Construct a new RandomScheduler with a freshly seeded RNG.
     pub fn new(max_iterations: usize) -> Self {
-        Self::new_from_seed(OsRng.next_u64(), max_iterations)
+        Self::new_from_seed(0/*OsRng.next_u64()*/, max_iterations)
     }
 
     /// Construct a new RandomScheduler with a given seed.

@@ -9,6 +9,7 @@ use crate::scheduler::{Schedule, Scheduler};
 use crate::sync::{ResourceSignature, ResourceType};
 use crate::thread::thread_fn;
 use crate::{backtrace_enabled, Config, MaxSteps, UNGRACEFUL_SHUTDOWN_CONFIG};
+use crate::random_override::{ShuttleRandomGuard, set_rng};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -327,8 +328,6 @@ pub(crate) struct ExecutionState {
     // static values for the current execution
     storage: StorageMap,
 
-    scheduler: Rc<RefCell<dyn Scheduler>>,
-
     in_cleanup: bool,
 
     #[cfg(debug_assertions)]
@@ -340,6 +339,12 @@ pub(crate) struct ExecutionState {
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
+
+    // The guard which makes randomness Shuttle-compatible.
+    // Gets dropped after everything else, but before the `Scheduler` (aka the provider of `next_u64`).
+    _random_guard: ShuttleRandomGuard,
+
+    scheduler: Rc<RefCell<dyn Scheduler>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -383,12 +388,13 @@ impl ExecutionState {
             context_switches: 0,
             steps_reset_at: 0,
             storage: StorageMap::new(),
-            scheduler,
             in_cleanup: false,
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
+            _random_guard: set_rng(),
+            scheduler,
         }
     }
 

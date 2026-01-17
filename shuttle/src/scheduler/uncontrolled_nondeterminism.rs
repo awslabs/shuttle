@@ -43,6 +43,7 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
         let mut out = Some(Schedule::new(0));
 
         if !self.recording {
+            println!("NEW RECORDING");
             // Start a new recording
             if self.current_step != self.previous_schedule.len() {
                 panic!("possible nondeterminism: current execution ended earlier than expected (expected length {} but ended after {})", self.previous_schedule.len(), self.current_step);
@@ -50,6 +51,8 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
 
             self.previous_schedule.clear();
             out = self.scheduler.new_execution();
+        } else {
+            println!("====== NEW REPLAY");
         }
 
         self.recording = !self.recording;
@@ -109,6 +112,7 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
     }
 
     fn next_u64(&mut self) -> u64 {
+        println!("==== next u64");
         if self.recording {
             let next = self.scheduler.next_u64();
             self.previous_schedule.push(ScheduleRecord::Random(next));

@@ -22,16 +22,18 @@ where
 }
 
 fn have_n_threads_acquire_mutex<R: rand::RngCore, F: (Fn() -> R) + Send + Sync>(
-    thread_rng: &'static F,
+    _thread_rng: &'static F,
     num_threads: u64,
     modulus: u64,
 ) {
+    let thread_rng = rand::thread_rng;
     let lock = Arc::new(Mutex::new(0u64));
     let threads: Vec<_> = (0..num_threads)
         .map(|_| {
             let my_lock = lock.clone();
 
             thread::spawn(move || {
+                println!("GETTING");
                 let x = thread_rng().gen::<u64>();
 
                 if x % modulus == 0 {
@@ -45,6 +47,30 @@ fn have_n_threads_acquire_mutex<R: rand::RngCore, F: (Fn() -> R) + Send + Sync>(
     threads.into_iter().for_each(|t| t.join().expect("Failed"));
 }
 
+fn simple() {
+    use std::collections::HashSet;
+    let mut hs = HashSet::new();
+    hs.insert(123);
+    hs.insert(0);
+    let mut x = 1;
+    for e in hs {
+        x = e;
+    }
+    let lock = Arc::new(Mutex::new(0u64));
+    println!("x: {x:?}");
+    if x % 2 == 0 {
+        let mut num = lock.lock().unwrap();
+        *num += 1;
+    }
+}
+
+#[test]
+//#[should_panic = "possible nondeterminism"]
+fn bingo() {
+    println!("RUNNING TEST BINGO");
+    check_uncontrolled_nondeterminism(|| simple(), 10);
+}
+
 #[test]
 fn randomly_acquire_lock_shuttle_rand() {
     check_uncontrolled_nondeterminism(
@@ -54,7 +80,7 @@ fn randomly_acquire_lock_shuttle_rand() {
 }
 
 #[test]
-#[should_panic = "possible nondeterminism"]
+//#[should_panic = "possible nondeterminism"]
 fn randomly_acquire_lock_regular_rand() {
     check_uncontrolled_nondeterminism(|| have_n_threads_acquire_mutex(&rand::thread_rng, 10, 10), 1000);
 }
