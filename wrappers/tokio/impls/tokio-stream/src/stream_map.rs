@@ -205,7 +205,7 @@ where
     /// Polls the next value, includes the vec entry index
     fn poll_next_entry(&mut self, cx: &mut Context<'_>) -> Poll<Option<(usize, V::Item)>> {
         // SHUTTLE_CHANGES: Uses Shuttle's controlled `thread_rng` for deterministic replay
-        let start = if self.entries.len() == 0 {
+        let start = if self.entries.is_empty() {
             0
         } else {
             shuttle::rand::thread_rng().gen::<usize>() % self.entries.len()

@@ -50,7 +50,7 @@ where
             Poll::Ready(None)
         } else {
             self.as_mut().project().stream.poll_next(cx).map(|ready| {
-                let ready = ready.and_then(|item| (self.as_mut().project().predicate)(&item).then(|| item));
+                let ready = ready.and_then(|item| (self.as_mut().project().predicate)(&item).then_some(item));
 
                 if ready.is_none() {
                     *self.as_mut().project().done = true;
