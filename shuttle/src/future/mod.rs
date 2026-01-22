@@ -5,6 +5,7 @@
 //!
 //! [`futures::executor`]: https://docs.rs/futures/0.3.13/futures/executor/index.html
 
+use crate::backtrace_enabled;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
@@ -171,6 +172,15 @@ impl<T> Future for JoinHandle<T> {
             Poll::Ready(result)
         } else {
             lock.waker = Some(cx.waker().clone());
+
+            ExecutionState::with(|state| {
+                state.current_mut().backtrace = if backtrace_enabled() {
+                    Some(std::backtrace::Backtrace::force_capture())
+                } else {
+                    None
+                }
+            });
+
             Poll::Pending
         }
     }
