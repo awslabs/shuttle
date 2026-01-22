@@ -138,7 +138,7 @@
 //!
 //! Then a Shuttle test can be written like this:
 //!
-//! ```
+//! ```no_run
 //! # mod my_crate {}
 //! #[cfg(feature = "shuttle")]
 //! #[test]
