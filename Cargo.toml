@@ -3,6 +3,7 @@ members = [
     "shuttle",
     "wrappers/shuttle_rand_0.8",
     "wrappers/shuttle_sync",
+    "wrappers/lazy_static",
 ]
 
 resolver = "2"
