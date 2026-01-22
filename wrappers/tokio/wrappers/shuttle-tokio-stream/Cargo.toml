@@ -1,0 +1,30 @@
+[package]
+name = "shuttle-tokio-stream"
+version = "0.1.0" # Forked from "0.1.14"
+edition = "2021"
+
+[features]
+shuttle = ["shuttle-tokio-stream-impl"]
+
+default = ["time"]
+
+full = [
+    "time",
+    "net",
+    "io-util",
+    "fs",
+    "sync",
+    "signal"
+]
+
+time = ["tokio-stream/time", "shuttle-tokio-stream-impl?/time"]
+net = ["tokio-stream/net", "shuttle-tokio-stream-impl?/net"]
+io-util = ["tokio-stream/io-util", "shuttle-tokio-stream-impl?/io-util"]
+fs = ["tokio-stream/fs", "shuttle-tokio-stream-impl?/fs"]
+sync = ["tokio-stream/sync", "shuttle-tokio-stream-impl?/sync"]
+signal = ["tokio-stream/signal", "shuttle-tokio-stream-impl?/signal"]
+
+[dependencies]
+cfg-if = "1.0"
+tokio-stream = "0.1"
+shuttle-tokio-stream-impl = { version = "*", optional = true, path = "../../impls/tokio-stream" }

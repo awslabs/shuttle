@@ -1,0 +1,23 @@
+[package]
+name = "shuttle-tokio-test-impl"
+version = "0.1.0" # Forked from: "0.4.3"
+edition = "2021"
+rust-version = "1.63"
+
+# Tokio publishes this, but we currently don't. Package exists for tests in the other tokio-related packages
+publish = false
+
+
+[dependencies]
+tokio_orig = { package = "tokio", version = "*", features = ["rt", "sync", "time", "test-util"] }
+tokio = { package = "shuttle-tokio-impl", version = "*", path = "../tokio", features = ["rt", "sync", "time", "test-util"] }
+shuttle = { path = "../../../../shuttle", version = "*" }
+tokio-stream = { version = "0.1.0", path = "../tokio-stream", package = "shuttle-tokio-stream-impl" }
+async-stream = "0.3.3"
+
+bytes = "1.0.0"
+futures-core = "0.3.0"
+
+[dev-dependencies]
+#tokio = { version = "1.2.0", path = "../tokio", features = ["full"] }
+futures-util = "0.3.0"
