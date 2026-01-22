@@ -16,7 +16,7 @@
 //! [`AsyncRead`]: tokio::io::AsyncRead
 //! [`AsyncWrite`]: tokio::io::AsyncWrite
 
-// Get from tokio_orig as they are not currently exported by ShuttleTokio
+// Get from tokio_orig as they are not currently exported by shuttle-tokio
 use tokio_orig::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use tokio::sync::mpsc;

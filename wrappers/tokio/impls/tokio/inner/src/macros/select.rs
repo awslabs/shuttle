@@ -99,7 +99,7 @@ macro_rules! select {
                 // Return `Pending` when the task budget is depleted since budget-aware futures
                 // are going to yield anyway and other futures will not cooperate.
 
-                // CHANGED: The line is the same, but `poll_budget_available` always resolves to `Poll::Ready`
+                // SHUTTLE_CHANGES: The line is the same, but `poll_budget_available` always resolves to `Poll::Ready`
                 ::std::task::ready!($crate::macros::support::poll_budget_available(cx));
 
                 // Track if any branch returns pending. If no branch completes
@@ -242,7 +242,7 @@ macro_rules! select {
         // Randomly generate a starting point. This makes `select!` a bit more
         // fair and avoids always polling the first future.
 
-        // CHANGED: `thread_rng_n` is changed to be Shuttle-compatible
+        // SHUTTLE_CHANGHES: `thread_rng_n` is changed to be Shuttle-compatible
         $crate::select!(@{ start={ $crate::macros::support::thread_rng_n(BRANCHES) }; () } $p = $($t)*)
     };
 

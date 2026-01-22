@@ -5,7 +5,7 @@
     attr(deny(warnings, rust_2018_idioms), allow(dead_code, unused_variables))
 ))]
 
-//! Macros for use when testing with Shuttle
+//! Macros for use when testing with shuttle-tokio
 //! This package is not intended to be depended on directly, and should instead be used via `shuttle-tokio`.
 //! Put up an issue if you have a use case for using it directly and we'll add a `shuttle-tokio-macros` crate.
 // This file is code-wise a verbatim copy of [tokio-macros/src/lib.rs](https://github.com/tokio-rs/tokio/blob/9e94fa7e15cfe6ebbd06e9ebad4642896620d924/tokio-macros/src/lib.rs),

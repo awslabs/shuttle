@@ -36,8 +36,8 @@ pub use tokio_macros::select_priv_clean_pattern;
 #[doc(hidden)]
 pub mod macros;
 
-// TODO: Finish deprecation and move out of ShuttleTokio
-#[deprecated = "`default_shuttle_config` is going to be moved out of ShuttleTokio. Removing it will not be treated as a breaking change."]
+// TODO: Finish deprecation and move out of this crate
+#[deprecated = "`default_shuttle_config` is going to be moved out of shuttle-tokio-impl-inner. Removing it will not be treated as a breaking change."]
 #[doc(hidden)]
 pub fn default_shuttle_config() -> shuttle::Config {
     let mut config = shuttle::Config::new();
@@ -46,7 +46,7 @@ pub fn default_shuttle_config() -> shuttle::Config {
     config
 }
 
-// Default for the `test` macto expansions
+// Default for the `test` macro expansions
 #[doc(hidden)]
 pub fn __default_shuttle_config() -> shuttle::Config {
     let mut config = shuttle::Config::new();
@@ -102,7 +102,7 @@ where
 ///   like `RUST_LOG=trace SHUTTLE_HIDE_TRACE=true` without drowning in log messages. A failing schedule
 ///   can then still be replayed with `RUST_LOG=trace`, giving access to all log messages for debugging.
 // TODO: Remove. It's around due to the volume of code still using it and due to `shuttle_tokio::test` being built on it.
-#[deprecated = "`check` is going to be moved out of ShuttleTokio. Removing it will not be treated as a breaking change."]
+#[deprecated = "`check` is going to be moved out of shuttle-tokio-impl-inner. Removing it will not be treated as a breaking change."]
 #[doc(hidden)]
 pub fn check<F>(f: F, mut config: shuttle::Config, max_iterations: usize)
 where
@@ -175,7 +175,7 @@ where
 /// Run the given function under a scheduler that checks whether the function
 /// contains randomness which is not controlled by Shuttle.
 /// Each iteration will check a different random schedule and replay that schedule once.
-#[deprecated = "`check` is going to be moved out of ShuttleTokio. Removing it will not be treated as a breaking change."]
+#[deprecated = "`check` is going to be moved out of shuttle-tokio-impl-inner. Removing it will not be treated as a breaking change."]
 #[doc(hidden)]
 pub fn check_for_uncontrolled_nondeterminism<F>(f: F, config: shuttle::Config, max_iterations: usize)
 where

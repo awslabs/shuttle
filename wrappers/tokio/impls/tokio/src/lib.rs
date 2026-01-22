@@ -1,6 +1,6 @@
-//! This is the "impl" crate implementing [`tokio`] support for [`Shuttle`].
-//! This crate should not be depended on directly, the intended way to use this crate is via
-//! the `shuttle-tokio` crate and feature flag `shuttle`.
+//! This crate contains Shuttle's internal implementations of the `tokio` crate.
+//! Do not depend on this crate directly. Use the `shuttle-tokio` crate, which conditionally
+//! exposes these implementations with the `shuttle` feature or the original crate without it.
 //!
 //! The reason there exists an `impl` crate (this crate) and an `impl-inner` crate is to make it
 //! clear which parts are just reexports from tokio, and which parts are made to be shuttle-compatible.
