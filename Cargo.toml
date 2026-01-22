@@ -3,6 +3,9 @@ members = [
     "shuttle",
     "wrappers/shuttle_rand_0.8",
     "wrappers/shuttle_sync",
+    "wrappers/collections",
+    "wrappers/collections/deterministic_collections",
+    "wrappers/collections/std_collections",
 ]
 
 resolver = "2"
