@@ -5,13 +5,15 @@ This directory contains a collection of wrappers and their implementations. The 
 ```toml
 [features]
 shuttle = [
-   "PACKAGE_NAME/shuttle",
-   "OTHER_PACKAGE_NAME/shuttle",
+   "tokio/shuttle",
+   "parking-lot/shuttle",
+   # ... etc. for all wrapped dependencies
 ]
 
 [dependencies]
-PACKAGE_NAME = { package = "shuttle-PACKAGE_NAME", version = "VERSION_NUMBER" }
-OTHER_PACKAGE_NAME = { package = "shuttle-OTHER_PACKAGE_NAME", version = "VERSION_NUMBER_2" }
+tokio = { package = "shuttle-tokio", version = "1" }
+parking_lot = { package = "shuttle-parking_lot", version = "0.12" }
+# ... etc. for all wrapped dependencies
 ```
 
 When running without the `shuttle` feature flag enabled, the code will behave as normal (ie., run with primitives from `std`, `rand`, `tokio` etc), and when the `shuttle` feature flag is enabled, the code will use primitives which are compatible with Shuttle.
@@ -26,8 +28,8 @@ shuttle = [
 
 [dependencies]
 shuttle_enabler = "0.1.0"
-PACKAGE_NAME = { package = "shuttle-PACKAGE_NAME", version = "VERSION_NUMBER" }
-OTHER_PACKAGE_NAME = { package = "shuttle-OTHER_PACKAGE_NAME", version = "VERSION_NUMBER_2" }
+tokio = { package = "shuttle-tokio", version = "1" }
+parking_lot = { package = "shuttle-parking_lot", version = "0.12" }
 ```
 
 Note that depending on `shuttle_enabler` will cause all crates in `shuttle_enabler` to be compiled when the `shuttle` flag is enabled.
