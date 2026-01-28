@@ -20,7 +20,7 @@ use crate::current::Labels;
 use crate::runtime::execution::ExecutionState;
 
 use crate::runtime::thread;
-use crate::sync::time::frozen::FrozenTimeModel;
+use crate::time::frozen::FrozenTimeModel;
 
 /// Constant stepped time model implementation
 pub mod constant_stepped;
@@ -50,23 +50,31 @@ pub trait TimeModel: std::fmt::Debug {
     /// Wake the next sleeping task; returns true if there exists a task that was able to be woken.
     /// Called when all tasks are blocked to resolve timing based deadlocks (all unblocked tasks are sleeping).
     fn wake_next(&mut self) -> bool;
+
     /// Reset the TimeModel state for the next Shuttle iteration
     fn new_execution(&mut self);
+
     /// Callback after each scheduling step to allow the TimeModel to update itself
     fn step(&mut self);
+
     /// Used to create the TimeModel's Instant struct in functions like Instant::now()
     fn instant(&self) -> Instant;
+
     /// Pauses the TimeModel
     fn pause(&mut self);
+
     /// Resumes the TimeModel
     fn resume(&mut self);
+
     /// Manually advances the TimeModel's clock by a fixed amount
     fn advance(&mut self, duration: Duration);
+
     /// Callback for registering a sleep/timeout on the current task. It is up to the TimeModel
     /// implementation to determine when to wake the sleeping task. If no waker is provided, then
     /// the caller is polling whether it is currently expired but is not yet performing a blocking
     /// sleep.
     fn register_sleep(&mut self, deadline: Instant, id: u64, waker: Option<Waker>) -> bool;
+
     /// Downcast to Any for type casting / checking
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
