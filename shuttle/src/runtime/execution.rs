@@ -6,9 +6,9 @@ use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, 
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::sync::time::{get_time_model, TimeModel};
 use crate::sync::{ResourceSignature, ResourceType};
 use crate::thread::thread_fn;
+use crate::time::{get_time_model, TimeModel};
 use crate::{backtrace_enabled, Config, MaxSteps, UNGRACEFUL_SHUTDOWN_CONFIG};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;

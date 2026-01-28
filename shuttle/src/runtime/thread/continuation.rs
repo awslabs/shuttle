@@ -1,5 +1,5 @@
 use crate::runtime::execution::ExecutionState;
-use crate::sync::time::get_time_model;
+use crate::time::get_time_model;
 use crate::{ContinuationFunctionBehavior, UNGRACEFUL_SHUTDOWN_CONFIG};
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
