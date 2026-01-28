@@ -190,6 +190,7 @@ pub mod lazy_static;
 pub mod rand;
 pub mod sync;
 pub mod thread;
+pub mod time;
 
 pub mod scheduler;
 
