@@ -1,3 +1,23 @@
+# 0.9.0 (Jan 13, 2026)
+
+* Fix: `JoinHandle<T>` is now `Send` and `Sync` even if `T` is not.
+* Gate vector clocks behind the `vector-clocks` feature flag. (#187)
+* Fix: `Once` can now be moved (#188 and #208)
+* Various performance improvements (#191, #211)
+* `std::sync::{LockResult, PoisonError, TryLockError, TryLockResult}` are now exported from `shuttle::sync` (#198)
+* Task names are now logged in the step span (#206)
+* Task backtraces are now printed on deadlock if the SHUTTLE_BACKTRACE environment variable is set (#205, #213)
+* Spawn events are now traced at `DEBUG` (down from `INFO`) (#211)
+* Stable resource ids (#207)
+* `UniformRandomWalk` scheduler added (#200)
+* Panic path refactored. 1: Aborting panics should more often have their schedule serialized, 2: Schedule is no longer part of the panic message, 3: There will now be multiple shcedules serialized on multiple panics, 4: if `Config::immediately_return_on_panic` is set then we will return immediately on a failure and not finish unwinding the panic. (#202)
+* Change scheduling points to always precede operations (#216)
+* Change the backend for the tasks to be the Corosensei crate instead of the generators crate (#204)
+* Add `SHUTTLE_PERSIST_SEED` in the RandomScheduler to persist schedule before running the test (to be used for aborting tests) (#201)
+* Add `BatchSemaphore::close_no_scheduling_point` (#227)
+* Add config for ungraceful shutdowns (#230)
+* Add {RwLock, Mutex}::clear_poison (#233)
+
 # 0.8.1 (Jun 19, 2025)
 
 * Fix bug in `BatchSemaphore` (#167)
