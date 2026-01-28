@@ -3,7 +3,7 @@ use crate::runtime::task::{Task, TaskId};
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::sync::time::{frozen::FrozenTimeModel, TimeModel};
+use crate::time::{frozen::FrozenTimeModel, TimeModel};
 use crate::Config;
 use std::cell::RefCell;
 use std::fmt;

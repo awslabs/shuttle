@@ -1,10 +1,8 @@
 use shuttle::current::{me, set_label_for_task};
 use shuttle::scheduler::{DfsScheduler, RandomScheduler};
-use shuttle::sync::time::constant_stepped::ConstantSteppedTimeModel;
-use shuttle::sync::time::frozen::FrozenTimeModel;
-use shuttle::sync::time::{
-    async_interval, async_sleep, async_timeout, clear_triggers, trigger_timeouts, Duration, Instant,
-};
+use shuttle::time::constant_stepped::ConstantSteppedTimeModel;
+use shuttle::time::frozen::FrozenTimeModel;
+use shuttle::time::{async_interval, async_sleep, async_timeout, clear_triggers, trigger_timeouts, Duration, Instant};
 use shuttle::{future, thread, Config, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

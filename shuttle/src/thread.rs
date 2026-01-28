@@ -3,13 +3,13 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use crate::runtime::thread;
-use crate::sync::time::Duration;
+use crate::time::Duration;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-pub use crate::sync::time::sleep;
+pub use crate::time::sleep;
 pub use std::thread::{panicking, Result};
 
 /// A unique identifier for a running thread
