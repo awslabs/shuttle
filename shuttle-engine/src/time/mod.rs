@@ -591,11 +591,7 @@ pub fn advance(dur: Duration) {
 /// Returns a future which sleeps until the duration has elapsed
 /// Behavior of this function depends on the TimeModel provided to Shuttle
 pub fn async_sleep(dur: Duration) -> Sleep {
-    let id = increment_timer_counter();
-    Sleep {
-        id,
-        deadline: Instant::now().saturating_add(dur),
-    }
+    async_sleep_until(Instant::now().saturating_add(dur))
 }
 
 /// Returns a future which sleeps until the deadline is reached
