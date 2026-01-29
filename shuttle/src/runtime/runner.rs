@@ -3,6 +3,7 @@ use crate::runtime::task::{Task, TaskId};
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::time::{frozen::FrozenTimeModel, TimeModel};
 use crate::Config;
 use std::cell::RefCell;
 use std::fmt;
@@ -52,18 +53,33 @@ impl Drop for ResetSpanOnDrop {
 /// function as many times as dictated by the scheduler; each execution has its scheduling decisions
 /// resolved by the scheduler, which can make different choices for each execution.
 #[derive(Debug)]
-pub struct Runner<S: ?Sized + Scheduler> {
+pub struct Runner<S: ?Sized + Scheduler, T: TimeModel> {
     scheduler: Rc<RefCell<MetricsScheduler<S>>>,
+    time_model: Rc<RefCell<T>>,
     config: Config,
 }
 
-impl<S: Scheduler + 'static> Runner<S> {
+impl<S: Scheduler + 'static> Runner<S, FrozenTimeModel> {
     /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
     pub fn new(scheduler: S, config: Config) -> Self {
         let metrics_scheduler = MetricsScheduler::new(scheduler);
 
         Self {
             scheduler: Rc::new(RefCell::new(metrics_scheduler)),
+            time_model: Rc::new(RefCell::new(FrozenTimeModel::new())),
+            config,
+        }
+    }
+}
+
+impl<S: Scheduler + 'static, T: TimeModel + 'static> Runner<S, T> {
+    /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
+    pub fn new_with_time_model(scheduler: S, time_model: T, config: Config) -> Self {
+        let metrics_scheduler = MetricsScheduler::new(scheduler);
+
+        Self {
+            scheduler: Rc::new(RefCell::new(metrics_scheduler)),
+            time_model: Rc::new(RefCell::new(time_model)),
             config,
         }
     }
@@ -95,8 +111,9 @@ impl<S: Scheduler + 'static> Runner<S> {
                     None => break,
                     Some(s) => s,
                 };
+                self.time_model.borrow_mut().new_execution();
 
-                let execution = Execution::new(self.scheduler.clone(), schedule);
+                let execution = Execution::new(self.scheduler.clone(), schedule, self.time_model.clone());
                 let f = Arc::clone(&f);
 
                 // This is a slightly lazy way to ensure that everything outside of the "execution" span gets
@@ -122,7 +139,6 @@ pub struct PortfolioRunner {
     stop_on_first_failure: bool,
     config: Config,
 }
-
 impl PortfolioRunner {
     /// Construct a new `PortfolioRunner` with no schedulers. If `stop_on_first_failure` is true,
     /// all schedulers will be terminated as soon as any fails; if false, they will keep running
