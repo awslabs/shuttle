@@ -631,6 +631,7 @@ pub fn async_interval_at(start: Instant, period: Duration) -> Interval {
 /// A future which returns Poll::Pending until its deadline
 #[pin_project]
 #[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Sleep {
     id: u64,
     deadline: Instant,
