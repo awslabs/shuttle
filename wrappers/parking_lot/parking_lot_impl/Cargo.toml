@@ -1,0 +1,16 @@
+[package]
+name = "shuttle-parking_lot-impl"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+arc_lock = []
+deadlock_detection = []
+hardware-lock-elision = []
+nightly = []
+owning_ref = []
+send_guard = []
+serde = []
+
+[dependencies]
+shuttle = { path = "../../../shuttle", version = "*"}

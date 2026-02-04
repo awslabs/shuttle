@@ -1,0 +1,20 @@
+[package]
+name = "shuttle-parking_lot"
+version = "0.12.5"
+edition = "2024"
+
+[features]
+shuttle = [ "dep:shuttle-parking_lot-impl" ]
+
+arc_lock = [ "parking_lot/arc_lock", "shuttle-parking_lot-impl?/arc_lock" ]
+deadlock_detection = [ "parking_lot/deadlock_detection", "shuttle-parking_lot-impl?/deadlock_detection" ]
+hardware-lock-elision = [ "parking_lot/hardware-lock-elision", "shuttle-parking_lot-impl?/hardware-lock-elision" ]
+nightly = [ "parking_lot/nightly", "shuttle-parking_lot-impl?/nightly" ]
+owning_ref = [ "parking_lot/owning_ref", "shuttle-parking_lot-impl?/owning_ref" ]
+send_guard = [ "parking_lot/send_guard", "shuttle-parking_lot-impl?/send_guard" ]
+serde = [ "parking_lot/serde", "shuttle-parking_lot-impl?/serde" ]
+
+[dependencies]
+cfg-if = "1.0"
+parking_lot = "0.12"
+shuttle-parking_lot-impl = { path = "./parking_lot_impl", version = "0.1.0", optional = true }
