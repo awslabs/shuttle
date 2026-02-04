@@ -11,6 +11,7 @@ members = [
     "wrappers/tokio/impls/tokio-util",
     "wrappers/tokio/wrappers/shuttle-tokio",
     "wrappers/tokio/wrappers/shuttle-tokio-stream",
+    "wrappers/parking_lot",
 ]
 
 resolver = "2"
