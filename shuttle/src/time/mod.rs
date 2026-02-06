@@ -43,6 +43,15 @@ pub trait TimeDistribution<D> {
     fn sample(&self) -> D;
 }
 
+/// Whether or not a waker was registered on call to `register_sleep`
+#[derive(Debug)]
+pub enum WakerRegistered {
+    /// Waker was registered (ie. caller can return `Poll::Pending`)
+    Registered,
+    /// Waker was not registered (ie. the time duration has elapsed)
+    NotRegistered,
+}
+
 /// The trait implemented by each TimeModel
 pub trait TimeModel: std::fmt::Debug {
     /// Wake the next sleeping task; returns true if there exists a task that was able to be woken.
@@ -68,10 +77,8 @@ pub trait TimeModel: std::fmt::Debug {
     fn advance(&mut self, duration: Duration);
 
     /// Callback for registering a sleep/timeout on the current task. It is up to the TimeModel
-    /// implementation to determine when to wake the sleeping task. If no waker is provided, then
-    /// the caller is polling whether it is currently expired but is not yet performing a blocking
-    /// sleep.
-    fn register_sleep(&mut self, deadline: Instant, id: u64, waker: Option<Waker>) -> bool;
+    /// implementation to determine when to wake the sleeping task.
+    fn register_sleep(&mut self, deadline: Instant, id: u64, waker: Waker) -> WakerRegistered;
 }
 
 /// Provides a reference to the current TimeModel for this execution.
@@ -604,16 +611,12 @@ impl Future for Sleep {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let is_expired = get_time_model()
+        match get_time_model()
             .borrow_mut()
-            .register_sleep(self.deadline, self.id, None);
-        if is_expired {
-            Poll::Ready(())
-        } else {
-            let _ = get_time_model()
-                .borrow_mut()
-                .register_sleep(self.deadline, self.id, Some(cx.waker().clone()));
-            Poll::Pending
+            .register_sleep(self.deadline, self.id, cx.waker().clone())
+        {
+            WakerRegistered::Registered => Poll::Pending,
+            WakerRegistered::NotRegistered => Poll::Ready(()),
         }
     }
 }
@@ -773,23 +776,23 @@ where
     type Output = std::result::Result<F::Output, Elapsed>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let now = Instant::now();
         let this = self.project();
 
-        let tm = get_time_model();
-        let expired = tm.borrow_mut().register_sleep(*this.deadline, *this.id, None);
-        if expired {
+        if *this.deadline <= now {
             return Poll::Ready(Err(Elapsed(())));
         }
 
+        let time_model = get_time_model();
         match this.future.poll(cx) {
             Poll::Pending => {
-                let expired = tm
+                match time_model
                     .borrow_mut()
-                    .register_sleep(*this.deadline, *this.id, Some(cx.waker().clone()));
-                if expired {
-                    return Poll::Ready(Err(Elapsed(())));
+                    .register_sleep(*this.deadline, *this.id, cx.waker().clone())
+                {
+                    WakerRegistered::NotRegistered => Poll::Ready(Err(Elapsed(()))),
+                    WakerRegistered::Registered => Poll::Pending,
                 }
-                Poll::Pending
             }
             Poll::Ready(x) => Poll::Ready(Ok(x)),
         }

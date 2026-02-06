@@ -6,7 +6,7 @@ use std::{
 
 use tracing::{trace, warn};
 
-use crate::{current::TaskId, runtime::execution::ExecutionState};
+use crate::{current::TaskId, runtime::execution::ExecutionState, time::WakerRegistered};
 
 use super::{Duration, Instant, TimeModel};
 
@@ -32,7 +32,9 @@ impl ConstantSteppedTimeModel {
         }
     }
 
-    fn unblock_expired(&mut self) {
+    // Unblocks expired. Returns `true` if any were woken.
+    fn unblock_expired(&mut self) -> bool {
+        let mut out = false;
         while let Some(waker_key) = self.waiters.peek().and_then(|Reverse((t, _, sleep_id))| {
             if *t <= self.current_time_elapsed {
                 Some(*sleep_id)
@@ -44,19 +46,9 @@ impl ConstantSteppedTimeModel {
             if let Some(waker) = self.wakers.remove(&waker_key) {
                 waker.wake();
             }
+            out = true
         }
-    }
-
-    /// Get the currently sleeping tasks and deadlines. May contain duplicates
-    pub fn get_waiters(&self) -> &[Reverse<(std::time::Duration, TaskId, u64)>] {
-        self.waiters.as_slice()
-    }
-
-    /// Manually wake a task without affecting the global clock
-    pub fn wake_frozen(&mut self, sleep_id: u64) {
-        if let Some(waker) = self.wakers.remove(&sleep_id) {
-            waker.wake();
-        }
+        out
     }
 }
 
@@ -70,7 +62,7 @@ impl TimeModel for ConstantSteppedTimeModel {
     }
 
     fn step(&mut self) {
-        self.current_time_elapsed += self.current_step_size;
+        self.current_time_elapsed += self.step_size;
         trace!("time step to {:?}", self.current_time_elapsed);
         self.unblock_expired();
     }
@@ -86,32 +78,30 @@ impl TimeModel for ConstantSteppedTimeModel {
     }
 
     fn wake_next(&mut self) -> bool {
-        if self.waiters.is_empty() {
-            return false;
-        }
         if let Some(Reverse((time, _, _))) = self.waiters.peek() {
             self.current_time_elapsed = max(self.current_time_elapsed, *time);
+            self.unblock_expired();
+            true
+        } else {
+            false
         }
-        self.unblock_expired();
-        true
     }
 
     fn advance(&mut self, dur: Duration) {
         self.current_time_elapsed += dur;
     }
 
-    fn register_sleep(&mut self, deadline: Instant, sleep_id: u64, waker: Option<Waker>) -> bool {
+    fn register_sleep(&mut self, deadline: Instant, sleep_id: u64, waker: Waker) -> WakerRegistered {
         let deadline = deadline.unwrap_simulated();
         if deadline <= self.current_time_elapsed {
-            return true;
+            return WakerRegistered::NotRegistered;
         }
 
-        if let Some(waker) = waker {
-            let task_id = ExecutionState::with(|s| s.current().id());
-            let item = (deadline, task_id, sleep_id);
-            self.waiters.push(Reverse(item));
-            self.wakers.insert(sleep_id, waker);
-        }
-        false
+        let task_id = ExecutionState::with(|s| s.current().id());
+        let item = (deadline, task_id, sleep_id);
+        self.waiters.push(Reverse(item));
+        self.wakers.insert(sleep_id, waker);
+
+        WakerRegistered::Registered
     }
 }
