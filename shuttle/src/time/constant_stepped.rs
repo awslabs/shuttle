@@ -8,13 +8,12 @@ use tracing::{trace, warn};
 
 use crate::{current::TaskId, runtime::execution::ExecutionState};
 
-use super::{Duration, Instant, TimeDistribution, TimeModel};
+use super::{Duration, Instant, TimeModel};
 
 /// A time model where time advances by a constant amount for each scheduling step
 #[derive(Clone, Debug)]
 pub struct ConstantSteppedTimeModel {
-    distribution: ConstantTimeDistribution,
-    current_step_size: std::time::Duration,
+    step_size: std::time::Duration,
     current_time_elapsed: std::time::Duration,
     waiters: BinaryHeap<Reverse<(std::time::Duration, TaskId, u64)>>,
     wakers: HashMap<u64, Waker>,
@@ -25,10 +24,8 @@ unsafe impl Send for ConstantSteppedTimeModel {}
 impl ConstantSteppedTimeModel {
     /// Create a ConstantSteppedTimeModel
     pub fn new(step_size: std::time::Duration) -> Self {
-        let distribution = ConstantTimeDistribution::new(step_size);
         Self {
-            distribution,
-            current_step_size: distribution.sample(),
+            step_size,
             current_time_elapsed: std::time::Duration::from_secs(0),
             waiters: BinaryHeap::new(),
             wakers: HashMap::new(),
@@ -79,7 +76,6 @@ impl TimeModel for ConstantSteppedTimeModel {
     }
 
     fn new_execution(&mut self) {
-        self.current_step_size = self.distribution.sample();
         self.current_time_elapsed = std::time::Duration::from_secs(0);
         self.waiters.clear();
         self.wakers.clear();
@@ -100,9 +96,8 @@ impl TimeModel for ConstantSteppedTimeModel {
         true
     }
 
-    #[allow(clippy::useless_conversion)]
     fn advance(&mut self, dur: Duration) {
-        self.current_time_elapsed += dur.into();
+        self.current_time_elapsed += dur;
     }
 
     fn register_sleep(&mut self, deadline: Instant, sleep_id: u64, waker: Option<Waker>) -> bool {
@@ -118,25 +113,5 @@ impl TimeModel for ConstantSteppedTimeModel {
             self.wakers.insert(sleep_id, waker);
         }
         false
-    }
-}
-
-/// A constant distribution; each sample returns the same time
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct ConstantTimeDistribution {
-    /// The time that will be returned on sampling
-    pub time: std::time::Duration,
-}
-
-impl ConstantTimeDistribution {
-    /// Create a new constant time distribution
-    pub fn new(time: std::time::Duration) -> Self {
-        Self { time }
-    }
-}
-
-impl TimeDistribution<std::time::Duration> for ConstantTimeDistribution {
-    fn sample(&self) -> std::time::Duration {
-        self.time
     }
 }
