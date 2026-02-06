@@ -142,8 +142,8 @@ impl StepError {
 /// result in a newly runnable task when woken. Requires access to the ExecutionState to obtain a reference to the
 /// time model.
 fn wake_sleepers_until_runnable() {
-    let tm = get_time_model();
-    while ExecutionState::num_runnable() == 0 && tm.borrow_mut().wake_next() {}
+    let time_model = get_time_model();
+    while ExecutionState::num_runnable() == 0 && time_model.borrow_mut().wake_next() {}
 }
 
 impl Execution {
