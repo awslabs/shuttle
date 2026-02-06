@@ -16,11 +16,9 @@ use pin_project::pin_project;
 use std::task::{Context, Poll, Waker};
 use tracing::warn;
 
-use crate::current::Labels;
 use crate::runtime::execution::ExecutionState;
 
 use crate::runtime::thread;
-use crate::time::frozen::FrozenTimeModel;
 
 /// Constant stepped time model implementation
 pub mod constant_stepped;
@@ -74,43 +72,12 @@ pub trait TimeModel: std::fmt::Debug {
     /// the caller is polling whether it is currently expired but is not yet performing a blocking
     /// sleep.
     fn register_sleep(&mut self, deadline: Instant, id: u64, waker: Option<Waker>) -> bool;
-
-    /// Downcast to Any for type casting / checking
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 /// Provides a reference to the current TimeModel for this execution.
 /// Uses `Rc::clone` so that ExecutionState isn't already borrowed when running most TimeModel methods
 pub fn get_time_model() -> Rc<RefCell<dyn TimeModel>> {
     ExecutionState::with(|s| Rc::clone(&s.time_model))
-}
-
-/// Expire all current timeouts/sleeps requested by tasks whose tags match the
-/// given predicate. May not be implemented by all TimeModels.
-pub fn trigger_timeouts<F>(trigger: F)
-where
-    F: Fn(&Labels) -> bool + 'static,
-{
-    match get_time_model()
-        .borrow_mut()
-        .as_any_mut()
-        .downcast_mut::<FrozenTimeModel>()
-    {
-        Some(model) => model.trigger_timeouts(trigger),
-        None => warn!("trigger_timeouts is only available for the default FrozenTimeModel"),
-    }
-}
-
-/// Remove all triggers to expire timeouts
-pub fn clear_triggers() {
-    match get_time_model()
-        .borrow_mut()
-        .as_any_mut()
-        .downcast_mut::<FrozenTimeModel>()
-    {
-        Some(model) => model.clear_triggers(),
-        None => warn!("trigger_timeouts is only available for the default FrozenTimeModel"),
-    }
 }
 
 #[cfg(feature = "advanced-time-models")]
