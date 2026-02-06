@@ -817,10 +817,6 @@ impl ExecutionState {
         Self::with(|state| state.context_switches)
     }
 
-    pub(crate) fn num_tasks(&self) -> usize {
-        self.tasks.len()
-    }
-
     #[track_caller]
     pub(crate) fn new_resource_signature(resource_type: ResourceType) -> ResourceSignature {
         ExecutionState::with(|s| s.current_mut().signature.new_resource(resource_type))

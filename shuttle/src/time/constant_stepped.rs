@@ -119,10 +119,6 @@ impl TimeModel for ConstantSteppedTimeModel {
         }
         false
     }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
 }
 
 /// A constant distribution; each sample returns the same time
