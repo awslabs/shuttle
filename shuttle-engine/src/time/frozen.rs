@@ -1,5 +1,7 @@
 use std::task::Waker;
 
+use crate::time::WakerRegistered;
+
 use super::{constant_stepped::ConstantSteppedTimeModel, Duration, Instant, TimeModel};
 
 /// A time model where time does not advance unless forced
@@ -52,7 +54,7 @@ impl TimeModel for FrozenTimeModel {
         self.inner.advance(dur);
     }
 
-    fn register_sleep(&mut self, deadline: Instant, sleep_id: u64, waker: Option<Waker>) -> bool {
+    fn register_sleep(&mut self, deadline: Instant, sleep_id: u64, waker: Waker) -> WakerRegistered {
         self.inner.register_sleep(deadline, sleep_id, waker)
     }
 }
