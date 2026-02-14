@@ -550,8 +550,6 @@ impl BatchSemaphore {
 
     /// Acquire the specified number of permits (blocking API)
     pub fn acquire_blocking(&self, num_permits: usize) -> Result<(), AcquireError> {
-        // No switch here; switch should be triggered on polling future
-        self.init_object_id();
         crate::future::block_on(self.acquire(num_permits))
     }
 
