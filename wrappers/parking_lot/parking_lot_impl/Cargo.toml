@@ -14,3 +14,4 @@ serde = []
 
 [dependencies]
 shuttle = { path = "../../../shuttle", version = "*"}
+tracing = { version = "0.1.36", default-features = false, features = ["std"] }
