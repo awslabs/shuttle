@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::thread;
 use tracing::trace;
 
-/// An asynchronous semaphore
+/// An asynchronous mutex
 pub struct Mutex<T: ?Sized> {
     semaphore: BatchSemaphore,
     inner: UnsafeCell<T>,

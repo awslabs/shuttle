@@ -32,17 +32,16 @@ impl<T> RwLock<T> {
     /// Creates a new instance of an `RwLock<T>` which is unlocked
     /// and allows a maximum of `max_readers` concurrent readers.
     const fn with_max_readers(value: T, max_readers: usize) -> Self {
-        let sem = BatchSemaphore::const_new(max_readers, Fairness::StrictlyFair);
-        let rwlock = RwLock {
+        RwLock {
             max_readers,
-            sem,
+            sem: BatchSemaphore::const_new(max_readers, Fairness::StrictlyFair),
             inner: UnsafeCell::new(value),
-        };
-        rwlock
+        }
     }
 }
 
 impl<T: ?Sized> RwLock<T> {
+    /// Locks this `RwLock` with shared read access, blocking the current thread
     /// until it can be acquired.
     ///
     /// The calling thread will be blocked until there are no more writers which
@@ -56,7 +55,7 @@ impl<T: ?Sized> RwLock<T> {
     /// once it is dropped.
     #[inline]
     pub fn read(&self) -> RwLockReadGuard<'_, T> {
-        trace!("parking_lot rwlock {:p} acquiring read lock", self);
+        trace!("parking_lot rwlock {:p} read acquiring RwLockReadGuard", self);
         self.sem.acquire_blocking(1).unwrap_or_else(|_| {
             // The semaphore was closed. but, we never explicitly close it, and we have a
             // handle to it through the Arc, which means that this can never happen.
@@ -65,7 +64,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         });
 
-        trace!("parking_lot rwlock {:p} acquired", self);
+        trace!("parking_lot rwlock {:p} read acquired RwLockReadGuard", self);
 
         RwLockReadGuard {
             sem: &self.sem,
@@ -80,6 +79,8 @@ impl<T: ?Sized> RwLock<T> {
     /// Otherwise, an RAII guard is returned which will release read access
     /// when dropped.
     pub fn try_read(&self) -> Option<RwLockReadGuard<'_, T>> {
+        trace!("parking_lot rwlock {:p} try_read acquiring RwlockReadGuard", self);
+
         match self.sem.try_acquire(1) {
             Ok(permit) => permit,
             Err(TryAcquireError::NoPermits) => return None,
@@ -91,7 +92,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
-        trace!("parking_lot rwlock {:p} try_read acquired ReadGuard", self);
+        trace!("parking_lot rwlock {:p} try_read acquired RwLockReadGuard", self);
 
         Some(RwLockReadGuard {
             sem: &self.sem,
@@ -103,7 +104,7 @@ impl<T: ?Sized> RwLock<T> {
     /// Locks this `RwLock` with exclusive write access, blocking the current
     /// thread until it can be acquired.
     pub fn write(&self) -> RwLockWriteGuard<'_, T> {
-        trace!("parking_lot rwlock {:p} acquiring write lock", self);
+        trace!("parking_lot rwlock {:p} write acquiring RwLockWriteGuard", self);
         self.sem.acquire_blocking(1).unwrap_or_else(|_| {
             // The semaphore was closed. but, we never explicitly close it, and we have a
             // handle to it through the Arc, which means that this can never happen.
@@ -112,7 +113,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         });
 
-        trace!("parking_lot rwlock {:p} acquired WriteGuard", self);
+        trace!("parking_lot rwlock {:p} write acquired RwLockWriteGuard", self);
         RwLockWriteGuard {
             permits_acquired: self.max_readers,
             data: self.inner.get(),
@@ -127,7 +128,7 @@ impl<T: ?Sized> RwLock<T> {
     /// Otherwise, an RAII guard is returned which will release write access
     /// when dropped.
     pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
-        tracing::trace!("parking_lot rwlock {:p} try_write acquired WriteGuard", self,);
+        tracing::trace!("parking_lot rwlock {:p} try_write acquiring RwLockWriteGuard", self);
 
         match self.sem.try_acquire(1) {
             Ok(permit) => permit,
@@ -140,7 +141,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
-        tracing::trace!("parking_lot rwlock {:p} try_write acquired WriteGuard", self,);
+        tracing::trace!("parking_lot rwlock {:p} try_write acquired RwLockWriteGuard", self);
 
         Some(RwLockWriteGuard {
             permits_acquired: self.max_readers,
@@ -261,7 +262,10 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
         let RwLockWriteGuard { sem, data, .. } = self;
         let to_release = self.permits_acquired - 1;
 
-        tracing::trace!("rwlock {:p} downgrading to ReadGuard", &self);
+        tracing::trace!(
+            "parking_lot rwlock {:p} downgrade RwLockWriteGuard to RwLockReadGuard",
+            &self
+        );
 
         // NB: Forget to avoid drop impl from being called.
         std::mem::forget(self);

@@ -1,4 +1,4 @@
-//! An asynchronous reader-writer lock.
+//! An asynchronous mutual exclusion primitive.
 
 // This implementation is adapted from the one in shuttle-tokio
 
@@ -10,7 +10,7 @@ use std::ops::{Deref, DerefMut};
 use std::thread;
 use tracing::trace;
 
-/// An asynchronous semaphore
+/// An asynchronous mutex
 pub struct Mutex<T: ?Sized> {
     semaphore: BatchSemaphore,
     inner: UnsafeCell<T>,
@@ -73,7 +73,7 @@ impl<T: ?Sized> Mutex<T> {
                 unreachable!()
             }
         });
-        trace!("acquired parking_Lot lock {:p}", self);
+        trace!("acquired parking_lot lock {:p}", self);
     }
 
     /// Acquires a mutex, blocking the current thread until it is able to do so.
