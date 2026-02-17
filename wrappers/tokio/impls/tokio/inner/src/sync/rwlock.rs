@@ -72,6 +72,7 @@ impl<T: ?Sized> RwLock<T> {
     /// Returns an RAII guard which will drop this read access of the `RwLock`
     /// when dropped.
     pub async fn read(&self) -> RwLockReadGuard<'_, T> {
+        trace!("rwlock {:p} read", self);
         let inner = self.sem.acquire(1);
         inner.await.unwrap_or_else(|_| {
             // The semaphore was closed. but, we never explicitly close it, and we have a
@@ -81,7 +82,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         });
 
-        trace!("rwlock {:p} acquired ReadGuard", self);
+        trace!("rwlock {:p} read acquired ReadGuard", self);
         RwLockReadGuard {
             sem: &self.sem,
             data: self.inner.get(),
@@ -112,6 +113,7 @@ impl<T: ?Sized> RwLock<T> {
     /// Returns an RAII guard which will drop this read access of the `RwLock`
     /// when dropped.
     pub async fn read_owned(self: Arc<Self>) -> OwnedRwLockReadGuard<T> {
+        trace!("rwlock {:p} read_owned", self);
         let inner = self.sem.acquire(1);
         inner.await.unwrap_or_else(|_| {
             // The semaphore was closed. but, we never explicitly close it, and we have a
@@ -121,7 +123,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         });
 
-        trace!("rwlock {:p} acquired OwnedReadGuard", self);
+        trace!("rwlock {:p} read_owned acquired OwnedReadGuard", self);
         OwnedRwLockReadGuard {
             data: self.inner.get(),
             lock: ManuallyDrop::new(self),
@@ -135,6 +137,7 @@ impl<T: ?Sized> RwLock<T> {
     /// Otherwise, an RAII guard is returned which will release read access
     /// when dropped.
     pub fn try_read(&self) -> Result<RwLockReadGuard<'_, T>, TryLockError> {
+        tracing::trace!("rwlock {:p} try_read", self);
         match self.sem.try_acquire(1) {
             Ok(permit) => permit,
             Err(TryAcquireError::NoPermits) => return Err(TryLockError(())),
@@ -166,6 +169,7 @@ impl<T: ?Sized> RwLock<T> {
     /// call this method, and the guard will live for the `'static` lifetime,
     /// as it keeps the `RwLock` alive by holding an `Arc`.
     pub fn try_read_owned(self: Arc<Self>) -> Result<OwnedRwLockReadGuard<T>, TryLockError> {
+        trace!("rwlock {:p} try_read_owned", self);
         match self.sem.try_acquire(1) {
             Ok(permit) => permit,
             Err(TryAcquireError::NoPermits) => return Err(TryLockError(())),
@@ -177,7 +181,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
-        trace!("rwlock {:p} try_read acquired OwnedReadGuard", self);
+        trace!("rwlock {:p} try_read_owned acquired OwnedReadGuard", self);
         Ok(OwnedRwLockReadGuard {
             data: self.inner.get(),
             lock: ManuallyDrop::new(self),
@@ -194,13 +198,14 @@ impl<T: ?Sized> RwLock<T> {
     /// Returns an RAII guard which will drop the write access of this `RwLock`
     /// when dropped.
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
+        trace!("rwlock {:p} write", self);
         self.sem.acquire(self.max_readers).await.unwrap_or_else(|_| {
             if !std::thread::panicking() {
                 unreachable!()
             }
         });
 
-        trace!("rwlock {:p} acquired WriteGuard", self);
+        trace!("rwlock {:p} write acquired WriteGuard", self);
         RwLockWriteGuard {
             permits_acquired: self.max_readers,
             data: self.inner.get(),
@@ -229,6 +234,7 @@ impl<T: ?Sized> RwLock<T> {
     /// method, and the guard will live for the `'static` lifetime, as it keeps
     /// the `RwLock` alive by holding an `Arc`.
     pub async fn write_owned(self: Arc<Self>) -> OwnedRwLockWriteGuard<T> {
+        tracing::trace!("rwlock {:p} write_owned", self);
         self.sem.acquire(self.max_readers).await.unwrap_or_else(|_| {
             // The semaphore was closed. but, we never explicitly close it, and we have a
             // handle to it through the Arc, which means that this can never happen.
@@ -237,7 +243,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         });
 
-        tracing::trace!("rwlock {:p} acquired OwnedWriteGuard", self,);
+        tracing::trace!("rwlock {:p} write_owned acquired OwnedWriteGuard", self);
         OwnedRwLockWriteGuard {
             permits_acquired: self.max_readers,
             data: self.inner.get(),
@@ -252,6 +258,7 @@ impl<T: ?Sized> RwLock<T> {
     /// Otherwise, an RAII guard is returned which will release write access
     /// when dropped.
     pub fn try_write(&self) -> Result<RwLockWriteGuard<'_, T>, TryLockError> {
+        tracing::trace!("rwlock {:p} try_write", self);
         match self.sem.try_acquire(self.max_readers) {
             Ok(permit) => permit,
             Err(TryAcquireError::NoPermits) => return Err(TryLockError(())),
@@ -263,7 +270,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
-        tracing::trace!("rwlock {:p} try_write acquired WriteGuard", self,);
+        tracing::trace!("rwlock {:p} try_write acquired WriteGuard", self);
         Ok(RwLockWriteGuard {
             permits_acquired: self.max_readers,
             sem: &self.sem,
@@ -284,6 +291,7 @@ impl<T: ?Sized> RwLock<T> {
     /// call this method, and the guard will live for the `'static` lifetime,
     /// as it keeps the `RwLock` alive by holding an `Arc`.
     pub fn try_write_owned(self: Arc<Self>) -> Result<OwnedRwLockWriteGuard<T>, TryLockError> {
+        tracing::trace!("rwlock {:p} try_write_owned", self);
         match self.sem.try_acquire(self.max_readers) {
             Ok(permit) => permit,
             Err(TryAcquireError::NoPermits) => return Err(TryLockError(())),
@@ -295,7 +303,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
-        tracing::trace!("rwlock {:p} try_write acquired OwnedWriteGuard", self,);
+        tracing::trace!("rwlock {:p} try_write_owned acquired OwnedWriteGuard", self);
         Ok(OwnedRwLockWriteGuard {
             permits_acquired: self.max_readers,
             data: self.inner.get(),
