@@ -32,13 +32,11 @@ impl<T> RwLock<T> {
     /// Creates a new instance of an `RwLock<T>` which is unlocked
     /// and allows a maximum of `max_readers` concurrent readers.
     const fn with_max_readers(value: T, max_readers: usize) -> Self {
-        let sem = BatchSemaphore::const_new(max_readers, Fairness::StrictlyFair);
-        let rwlock = RwLock {
+        RwLock {
             max_readers,
-            sem,
+            sem: BatchSemaphore::const_new(max_readers, Fairness::StrictlyFair),
             inner: UnsafeCell::new(value),
-        };
-        rwlock
+        }
     }
 }
 
