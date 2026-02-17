@@ -142,6 +142,7 @@ impl<T: ?Sized> RwLock<T> {
                 if !std::thread::panicking() {
                     unreachable!()
                 }
+                return Err(TryLockError(()));
             }
         }
 
@@ -172,6 +173,7 @@ impl<T: ?Sized> RwLock<T> {
                 if !std::thread::panicking() {
                     unreachable!()
                 }
+                return Err(TryLockError(()));
             }
         }
 
@@ -257,6 +259,7 @@ impl<T: ?Sized> RwLock<T> {
                 if !std::thread::panicking() {
                     unreachable!()
                 }
+                return Err(TryLockError(()));
             }
         }
 
@@ -288,6 +291,7 @@ impl<T: ?Sized> RwLock<T> {
                 if !std::thread::panicking() {
                     unreachable!()
                 }
+                return Err(TryLockError(()));
             }
         }
 
