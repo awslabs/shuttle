@@ -1,11 +1,12 @@
-//! An asynchronous `Mutex`-like type.
+//! An asynchronous mutual exclusion primitive.
+
+// This implementation is adapted from the one in shuttle-tokio
 
 use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness, TryAcquireError};
 use std::cell::UnsafeCell;
 use std::error::Error;
 use std::fmt::{self, Debug, Display};
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 use std::thread;
 use tracing::trace;
 
@@ -27,11 +28,6 @@ impl<T: ?Sized + Display> Display for MutexGuard<'_, T> {
     }
 }
 
-/// An owned handle to a held `Mutex`.
-pub struct OwnedMutexGuard<T: ?Sized> {
-    mutex: Arc<Mutex<T>>,
-}
-
 /// Error returned from the [`Mutex::try_lock`], `RwLock::try_read` and
 /// `RwLock::try_write` functions.
 #[derive(Debug)]
@@ -51,87 +47,52 @@ impl Error for TryLockError {}
 unsafe impl<T> Send for Mutex<T> where T: ?Sized + Send {}
 unsafe impl<T> Sync for Mutex<T> where T: ?Sized + Send {}
 unsafe impl<T> Sync for MutexGuard<'_, T> where T: ?Sized + Send + Sync {}
-unsafe impl<T> Sync for OwnedMutexGuard<T> where T: ?Sized + Send + Sync {}
 
-impl<T: ?Sized> Mutex<T> {
+impl<T> Mutex<T> {
     /// Creates a new lock in an unlocked state ready for use.
-    pub fn new(t: T) -> Self
-    where
-        T: Sized,
-    {
+    pub const fn new(t: T) -> Self {
         Self {
-            semaphore: BatchSemaphore::new(1, Fairness::StrictlyFair),
+            semaphore: BatchSemaphore::const_new(1, Fairness::StrictlyFair),
             inner: UnsafeCell::new(t),
         }
     }
 
-    async fn acquire(&self) {
-        trace!("acquiring lock {:p}", self);
-        self.semaphore.acquire(1).await.unwrap_or_else(|_| {
+    /// Consumes the mutex, returning the underlying data.
+    pub fn into_inner(self) -> T {
+        self.inner.into_inner()
+    }
+}
+
+impl<T: ?Sized> Mutex<T> {
+    fn acquire(&self) {
+        trace!("acquiring parking_lot lock {:p}", self);
+        self.semaphore.acquire_blocking(1).unwrap_or_else(|_| {
             // The semaphore was closed. but, we never explicitly close it, and
             // we own it exclusively, which means that this can never happen.
             if !thread::panicking() {
                 unreachable!()
             }
         });
-        trace!("acquired lock {:p}", self);
+        trace!("acquired parking_lot lock {:p}", self);
     }
 
-    /// Locks this mutex, causing the current task to yield until the lock has
-    /// been acquired.  When the lock has been acquired, function returns a
-    /// [`MutexGuard`].    
-    pub async fn lock(&self) -> MutexGuard<'_, T> {
-        self.acquire().await;
+    /// Acquires a mutex, blocking the current thread until it is able to do so.
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        self.acquire();
 
         MutexGuard { mutex: self }
-    }
-
-    /// Blockingly locks this `Mutex`. When the lock has been acquired, function returns a
-    /// [`MutexGuard`].
-    ///
-    /// This method is intended for use cases where you
-    /// need to use this mutex in asynchronous code as well as in synchronous code.    
-    pub fn blocking_lock(&self) -> MutexGuard<'_, T> {
-        shuttle::future::block_on(self.lock())
-    }
-
-    /// Locks this mutex, causing the current task to yield until the lock has
-    /// been acquired. When the lock has been acquired, this returns an
-    /// [`OwnedMutexGuard`].
-    pub async fn lock_owned(self: Arc<Self>) -> OwnedMutexGuard<T> {
-        self.acquire().await;
-
-        OwnedMutexGuard { mutex: self }
     }
 
     fn try_acquire(&self) -> Result<(), TryAcquireError> {
         self.semaphore.try_acquire(1)
     }
 
-    /// Attempts to acquire the lock, and returns [`TryLockError`] if the
-    /// lock is currently held somewhere else.
-    pub fn try_lock(&self) -> Result<MutexGuard<'_, T>, TryLockError> {
+    /// Attempts to acquire this lock.
+    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
         match self.try_acquire() {
-            Ok(()) => Ok(MutexGuard { mutex: self }),
-            Err(_) => Err(TryLockError(())),
+            Ok(()) => Some(MutexGuard { mutex: self }),
+            Err(_) => None,
         }
-    }
-
-    /// Attempts to acquire the lock, and returns [`TryLockError`] if the lock
-    /// is currently held somewhere else.
-    pub fn try_lock_owned(self: Arc<Self>) -> Result<OwnedMutexGuard<T>, TryLockError> {
-        match self.try_acquire() {
-            Ok(()) => Ok(OwnedMutexGuard { mutex: self }),
-            Err(_) => Err(TryLockError(())),
-        }
-    }
-
-    /// Consumes the mutex, returning the underlying data.
-    pub fn into_inner(self) -> T
-    where
-        T: Sized,
-    {
-        self.inner.into_inner()
     }
 }
 
@@ -164,33 +125,6 @@ impl<T: ?Sized> Drop for MutexGuard<'_, T> {
 }
 
 impl<T: ?Sized + Debug> Debug for MutexGuard<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&self.mutex, f)
-    }
-}
-
-impl<T: ?Sized> Drop for OwnedMutexGuard<T> {
-    fn drop(&mut self) {
-        trace!("releasing owned lock {:p}", self);
-        self.mutex.semaphore.release(1);
-    }
-}
-
-impl<T: ?Sized> Deref for OwnedMutexGuard<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.mutex.inner.get() }
-    }
-}
-
-impl<T: ?Sized> DerefMut for OwnedMutexGuard<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.mutex.inner.get() }
-    }
-}
-
-impl<T: ?Sized + Debug> Debug for OwnedMutexGuard<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Debug::fmt(&self.mutex, f)
     }
