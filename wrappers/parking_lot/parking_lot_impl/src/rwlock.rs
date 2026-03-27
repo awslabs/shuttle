@@ -151,6 +151,35 @@ impl<T: ?Sized> RwLock<T> {
         })
     }
 
+    /// Locks this `RwLock` with upgradable read access, blocking the current
+    /// thread until it can be acquired.
+    #[inline]
+    pub fn upgradable_read(&self) -> RwLockUpgradableReadGuard<'_, T> {
+        trace!(
+            "parking_lot rwlock {:p} upgradeable_read acquiring RwLockUpgradableReadGuard",
+            self
+        );
+        self.sem.acquire_blocking(1).unwrap_or_else(|_| {
+            // The semaphore was closed. but, we never explicitly close it, and we have a
+            // handle to it through the Arc, which means that this can never happen.
+            if !std::thread::panicking() {
+                unreachable!()
+            }
+        });
+
+        trace!(
+            "parking_lot rwlock {:p} upgradeable_read acquired RwLockUpgradableReadGuard",
+            self
+        );
+
+        RwLockUpgradableReadGuard {
+            sem: &self.sem,
+            max_readers: self.max_readers,
+            data: self.inner.get(),
+            _p: PhantomData,
+        }
+    }
+
     /// Returns a mutable reference to the underlying data.
     ///
     /// Since this call borrows the `RwLock` mutably, no actual locking needs to
@@ -168,6 +197,43 @@ impl<T: ?Sized> RwLock<T> {
         T: Sized,
     {
         self.inner.into_inner()
+    }
+}
+
+/// An RAII guard for upgradable read access to an `RwLock`.
+pub struct RwLockUpgradableReadGuard<'a, T: ?Sized> {
+    sem: &'a BatchSemaphore,
+    max_readers: usize,
+    data: *const T,
+    _p: PhantomData<&'a T>,
+}
+
+impl<'a, T: ?Sized> RwLockUpgradableReadGuard<'a, T> {
+    /// Atomically upgrades an upgradable read lock lock into an exclusive write lock,
+    /// blocking the current thread until it can be acquired.
+    #[inline]
+    pub fn upgrade(s: Self) -> RwLockWriteGuard<'a, T> {
+        shuttle::future::block_on(s.sem.upgrade(1, s.max_readers)).unwrap_or_else(|_| {
+            // The semaphore was closed. but, we never explicitly close it, and we have a
+            // handle to it through the Arc, which means that this can never happen.
+            if !std::thread::panicking() {
+                unreachable!()
+            }
+        });
+        RwLockWriteGuard {
+            permits_acquired: s.max_readers,
+            sem: s.sem,
+            data: s.data as *mut T,
+            _p: PhantomData,
+        }
+    }
+}
+
+impl<T: ?Sized> std::ops::Deref for RwLockUpgradableReadGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        unsafe { &*self.data }
     }
 }
 
@@ -194,16 +260,20 @@ unsafe impl<T> Sync for RwLock<T> where T: ?Sized + Send + Sync {}
 // NB: These impls need to be explicit since we're storing a raw pointer.
 // Safety: Stores a raw pointer to `T`, so if `T` is `Sync`, the lock guard over
 // `T` is `Send`.
-unsafe impl<T> Send for RwLockReadGuard<'_, T> where T: ?Sized + Sync {}
-unsafe impl<T> Sync for RwLockReadGuard<'_, T> where T: ?Sized + Send + Sync {}
-
-unsafe impl<T> Sync for RwLockWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
+unsafe impl<T> Send for RwLockReadGuard<'_, T> where T: ?Sized + Send + Sync {}
+unsafe impl<T> Sync for RwLockReadGuard<'_, T> where T: ?Sized + Sync {}
 
 // Safety: Stores a raw pointer to `T`, so if `T` is `Sync`, the lock guard over
 // `T` is `Send` - but since this is also provides mutable access, we need to
 // make sure that `T` is `Send` since its value can be sent across thread
 // boundaries.
 unsafe impl<T> Send for RwLockWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
+unsafe impl<T> Sync for RwLockWriteGuard<'_, T> where T: ?Sized + Sync {}
+
+// SAFETY: The raw pointer is not actually sent across threads
+unsafe impl<T> Send for RwLockUpgradableReadGuard<'_, T> where T: ?Sized + Send + Sync {}
+// SAFETY: The raw pointer is not actually sent across threads
+unsafe impl<T> Sync for RwLockUpgradableReadGuard<'_, T> where T: ?Sized + Sync {}
 
 /// RAII structure used to release the shared read access of a lock when
 /// dropped.
@@ -312,7 +382,7 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use super::RwLock;
+    use super::{RwLock, RwLockUpgradableReadGuard};
     use shuttle::{check_dfs, thread::spawn};
     use std::sync::Arc;
 
@@ -331,6 +401,33 @@ mod tests {
                 });
                 t1.join().unwrap();
                 t2.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    #[test]
+    fn upgrade_sanity() {
+        check_dfs(
+            move || {
+                let rwlock = Arc::new(RwLock::new(0));
+                let r1 = rwlock.clone();
+                let r2 = rwlock.clone();
+                let t1 = spawn(move || {
+                    let guard = r1.upgradable_read();
+                    assert!(*guard < 2);
+                    let mut write = RwLockUpgradableReadGuard::<'_, _>::upgrade(guard);
+                    *write += 1;
+                });
+                let t2 = spawn(move || {
+                    let guard = r2.upgradable_read();
+                    assert!(*guard < 2);
+                    let mut write = RwLockUpgradableReadGuard::<'_, _>::upgrade(guard);
+                    *write += 1;
+                });
+                t1.join().unwrap();
+                t2.join().unwrap();
+                assert!(*rwlock.read() == 2);
             },
             None,
         );
