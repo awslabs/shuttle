@@ -105,7 +105,7 @@ impl<T: ?Sized> RwLock<T> {
     /// thread until it can be acquired.
     pub fn write(&self) -> RwLockWriteGuard<'_, T> {
         trace!("parking_lot rwlock {:p} write acquiring RwLockWriteGuard", self);
-        self.sem.acquire_blocking(1).unwrap_or_else(|_| {
+        self.sem.acquire_blocking(self.max_readers).unwrap_or_else(|_| {
             // The semaphore was closed. but, we never explicitly close it, and we have a
             // handle to it through the Arc, which means that this can never happen.
             if !std::thread::panicking() {
@@ -130,7 +130,7 @@ impl<T: ?Sized> RwLock<T> {
     pub fn try_write(&self) -> Option<RwLockWriteGuard<'_, T>> {
         tracing::trace!("parking_lot rwlock {:p} try_write acquiring RwLockWriteGuard", self);
 
-        match self.sem.try_acquire(1) {
+        match self.sem.try_acquire(self.max_readers) {
             Ok(permit) => permit,
             Err(TryAcquireError::NoPermits) => return None,
             Err(TryAcquireError::Closed) => {
@@ -307,5 +307,32 @@ where
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
         self.sem.release(self.permits_acquired);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RwLock;
+    use shuttle::{check_dfs, thread::spawn};
+    use std::sync::Arc;
+
+    #[test]
+    #[should_panic = "deadlock"]
+    fn mem_forget_write_guard_deadlock() {
+        check_dfs(
+            move || {
+                let rwlock = Arc::new(RwLock::new(()));
+                let r1 = rwlock.clone();
+                let t1 = spawn(move || {
+                    std::mem::forget(r1.write());
+                });
+                let t2 = spawn(move || {
+                    let _g = rwlock.write();
+                });
+                t1.join().unwrap();
+                t2.join().unwrap();
+            },
+            None,
+        );
     }
 }
