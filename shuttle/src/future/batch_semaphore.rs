@@ -635,6 +635,9 @@ impl BatchSemaphore {
     /// naive implementation where `permits_to_be_held - permits_currently_held` is `acquire`d, and two tasks try to `upgrade`
     /// concurrently (or one `upgrade` in the presence of a `write`).
     pub fn upgrade(&self, permits_currently_held: usize, permits_to_be_held: usize) -> Acquire<'_> {
+        assert!(permits_currently_held > 0);
+        assert!(permits_to_be_held > permits_currently_held);
+
         let mut acquire = Box::pin(self.acquire(permits_to_be_held));
         let waker = ExecutionState::with(|state| state.current_mut().waker());
         let cx = &mut Context::from_waker(&waker);
