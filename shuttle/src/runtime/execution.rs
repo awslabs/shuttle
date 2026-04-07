@@ -868,7 +868,10 @@ impl ExecutionState {
         let mut any_runnable = false;
 
         for task in &self.tasks {
-            unfinished_attached |= !task.finished() && !task.detached;
+            if task.finished() {
+                continue;
+            }
+            unfinished_attached |= !task.detached;
             let is_runnable = task.runnable();
             any_runnable |= is_runnable;
 
