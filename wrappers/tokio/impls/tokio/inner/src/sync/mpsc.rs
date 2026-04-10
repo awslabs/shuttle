@@ -3,10 +3,12 @@
 
 use shuttle::future::{
     self,
-    batch_semaphore::{BatchSemaphore, Fairness, TryAcquireError},
+    batch_semaphore::{Acquire, BatchSemaphore, Fairness, TryAcquireError},
 };
 use smallvec::SmallVec;
 use std::fmt::{self, Debug};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tracing::trace;
@@ -204,6 +206,14 @@ impl<T> Channel<T> {
 /// Common building block to build [`Receiver`]/[`UnboundedReceiver`] atop.
 struct ReceiverInternal<T> {
     chan: Arc<Channel<T>>,
+    /// In-progress semaphore acquire for `poll_recv`. Stored across polls
+    /// so the waiter stays registered in the semaphore queue.
+    ///
+    /// # Safety
+    /// The `'static` lifetime is a lie — `Acquire` borrows
+    /// `chan.recv_semaphore`. This is sound because we always clear
+    /// `pending_acquire` before `chan` is dropped (see `Drop` impl).
+    pending_acquire: Option<Pin<Box<Acquire<'static>>>>,
 }
 
 impl<T> fmt::Debug for ReceiverInternal<T> {
@@ -214,54 +224,42 @@ impl<T> fmt::Debug for ReceiverInternal<T> {
 
 impl<T> ReceiverInternal<T> {
     pub fn new(chan: Arc<Channel<T>>) -> Self {
-        Self { chan }
+        Self {
+            chan,
+            pending_acquire: None,
+        }
     }
 
     /// Receives the next value for this receiver.
     pub async fn recv(&mut self) -> Option<T> {
-        if self.is_closed() && self.is_empty() {
-            return None;
-        }
-
-        self.chan.recv_semaphore.acquire(1).await.ok()?;
-        let message = self.chan.recv()?;
-
-        if self.chan.is_bounded() {
-            self.chan.send_semaphore.release(1);
-        }
-
-        Some(message)
+        std::future::poll_fn(|cx| self.poll_recv(cx)).await
     }
 
     /// Tries to receive the next value for this receiver.
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        match self.chan.recv_semaphore.try_acquire(1) {
-            Err(TryAcquireError::Closed) => Err(TryRecvError::Disconnected),
-            Err(TryAcquireError::NoPermits) => Err(TryRecvError::Empty),
-            Ok(()) => {
-                let message = self.chan.recv().expect(
-                    "Internal Shuttle error. We acquired a permit for an empty channel. This should never happen.",
-                );
-                if self.chan.is_bounded() {
-                    self.chan.send_semaphore.release(1);
-                }
-                Ok(message)
+        let waker = futures::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        match self.poll_recv(&mut cx) {
+            Poll::Ready(Some(item)) => Ok(item),
+            Poll::Ready(None) => Err(TryRecvError::Disconnected),
+            Poll::Pending => {
+                // poll_recv registered a waiter, but try_recv won't poll
+                // again — clear it to avoid a dangling waiter.
+                self.pending_acquire = None;
+                Err(TryRecvError::Empty)
             }
         }
     }
 
     /// Blocking receive to call outside of asynchronous contexts.
     pub fn blocking_recv(&mut self) -> Option<T> {
-        if self.is_closed() && self.is_empty() {
-            return None;
-        }
-
-        self.chan.recv_semaphore.acquire_blocking(1).ok()?;
-        self.chan.recv()
+        shuttle::future::block_on(self.recv())
     }
 
     /// Closes the receiving half of a channel, without dropping it.
     pub fn close(&mut self) {
+        // Deregister any in-flight waiter before closing.
+        self.pending_acquire = None;
         self.chan.close();
     }
 
@@ -282,8 +280,40 @@ impl<T> ReceiverInternal<T> {
     ///  * `Poll::Ready(Some(message))` if a message is available.
     ///  * `Poll::Ready(None)` if the channel has been closed and all messages
     ///    sent before it was closed have been received.
-    pub fn poll_recv(&mut self, _cx: &mut Context<'_>) -> Poll<Option<T>> {
-        unimplemented!()
+    pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
+        if self.is_closed() && self.is_empty() {
+            self.pending_acquire = None;
+            return Poll::Ready(None);
+        }
+
+        // Create the Acquire future on first poll, reuse on subsequent polls
+        // so the waiter stays registered in the semaphore queue.
+        if self.pending_acquire.is_none() {
+            let acquire = self.chan.recv_semaphore.acquire(1);
+            // Safety: Acquire borrows recv_semaphore which lives in self.chan
+            // (behind Arc). We clear pending_acquire on completion, on close,
+            // and in Drop — so the borrow never outlives the semaphore.
+            let acquire: Acquire<'static> = unsafe { std::mem::transmute(acquire) };
+            self.pending_acquire = Some(Box::pin(acquire));
+        }
+
+        match self.pending_acquire.as_mut().unwrap().as_mut().poll(cx) {
+            Poll::Ready(Ok(())) => {
+                self.pending_acquire = None;
+                let message = self.chan.recv().expect(
+                    "Internal Shuttle error. We acquired a permit for an empty channel. This should never happen.",
+                );
+                if self.chan.is_bounded() {
+                    self.chan.send_semaphore.release(1);
+                }
+                Poll::Ready(Some(message))
+            }
+            Poll::Ready(Err(_)) => {
+                self.pending_acquire = None;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     /// Checks if a channel is empty.
@@ -301,6 +331,9 @@ impl<T> ReceiverInternal<T> {
 
 impl<T> Drop for ReceiverInternal<T> {
     fn drop(&mut self) {
+        // Clear pending_acquire before dropping chan so the Acquire's
+        // borrow of recv_semaphore is released first.
+        self.pending_acquire = None;
         self.chan.drop_receiver();
     }
 }
@@ -582,7 +615,10 @@ pub fn channel<T>(bound: usize) -> (Sender<T>, Receiver<T>) {
         inner: SenderInternal::new(chan.clone()),
     };
     let receiver = Receiver {
-        inner: ReceiverInternal { chan },
+        inner: ReceiverInternal {
+            chan,
+            pending_acquire: None,
+        },
     };
     (sender, receiver)
 }
