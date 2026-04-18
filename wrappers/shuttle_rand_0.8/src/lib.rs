@@ -1,7 +1,7 @@
 //! This crate provides a Shuttle-compatible implementation and wrapper for [`rand` version 0.8] in order to make it
 //! more ergonomic to run a codebase under Shuttle.
 //!
-//! [`rand` version 0.8]: <https://crates.io/crates/rand/0.8.5>
+//! [`rand` version 0.8]: <https://crates.io/crates/rand/0.8.6>
 //!
 //! To use this crate, add something akin to the following to your Cargo.toml:
 //!
@@ -12,7 +12,7 @@
 //! ]
 //!
 //! [dependencies]
-//! rand = { package = "shuttle-rand", version = "0.8" }
+//! rand = { package = "shuttle-rand", version = "0.8.6" }
 //! ```
 //!
 //! The rest of the codebase then remains unchanged, and running with Shuttle-compatible `rand` can be done via the "shuttle" feature flag.
