@@ -1,4 +1,5 @@
 use crate::runtime::execution::ExecutionState;
+use crate::{ContinuationFunctionBehavior, UNGRACEFUL_SHUTDOWN_CONFIG};
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
@@ -256,7 +257,14 @@ impl Drop for PooledContinuation {
             // dropped. Thus we must drop the inner function before reusing it.
             let old = c.function.0.replace(None);
             c.state = ContinuationState::NotReady;
-            drop(old);
+            if std::thread::panicking() {
+                match UNGRACEFUL_SHUTDOWN_CONFIG.get().continuation_function_behavior {
+                    ContinuationFunctionBehavior::Drop => drop(old),
+                    ContinuationFunctionBehavior::Leak => std::mem::forget(old),
+                }
+            } else {
+                drop(old);
+            }
             self.queue.borrow_mut().push_back(c);
         }
     }

@@ -298,6 +298,12 @@ impl<T: ?Sized> RwLock<T> {
 
         acquired
     }
+
+    /// Clear the poisoned state from a lock.
+    #[inline]
+    pub fn clear_poison(&self) {
+        self.inner.clear_poison();
+    }
 }
 
 // Safety: RwLock is never actually passed across true threads, only across continuations. The

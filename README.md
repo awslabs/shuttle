@@ -8,6 +8,8 @@ Shuttle is a library for testing concurrent Rust code. It is an implementation o
 *randomized concurrency testing* techniques, including
 [A Randomized Scheduler with Probabilistic Guarantees of Finding Bugs](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf).
 
+This repository also houses a collection of [wrappers](/wrappers) and their implementations. These make it easier to test code using popular libraries such as `tokio` and `rand`, as well as synchronization primitives from `std::sync` and collections from `std::collections`. For more information on how to use these wrappers, see the [wrappers/README.md](/wrappers/README.md).
+
 ## Getting started
 
 Consider this simple piece of concurrent code:

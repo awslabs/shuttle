@@ -1,0 +1,36 @@
+[package]
+name = "shuttle-tokio-stream-impl"
+version = "0.1.0" # Forked from "0.1.14"
+edition = "2021"
+rust-version = "1.63"
+
+[features]
+default = ["time"]
+
+full = [
+    "time",
+    "net",
+    "io-util",
+    "fs",
+    "sync",
+    "signal"
+]
+
+time = []
+net = []
+io-util = []
+fs = []
+sync = []
+signal = []
+
+[dependencies]
+tokio = { path = "../tokio", package = "shuttle-tokio-impl", version = "*" }
+shuttle = { version = "*", path = "../../../../shuttle" }
+futures-core = { version = "0.3.0" }
+pin-project-lite = "0.2.11"
+tokio-util = "0.7.0"
+
+[dev-dependencies]
+async-stream = "0.3"
+tokio-test = { package = "shuttle-tokio-test-impl", path = "../tokio-test" }
+futures = { version = "0.3", default-features = false }

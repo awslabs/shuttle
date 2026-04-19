@@ -1,0 +1,10 @@
+[package]
+name = "shuttle-lazy_static-impl"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+spin_no_std = []
+
+[dependencies]
+shuttle = { path = "../../../shuttle", version = "*" }

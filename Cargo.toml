@@ -6,6 +6,15 @@ members = [
     "wrappers/collections",
     "wrappers/collections/deterministic_collections",
     "wrappers/collections/std_collections",
+    "wrappers/lazy_static",
+    "wrappers/tokio/impls/tokio",
+    "wrappers/tokio/impls/tokio-macros",
+    "wrappers/tokio/impls/tokio-stream",
+    "wrappers/tokio/impls/tokio-test",
+    "wrappers/tokio/impls/tokio-util",
+    "wrappers/tokio/wrappers/shuttle-tokio",
+    "wrappers/tokio/wrappers/shuttle-tokio-stream",
+    "wrappers/parking_lot",
 ]
 
 resolver = "2"

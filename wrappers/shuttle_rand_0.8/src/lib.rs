@@ -15,7 +15,7 @@
 //! rand = { package = "shuttle-rand", version = "0.8" }
 //! ```
 //!
-//! The rest of the codebase then remains unchanged, and running with Shuttle-conpatible `rand` can be done via the "shuttle" feature flag.
+//! The rest of the codebase then remains unchanged, and running with Shuttle-compatible `rand` can be done via the "shuttle" feature flag.
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "shuttle")] {

@@ -1,4 +1,6 @@
 name: Tests
+permissions:
+  contents: read
 
 on:
   push:
@@ -58,16 +60,3 @@ jobs:
       - name: cargo doc
         run: cargo doc --no-deps
 
-  bench:
-    name: Benchmarks 
-    runs-on: ubuntu-latest
-    continue-on-error: true # This step will not fail the job if it errors
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install Rust
-        run: rustup update stable
-      - uses: boa-dev/criterion-compare-action@v3
-        with:
-          cwd: "shuttle"
-          features: "bench-no-vector-clocks"
-          branchName: ${{ github.base_ref }}

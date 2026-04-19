@@ -394,7 +394,11 @@ impl BatchSemaphore {
     /// permits and notifies all pending waiters.
     pub fn close(&self) {
         thread::switch();
+        self.close_no_scheduling_point();
+    }
 
+    /// Closes the semaphore without invoking `thread::switch`
+    pub fn close_no_scheduling_point(&self) {
         self.init_object_id();
         let mut state = self.state.borrow_mut();
         if state.closed {
@@ -617,6 +621,31 @@ impl BatchSemaphore {
             }
         }
         drop(state);
+    }
+
+    /// Atomically `upgrade`s from holding `permits_currently_held` to holding `permits_to_be_held`.
+    /// The motivating use case for this is `parking_lot`s `RwLockUpgradableReadGuard::ugrade`, where we want to be able to
+    /// go from having a read guard to a write guard while honoring the order of `acquire`s.
+    ///
+    /// This is implemented by first trying to `acquire` `permits_to_be_held` (which for the `RwLock::upgrade` case would never
+    /// succeed, as the task is holding one permit, and wants to acquire all of them, meaning even with no other tasks it will
+    /// block on itself), then `release`ing `permits_currently_held`.
+    ///
+    /// This ensures the order of `acquire`s is honored, and prevents the potential deadlock situation which could occur in the
+    /// naive implementation where `permits_to_be_held - permits_currently_held` is `acquire`d, and two tasks try to `upgrade`
+    /// concurrently (or one `upgrade` in the presence of a `write`).
+    pub fn upgrade(&self, permits_currently_held: usize, permits_to_be_held: usize) -> Acquire<'_> {
+        assert!(permits_currently_held > 0);
+        assert!(permits_to_be_held > permits_currently_held);
+
+        let mut acquire = Box::pin(self.acquire(permits_to_be_held));
+        let waker = ExecutionState::with(|state| state.current_mut().waker());
+        let cx = &mut Context::from_waker(&waker);
+        let _poll = acquire.as_mut().poll(cx);
+
+        self.release(permits_currently_held);
+
+        *Pin::into_inner(acquire)
     }
 }
 

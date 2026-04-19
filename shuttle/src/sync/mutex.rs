@@ -136,7 +136,7 @@ impl<T: ?Sized> Mutex<T> {
     /// Returns a mutable reference to the underlying data.
     ///
     /// Since this call borrows the `Mutex` mutably, no actual locking needs to
-    /// take place---the mutable borrow statically guarantees no locks exist.
+    /// take place -- the mutable borrow statically guarantees no locks exist.
     #[inline]
     pub fn get_mut(&mut self) -> LockResult<&mut T> {
         self.inner.get_mut()
@@ -154,6 +154,11 @@ impl<T: ?Sized> Mutex<T> {
         self.semaphore.try_acquire(1).unwrap();
 
         self.inner.into_inner()
+    }
+
+    /// Clear the poisoned state from a mutex.
+    pub fn clear_poison(&self) {
+        self.inner.clear_poison()
     }
 }
 

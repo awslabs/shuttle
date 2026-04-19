@@ -1,0 +1,38 @@
+[package]
+name = "shuttle-tokio"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+shuttle = ["shuttle-tokio-impl"]
+
+# Include nothing by default
+default = []
+
+# enable everything
+full = ["tokio/full", "shuttle-tokio-impl?/full"]
+
+fs = ["tokio/fs", "shuttle-tokio-impl?/fs"]
+io-util = ["tokio/io-util", "shuttle-tokio-impl?/io-util"]
+# stdin, stdout, stderr
+io-std = ["tokio/io-std", "shuttle-tokio-impl?/io-std"]
+macros = ["tokio/macros", "shuttle-tokio-impl?/macros"]
+net = ["tokio/net", "shuttle-tokio-impl?/net"]
+process = ["tokio/process", "shuttle-tokio-impl?/process"]
+# Includes basic task execution capabilities
+rt = ["tokio/rt", "shuttle-tokio-impl?/rt"]
+rt-multi-thread = ["tokio/rt-multi-thread", "shuttle-tokio-impl?/rt-multi-thread"]
+signal = ["tokio/signal", "shuttle-tokio-impl?/signal"]
+sync = ["tokio/sync", "shuttle-tokio-impl?/sync"]
+test-util = ["tokio/test-util", "shuttle-tokio-impl?/test-util"]
+time = ["tokio/time", "shuttle-tokio-impl?/time"]
+# Unstable feature. Requires `--cfg tokio_unstable` to enable.
+io-uring = ["tokio/io-uring", "shuttle-tokio-impl?/io-uring"]
+# Unstable feature. Requires `--cfg tokio_unstable` to enable.
+taskdump = ["tokio/taskdump", "shuttle-tokio-impl?/taskdump"]
+
+
+[dependencies]
+cfg-if = "1.0"
+tokio = "1"
+shuttle-tokio-impl = { path = "../../impls/tokio", version = "0.1.0", optional = true }
