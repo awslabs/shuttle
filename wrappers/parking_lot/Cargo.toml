@@ -2,6 +2,8 @@
 name = "shuttle-parking_lot"
 version = "0.12.5"
 edition = "2024"
+license = "Apache-2.0"
+description = "parking_lot wrapper for the Shuttle concurrency testing tool."
 
 [features]
 shuttle = [ "dep:shuttle-parking_lot-impl" ]

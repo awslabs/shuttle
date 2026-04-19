@@ -1,6 +1,6 @@
 # Shuttle support for `parking_lot`
 
-This folder contains the implementation and wrapper that enables testing of [parking_lot](https://crates.io/crates/parking_lot) applications with Shuttle.
+This crate contains the wrapper that enables testing of [parking_lot](https://crates.io/crates/parking_lot) applications with Shuttle.
 
 ## How to use
 
@@ -20,4 +20,4 @@ The code will then behave as before when the `shuttle` feature flag is not provi
 
 ## Limitations
 
-Shuttle's parking_lot functionality is currently limited to a subset of the `Mutex` and `RwLock` primitives. If your project needs functionality which is not currently supported, please file an issue or, better yet, open a PR to contribute the functionality.
+For the list of current limitations, see the README in [parking_lot_impl](parking_lot_impl).
