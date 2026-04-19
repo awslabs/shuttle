@@ -2,6 +2,8 @@
 name = "shuttle-lazy_static-impl"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "The implementation for the Shutte-compatible wrapper for the lazy_static crate."
 
 [features]
 spin_no_std = []
