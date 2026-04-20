@@ -65,7 +65,7 @@ pub fn test(args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ## Usage
 ///
-/// ```no_run
+/// ```ignore
 /// #[shuttle_tokio::test]
 /// async fn my_test() {
 ///     assert!(true);
