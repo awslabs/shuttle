@@ -2,6 +2,8 @@
 name = "shuttle-tokio-stream"
 version = "0.1.0" # Forked from "0.1.14"
 edition = "2021"
+license = "Apache-2.0"
+description = "tokio-stream wrapper for the Shuttle concurrency testing tool."
 
 [features]
 shuttle = ["shuttle-tokio-stream-impl"]
@@ -27,4 +29,4 @@ signal = ["tokio-stream/signal", "shuttle-tokio-stream-impl?/signal"]
 [dependencies]
 cfg-if = "1.0"
 tokio-stream = "0.1"
-shuttle-tokio-stream-impl = { version = "*", optional = true, path = "../../impls/tokio-stream" }
+shuttle-tokio-stream-impl = { version = "0.1", optional = true, path = "../../impls/tokio-stream" }
