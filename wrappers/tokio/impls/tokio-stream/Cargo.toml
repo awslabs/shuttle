@@ -3,6 +3,8 @@ name = "shuttle-tokio-stream-impl"
 version = "0.1.0" # Forked from "0.1.14"
 edition = "2021"
 rust-version = "1.63"
+license = "MIT"
+description = "A fork of tokio-stream 0.1.14 which is compatible with the Shuttle concurrency checker."
 
 [features]
 default = ["time"]
@@ -24,8 +26,8 @@ sync = []
 signal = []
 
 [dependencies]
-tokio = { path = "../tokio", package = "shuttle-tokio-impl", version = "*" }
-shuttle = { version = "*", path = "../../../../shuttle" }
+tokio = { path = "../tokio", package = "shuttle-tokio-impl", version = "0.1" }
+shuttle = { version = "0.9", path = "../../../../shuttle" }
 futures-core = { version = "0.3.0" }
 pin-project-lite = "0.2.11"
 tokio-util = "0.7.0"

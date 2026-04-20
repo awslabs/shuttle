@@ -2,6 +2,8 @@
 name = "shuttle-tokio-impl"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "Internal implementation of the `tokio` crate for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-tokio`."
 
 [features]
 # Include nothing by default
@@ -35,5 +37,5 @@ tokio-orig = { package = "tokio", version = "1.43" }
 shuttle-tokio-impl-inner = { version = "0.1.0", path = "./inner" }
 
 [dev-dependencies]
-shuttle = { version = "*", path = "../../../../shuttle" }
+shuttle = { version = "0.9", path = "../../../../shuttle" }
 futures = "0.3.15"
