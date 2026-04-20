@@ -10,7 +10,7 @@
 * Spawn events are now traced at `DEBUG` (down from `INFO`) (#211)
 * Stable resource ids (#207)
 * `UniformRandomWalk` scheduler added (#200)
-* Panic path refactored. 1: Aborting panics should more often have their schedule serialized, 2: Schedule is no longer part of the panic message, 3: There will now be multiple shcedules serialized on multiple panics, 4: if `Config::immediately_return_on_panic` is set then we will return immediately on a failure and not finish unwinding the panic. (#202)
+* Panic path refactored. 1: Aborting panics should more often have their schedule serialized, 2: Schedule is no longer part of the panic message, 3: There will now be multiple schedules serialized on multiple panics, 4: if `Config::immediately_return_on_panic` is set then we will return immediately on a failure and not finish unwinding the panic. (#202)
 * Change scheduling points to always precede operations (#216)
 * Change the backend for the tasks to be the Corosensei crate instead of the generators crate (#204)
 * Add `SHUTTLE_PERSIST_SEED` in the RandomScheduler to persist schedule before running the test (to be used for aborting tests) (#201)
