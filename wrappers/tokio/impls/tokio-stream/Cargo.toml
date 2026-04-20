@@ -26,7 +26,7 @@ sync = []
 signal = []
 
 [dependencies]
-tokio = { path = "../tokio", package = "shuttle-tokio-impl", version = "*" }
+tokio = { path = "../tokio", package = "shuttle-tokio-impl", version = "0.1" }
 shuttle = { version = "0.9", path = "../../../../shuttle" }
 futures-core = { version = "0.3.0" }
 pin-project-lite = "0.2.11"
