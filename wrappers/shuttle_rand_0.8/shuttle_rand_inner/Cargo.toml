@@ -1,5 +1,5 @@
 [package]
-name = "shuttle-rand-inner"
+name = "shuttle-rand_0_8-inner"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,13 +10,12 @@ getrandom = []
 min_const_gen = []
 nightly = []
 serde1 = []
-simd_support = []
 small_rng = []
 std = []
 std_rng = []
 
 [dependencies]
 shuttle = { path = "../../../shuttle", version = "*"}
-rand-orig = { package = "rand", version = "0.8" }
+rand-orig = { package = "rand", version = "0.8.6" }
 
 

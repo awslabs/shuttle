@@ -4,7 +4,7 @@
 //!
 //! [`Shuttle`]: <https://crates.io/crates/shuttle>
 //!
-//! [`rand` version 0.8]: <https://crates.io/crates/rand/0.8.5>
+//! [`rand` version 0.8]: <https://crates.io/crates/rand/0.8.6>
 
 // TODO:
 // There is a case to be made for having Shuttle offering a random number generation construct which is not modelled on
