@@ -2,6 +2,8 @@
 name = "determinizable_collections"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "Hash collections that can be switched between std and deterministic implementations via a feature flag"
 
 [features]
 deterministic = ["dep:deterministic_collections"]

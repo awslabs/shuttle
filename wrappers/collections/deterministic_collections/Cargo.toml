@@ -2,7 +2,9 @@
 name = "deterministic_collections"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "HashMap and HashSet with deterministic iteration order for reproducible testing"
 
 [dependencies]
 siphasher = "0.3"
-serde = { version = "*", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }

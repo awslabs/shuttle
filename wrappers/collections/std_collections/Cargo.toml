@@ -2,3 +2,5 @@
 name = "std_collections_reexport"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "Re-exports of std HashMap, HashSet, and DefaultHasher for use by determinizable_collections"
