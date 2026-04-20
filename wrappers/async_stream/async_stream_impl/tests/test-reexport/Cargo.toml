@@ -1,0 +1,10 @@
+[package]
+name = "test-reexport"
+version = "0.0.0"
+authors = []
+edition = "2021"
+publish = false
+
+[dependencies]
+reexporter = { path = "../reexporter" }
+futures-core = "0.3.8"

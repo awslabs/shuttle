@@ -1,0 +1,20 @@
+[package]
+name = "shuttle-async-stream-impl"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.65"
+license = "MIT"
+description = "Shuttle's internal implementation of the `async-stream` crate. Do not depend on this crate directly; use `shuttle-async-stream`."
+
+[dependencies]
+async-stream-impl = { version = "0.3" }
+futures-core = "0.3"
+pin-project-lite = "0.2"
+shuttle = { path = "../../../shuttle", version = "<0.10" }
+
+[dev-dependencies]
+futures-util = "0.3"
+rustversion = "1"
+trybuild = "1"
+tokio = { package = "shuttle-tokio-impl", path = "../../tokio/impls/tokio", version = "*", features = ["full"] }
+tokio-test = { package = "shuttle-tokio-test-impl", path = "../../tokio/impls/tokio-test", version = "*" }
