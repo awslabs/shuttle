@@ -1,6 +1,6 @@
 # Shuttle support for `parking_lot`
 
-This crate contains the wrapper that enables testing of [parking_lot](https://crates.io/crates/parking_lot) applications with Shuttle.
+This crate contains the wrapper that enables testing of applications that use [parking_lot](https://crates.io/crates/parking_lot) with Shuttle.
 
 ## How to use
 
