@@ -1,0 +1,12 @@
+[package]
+name = "determinizable_collections"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+deterministic = ["dep:deterministic_collections"]
+
+[dependencies]
+cfg-if = "1.0"
+deterministic_collections = { path = "./deterministic_collections", version = "0.1.0", optional = true }
+std_collections_reexport = { path = "./std_collections", version = "0.1.0"}
