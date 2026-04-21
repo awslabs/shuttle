@@ -1,0 +1,9 @@
+[package]
+name = "shuttle-sync-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of `std::sync` primitives. Do not depend on this crate directly; use `shuttle-sync`."
+
+[dependencies]
+shuttle = { path = "../../../shuttle", version = "0.9" }

@@ -2,9 +2,12 @@
 name = "shuttle-sync"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "sync wrapper for the Shuttle concurrency testing tool."
 
 [features]
-shuttle = [ "dep:shuttle" ]
+shuttle = [ "dep:shuttle-sync-inner" ]
 
 [dependencies]
-shuttle = { version = "*", path = "../../shuttle", optional = true }
+cfg-if = "1.0"
+shuttle-sync-inner = { path = "./shuttle_sync_inner", version = "0.1.0", optional = true }
