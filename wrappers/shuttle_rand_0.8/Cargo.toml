@@ -2,22 +2,25 @@
 name = "shuttle-rand"
 version = "0.8.6"
 edition = "2024"
+license = "Apache-2.0"
+description = "rand wrapper for the Shuttle concurrency testing tool."
 
 [features]
 shuttle = [ "dep:shuttle", "dep:shuttle-rand-inner" ]
 
-alloc = ["rand-orig/alloc", "shuttle-rand-inner/alloc"]
-default = [ "rand-orig/default", "shuttle-rand-inner/default" ]
-getrandom = [ "rand-orig/getrandom", "shuttle-rand-inner/getrandom" ]
-min_const_gen = [ "rand-orig/min_const_gen", "shuttle-rand-inner/min_const_gen" ]
-nightly = [ "rand-orig/nightly", "shuttle-rand-inner/nightly" ]
-serde1 = [ "rand-orig/serde1", "shuttle-rand-inner/serde1" ]
-small_rng = [ "rand-orig/small_rng", "shuttle-rand-inner/small_rng" ]
-std = [ "rand-orig/std", "shuttle-rand-inner/std" ]
-std_rng = [ "rand-orig/std_rng", "shuttle-rand-inner/std_rng" ]
+alloc = ["rand-orig/alloc", "shuttle-rand-inner?/alloc"]
+default = [ "rand-orig/default", "shuttle-rand-inner?/default" ]
+getrandom = [ "rand-orig/getrandom", "shuttle-rand-inner?/getrandom" ]
+log = [ "rand-orig/log", "shuttle-rand-inner?/log" ]
+min_const_gen = [ "rand-orig/min_const_gen", "shuttle-rand-inner?/min_const_gen" ]
+nightly = [ "rand-orig/nightly", "shuttle-rand-inner?/nightly" ]
+serde1 = [ "rand-orig/serde1", "shuttle-rand-inner?/serde1" ]
+small_rng = [ "rand-orig/small_rng", "shuttle-rand-inner?/small_rng" ]
+std = [ "rand-orig/std", "shuttle-rand-inner?/std" ]
+std_rng = [ "rand-orig/std_rng", "shuttle-rand-inner?/std_rng" ]
 
 [dependencies]
 cfg-if = "1.0"
 rand-orig = { package = "rand", version = "0.8.6" }
 shuttle-rand-inner = { package = "shuttle-rand_0_8-inner", path = "./shuttle_rand_inner", version = "0.1", optional = true }
-shuttle = { path = "../../shuttle", version = "*", optional = true }
+shuttle = { path = "../../shuttle", version = "0.9", optional = true }
