@@ -2,10 +2,13 @@
 name = "shuttle-rand_0_8-inner"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `rand` 0.8 crate. Do not depend on this crate directly; use `shuttle-rand`."
 
 [features]
 alloc = []
 default = []
+log = []
 getrandom = []
 min_const_gen = []
 nightly = []
@@ -15,7 +18,7 @@ std = []
 std_rng = []
 
 [dependencies]
-shuttle = { path = "../../../shuttle", version = "*"}
+shuttle = { path = "../../../shuttle", version = "0.9"}
 rand-orig = { package = "rand", version = "0.8.6" }
 
 
