@@ -1,0 +1,14 @@
+[package]
+name = "shuttle-tokio-retry-impl"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Shuttle's internal implementation of the `tokio-retry` crate. Do not depend on this crate directly; use `shuttle-tokio-retry`."
+
+[dependencies]
+rand = { package = "shuttle-rand", version = "0.8", path = "../../../shuttle_rand_0.8", features = ["shuttle"] }
+tokio = { package = "shuttle-tokio-impl", version = "0.1", path = "../tokio", features = ["time"] }
+pin-project = "1.0.5"
+
+[dev-dependencies]
+tokio = { package = "shuttle-tokio-impl", version = "0.1", path = "../tokio", features = ["full"] }
