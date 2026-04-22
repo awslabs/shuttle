@@ -46,7 +46,7 @@ impl Thread {
         thread::switch();
 
         ExecutionState::with(|s| {
-            s.get_mut(self.id.task_id).unpark();
+            s.unpark_task(self.id.task_id);
         });
     }
 }
@@ -97,7 +97,7 @@ impl<'scope> Scope<'scope, '_> {
                 finished.store(true, Ordering::Relaxed);
 
                 if self.num_running_threads.fetch_sub(1, Ordering::Relaxed) == 1 {
-                    ExecutionState::with(|s| s.get_mut(self.main_task).unblock());
+                    ExecutionState::with(|s| s.unblock_task(self.main_task));
                 }
 
                 ret
@@ -136,7 +136,10 @@ where
 
     if scope.num_running_threads.load(Ordering::Relaxed) != 0 {
         tracing::info!("thread blocked, waiting for completion of scoped threads");
-        ExecutionState::with(|s| s.current_mut().block(false));
+        ExecutionState::with(|s| {
+            let me = s.current().id();
+            s.block_task(me, false);
+        });
         thread::switch();
     }
 
@@ -251,7 +254,7 @@ pub(crate) fn thread_fn<F, T>(
     *result.lock().unwrap() = Some(Ok(ret));
     ExecutionState::with(|state| {
         if let Some(waiter) = state.current_mut().take_waiter() {
-            state.get_mut(waiter).unblock();
+            state.unblock_task(waiter);
         }
     });
 }
@@ -310,7 +313,7 @@ impl<T> JoinHandle<T> {
             let me = state.current().id();
             let target = state.get_mut(self.task_id);
             if target.set_waiter(me) {
-                state.current_mut().block(false);
+                state.block_task(me, false);
                 true
             } else {
                 false
@@ -369,7 +372,7 @@ pub fn current() -> Thread {
 
 /// Blocks unless or until the current thread's token is made available (may wake spuriously).
 pub fn park() {
-    let switch = ExecutionState::with(|s| s.current_mut().park());
+    let switch = ExecutionState::with(|s| s.park_current());
 
     // We only need to context switch if the park token was unavailable. If it was available, then
     // any execution reachable by context switching here would also be reachable by having not

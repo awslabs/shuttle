@@ -151,7 +151,10 @@ impl Condvar {
         drop(state);
 
         // TODO: Condvar::wait should allow for spurious wakeups.
-        ExecutionState::with(|s| s.current_mut().block(false));
+        ExecutionState::with(|s| {
+            let me = s.current().id();
+            s.block_task(me, false);
+        });
         thread::switch();
 
         // After the context switch, consume whichever signal that woke this thread
@@ -175,7 +178,7 @@ impl Condvar {
                                 // Make the task unrunnable if there are no pending signals that
                                 // could unblock it
                                 // TODO: Condvar::wait should allow for spurious wakeups.
-                                ExecutionState::with(|s| s.get_mut(*tid).block(false));
+                                ExecutionState::with(|s| s.block_task(*tid, false));
                             }
                         }
                     }
@@ -269,7 +272,7 @@ impl Condvar {
             }
 
             // Note: the task might have been unblocked by a previous signal
-            ExecutionState::with(|s| s.get_mut(*tid).unblock());
+            ExecutionState::with(|s| s.unblock_task(*tid));
         }
         state.next_epoch += 1;
 
@@ -290,7 +293,7 @@ impl Condvar {
             assert_ne!(*tid, me);
             *status = CondvarWaitStatus::Broadcast(current::clock());
             // Note: the task might have been unblocked by a previous signal
-            ExecutionState::with(|s| s.get_mut(*tid).unblock());
+            ExecutionState::with(|s| s.unblock_task(*tid));
         }
 
         drop(state);

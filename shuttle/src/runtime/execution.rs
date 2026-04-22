@@ -2,6 +2,7 @@ use crate::runtime::failure::{init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
+use crate::runtime::task::task_manager::TaskManager;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
@@ -287,7 +288,7 @@ impl Execution {
                 // Task finished
                 Ok(true) => {
                     crate::annotations::record_task_terminated();
-                    ExecutionState::with(|state| state.current_mut().finish());
+                    ExecutionState::with(|state| state.finish_current_task());
                 }
                 // Task yielded
                 Ok(false) => {
@@ -340,6 +341,9 @@ pub(crate) struct ExecutionState {
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
+
+    // Incrementally maintained view of which tasks are runnable
+    task_manager: TaskManager,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -389,6 +393,7 @@ impl ExecutionState {
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
+            task_manager: TaskManager::new(),
         }
     }
 
@@ -538,6 +543,8 @@ impl ExecutionState {
             );
             state.tasks.push(task);
 
+            state.task_manager.task_spawned(task_id, false);
+
             task_id
         });
         crate::annotations::record_task_created(task_id, false);
@@ -585,6 +592,8 @@ impl ExecutionState {
 
             state.tasks.push(task);
 
+            state.task_manager.task_spawned(task_id, false);
+
             task_id
         });
         crate::annotations::record_task_created(task_id, true);
@@ -630,6 +639,8 @@ impl ExecutionState {
                 state.current_mut().signature.new_child(caller),
             );
             state.tasks.push(task);
+
+            state.task_manager.task_spawned(task_id, false);
 
             task_id
         });
@@ -782,6 +793,73 @@ impl ExecutionState {
         self.in_cleanup
     }
 
+    /// Block a task and update the TaskManager.
+    pub(crate) fn block_task(&mut self, id: TaskId, allow_spurious_wakeups: bool) {
+        self.get_mut(id).block(allow_spurious_wakeups);
+        self.task_manager.task_blocked(id, allow_spurious_wakeups);
+    }
+
+    /// Unblock a task and update the TaskManager.
+    pub(crate) fn unblock_task(&mut self, id: TaskId) {
+        self.get_mut(id).unblock();
+        self.task_manager.task_unblocked(id);
+    }
+
+    /// Put the current task to sleep (unless already woken) and update the TaskManager.
+    pub(crate) fn sleep_current_unless_woken(&mut self) {
+        let tid = self.current().id();
+        let was_sleeping_before = self.current().sleeping();
+        self.current_mut().sleep_unless_woken();
+        let is_sleeping_after = self.current().sleeping();
+        // Only notify if the state actually changed to sleeping
+        if !was_sleeping_before && is_sleeping_after {
+            self.task_manager.task_sleeping(tid);
+        }
+    }
+
+    /// Park the current task and update the TaskManager. Returns true if the task blocked.
+    pub(crate) fn park_current(&mut self) -> bool {
+        let tid = self.current().id();
+        let did_block = self.current_mut().park();
+        if did_block {
+            self.task_manager.task_blocked(tid, true);
+        }
+        did_block
+    }
+
+    /// Unpark a task and update the TaskManager.
+    pub(crate) fn unpark_task(&mut self, id: TaskId) {
+        let was_parked = self.get(id).blocked() && self.get(id).can_spuriously_wakeup();
+        self.get_mut(id).unpark();
+        // Only notify TaskManager if the task actually transitioned to Runnable
+        if was_parked && self.get(id).runnable() {
+            self.task_manager.task_unblocked(id);
+        }
+    }
+
+    /// Wake a task (from a Waker) and update the TaskManager.
+    pub(crate) fn wake_task(&mut self, id: TaskId) {
+        let was_sleeping = self.get(id).sleeping();
+        self.get_mut(id).wake();
+        if was_sleeping {
+            // wake() calls unblock() when sleeping, transitioning to Runnable
+            self.task_manager.task_unblocked(id);
+        }
+    }
+
+    /// Abort (detach) a task and update the TaskManager.
+    pub(crate) fn abort_task(&mut self, id: TaskId) {
+        self.get_mut(id).abort();
+        self.task_manager.task_detached(id);
+    }
+
+    /// Finish the current task and update the TaskManager.
+    pub(crate) fn finish_current_task(&mut self) {
+        let tid = self.current().id();
+        self.current_mut().finish();
+        self.task_manager.task_finished(tid);
+    }
+
     pub(crate) fn context_switches() -> usize {
         Self::with(|state| state.context_switches)
     }
@@ -863,42 +941,18 @@ impl ExecutionState {
             MaxSteps::None => {}
         }
 
-        let mut unfinished_attached = false;
-        let mut all_runnable_detached = true;
-        let mut any_runnable = false;
-
-        for task in &self.tasks {
-            if task.finished() {
-                continue;
-            }
-            unfinished_attached |= !task.detached;
-            let is_runnable = task.runnable();
-            any_runnable |= is_runnable;
-
-            if is_runnable {
-                all_runnable_detached &= task.detached;
-                self.runnable_tasks.push(task as *const Task);
-            } else if task.can_spuriously_wakeup() {
-                // Some blocked tasks can be woken up spuriously, even though the condition the task is
-                // blocked on hasn't happened yet. We'll add such tasks to the list of runnable tasks, but
-                // they won't contribute to the check on `any_runnable`; if the only runnable tasks
-                // are ones that are waiting for a potential spurious wakeup, it should still be treated as
-                // a deadlock since there's no guarantee that spurious wakeups will ever occur.
-                self.runnable_tasks.push(task as *const Task);
-            }
-        }
-
-        // We should finish execution when either
-        // (1) There are no runnable tasks, or
-        // (2) All runnable tasks have been detached AND there are no unfinished attached tasks
-        // If there are some unfinished attached tasks and all runnable tasks are detached, we must
-        // run some detached task to give them a chance to unblock some unfinished attached task.
-        if !any_runnable || (!unfinished_attached && all_runnable_detached) {
+        // Use the TaskManager's persistent view instead of rescanning all tasks
+        if self.task_manager.should_finish() {
             self.next_task = ScheduledTask::Finished;
             return Ok(());
         }
 
         let is_yielding = std::mem::replace(&mut self.has_yielded, false);
+
+        // Resolve TaskIds from the TaskManager to &Task references for the scheduler
+        for &tid in self.task_manager.runnable_tasks() {
+            self.runnable_tasks.push(&self.tasks[tid.0] as *const Task);
+        }
 
         // Cast the slice of raw pointers to a slice of references in place to provide schedulers with a safe API
         //
@@ -940,6 +994,7 @@ impl ExecutionState {
             if task.blocked() {
                 assert!(task.can_spuriously_wakeup());
                 task.unblock();
+                self.task_manager.task_unblocked(tid);
             }
         }
 

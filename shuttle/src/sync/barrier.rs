@@ -133,7 +133,10 @@ impl Barrier {
         if state.waiters.len() < state.bound {
             trace!(waiters=?state.waiters, epoch=my_epoch, "blocked on barrier {:?}", self);
             drop(state);
-            ExecutionState::with(|s| s.current_mut().block(false));
+            ExecutionState::with(|s| {
+                let me = s.current().id();
+                s.block_task(me, false);
+            });
             thread::switch();
         } else {
             trace!(waiters=?state.waiters, epoch=my_epoch, "releasing waiters on barrier {:?}", self);
@@ -159,11 +162,15 @@ impl Barrier {
             let clock = state.clock.clone();
             ExecutionState::with(|s| {
                 // `waiters` includes the current task.
-                for tid in waiters {
+                // First update clocks, then unblock — separate steps to avoid
+                // borrow conflicts between get_mut and unblock_task.
+                for &tid in &waiters {
                     let t = s.get_mut(tid);
                     t.clock.increment(tid);
                     t.clock.update(&clock);
-                    t.unblock();
+                }
+                for tid in waiters {
+                    s.unblock_task(tid);
                 }
             });
             drop(state);

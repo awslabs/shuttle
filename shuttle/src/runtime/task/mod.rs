@@ -27,6 +27,7 @@ use tracing::{error_span, event, field, Level, Span};
 
 pub(crate) mod clock;
 pub(crate) mod labels;
+pub(crate) mod task_manager;
 pub(crate) mod waker;
 use waker::make_waker;
 
@@ -424,7 +425,7 @@ impl Task {
                 let waker = ExecutionState::with(|state| state.current_mut().waker());
                 let cx = &mut Context::from_waker(&waker);
                 while future.as_mut().poll(cx).is_pending() {
-                    ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
+                    ExecutionState::with(|state| state.sleep_current_unless_woken());
                     thread::switch();
                 }
             }),

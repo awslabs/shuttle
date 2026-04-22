@@ -266,12 +266,14 @@ impl BatchSemaphoreState {
                 assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
                 assert!(!waiter.has_permits.swap(true, Ordering::SeqCst));
                 ExecutionState::with(|s| {
-                    let task = s.get_mut(waiter.task_id);
-                    assert!(!task.finished());
-                    // The acquiry is causally dependent on the event
-                    // which released the acquired permits.
-                    task.clock.update(&clock);
-                    task.unblock();
+                    {
+                        let task = s.get_mut(waiter.task_id);
+                        assert!(!task.finished());
+                        // The acquiry is causally dependent on the event
+                        // which released the acquired permits.
+                        task.clock.update(&clock);
+                    }
+                    s.unblock_task(waiter.task_id);
                 });
                 let mut maybe_waker = waiter.waker.lock().unwrap();
                 if let Some(waker) = maybe_waker.take() {
@@ -420,7 +422,7 @@ impl BatchSemaphore {
             assert!(!waiter.has_permits.load(Ordering::SeqCst)); // sanity check
             ExecutionState::with(|exec_state| {
                 if !exec_state.in_cleanup() {
-                    exec_state.get_mut(waiter.task_id).unblock();
+                    exec_state.unblock_task(waiter.task_id);
                 }
             });
             let mut maybe_waker = waiter.waker.lock().unwrap();
@@ -491,7 +493,7 @@ impl BatchSemaphore {
                         // Block this waiter: it cannot succeed (there are not
                         // enough permits available); its `poll` would return
                         // without resolving.
-                        s.get_mut(waiter.task_id).block(false);
+                        s.block_task(waiter.task_id, false);
                     }
                 }
             });
@@ -606,9 +608,8 @@ impl BatchSemaphore {
                 for waiter in &mut state.waiters {
                     if waiter.num_permits <= num_available {
                         ExecutionState::with(|s| {
-                            let task = s.get_mut(waiter.task_id);
-                            assert!(!task.finished());
-                            task.unblock();
+                            assert!(!s.get(waiter.task_id).finished());
+                            s.unblock_task(waiter.task_id);
                         });
                         let maybe_waker = waiter.waker.lock().unwrap();
                         if let Some(waker) = maybe_waker.as_ref() {
