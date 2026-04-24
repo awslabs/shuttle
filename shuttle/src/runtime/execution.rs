@@ -153,7 +153,7 @@ impl Execution {
             );
 
                 // Run the test to completion
-                match self.run_to_competion(UNGRACEFUL_SHUTDOWN_CONFIG.get().immediately_return_on_panic) {
+                match self.run_to_completion(UNGRACEFUL_SHUTDOWN_CONFIG.get().immediately_return_on_panic) {
                     Ok(()) => {},
                     Err(e) => {
                         e.persist_failure(config);
@@ -243,7 +243,7 @@ impl Execution {
 
     /// Run the execution to completion.
     #[inline]
-    fn run_to_competion(&mut self, immediately_return_on_panic: bool) -> Result<(), StepError> {
+    fn run_to_completion(&mut self, immediately_return_on_panic: bool) -> Result<(), StepError> {
         loop {
             let next_step: Option<Rc<RefCell<PooledContinuation>>> = ExecutionState::with(|state| {
                 state.schedule()?;
