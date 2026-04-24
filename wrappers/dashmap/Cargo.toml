@@ -1,0 +1,21 @@
+[package]
+name = "shuttle-dashmap"
+version = "6.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "dashmap wrapper for the Shuttle concurrency testing tool."
+
+[features]
+shuttle = [ "dep:shuttle-dashmap-impl" ]
+
+arbitrary = [ "dashmap/arbitrary", "shuttle-dashmap-impl?/arbitrary" ]
+inline = [ "dashmap/inline", "shuttle-dashmap-impl?/inline" ]
+raw-api = [ "dashmap/raw-api", "shuttle-dashmap-impl?/raw-api" ]
+rayon = [ "dashmap/rayon", "shuttle-dashmap-impl?/rayon" ]
+serde = [ "dashmap/serde", "shuttle-dashmap-impl?/serde" ]
+typesize = [ "dashmap/typesize", "shuttle-dashmap-impl?/typesize" ]
+
+[dependencies]
+cfg-if = "1.0"
+dashmap = "6.1.0"
+shuttle-dashmap-impl = { path = "./dashmap_impl", version = "0.1.0", optional = true }
