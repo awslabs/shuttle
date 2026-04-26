@@ -481,9 +481,12 @@ impl Task {
         self.detached = true;
     }
 
+    /// Wake this task so the Wrapper future can observe the abort flag on its next poll.
     pub(crate) fn abort(&mut self) {
-        // TODO: Change into actually aborting
-        self.detach();
+        if self.finished() {
+            return;
+        }
+        self.wake();
     }
 
     pub(crate) fn waker(&self) -> Waker {
