@@ -1,0 +1,9 @@
+[package]
+name = "reexporter"
+version = "0.0.0"
+authors = []
+edition = "2021"
+publish = false
+
+[dependencies]
+async-stream = { package = "shuttle-async-stream-impl", path = "../.." }
