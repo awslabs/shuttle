@@ -34,6 +34,8 @@ jobs:
         run: rustup default beta
       - name: Install rustfmt
         run: rustup component add rustfmt
+      - name: Install Clippy
+        run: rustup component add clippy
       - name: clippy
         run: cargo clippy --all-targets -- -D clippy::all
       - name: "rustfmt --check"
