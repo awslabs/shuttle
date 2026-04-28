@@ -1,0 +1,19 @@
+[package]
+name = "shuttle-tokio-retry"
+version = "0.3.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "tokio-retry wrapper for the Shuttle concurrency testing tool."
+
+[lib]
+name = "shuttle_tokio_retry"
+path = "src/lib.rs"
+doctest = false
+
+[features]
+shuttle = [ "dep:shuttle-tokio-retry-impl" ]
+
+[dependencies]
+cfg-if = "1.0"
+tokio-retry-orig = { package = "tokio-retry", version = "0.3" }
+shuttle-tokio-retry-impl = { path = "../../impls/tokio-retry", version = "0.1", optional = true }
