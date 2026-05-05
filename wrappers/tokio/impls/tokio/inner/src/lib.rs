@@ -41,7 +41,7 @@ pub mod macros;
 #[doc(hidden)]
 pub fn default_shuttle_config() -> shuttle::Config {
     let mut config = shuttle::Config::new();
-    config.stack_size = 0x0008_0000;
+    config.stack_size = 0x000F_0000;
     config.max_steps = shuttle::MaxSteps::FailAfter(10_000_000);
     config
 }
@@ -50,7 +50,7 @@ pub fn default_shuttle_config() -> shuttle::Config {
 #[doc(hidden)]
 pub fn __default_shuttle_config() -> shuttle::Config {
     let mut config = shuttle::Config::new();
-    config.stack_size = 0x0008_0000;
+    config.stack_size = 0x000F_0000;
     config.max_steps = shuttle::MaxSteps::FailAfter(10_000_000);
     config
 }
