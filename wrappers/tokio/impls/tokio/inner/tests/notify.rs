@@ -300,3 +300,23 @@ fn notify_mpmc_no_deadlock() {
 fn notify_mpmc_deadlock() {
     notify_mpmc_channel_2_test(false);
 }
+
+// Regression test: `notify_one` must not panic when the `Notified` future is
+// dropped after the waiter's flag is set to NOTIFIED but before the internal
+// oneshot send completes. This race is reachable because the oneshot `Sender::send`
+// now yields before sending, allowing the woken task to run (and drop the receiver)
+// before the send. The fix is `let _ = waiter.tx.send(())` instead of `.unwrap()`.
+#[test]
+fn notify_one_drop_notified_before_send() {
+    check_dfs(|| {
+        future::block_on(async {
+            let notify = Arc::new(Notify::new());
+            let notify2 = notify.clone();
+            let handle = future::spawn(async move {
+                notify2.notified().await;
+            });
+            notify.notify_one();
+            handle.await.unwrap();
+        });
+    });
+}

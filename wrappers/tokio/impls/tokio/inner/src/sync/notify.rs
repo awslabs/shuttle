@@ -128,8 +128,6 @@ impl Notify {
     /// [`notified().await`] will complete immediately consuming the permit made
     /// available by this call to `notify_one()`.
     pub fn notify_one(&self) {
-        // Scheduling point precedes the visible notification operation
-        shuttle::thread::yield_now();
         let mut state = self.state.lock().unwrap();
         // Need to choose a waiter that is Pending
         let mut pending = Vec::with_capacity(state.waiters.len());
@@ -169,8 +167,6 @@ impl Notify {
     /// already registered waiters. Registering for notification is done by
     /// acquiring an instance of the `Notified` future via calling `notified()`.
     pub fn notify_waiters(&self) {
-        // Scheduling point precedes the visible notification operation
-        shuttle::thread::yield_now();
         let mut state = self.state.lock().unwrap();
         // Notify all waiters, including those not yet enabled
         let waiters = std::mem::take(&mut state.waiters);
