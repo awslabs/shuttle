@@ -303,20 +303,41 @@ fn notify_mpmc_deadlock() {
 
 // Regression test: `notify_one` must not panic when the `Notified` future is
 // dropped after the waiter's flag is set to NOTIFIED but before the internal
-// oneshot send completes. This race is reachable because the oneshot `Sender::send`
-// now yields before sending, allowing the woken task to run (and drop the receiver)
-// before the send. The fix is `let _ = waiter.tx.send(())` instead of `.unwrap()`.
+// oneshot send completes.
+//
+// The race:
+//   1. Spawned task polls `notified()`, enabling its waiter (flag = ENABLED).
+//   2. `handle.abort()` wakes the task so it is runnable for cancellation.
+//   3. `notify_one()` finds the ENABLED waiter, removes it, sets flag = NOTIFIED,
+//      then calls `tx.send()` which yields before the actual send.
+//   4. At that yield the DFS scheduler runs the aborted task, dropping the
+//      `Notified` future (and its oneshot receiver) while flag is already NOTIFIED.
+//   5. The send resumes and returns `Err` — `let _ =` handles it; `.unwrap()` panics.
 #[test]
 fn notify_one_drop_notified_before_send() {
     check_dfs(|| {
         future::block_on(async {
             let notify = Arc::new(Notify::new());
             let notify2 = notify.clone();
+
             let handle = future::spawn(async move {
                 notify2.notified().await;
             });
+
+            // Let the spawned task poll its Notified future, transitioning
+            // the waiter from INIT to ENABLED.
+            shuttle::future::yield_now().await;
+
+            // Abort the task — this wakes it so it is runnable for
+            // cancellation at the next scheduling point.
+            handle.abort();
+
+            // notify_one sets flag = NOTIFIED then yields inside tx.send().
+            // The DFS scheduler may run the aborted task at that yield,
+            // dropping the receiver before the send completes.
             notify.notify_one();
-            handle.await.unwrap();
+
+            let _ = handle.await;
         });
     });
 }
