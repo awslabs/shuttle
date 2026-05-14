@@ -71,9 +71,9 @@ impl<T> Sender<T> {
     /// not be sent.
     pub fn send(self, t: T) -> Result<(), T> {
         trace!("Sending message on oneshot {:p}", &self.0);
-        let send_result = self.0.send(t);
+        // Scheduling point precedes the visible send operation
         shuttle::thread::yield_now();
-        send_result
+        self.0.send(t)
     }
 
     /// Waits for the associated [`Receiver`] handle to close.
@@ -102,19 +102,20 @@ impl<T> Sender<T> {
 impl<T> Receiver<T> {
     /// Prevents the associated [`Sender`] handle from sending a value.
     pub fn close(&mut self) {
-        self.0.close();
+        // Scheduling point precedes the visible close operation
         shuttle::thread::yield_now();
+        self.0.close();
     }
 
     /// Attempts to receive a value.
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
-        let out = match self.0.try_recv() {
+        // Scheduling point precedes the visible receive operation
+        shuttle::thread::yield_now();
+        match self.0.try_recv() {
             Ok(Some(v)) => Ok(v),
             Ok(None) => Err(TryRecvError::Empty),
             Err(_) => Err(TryRecvError::Closed),
-        };
-        shuttle::thread::yield_now();
-        out
+        }
     }
 
     /// Blocking receive to call outside of asynchronous contexts.

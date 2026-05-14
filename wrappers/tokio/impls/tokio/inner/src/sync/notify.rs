@@ -151,9 +151,11 @@ impl Notify {
             state.pending = false;
             drop(state);
             trace!("notify_one for {:?} waking waiter {:?}", self, waiter.id);
-            // Must set flag before notifying waiter
+            // Must set flag before notifying waiter.
+            // The send may fail if the Notified future is dropped between the flag store
+            // and the send (the flag is already NOTIFIED, so the future already completed).
             waiter.flag.store(NOTIFIED, Ordering::SeqCst);
-            waiter.tx.send(()).unwrap();
+            let _ = waiter.tx.send(());
         }
     }
 
@@ -163,7 +165,7 @@ impl Notify {
     /// `notify_one()`, no permit is stored to be used by the next call to
     /// `notified().await`. The purpose of this method is to notify all
     /// already registered waiters. Registering for notification is done by
-    /// acquiring an instance of the `Notified` future via calling `notified()`.    
+    /// acquiring an instance of the `Notified` future via calling `notified()`.
     pub fn notify_waiters(&self) {
         let mut state = self.state.lock().unwrap();
         // Notify all waiters, including those not yet enabled
