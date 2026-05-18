@@ -1,12 +1,12 @@
-use crate::runtime::task::{Task, TaskId};
-use crate::scheduler::data::random::RandomDataSource;
-use crate::scheduler::data::DataSource;
-use crate::scheduler::{Schedule, Scheduler};
-use crate::seed_from_env;
 use rand::rngs::OsRng;
 use rand::seq::SliceRandom;
 use rand::{RngCore, SeedableRng};
 use rand_pcg::Pcg64Mcg;
+use shuttle_core::runtime::task::{Task, TaskId};
+use shuttle_core::scheduler::data::random::RandomDataSource;
+use shuttle_core::scheduler::data::DataSource;
+use shuttle_core::scheduler::{Schedule, Scheduler};
+use shuttle_core::seed_from_env;
 
 /// A scheduler that randomly chooses a runnable task at each context switch.
 ///
