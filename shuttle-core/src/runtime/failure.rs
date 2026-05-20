@@ -11,9 +11,9 @@ use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::Once;
 
+use crate::config::{Config, FailurePersistence};
 use crate::runtime::execution::{CurrentSchedule, ExecutionState};
 use crate::scheduler::serialization::serialize_schedule;
-use crate::{Config, FailurePersistence};
 
 // When we last persisted a schedule. Used so that we don't persist the same schedule twice.
 thread_local! {

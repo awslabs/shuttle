@@ -4,7 +4,7 @@ use crate::scheduler::data::DataSource;
 /// A `FixedDataSource` generates the same stream of non-determinism (from an underlying
 /// `RandomDataSource`) on every execution.
 #[derive(Debug)]
-pub(crate) struct FixedDataSource {
+pub struct FixedDataSource {
     seed: u64,
     data_source: RandomDataSource,
 }

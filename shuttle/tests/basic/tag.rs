@@ -249,7 +249,7 @@ impl Subscriber for RunnableSubscriber {
 
     fn event(&self, event: &Event<'_>) {
         let metadata = event.metadata();
-        if metadata.target() == "shuttle::runtime::execution" {
+        if metadata.target() == "shuttle_core::runtime::execution" {
             struct CheckRunnableSubscriber {
                 contained_task_id: bool,
             }

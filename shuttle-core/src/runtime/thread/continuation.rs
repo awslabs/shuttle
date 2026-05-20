@@ -1,5 +1,5 @@
+use crate::config::{ContinuationFunctionBehavior, UNGRACEFUL_SHUTDOWN_CONFIG};
 use crate::runtime::execution::ExecutionState;
-use crate::{ContinuationFunctionBehavior, UNGRACEFUL_SHUTDOWN_CONFIG};
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
@@ -12,7 +12,7 @@ use std::rc::Rc;
 use tracing::trace;
 
 scoped_thread_local! {
-    pub(crate) static CONTINUATION_POOL: ContinuationPool
+    pub static CONTINUATION_POOL: ContinuationPool
 }
 
 /// A continuation is a green thread that can be resumed and yielded at will. We use it to
@@ -21,11 +21,19 @@ scoped_thread_local! {
 /// For efficiency, we reuse continuations. The continuation can be provided a new function
 /// to run via `initialize`. A continuation is only reusable if the previous function it was
 /// executing completed.
-pub(crate) struct Continuation {
+pub struct Continuation {
     coroutine: Coroutine<ContinuationInput, ContinuationOutput, ContinuationOutput>,
     function: ContinuationFunction,
     state: ContinuationState,
     pub yielder: *const Yielder<ContinuationInput, ContinuationOutput>,
+}
+
+impl std::fmt::Debug for Continuation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Continuation")
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A cell to pass functions into continuations
@@ -40,14 +48,14 @@ unsafe impl Send for ContinuationFunction {}
 
 /// Inputs that we can pass to a continuation.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) enum ContinuationInput {
+pub enum ContinuationInput {
     Resume,
     Exit,
 }
 
 /// Outputs that a continuation can pass back to us
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) enum ContinuationOutput {
+pub enum ContinuationOutput {
     Yielded,
     Finished(*const Yielder<ContinuationInput, ContinuationOutput>),
     Exited,
@@ -205,9 +213,15 @@ impl Drop for Continuation {
 /// A `ContinuationPool` just holds on to old `Continuation`s that are reusable, and vends
 /// them back out again. This amortizes the cost of allocating continuations, which involve
 /// allocating new stacks (`mmap`), `mprotect`, etc.
-pub(crate) struct ContinuationPool {
+pub struct ContinuationPool {
     // invariant: if c is in this queue, c.reusable() == true
     continuations: Rc<RefCell<VecDeque<Continuation>>>,
+}
+
+impl std::fmt::Debug for ContinuationPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContinuationPool").finish_non_exhaustive()
+    }
 }
 
 impl ContinuationPool {
@@ -240,7 +254,7 @@ impl ContinuationPool {
 
 /// A thin wrapper around a `Continuation` that returns it to a `ContinuationPool`
 /// when dropped, but only if it's reusable.
-pub(crate) struct PooledContinuation {
+pub struct PooledContinuation {
     continuation: Option<Continuation>,
     queue: Rc<RefCell<VecDeque<Continuation>>>,
 }
@@ -328,7 +342,7 @@ unsafe impl Send for PooledContinuation {}
 /// operation `Y1`, it suffices to check that `Y1` commutes with all operations `Z` on the same resource,
 /// as operations on other resources should commute trivially.
 #[track_caller]
-pub(crate) fn switch() {
+pub fn switch() {
     crate::annotations::record_tick();
     trace!("switch from {}", Location::caller());
     if ExecutionState::maybe_yield() {
@@ -347,7 +361,7 @@ pub(crate) fn switch() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Config;
+    use crate::config::Config;
 
     #[test]
     fn reusable_continuation_drop() {

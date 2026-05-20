@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
-pub(crate) mod fixed;
-pub(crate) mod random;
+pub mod fixed;
+pub mod random;
 pub use random::RandomDataSource;
 
 /// A `DataSource` is an oracle for generating non-deterministic data to return to a task that asks

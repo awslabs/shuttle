@@ -5,9 +5,9 @@
 //!
 //! [`futures::executor`]: https://docs.rs/futures/0.3.13/futures/executor/index.html
 
-use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::TaskId;
-use crate::runtime::thread;
+use shuttle_core::runtime::execution::ExecutionState;
+use shuttle_core::runtime::task::TaskId;
+use shuttle_core::runtime::thread;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-pub mod batch_semaphore;
+pub use shuttle_core::future::batch_semaphore;
 
 fn spawn_inner<F>(fut: F, caller: &'static Location<'static>) -> JoinHandle<F::Output>
 where

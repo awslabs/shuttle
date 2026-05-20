@@ -9,29 +9,29 @@ mod vector_clock {
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct VectorClock {
-        pub(crate) time: SmallVec<[u32; DEFAULT_INLINE_TASKS]>,
+        pub time: SmallVec<[u32; DEFAULT_INLINE_TASKS]>,
     }
 
     impl VectorClock {
-        pub(crate) const fn new() -> Self {
+        pub const fn new() -> Self {
             Self {
                 time: SmallVec::new_const(),
             }
         }
 
         // Zero extend clock to accommodate `task_id` tasks.
-        pub(crate) fn extend(&mut self, task_id: TaskId) {
+        pub fn extend(&mut self, task_id: TaskId) {
             let num_new_tasks = 1 + task_id.0 - self.time.len();
             let clock: SmallVec<[_; DEFAULT_INLINE_TASKS]> = smallvec![0u32; num_new_tasks];
             self.time.extend_from_slice(&clock);
         }
 
-        pub(crate) fn increment(&mut self, task_id: TaskId) {
+        pub fn increment(&mut self, task_id: TaskId) {
             self.time[task_id.0] += 1;
         }
 
         // Update the clock of `self` with the clock from `other`
-        pub(crate) fn update(&mut self, other: &Self) {
+        pub fn update(&mut self, other: &Self) {
             let n1 = self.time.len();
             let n2 = other.time.len();
             for i in 0..n1.min(n2) {
@@ -107,19 +107,19 @@ mod vector_clock {
     pub struct VectorClock;
 
     impl VectorClock {
-        pub(crate) const fn new() -> Self {
+        pub const fn new() -> Self {
             Self
         }
 
-        pub(crate) fn extend(&mut self, _task_id: TaskId) {
+        pub fn extend(&mut self, _task_id: TaskId) {
             // No-op when vector clocks are disabled
         }
 
-        pub(crate) fn increment(&mut self, _task_id: TaskId) {
+        pub fn increment(&mut self, _task_id: TaskId) {
             // No-op when vector clocks are disabled
         }
 
-        pub(crate) fn update(&mut self, _other: &Self) {
+        pub fn update(&mut self, _other: &Self) {
             // No-op when vector clocks are disabled
         }
 

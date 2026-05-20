@@ -1,5 +1,5 @@
-//! Annotated schedules. When an execution is scheduled using the
-//! [`crate::scheduler::AnnotationScheduler`], Shuttle will produce a file that contains
+//! Annotated schedules. When an execution is scheduled using an
+//! `AnnotationScheduler`, Shuttle will produce a file that contains
 //! additional information about the execution, such as the kind of step that
 //! was taken (was a task created, were permits acquired from a semaphore, etc)
 //! as well as the task's vector clocks and thus any causal dependence between
@@ -27,11 +27,11 @@ cfg_if::cfg_if! {
         }
 
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-        pub(crate) struct ObjectId(usize);
+        pub struct ObjectId(usize);
 
-        pub(crate) const DUMMY_OBJECT_ID: ObjectId = ObjectId(usize::MAX);
+        pub const DUMMY_OBJECT_ID: ObjectId = ObjectId(usize::MAX);
 
-        pub(crate) const ANNOTATION_VERSION: usize = 0;
+        pub const ANNOTATION_VERSION: usize = 0;
 
         /// Information about a file path found in one or more backtraces in the
         /// annotated schedule. The path is stored in this type; instances of this
@@ -280,7 +280,7 @@ cfg_if::cfg_if! {
             .unwrap_or(DUMMY_OBJECT_ID)
         }
 
-        pub(crate) fn start_annotations() {
+        pub fn start_annotations() {
             ANNOTATION_STATE.with(|cell| {
                 let mut bw = cell.borrow_mut();
                 assert!(bw.is_none(), "annotations already started");
@@ -293,7 +293,7 @@ cfg_if::cfg_if! {
             });
         }
 
-        pub(crate) fn stop_annotations() {
+        pub fn stop_annotations() {
             ANNOTATION_STATE.with(|cell| {
                 let mut bw = cell.borrow_mut();
                 let state = bw.take().expect("annotations not started");
@@ -310,25 +310,25 @@ cfg_if::cfg_if! {
             });
         }
 
-        pub(crate) fn record_semaphore_created() -> ObjectId {
+        pub fn record_semaphore_created() -> ObjectId {
             let object_id = record_object();
             record_event(AnnotationEvent::SemaphoreCreated(object_id));
             object_id
         }
 
-        pub(crate) fn record_semaphore_closed(object_id: ObjectId) {
+        pub fn record_semaphore_closed(object_id: ObjectId) {
             record_event(AnnotationEvent::SemaphoreClosed(object_id));
         }
 
-        pub(crate) fn record_semaphore_acquire_fast(object_id: ObjectId, num_permits: usize) {
+        pub fn record_semaphore_acquire_fast(object_id: ObjectId, num_permits: usize) {
             record_event(AnnotationEvent::SemaphoreAcquireFast(object_id, num_permits));
         }
 
-        pub(crate) fn record_semaphore_acquire_blocked(object_id: ObjectId, num_permits: usize) {
+        pub fn record_semaphore_acquire_blocked(object_id: ObjectId, num_permits: usize) {
             record_event(AnnotationEvent::SemaphoreAcquireBlocked(object_id, num_permits));
         }
 
-        pub(crate) fn record_semaphore_acquire_unblocked(object_id: ObjectId, unblocked_task_id: TaskId, num_permits: usize) {
+        pub fn record_semaphore_acquire_unblocked(object_id: ObjectId, unblocked_task_id: TaskId, num_permits: usize) {
             record_event(AnnotationEvent::SemaphoreAcquireUnblocked(
                 object_id,
                 unblocked_task_id,
@@ -336,15 +336,15 @@ cfg_if::cfg_if! {
             ));
         }
 
-        pub(crate) fn record_semaphore_try_acquire(object_id: ObjectId, num_permits: usize, successful: bool) {
+        pub fn record_semaphore_try_acquire(object_id: ObjectId, num_permits: usize, successful: bool) {
             record_event(AnnotationEvent::SemaphoreTryAcquire(object_id, num_permits, successful));
         }
 
-        pub(crate) fn record_semaphore_release(object_id: ObjectId, num_permits: usize) {
+        pub fn record_semaphore_release(object_id: ObjectId, num_permits: usize) {
             record_event(AnnotationEvent::SemaphoreRelease(object_id, num_permits));
         }
 
-        pub(crate) fn record_task_created(task_id: TaskId, is_future: bool) {
+        pub fn record_task_created(task_id: TaskId, is_future: bool) {
             with_state(move |state| {
                 assert_eq!(state.tasks.len(), usize::from(task_id));
                 state.tasks.push(TaskInfo {
@@ -357,11 +357,11 @@ cfg_if::cfg_if! {
             record_event(AnnotationEvent::TaskCreated(task_id, is_future));
         }
 
-        pub(crate) fn record_task_terminated() {
+        pub fn record_task_terminated() {
             record_event(AnnotationEvent::TaskTerminated);
         }
 
-        pub(crate) fn record_name_for_object(object_id: ObjectId, name: Option<&str>, kind: Option<&str>) {
+        pub fn record_name_for_object(object_id: ObjectId, name: Option<&str>, kind: Option<&str>) {
             with_state(move |state| {
                 if let Some(object_info) = state.objects.get_mut(object_id.0) {
                     if name.is_some() {
@@ -374,7 +374,7 @@ cfg_if::cfg_if! {
             });
         }
 
-        pub(crate) fn record_name_for_task(task_id: TaskId, name: &crate::current::TaskName) {
+        pub fn record_name_for_task(task_id: TaskId, name: &crate::current::TaskName) {
             with_state(|state| {
                 if let Some(task_info) = state.tasks.get_mut(usize::from(task_id)) {
                     let name: &String = name.into();
@@ -383,11 +383,11 @@ cfg_if::cfg_if! {
             });
         }
 
-        pub(crate) fn record_random() {
+        pub fn record_random() {
             record_event(AnnotationEvent::Random);
         }
 
-        pub(crate) fn record_schedule(choice: TaskId, runnable_tasks: &[&Task]) {
+        pub fn record_schedule(choice: TaskId, runnable_tasks: &[&Task]) {
             with_state(|state| {
                 let choice_id_num = usize::from(choice);
                 state.tasks[choice_id_num].first_step = state.tasks[choice_id_num].first_step.min(state.events.len());
@@ -402,73 +402,73 @@ cfg_if::cfg_if! {
             });
         }
 
-        pub(crate) fn record_tick() {
+        pub fn record_tick() {
             record_event(AnnotationEvent::Tick);
         }
     } else {
         use crate::runtime::task::{Task, TaskId};
 
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub(crate) struct ObjectId;
+        pub struct ObjectId;
 
-        pub(crate) const DUMMY_OBJECT_ID: ObjectId = ObjectId;
-
-        #[inline(always)]
-        pub(crate) fn start_annotations() {}
+        pub const DUMMY_OBJECT_ID: ObjectId = ObjectId;
 
         #[inline(always)]
-        pub(crate) fn stop_annotations() {}
+        pub fn start_annotations() {}
 
         #[inline(always)]
-        pub(crate) fn record_semaphore_created() -> ObjectId {
+        pub fn stop_annotations() {}
+
+        #[inline(always)]
+        pub fn record_semaphore_created() -> ObjectId {
             DUMMY_OBJECT_ID
         }
 
         #[inline(always)]
-        pub(crate) fn record_semaphore_closed(_object_id: ObjectId) {}
+        pub fn record_semaphore_closed(_object_id: ObjectId) {}
 
         #[inline(always)]
-        pub(crate) fn record_semaphore_acquire_fast(_object_id: ObjectId, _num_permits: usize) {}
+        pub fn record_semaphore_acquire_fast(_object_id: ObjectId, _num_permits: usize) {}
 
         #[inline(always)]
-        pub(crate) fn record_semaphore_acquire_blocked(_object_id: ObjectId, _num_permits: usize) {}
+        pub fn record_semaphore_acquire_blocked(_object_id: ObjectId, _num_permits: usize) {}
 
         #[inline(always)]
-        pub(crate) fn record_semaphore_acquire_unblocked(_object_id: ObjectId, _unblocked_task_id: TaskId, _num_permits: usize) {}
+        pub fn record_semaphore_acquire_unblocked(_object_id: ObjectId, _unblocked_task_id: TaskId, _num_permits: usize) {}
 
         #[inline(always)]
-        pub(crate) fn record_semaphore_try_acquire(_object_id: ObjectId, _num_permits: usize, _successful: bool) {}
+        pub fn record_semaphore_try_acquire(_object_id: ObjectId, _num_permits: usize, _successful: bool) {}
 
         #[inline(always)]
-        pub(crate) fn record_semaphore_release(_object_id: ObjectId, _num_permits: usize) {}
+        pub fn record_semaphore_release(_object_id: ObjectId, _num_permits: usize) {}
 
         #[inline(always)]
-        pub(crate) fn record_task_created(_task_id: TaskId, _future: bool) {}
+        pub fn record_task_created(_task_id: TaskId, _future: bool) {}
 
         #[inline(always)]
-        pub(crate) fn record_task_terminated() {}
+        pub fn record_task_terminated() {}
 
         #[inline(always)]
-        pub(crate) fn record_name_for_object(_object_id: ObjectId, _name: Option<&str>, _kind: Option<&str>) {}
+        pub fn record_name_for_object(_object_id: ObjectId, _name: Option<&str>, _kind: Option<&str>) {}
 
         #[inline(always)]
-        pub(crate) fn record_name_for_task(_task_id: TaskId, _name: &crate::current::TaskName) {}
+        pub fn record_name_for_task(_task_id: TaskId, _name: &crate::current::TaskName) {}
 
         #[inline(always)]
-        pub(crate) fn record_random() {}
+        pub fn record_random() {}
 
         #[inline(always)]
-        pub(crate) fn record_schedule(_choice: TaskId, _runnable_tasks: &[&Task]) {}
+        pub fn record_schedule(_choice: TaskId, _runnable_tasks: &[&Task]) {}
 
         #[inline(always)]
-        pub(crate) fn record_tick() {}
+        pub fn record_tick() {}
     }
 }
 
 /// Trait to record information about shared objects, such as their name and
 /// type. See implementation in [`crate::future::batch_semaphore::BatchSemaphore`], which actually records the
 /// name into the schedule, other types should forward calls into their
-/// underlying primitive, as in [`crate::sync::Mutex`].
+/// underlying primitive, as in `shuttle::sync::Mutex`.
 pub trait WithName {
     /// Set the name and kind (full type path) of this object.
     fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self;

@@ -85,7 +85,7 @@ const SCHEDULE_MAGIC_V2: u8 = 0x91;
 
 const LINE_WIDTH: usize = 76;
 
-pub(crate) fn serialize_schedule(schedule: &Schedule) -> String {
+pub fn serialize_schedule(schedule: &Schedule) -> String {
     use self::varint::{space_needed, WriteVarInt};
 
     let &max_task_id = schedule
@@ -134,7 +134,7 @@ pub(crate) fn serialize_schedule(schedule: &Schedule) -> String {
     String::from_utf8(wrapped).unwrap()
 }
 
-pub(crate) fn deserialize_schedule(str: &str) -> Option<Schedule> {
+pub fn deserialize_schedule(str: &str) -> Option<Schedule> {
     use self::varint::ReadVarInt;
 
     let str: String = str.chars().filter(|c| !c.is_whitespace()).collect();
