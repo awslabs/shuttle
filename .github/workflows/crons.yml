@@ -42,8 +42,12 @@ jobs:
         run: cargo fmt --all -- --check
       - name: cargo doc
         run: cargo doc --no-deps
-      - name: cargo test release
-        run: cargo test --release
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: cargo nextest
+        run: cargo nextest run --release --workspace
+      - name: cargo test --doc
+        run: cargo test --release --doc --workspace
       - name: Notify failed build
         uses: jayqi/failed-build-issue-action@v1
         if: failure() 

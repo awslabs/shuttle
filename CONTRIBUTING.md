@@ -40,6 +40,15 @@ GitHub provides additional document on [forking a repository](https://help.githu
 [creating a pull request](https://help.github.com/articles/creating-a-pull-request/).
 
 
+## Running Tests
+CI uses [cargo-nextest](https://nexte.st) for test execution. Install it once with `cargo install cargo-nextest --locked`, then run the full suite the same way CI does:
+
+```bash
+cargo nextest run --release --workspace   # unit and integration tests
+cargo test --release --doc --workspace    # doctests (nextest does not run these)
+```
+
+
 ## Finding contributions to work on
 Looking at the existing issues is a great way to find something to contribute on. As our projects, by default, use the default GitHub issue labels (enhancement/bug/duplicate/help wanted/invalid/question/wontfix), looking at any 'help wanted' issues is a great place to start.
 
