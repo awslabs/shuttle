@@ -129,6 +129,10 @@ struct Shared<T> {
     /// Tracks the number of `Receiver` instances.
     ref_count_rx: AtomicUsize,
 
+    /// Tracks the number of `Sender` instances. The channel is marked
+    /// closed (and receivers notified) only when the last sender drops.
+    ref_count_tx: AtomicUsize,
+
     /// Notifies waiting receivers that the value changed.
     notify_rx: Notify,
 
@@ -268,6 +272,7 @@ pub fn channel<T>(init: T) -> (Sender<T>, Receiver<T>) {
         value: RwLock::new(init),
         state: AtomicState::new(),
         ref_count_rx: AtomicUsize::new(1),
+        ref_count_tx: AtomicUsize::new(1),
         notify_rx: Notify::new(),
         notify_tx: Notify::new(),
     });
@@ -976,10 +981,23 @@ impl<T> Sender<T> {
     }
 }
 
+impl<T> Clone for Sender<T> {
+    fn clone(&self) -> Self {
+        // Mirrors tokio's behaviour: cloning bumps the sender ref count so
+        // the channel only closes when the last sender drops.
+        self.shared.ref_count_tx.fetch_add(1, Ordering::SeqCst);
+        Self {
+            shared: self.shared.clone(),
+        }
+    }
+}
+
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        self.shared.state.set_closed();
-        self.shared.notify_rx.notify_waiters();
+        if 1 == self.shared.ref_count_tx.fetch_sub(1, Ordering::SeqCst) {
+            self.shared.state.set_closed();
+            self.shared.notify_rx.notify_waiters();
+        }
     }
 }
 
