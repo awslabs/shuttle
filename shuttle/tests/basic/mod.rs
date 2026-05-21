@@ -15,6 +15,7 @@ mod panic;
 mod pct;
 mod portfolio;
 mod replay;
+mod resource_signatures;
 mod rwlock;
 mod shrink;
 mod tag;

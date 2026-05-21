@@ -6,8 +6,8 @@ use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, 
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::sync::{ResourceSignature, ResourceType};
-use crate::thread::thread_fn;
+use crate::sync_types::{ResourceSignature, ResourceType};
+use crate::thread_support::thread_fn;
 use crate::{backtrace_enabled, Config, MaxSteps, UNGRACEFUL_SHUTDOWN_CONFIG};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
@@ -62,12 +62,12 @@ impl CurrentSchedule {
     }
 
     /// Return the number of steps in the schedule
-    pub(crate) fn len() -> usize {
+    pub fn len() -> usize {
         CURRENT_SCHEDULE.with(|cs| (*cs.current_schedule.borrow()).len())
     }
 
     /// Returns a clone of the inner schedule
-    pub(crate) fn get_schedule() -> Schedule {
+    pub fn get_schedule() -> Schedule {
         CURRENT_SCHEDULE.with(|cs| (*cs.current_schedule.borrow()).clone())
     }
 }
@@ -75,11 +75,11 @@ impl CurrentSchedule {
 thread_local! {
     #[allow(clippy::complexity)]
     #[allow(deprecated)]
-    pub(crate) static TASK_ID_TO_TAGS: RefCell<HashMap<TaskId, Arc<dyn Tag>>> = RefCell::new(HashMap::new());
+    pub static TASK_ID_TO_TAGS: RefCell<HashMap<TaskId, Arc<dyn Tag>>> = RefCell::new(HashMap::new());
 }
 
 thread_local! {
-    pub(crate) static LABELS: RefCell<HashMap<TaskId, Labels>> = RefCell::new(HashMap::new());
+    pub static LABELS: RefCell<HashMap<TaskId, Labels>> = RefCell::new(HashMap::new());
 }
 
 /// An `Execution` encapsulates a single run of a function under test against a chosen scheduler.
@@ -89,15 +89,21 @@ thread_local! {
 /// mutable state a test's tasks might need access to during execution (to block/unblock tasks,
 /// spawn new tasks, etc). The `Execution` makes this state available through the `EXECUTION_STATE`
 /// static variable, but clients get access to it by calling `ExecutionState::with`.
-pub(crate) struct Execution {
+pub struct Execution {
     scheduler: Rc<RefCell<dyn Scheduler>>,
     initial_schedule: Schedule,
+}
+
+impl std::fmt::Debug for Execution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Execution").finish_non_exhaustive()
+    }
 }
 
 impl Execution {
     /// Construct a new execution that will use the given scheduler. The execution should then be
     /// invoked via its `run` method, which takes as input the closure for task 0.
-    pub(crate) fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+    pub fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
         Self {
             scheduler,
             initial_schedule,
@@ -134,7 +140,7 @@ impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
     /// scheduler returns `None`, indicating the execution should not be explored any further.
-    pub(crate) fn run<F>(mut self, config: &Config, f: F, caller: &'static Location<'static>)
+    pub fn run<F>(mut self, config: &Config, f: F, caller: &'static Location<'static>)
     where
         F: FnOnce() + Send + 'static,
     {
@@ -309,7 +315,7 @@ impl Execution {
 /// `ExecutionState` contains the portion of a single execution's state that needs to be reachable
 /// from within a task's execution. It tracks which tasks exist and their states, as well as which
 /// tasks are pending spawn.
-pub(crate) struct ExecutionState {
+pub struct ExecutionState {
     pub config: Config,
     // invariant: tasks are never removed from this list
     tasks: SmallVec<[Task; DEFAULT_INLINE_TASKS]>,
@@ -322,7 +328,7 @@ pub(crate) struct ExecutionState {
     // the number of scheduling decisions made so far
     context_switches: usize,
     // the schedule length last time `reset_stop_bound()` was called
-    pub(crate) steps_reset_at: usize,
+    pub steps_reset_at: usize,
 
     // static values for the current execution
     storage: StorageMap,
@@ -335,11 +341,17 @@ pub(crate) struct ExecutionState {
     has_cleaned_up: bool,
 
     // The `Span` which the `ExecutionState` was created under. Will be the parent of all `Task` `Span`s
-    pub(crate) top_level_span: Span,
+    pub top_level_span: Span,
 
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
+}
+
+impl std::fmt::Debug for ExecutionState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExecutionState").finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -397,7 +409,7 @@ impl ExecutionState {
     /// blocked).
     #[inline]
     #[track_caller]
-    pub(crate) fn with<F, T>(f: F) -> T
+    pub fn with<F, T>(f: F) -> T
     where
         F: FnOnce(&mut ExecutionState) -> T,
     {
@@ -418,7 +430,7 @@ impl ExecutionState {
     /// if the current ExecutionState is already borrowed.
     #[inline]
     #[track_caller]
-    pub(crate) fn try_with<F, T>(f: F) -> Result<T, ExecutionStateBorrowError>
+    pub fn try_with<F, T>(f: F) -> Result<T, ExecutionStateBorrowError>
     where
         F: FnOnce(&mut ExecutionState) -> T,
     {
@@ -440,7 +452,7 @@ impl ExecutionState {
     }
 
     /// A shortcut to get the current task ID
-    pub(crate) fn me() -> TaskId {
+    pub fn me() -> TaskId {
         Self::with(|s| s.current().id())
     }
 
@@ -449,7 +461,7 @@ impl ExecutionState {
     /// detached tasks are truncated -- their remaining events will not be executed because the program itself
     /// has exited. This is relevant because it means that *exiting* a task can be a visible operation
     /// in that it affects which events are executed.
-    pub(crate) fn exit_current_truncates_execution(&self) -> bool {
+    pub fn exit_current_truncates_execution(&self) -> bool {
         // Strictly speaking, this is only true if there are other runnable detached tasks, but always making the main thread
         // exit a scheduling point is simpler conceptually
         if self.current().id() == TaskId::from(0) {
@@ -505,7 +517,7 @@ impl ExecutionState {
 
     // Note: `spawn_thread`, `spawn_main_thread`, and `spawn_future` share some similar logic.
     // Changes to one of these functions likely need to be propagated to the other two as well.
-    pub(crate) fn spawn_main_thread(
+    pub fn spawn_main_thread(
         f: Box<dyn FnOnce() + 'static>,
         stack_size: usize,
         caller: &'static Location<'static>,
@@ -548,7 +560,7 @@ impl ExecutionState {
     // Changes to one of these functions likely need to be propagated to the other two as well.
     /// Spawn a new task for a future. This doesn't create a yield point; the caller should do that
     /// if it wants to give the new task a chance to run immediately.
-    pub(crate) fn spawn_future<F>(
+    pub fn spawn_future<F>(
         future: F,
         stack_size: usize,
         name: Option<String>,
@@ -593,7 +605,7 @@ impl ExecutionState {
 
     // Note: `spawn_thread`, `spawn_main_thread`, and `spawn_future` share some similar logic.
     // Changes to one of these functions likely need to be propagated to the other two as well.
-    pub(crate) fn spawn_thread(
+    pub fn spawn_thread(
         f: Box<dyn FnOnce() + 'static>,
         stack_size: usize,
         name: Option<String>,
@@ -672,14 +684,14 @@ impl ExecutionState {
     }
 
     /// Determine whether the execution has finished.
-    pub(crate) fn is_finished(&self) -> bool {
+    pub fn is_finished(&self) -> bool {
         self.current_task == ScheduledTask::Stopped || self.current_task == ScheduledTask::Finished
     }
 
     /// Invoke the scheduler to decide which task to schedule next. Returns true if the chosen task
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
-    pub(crate) fn maybe_yield() -> bool {
+    pub fn maybe_yield() -> bool {
         Self::with(|state| {
             if std::thread::panicking() && !state.in_cleanup {
                 return true;
@@ -710,7 +722,7 @@ impl ExecutionState {
 
     /// Tell the scheduler that the next context switch is an explicit yield requested by the
     /// current task. Some schedulers use this as a hint to influence scheduling.
-    pub(crate) fn request_yield() {
+    pub fn request_yield() {
         Self::with(|state| {
             state.has_yielded = true;
         });
@@ -723,7 +735,7 @@ impl ExecutionState {
     /// panic triggered while someone held a Mutex, and so are executing the Drop handler for
     /// MutexGuard). This avoids calling back into the scheduler during a panic, because the state
     /// may be poisoned or otherwise invalid.
-    pub(crate) fn should_stop() -> bool {
+    pub fn should_stop() -> bool {
         std::thread::panicking()
             || Self::with(|s| {
                 assert_ne!(s.current_task, ScheduledTask::Finished);
@@ -734,7 +746,7 @@ impl ExecutionState {
     /// Generate some diagnostic information used when persisting failures.
     ///
     /// Because this method may be called from a panic hook, it must not panic.
-    pub(crate) fn failing_task() -> String {
+    pub fn failing_task() -> String {
         Self::try_with(|state| {
             if let Some(task) = state.try_current() {
                 task.name().unwrap_or_else(|| format!("task-{:?}", task.id().0))
@@ -747,84 +759,84 @@ impl ExecutionState {
 
     /// Generate a random u64 from the current scheduler and return it.
     #[inline]
-    pub(crate) fn next_u64() -> u64 {
+    pub fn next_u64() -> u64 {
         Self::with(|state| {
             CurrentSchedule::push_random();
             state.scheduler.borrow_mut().next_u64()
         })
     }
 
-    pub(crate) fn current(&self) -> &Task {
+    pub fn current(&self) -> &Task {
         self.get(self.current_task.id().unwrap())
     }
 
-    pub(crate) fn current_mut(&mut self) -> &mut Task {
+    pub fn current_mut(&mut self) -> &mut Task {
         self.get_mut(self.current_task.id().unwrap())
     }
 
-    pub(crate) fn try_current(&self) -> Option<&Task> {
+    pub fn try_current(&self) -> Option<&Task> {
         self.try_get(self.current_task.id()?)
     }
 
-    pub(crate) fn get(&self, id: TaskId) -> &Task {
+    pub fn get(&self, id: TaskId) -> &Task {
         self.try_get(id).unwrap()
     }
 
-    pub(crate) fn get_mut(&mut self, id: TaskId) -> &mut Task {
+    pub fn get_mut(&mut self, id: TaskId) -> &mut Task {
         self.tasks.get_mut(id.0).unwrap()
     }
 
-    pub(crate) fn try_get(&self, id: TaskId) -> Option<&Task> {
+    pub fn try_get(&self, id: TaskId) -> Option<&Task> {
         self.tasks.get(id.0)
     }
 
-    pub(crate) fn in_cleanup(&self) -> bool {
+    pub fn in_cleanup(&self) -> bool {
         self.in_cleanup
     }
 
-    pub(crate) fn context_switches() -> usize {
+    pub fn context_switches() -> usize {
         Self::with(|state| state.context_switches)
     }
 
     #[track_caller]
-    pub(crate) fn new_resource_signature(resource_type: ResourceType) -> ResourceSignature {
+    pub fn new_resource_signature(resource_type: ResourceType) -> ResourceSignature {
         ExecutionState::with(|s| s.current_mut().signature.new_resource(resource_type))
     }
 
-    pub(crate) fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
+    pub fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
         self.storage
             .get(key.into())
             .map(|result| result.expect("global storage is never destructed"))
     }
 
-    pub(crate) fn init_storage<K: Into<StorageKey>, T: 'static>(&mut self, key: K, value: T) {
+    pub fn init_storage<K: Into<StorageKey>, T: 'static>(&mut self, key: K, value: T) {
         self.storage.init(key.into(), value);
     }
 
-    pub(crate) fn get_clock(&self, id: TaskId) -> &VectorClock {
+    pub fn get_clock(&self, id: TaskId) -> &VectorClock {
         &self.tasks.get(id.0).unwrap().clock
     }
 
-    pub(crate) fn get_clock_mut(&mut self, id: TaskId) -> &mut VectorClock {
+    pub fn get_clock_mut(&mut self, id: TaskId) -> &mut VectorClock {
         &mut self.tasks.get_mut(id.0).unwrap().clock
     }
 
     /// Increment the current thread's clock entry and update its clock with the one provided.
-    pub(crate) fn update_clock(&mut self, clock: &VectorClock) {
+    pub fn update_clock(&mut self, clock: &VectorClock) {
         let task = self.current_mut();
         task.clock.increment(task.id);
         task.clock.update(clock);
     }
 
     /// Increment the current thread's clock and return a shared reference to it
-    pub(crate) fn increment_clock(&mut self) -> &VectorClock {
+    pub fn increment_clock(&mut self) -> &VectorClock {
         let task = self.current_mut();
         task.clock.increment(task.id);
         &task.clock
     }
 
     /// Increment the current thread's clock and return a mutable reference to it
-    pub(crate) fn increment_clock_mut(&mut self) -> &mut VectorClock {
+    pub fn increment_clock_mut(&mut self) -> &mut VectorClock {
         let task = self.current_mut();
         task.clock.increment(task.id);
         &mut task.clock
@@ -962,7 +974,7 @@ impl ExecutionState {
     // Sets the `tag` field of the current task.
     // Returns the `tag` which was there previously.
     #[allow(deprecated)]
-    pub(crate) fn set_tag_for_current_task(tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
+    pub fn set_tag_for_current_task(tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
         ExecutionState::with(|s| s.current_mut().set_tag(tag))
     }
 
@@ -972,12 +984,12 @@ impl ExecutionState {
     }
 
     #[allow(deprecated)]
-    pub(crate) fn get_tag_for_current_task() -> Option<Arc<dyn Tag>> {
+    pub fn get_tag_for_current_task() -> Option<Arc<dyn Tag>> {
         ExecutionState::with(|s| s.get_tag_or_default_for_current_task())
     }
 
     #[allow(deprecated)]
-    pub(crate) fn set_tag_for_task(task: TaskId, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
+    pub fn set_tag_for_task(task: TaskId, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
         ExecutionState::with(|s| s.get_mut(task).set_tag(tag))
     }
 }

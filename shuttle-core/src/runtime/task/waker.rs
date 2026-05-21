@@ -12,7 +12,7 @@ use std::task::{RawWaker, RawWakerVTable, Waker};
 // the task ID -- so all these safety requirements are trivial.
 
 /// Create a `Waker` that will make the given `task_id` runnable when invoked.
-pub(crate) fn make_waker(task_id: TaskId) -> Waker {
+pub fn make_waker(task_id: TaskId) -> Waker {
     // We stash the task ID into the bits of the `data` pointer that all the vtable method below
     // receive as an argument.
     let data = task_id.0 as *const ();

@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 
 /// A unique identifier for a storage slot
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct StorageKey(pub usize, pub usize); // (identifier, type)
+pub struct StorageKey(pub usize, pub usize); // (identifier, type)
 
 /// A map of storage values.
 ///
@@ -12,7 +12,7 @@ pub(crate) struct StorageKey(pub usize, pub usize); // (identifier, type)
 /// for TLS destructors to initialize new TLS slots. When a slot is destructed, its key is removed
 /// from `order` and its value is replaced with None.
 #[derive(Debug)]
-pub(crate) struct StorageMap {
+pub struct StorageMap {
     locals: HashMap<StorageKey, Option<Box<dyn Any>>>,
     order: VecDeque<StorageKey>,
 }
@@ -58,4 +58,4 @@ impl StorageMap {
 
 #[derive(Debug)]
 #[non_exhaustive]
-pub(crate) struct AlreadyDestructedError;
+pub struct AlreadyDestructedError;

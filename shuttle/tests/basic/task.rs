@@ -36,7 +36,7 @@ impl Subscriber for SignatureSubscriber {
 
     fn event(&self, event: &Event<'_>) {
         let metadata = event.metadata();
-        if metadata.target() == "shuttle::runtime::task" && metadata.level() == &tracing::Level::DEBUG {
+        if metadata.target() == "shuttle_core::runtime::task" && metadata.level() == &tracing::Level::DEBUG {
             struct SignatureVisitor {
                 task_id: Option<String>,
                 signature: Option<u64>,

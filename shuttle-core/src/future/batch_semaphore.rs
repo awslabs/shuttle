@@ -3,7 +3,7 @@ use crate::current;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{clock::VectorClock, TaskId};
 use crate::runtime::thread;
-use crate::sync::{ResourceSignature, ResourceType};
+use crate::sync_types::{ResourceSignature, ResourceType};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -335,7 +335,7 @@ impl BatchSemaphore {
         )
     }
 
-    pub(crate) fn new_with_signature(num_permits: usize, fairness: Fairness, signature: ResourceSignature) -> Self {
+    pub fn new_with_signature(num_permits: usize, fairness: Fairness, signature: ResourceSignature) -> Self {
         let state = RefCell::new(BatchSemaphoreState {
             id: Some(crate::annotations::record_semaphore_created()),
             waiters: VecDeque::new(),
@@ -359,7 +359,7 @@ impl BatchSemaphore {
         )
     }
 
-    pub(crate) const fn const_new_with_signature(
+    pub const fn const_new_with_signature(
         num_permits: usize,
         fairness: Fairness,
         signature: ResourceSignature,
@@ -846,54 +846,8 @@ impl crate::annotations::WithName for BatchSemaphore {
 }
 
 impl BatchSemaphore {
-    #[cfg(test)]
-    pub(crate) fn signature(&self) -> &ResourceSignature {
+    /// Returns a reference to this semaphore's resource signature.
+    pub fn signature(&self) -> &ResourceSignature {
         &self.signature
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unique_resource_signature_batch_semaphore() {
-        crate::check_random(
-            || {
-                let sem1 = BatchSemaphore::new(1, Fairness::Unfair);
-                let sem2 = BatchSemaphore::new(1, Fairness::Unfair);
-                assert_ne!(sem1.signature, sem2.signature);
-            },
-            1,
-        );
-    }
-
-    #[test]
-    fn batch_semaphore_signatures_consistent_across_shuttle_iterations() {
-        use std::collections::HashSet;
-        use std::sync::{Arc, Mutex};
-
-        let all_signatures = Arc::new(Mutex::new(HashSet::new()));
-        let all_signatures_clone = all_signatures.clone();
-
-        crate::check_random(
-            move || {
-                let sem1 = BatchSemaphore::new(1, Fairness::StrictlyFair);
-                let sem2 = BatchSemaphore::new(2, Fairness::Unfair);
-
-                all_signatures_clone
-                    .lock()
-                    .unwrap()
-                    .insert((sem1.available_permits(), sem1.signature().clone()));
-                all_signatures_clone
-                    .lock()
-                    .unwrap()
-                    .insert((sem2.available_permits(), sem2.signature().clone()));
-            },
-            10,
-        );
-
-        // Should have exactly 2 unique (signatures X permits available) across all iterations
-        assert_eq!(all_signatures.lock().unwrap().len(), 2);
     }
 }

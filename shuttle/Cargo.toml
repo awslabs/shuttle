@@ -10,6 +10,7 @@ categories = ["asynchronous", "concurrency", "development-tools::testing"]
 readme = "../README.md"
 
 [dependencies]
+shuttle-core = { path = "../shuttle-core" }
 assoc = "0.1.3"
 bitvec = "1.0.1"
 cfg-if = "1.0"
@@ -49,13 +50,13 @@ bench = false
 
 [features]
 default = []
-vector-clocks = []
-annotation = ["dep:serde", "dep:serde_json", "dep:regex"]
+vector-clocks = ["shuttle-core/vector-clocks"]
+annotation = ["shuttle-core/annotation", "dep:serde", "dep:serde_json", "dep:regex"]
 # The following feature overrides the `vector-clocks` feature. It SHOULD NOT be used in production.
 # Its purpose is solely to allow `cargo bench` to be run without vector clocks enabled, as they
 # are otherwise always enabled via a dev-dependency to ensure all *test* assertions utilizing vector
 # clocks behave correctly during testing
-bench-no-vector-clocks = []
+bench-no-vector-clocks = ["shuttle-core/bench-no-vector-clocks"]
 
 [[bench]]
 name = "lock"

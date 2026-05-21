@@ -5,7 +5,7 @@ use tracing::info;
 /// A `MetricsScheduler` wraps an inner `Scheduler` and collects metrics about the schedules it's
 /// generating.
 #[derive(Debug)]
-pub(crate) struct MetricsScheduler<S: ?Sized + Scheduler> {
+pub struct MetricsScheduler<S: ?Sized + Scheduler> {
     inner: Box<S>,
 
     iterations: usize,
@@ -28,7 +28,7 @@ pub(crate) struct MetricsScheduler<S: ?Sized + Scheduler> {
 
 impl<S: Scheduler> MetricsScheduler<S> {
     /// Create a new `MetricsScheduler` by wrapping the given `Scheduler` implementation.
-    pub(crate) fn new(inner: S) -> Self {
+    pub fn new(inner: S) -> Self {
         Self {
             inner: Box::new(inner),
 

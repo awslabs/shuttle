@@ -8,8 +8,8 @@ use crate::runtime::thread;
 use crate::runtime::thread::continuation::{
     ContinuationInput, ContinuationOutput, ContinuationPool, PooledContinuation,
 };
-use crate::sync::{ResourceSignature, ResourceType};
-use crate::thread::LocalKey;
+use crate::sync_types::{ResourceSignature, ResourceType};
+use crate::thread_support::LocalKey;
 use bitvec::prelude::*;
 use corosensei::Yielder;
 use std::any::Any;
@@ -25,9 +25,9 @@ use std::sync::Arc;
 use std::task::{Context, Waker};
 use tracing::{error_span, event, field, Level, Span};
 
-pub(crate) mod clock;
-pub(crate) mod labels;
-pub(crate) mod waker;
+pub mod clock;
+pub mod labels;
+pub mod waker;
 use waker::make_waker;
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
@@ -48,7 +48,7 @@ use waker::make_waker;
 //   Task, the executor resumes that task's continuation until it yields, which happens when its
 //   thread decides it might want to context switch (e.g., because it's blocked on a lock).
 
-pub(crate) const DEFAULT_INLINE_TASKS: usize = 16;
+pub const DEFAULT_INLINE_TASKS: usize = 16;
 
 /// A reserved label that is used to assign readable names to tasks for debugging.
 ///
@@ -99,9 +99,9 @@ impl<'a> From<&'a TaskName> for &'a String {
 ///
 /// # Example
 /// The following example shows how a `ChildLabelFn` can be used to set up names for the next child(ren)
-/// that will be spawned by a parent task.
-/// ```
-/// # use shuttle::current::{me, set_label_for_task, get_name_for_task, ChildLabelFn, TaskName};
+/// that will be spawned by a parent task (see `shuttle/tests/basic/labels.rs` for runnable versions).
+/// ```ignore
+/// # use shuttle_core::current::{me, set_label_for_task, get_name_for_task, ChildLabelFn, TaskName};
 /// # use std::sync::Arc;
 /// // In the parent, set up a `ChildLabelFn` that assigns a name to the child task
 /// shuttle::check_dfs(|| {
@@ -162,7 +162,7 @@ where
 /// by a u64 so that the details of how they are computed can be non-breaking changes in the future.
 /// Hashes are all pre-computed for fast checking of equality of signatures at runtime.
 #[derive(Debug, Clone)]
-pub(crate) struct TaskSignature {
+pub struct TaskSignature {
     /// The task creation stack is a tuple of (create location, number of tasks created at that location in the parent)
     task_creation_stack: Vec<(&'static Location<'static>, u32)>,
     spawn_call_site_hash: u64,
@@ -172,7 +172,7 @@ pub(crate) struct TaskSignature {
 }
 
 impl TaskSignature {
-    pub(crate) fn new_parentless(spawn_call_site: &'static Location<'static>) -> TaskSignature {
+    pub fn new_parentless(spawn_call_site: &'static Location<'static>) -> TaskSignature {
         let mut hasher = DefaultHasher::new();
         let task_creation_stack = vec![(spawn_call_site, 0)];
         task_creation_stack.hash(&mut hasher);
@@ -188,7 +188,7 @@ impl TaskSignature {
         }
     }
 
-    pub(crate) fn new_child(&mut self, spawn_call_site: &'static Location<'static>) -> Self {
+    pub fn new_child(&mut self, spawn_call_site: &'static Location<'static>) -> Self {
         let mut hasher = DefaultHasher::new();
         let counter = self
             .child_counters
@@ -213,7 +213,7 @@ impl TaskSignature {
     }
 
     #[track_caller]
-    pub(crate) fn new_resource(&mut self, resource_type: ResourceType) -> ResourceSignature {
+    pub fn new_resource(&mut self, resource_type: ResourceType) -> ResourceSignature {
         let static_create_location = Location::caller();
         let counter = self
             .child_counters
@@ -225,18 +225,18 @@ impl TaskSignature {
     }
 
     /// Hash of the static location within the source code where the task was spawned
-    pub(crate) fn static_create_location_hash(&self) -> u64 {
+    pub fn static_create_location_hash(&self) -> u64 {
         self.spawn_call_site_hash
     }
 
     /// Combined signature of the static location and dynamic context
     /// context where the task was spawned.
-    pub(crate) fn signature_hash(&self) -> u64 {
+    pub fn signature_hash(&self) -> u64 {
         self.signature_hash
     }
 
     /// Signature hash of the parent of this task
-    pub(crate) fn parent_signature_hash(&self) -> u64 {
+    pub fn parent_signature_hash(&self) -> u64 {
         self.parent_signature_hash
     }
 }
@@ -268,7 +268,7 @@ pub struct Task {
     pub(super) continuation: Rc<RefCell<PooledContinuation>>,
     pub(super) yielder: *const Yielder<ContinuationInput, ContinuationOutput>,
 
-    pub(crate) clock: VectorClock,
+    pub clock: VectorClock,
 
     waiter: Option<TaskId>,
 
@@ -282,7 +282,7 @@ pub struct Task {
 
     // The `Span` which looks like this: step{task=task_id}, or, if step count recording is enabled, like this:
     // step{task=task_id i=step_count}. Becomes the parent of the spans created by the `Task`.
-    pub(crate) step_span: Span,
+    pub step_span: Span,
 
     // The current `Span` "stack" of the `Task`.
     // `Span`s are stored such that the `Task`s current `Span` is at `span_stack[0]`, that `Span`s parent (if it exists)
@@ -302,12 +302,12 @@ pub struct Task {
 
     /// If [`crate::CAPTURE_BACKTRACE`] is set then this will be populated on task block.
     /// If the test then fails, then each task's backtrace will be printed.
-    pub(crate) backtrace: Option<Backtrace>,
+    pub backtrace: Option<Backtrace>,
 
     /// The signature of a Task; this is an identifier that is *not* guaranteed to be unique but should be *mostly*
     /// stable across iterations in a single Shuttle test. Tasks with the same signature are very likely to exhibit
     /// similar behavior
-    pub(crate) signature: TaskSignature,
+    pub signature: TaskSignature,
 }
 
 #[allow(deprecated)]
@@ -375,7 +375,7 @@ impl Task {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_closure(
+    pub fn from_closure(
         f: Box<dyn FnOnce() + 'static>,
         stack_size: usize,
         id: TaskId,
@@ -402,7 +402,7 @@ impl Task {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_future<F>(
+    pub fn from_future<F>(
         future: F,
         stack_size: usize,
         id: TaskId,
@@ -450,53 +450,53 @@ impl Task {
         self.parent_task_id
     }
 
-    pub(crate) fn runnable(&self) -> bool {
+    pub fn runnable(&self) -> bool {
         self.state == TaskState::Runnable
     }
 
-    pub(crate) fn blocked(&self) -> bool {
+    pub fn blocked(&self) -> bool {
         matches!(self.state, TaskState::Blocked { .. })
     }
 
-    pub(crate) fn can_spuriously_wakeup(&self) -> bool {
+    pub fn can_spuriously_wakeup(&self) -> bool {
         match self.state {
             TaskState::Blocked { allow_spurious_wakeups } => allow_spurious_wakeups,
             _ => false,
         }
     }
 
-    pub(crate) fn sleeping(&self) -> bool {
+    pub fn sleeping(&self) -> bool {
         self.state == TaskState::Sleeping
     }
 
-    pub(crate) fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         self.state == TaskState::Finished
     }
 
-    pub(crate) fn is_detached(&self) -> bool {
+    pub fn is_detached(&self) -> bool {
         self.detached
     }
 
-    pub(crate) fn detach(&mut self) {
+    pub fn detach(&mut self) {
         self.detached = true;
     }
 
     /// Wake this task so the Wrapper future can observe the abort flag on its next poll.
-    pub(crate) fn abort(&mut self) {
+    pub fn abort(&mut self) {
         if self.finished() {
             return;
         }
         self.wake();
     }
 
-    pub(crate) fn waker(&self) -> Waker {
+    pub fn waker(&self) -> Waker {
         self.waker.clone()
     }
 
     /// Block the current thread. If `allow_spurious_wakeups` is true, then the scheduler is
     /// permitted to spuriously wake up the thread (though it will still not count as a live thread
     /// for deadlock detection purposes for as long as it remains blocked).
-    pub(crate) fn block(&mut self, allow_spurious_wakeups: bool) {
+    pub fn block(&mut self, allow_spurious_wakeups: bool) {
         self.backtrace = if backtrace_enabled() {
             Some(Backtrace::force_capture())
         } else {
@@ -507,7 +507,7 @@ impl Task {
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
 
-    pub(crate) fn sleep(&mut self) {
+    pub fn sleep(&mut self) {
         self.backtrace = if backtrace_enabled() {
             Some(Backtrace::force_capture())
         } else {
@@ -518,7 +518,7 @@ impl Task {
         self.state = TaskState::Sleeping;
     }
 
-    pub(crate) fn unblock(&mut self) {
+    pub fn unblock(&mut self) {
         // Note we don't assert the task is blocked here. For example, a task invoking its own waker
         // will not be blocked when this is called.
         assert!(self.state != TaskState::Finished);
@@ -531,7 +531,7 @@ impl Task {
         self.park_state.blocked_in_park = false;
     }
 
-    pub(crate) fn finish(&mut self) {
+    pub fn finish(&mut self) {
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Finished;
     }
@@ -541,7 +541,7 @@ impl Task {
     ///
     /// A synchronous Task should never call this, because we want threads to be enabled-by-default
     /// to avoid bugs where Shuttle incorrectly omits a potential execution.
-    pub(crate) fn sleep_unless_woken(&mut self) {
+    pub fn sleep_unless_woken(&mut self) {
         let was_woken = std::mem::replace(&mut self.woken, false);
         if !was_woken {
             self.sleep();
@@ -560,7 +560,7 @@ impl Task {
     /// Register a waiter for this thread to terminate. Returns a boolean indicating whether the
     /// waiter should block or not. If false, this task has already finished, and so the waiter need
     /// not block.
-    pub(crate) fn set_waiter(&mut self, waiter: TaskId) -> bool {
+    pub fn set_waiter(&mut self, waiter: TaskId) -> bool {
         assert!(
             self.waiter.is_none() || self.waiter == Some(waiter),
             "Task cannot have more than one waiter"
@@ -573,11 +573,11 @@ impl Task {
         }
     }
 
-    pub(crate) fn take_waiter(&mut self) -> Option<TaskId> {
+    pub fn take_waiter(&mut self) -> Option<TaskId> {
         self.waiter.take()
     }
 
-    pub(crate) fn name(&self) -> Option<String> {
+    pub fn name(&self) -> Option<String> {
         self.name.clone()
     }
 
@@ -585,14 +585,14 @@ impl Task {
     ///
     /// Returns Some(Err(_)) if the slot has already been destructed. Returns None if the slot has
     /// not yet been initialized.
-    pub(crate) fn local<T: 'static>(&self, key: &'static LocalKey<T>) -> Option<Result<&T, AlreadyDestructedError>> {
+    pub fn local<T: 'static>(&self, key: &'static LocalKey<T>) -> Option<Result<&T, AlreadyDestructedError>> {
         self.local_storage.get(key.into())
     }
 
     /// Initialize the given thread-local storage slot with a new value.
     ///
     /// Panics if the slot has already been initialized.
-    pub(crate) fn init_local<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
+    pub fn init_local<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
         self.local_storage.init(key.into(), value)
     }
 
@@ -610,7 +610,7 @@ impl Task {
     ///    available to be popped on a future call to `pop_local`. To prevent an infinite loop, we
     ///    forbid *reinitializing* a TLS slot whose destructor has already run, or is currently
     ///    being run.
-    pub(crate) fn pop_local(&mut self) -> Option<Box<dyn Any>> {
+    pub fn pop_local(&mut self) -> Option<Box<dyn Any>> {
         self.local_storage.pop()
     }
 
@@ -619,7 +619,7 @@ impl Task {
     /// documentation for [`std::thread::park`], which says that "it may also return spuriously,
     /// without consuming the token"). Returns true if the execution should switch to a different
     /// task (e.g., if the token was unavailable).
-    pub(crate) fn park(&mut self) -> bool {
+    pub fn park(&mut self) -> bool {
         assert!(
             !self.park_state.blocked_in_park,
             "task cannot park while already parked"
@@ -637,7 +637,7 @@ impl Task {
     }
 
     /// Make the task's park token available, and unblock the task if it was parked.
-    pub(crate) fn unpark(&mut self) {
+    pub fn unpark(&mut self) {
         if self.park_state.blocked_in_park {
             assert!(
                 self.blocked() && self.can_spuriously_wakeup(),
@@ -656,18 +656,18 @@ impl Task {
         }
     }
 
-    pub(crate) fn get_tag(&self) -> Option<Arc<dyn Tag>> {
+    pub fn get_tag(&self) -> Option<Arc<dyn Tag>> {
         self.tag.clone()
     }
 
     /// Sets the `tag` field of the current task.
     /// Returns the `tag` which was there previously.
-    pub(crate) fn set_tag(&mut self, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
+    pub fn set_tag(&mut self, tag: Arc<dyn Tag>) -> Option<Arc<dyn Tag>> {
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().insert(self.id(), tag.clone()));
         self.tag.replace(tag)
     }
 
-    pub(crate) fn format_for_deadlock(&self) -> String {
+    pub fn format_for_deadlock(&self) -> String {
         use crate::backtrace_enabled;
         format!(
             "{} (task {:?}{}{}){}",
@@ -685,7 +685,7 @@ impl Task {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub(crate) enum TaskState {
+pub enum TaskState {
     /// Available to be scheduled
     Runnable,
     /// Blocked in a synchronization operation
@@ -697,7 +697,7 @@ pub(crate) enum TaskState {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
-pub(crate) struct ParkState {
+pub struct ParkState {
     /// Whether the task's park token is currently available. If it's available, then the next time
     /// the task calls `park`, the token will be atomically consumed and the task will continue
     /// executing. If it's not available, then the task will block until either another task makes
@@ -742,7 +742,7 @@ impl From<TaskId> for usize {
 
 /// A `TaskSet` is a set of `TaskId`s but implemented efficiently as a BitVec
 #[derive(PartialEq, Eq)]
-pub(crate) struct TaskSet {
+pub struct TaskSet {
     tasks: BitVec,
 }
 

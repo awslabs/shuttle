@@ -39,7 +39,7 @@ impl Subscriber for MetricsSubscriber {
     fn event(&self, event: &Event<'_>) {
         // If it's an event from the `MetricsScheduler` with an `iterations` counter, record it
         let metadata = event.metadata();
-        if metadata.target() == "shuttle::scheduler::metrics" {
+        if metadata.target() == "shuttle_core::scheduler::metrics" {
             struct FindIterationsVisitor(Option<u64>);
             impl Visit for FindIterationsVisitor {
                 fn record_debug(&mut self, _field: &Field, _value: &dyn std::fmt::Debug) {}
