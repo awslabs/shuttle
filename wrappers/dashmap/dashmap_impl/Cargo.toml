@@ -1,0 +1,21 @@
+[package]
+name = "shuttle-dashmap-impl"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Internal implementation of the `dashmap` crate for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-dashmap`."
+
+[dependencies]
+shuttle = { path = "../../../shuttle", version = "<0.10" }
+deterministic_collections = { path = "../../collections/deterministic_collections", version = "0.1.0" }
+
+[features]
+arbitrary = []
+inline = []
+raw-api = []
+rayon = []
+serde = []
+typesize = []
+
+[dev-dependencies]
+dashmap = "6.1.0"

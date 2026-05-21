@@ -20,6 +20,8 @@ members = [
     "wrappers/tokio/impls/tokio-retry",
     "wrappers/parking_lot",
     "wrappers/async_stream",
+    "wrappers/dashmap",
+    "wrappers/dashmap/dashmap_impl",
 ]
 
 resolver = "2"
