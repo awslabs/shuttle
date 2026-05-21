@@ -1,8 +1,8 @@
-use crate::runtime::task::{clock::VectorClock, Task, TaskId};
-use crate::scheduler::data::random::RandomDataSource;
-use crate::scheduler::data::DataSource;
-use crate::scheduler::serialization::deserialize_schedule;
-use crate::scheduler::{Schedule, ScheduleStep, Scheduler};
+use shuttle_core::runtime::task::{clock::VectorClock, Task, TaskId};
+use shuttle_core::scheduler::data::random::RandomDataSource;
+use shuttle_core::scheduler::data::DataSource;
+use shuttle_core::scheduler::serialization::deserialize_schedule;
+use shuttle_core::scheduler::{Schedule, ScheduleStep, Scheduler};
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;

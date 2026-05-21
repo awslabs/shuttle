@@ -1,0 +1,16 @@
+[package]
+name = "shuttle-schedulers"
+version = "0.1.0"
+edition = "2021"
+description = "Scheduler implementations for the Shuttle concurrency testing framework"
+license = "MIT"
+
+[dependencies]
+shuttle-core = { path = "../shuttle-core" }
+rand = "0.8.6"
+rand_pcg = "0.3.1"
+smallvec = { version = "1.11.2", features = ["const_new"] }
+tracing = { version = "0.1.36", default-features = false, features = ["std"] }
+
+[features]
+annotation = ["shuttle-core/annotation"]

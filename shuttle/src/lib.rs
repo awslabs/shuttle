@@ -205,10 +205,8 @@ pub use shuttle_core::{
 // Re-export constants
 pub use shuttle_core::{ANNOTATION_FILE, CAPTURE_BACKTRACE, SILENCE_WARNINGS};
 
-// Re-export internal helpers used by the scheduler impls in this crate
-#[cfg(feature = "annotation")]
-pub(crate) use shuttle_core::annotation_file;
-pub(crate) use shuttle_core::{seed_from_env, silence_warnings};
+// Re-export internal helpers used in this crate
+pub(crate) use shuttle_core::silence_warnings;
 
 /// Run the given function once under a round-robin concurrency scheduler.
 // TODO consider removing this -- round robin scheduling is never what you want.

@@ -1,7 +1,7 @@
-use crate::runtime::task::{Task, TaskId};
-use crate::scheduler::data::random::RandomDataSource;
-use crate::scheduler::data::DataSource;
-use crate::scheduler::{Schedule, Scheduler};
+use shuttle_core::runtime::task::{Task, TaskId};
+use shuttle_core::scheduler::data::random::RandomDataSource;
+use shuttle_core::scheduler::data::DataSource;
+use shuttle_core::scheduler::{Schedule, Scheduler};
 
 /// A round robin scheduler that chooses the next available runnable task at each context switch.
 #[derive(Debug)]

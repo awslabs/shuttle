@@ -1,5 +1,5 @@
-use crate::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
-use crate::scheduler::{Schedule, Scheduler};
+use shuttle_core::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
+use shuttle_core::scheduler::{Schedule, Scheduler};
 use smallvec::SmallVec;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

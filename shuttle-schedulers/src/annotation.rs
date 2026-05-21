@@ -1,6 +1,6 @@
-use crate::annotations::{record_random, record_schedule, start_annotations, stop_annotations};
-use crate::runtime::task::{Task, TaskId};
-use crate::scheduler::{Schedule, Scheduler};
+use shuttle_core::annotations::{record_random, record_schedule, start_annotations, stop_annotations};
+use shuttle_core::runtime::task::{Task, TaskId};
+use shuttle_core::scheduler::{Schedule, Scheduler};
 
 /// An `AnnotationScheduler` wraps an inner `Scheduler` and enables the
 /// creation of an annotated schedule (for use with Shuttle Explorer).

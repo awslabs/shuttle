@@ -1,7 +1,7 @@
-use crate::runtime::task::{Task, TaskId};
-use crate::scheduler::data::fixed::FixedDataSource;
-use crate::scheduler::data::DataSource;
-use crate::scheduler::{Schedule, Scheduler};
+use shuttle_core::runtime::task::{Task, TaskId};
+use shuttle_core::scheduler::data::fixed::FixedDataSource;
+use shuttle_core::scheduler::data::DataSource;
+use shuttle_core::scheduler::{Schedule, Scheduler};
 
 const DFS_RANDOM_SEED: u64 = 0x12345678;
 
