@@ -983,7 +983,7 @@ impl<T> Sender<T> {
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
-        // Mirrors tokio's behaviour: cloning bumps the sender ref count so
+        // Mirrors tokio's behavior: cloning bumps the sender ref count so
         // the channel only closes when the last sender drops.
         self.shared.ref_count_tx.fetch_add(1, Ordering::SeqCst);
         Self {
