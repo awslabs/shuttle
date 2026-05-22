@@ -1,0 +1,20 @@
+[package]
+name = "shuttle-sync-impl"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Shuttle implementations of std::sync primitives"
+repository = "https://github.com/awslabs/shuttle"
+
+[dependencies]
+shuttle-core = { path = "../shuttle-core" }
+assoc = "0.1.3"
+owo-colors = "4.3.0"
+smallvec = { version = "1.11.2", features = ["const_new"] }
+tracing = { version = "0.1.36", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+shuttle-schedulers = { path = "../shuttle-schedulers" }
+
+[features]
+default = []

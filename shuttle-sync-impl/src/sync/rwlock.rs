@@ -1,8 +1,8 @@
-use crate::future::batch_semaphore::{BatchSemaphore, Fairness};
-use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{TaskId, TaskSet};
-use crate::runtime::thread;
 use crate::sync::{ResourceSignature, ResourceType};
+use shuttle_core::future::batch_semaphore::{BatchSemaphore, Fairness};
+use shuttle_core::runtime::execution::ExecutionState;
+use shuttle_core::runtime::task::{TaskId, TaskSet};
+use shuttle_core::runtime::thread;
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn unique_resource_signature_rwlock() {
-        crate::check_random(
+        shuttle_schedulers::check_random(
             || {
                 let rwlock1 = RwLock::new(0);
                 let rwlock2 = RwLock::new(0);

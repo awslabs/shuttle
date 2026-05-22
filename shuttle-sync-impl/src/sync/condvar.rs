@@ -1,10 +1,10 @@
-use crate::current;
-use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::TaskId;
-use crate::runtime::thread;
 use crate::sync::{MutexGuard, ResourceSignature, ResourceType};
 use assoc::AssocExt;
+use shuttle_core::current;
+use shuttle_core::runtime::execution::ExecutionState;
+use shuttle_core::runtime::task::clock::VectorClock;
+use shuttle_core::runtime::task::TaskId;
+use shuttle_core::runtime::thread;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{LockResult, PoisonError};
@@ -319,13 +319,14 @@ impl WaitTimeoutResult {
         self.0
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn unique_resource_signature_condvar() {
-        crate::check_random(
+        shuttle_schedulers::check_random(
             || {
                 let condvar1 = Condvar::new();
                 let condvar2 = Condvar::new();

@@ -45,8 +45,8 @@
 //! and partial support for Relaxed orderings.
 //!
 //! To disable the warning printed about this issue, set the `SHUTTLE_SILENCE_WARNINGS` environment
-//! variable to any value, or set the [`silence_warnings`](crate::Config::silence_warnings) field of
-//! [`Config`](crate::Config) to true.
+//! variable to any value, or set the [`silence_warnings`](shuttle_core::Config::silence_warnings) field of
+//! [`Config`](shuttle_core::Config) to true.
 //!
 //! [Loom]: https://crates.io/crates/loom
 
@@ -59,11 +59,11 @@ pub use int::*;
 pub use ptr::AtomicPtr;
 pub use std::sync::atomic::Ordering;
 
-use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::clock::VectorClock;
-use crate::runtime::thread;
-use crate::silence_warnings;
 use crate::sync::{ResourceSignature, ResourceType};
+use shuttle_core::runtime::execution::ExecutionState;
+use shuttle_core::runtime::task::clock::VectorClock;
+use shuttle_core::runtime::thread;
+use shuttle_core::silence_warnings;
 use std::cell::RefCell;
 use std::panic::RefUnwindSafe;
 
@@ -287,13 +287,12 @@ mod tests {
 
     #[test]
     fn atomic_signatures_consistent_across_shuttle_iterations() {
-        use std::collections::HashSet;
         use std::sync::{Arc, Mutex};
 
         let all_signatures = Arc::new(Mutex::new(HashSet::new()));
         let all_signatures_clone = all_signatures.clone();
 
-        crate::check_random(
+        shuttle_schedulers::check_random(
             move || {
                 let atomic1 = AtomicBool::new(false);
                 let atomic2 = AtomicBool::new(true);

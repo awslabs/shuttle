@@ -1,10 +1,10 @@
 //! Multi-producer, single-consumer FIFO queue communication primitives.
 
-use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
-use crate::runtime::thread;
 use crate::sync::{ResourceSignature, ResourceType};
+use shuttle_core::runtime::execution::ExecutionState;
+use shuttle_core::runtime::task::clock::VectorClock;
+use shuttle_core::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
+use shuttle_core::runtime::thread;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn unique_resource_signature_mpsc() {
-        crate::check_random(
+        shuttle_schedulers::check_random(
             || {
                 let (sender1, _) = channel::<i32>();
                 let (sender2, _) = channel::<i32>();
