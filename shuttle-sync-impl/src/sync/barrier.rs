@@ -1,8 +1,8 @@
-use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::clock::VectorClock;
-use crate::runtime::task::TaskId;
-use crate::runtime::thread;
 use crate::sync::{ResourceSignature, ResourceType};
+use shuttle_core::runtime::execution::ExecutionState;
+use shuttle_core::runtime::task::clock::VectorClock;
+use shuttle_core::runtime::task::TaskId;
+use shuttle_core::runtime::thread;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn unique_resource_signature_barrier() {
-        crate::check_random(
+        shuttle_schedulers::check_random(
             || {
                 let barrier1 = Barrier::new(2);
                 let barrier2 = Barrier::new(2);

@@ -1,4 +1,5 @@
 mod annotation;
+mod check;
 mod dfs;
 mod pct;
 mod random;
@@ -8,6 +9,7 @@ mod uncontrolled_nondeterminism;
 mod urw;
 
 pub use annotation::AnnotationScheduler;
+pub use check::*;
 pub use dfs::DfsScheduler;
 pub use pct::PctScheduler;
 pub use random::RandomScheduler;

@@ -2,6 +2,7 @@
 members = [
     "shuttle-core",
     "shuttle-schedulers",
+    "shuttle-sync-impl",
     "shuttle",
     "wrappers/shuttle_rand_0.8",
     "wrappers/shuttle_sync",

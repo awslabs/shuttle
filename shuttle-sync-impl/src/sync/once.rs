@@ -1,7 +1,7 @@
-use crate::runtime::execution::ExecutionState;
-use crate::runtime::storage::StorageKey;
-use crate::runtime::task::clock::VectorClock;
 use crate::sync::{Mutex, ResourceSignature, ResourceType};
+use shuttle_core::runtime::execution::ExecutionState;
+use shuttle_core::runtime::storage::StorageKey;
+use shuttle_core::runtime::task::clock::VectorClock;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn unique_resource_signature_once() {
-        crate::check_random(
+        shuttle_schedulers::check_random(
             || {
                 let once1 = Once::new();
                 let once2 = Once::new();
