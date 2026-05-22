@@ -296,6 +296,17 @@ pub mod join_set {
         }
     }
 
+    impl<T> JoinSet<T> {
+        /// Mirrors `tokio::task::JoinSet::abort_all`: aborts every task in the
+        /// set. Already-completed tasks are unaffected; aborted tasks remain
+        /// in the set until their `JoinError` is consumed via `join_next`.
+        pub fn abort_all(&mut self) {
+            for jh in &self.inner {
+                jh.abort();
+            }
+        }
+    }
+
     impl<T: 'static> JoinSet<T> {
         /// Spawn the provided task on the `JoinSet`, returning an [`AbortHandle`]
         /// that can be used to remotely cancel the task.
