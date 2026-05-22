@@ -11,7 +11,7 @@ note: captured value is not `Send`
 9 |             shuttle::future::block_on(future::spawn(async { drop(rc) })).unwrap()
   |                                                                  ^^ has type `Rc<i32>` which is not `Send`
 note: required by a bound in `shuttle::future::spawn`
- --> src/future/mod.rs
+ --> $WORKSPACE/shuttle-std/src/future.rs
   |
   | pub fn spawn<F>(fut: F) -> JoinHandle<F::Output>
   |        ----- required by a bound in this function

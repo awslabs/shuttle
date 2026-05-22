@@ -1,3 +1,3 @@
 //! Shuttle's implementation of [`std::sync`].
 
-pub use shuttle_sync_impl::sync::*;
+pub use shuttle_std::sync::*;

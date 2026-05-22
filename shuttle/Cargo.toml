@@ -12,7 +12,7 @@ readme = "../README.md"
 [dependencies]
 shuttle-core = { path = "../shuttle-core" }
 shuttle-schedulers = { path = "../shuttle-schedulers" }
-shuttle-sync-impl = { path = "../shuttle-sync-impl" }
+shuttle-std = { path = "../shuttle-std" }
 bitvec = "1.0.1"
 cfg-if = "1.0"
 hex = "0.4.2"
