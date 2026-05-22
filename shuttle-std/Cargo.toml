@@ -3,7 +3,7 @@ name = "shuttle-std"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Shuttle implementations of std synchronization, threading, and async primitives"
+description = "Mirrors of std compatible with the Shuttle concurrency testing tool"
 repository = "https://github.com/awslabs/shuttle"
 
 [dependencies]
