@@ -256,11 +256,13 @@ mod tests {
         let atomic_i16 = AtomicI16::new(0);
         let atomic_i32 = AtomicI32::new(0);
         let atomic_i64 = AtomicI64::new(0);
+        let atomic_i128 = AtomicI128::new(0);
         let atomic_isize = AtomicIsize::new(0);
         let atomic_u8 = AtomicU8::new(0);
         let atomic_u16 = AtomicU16::new(0);
         let atomic_u32 = AtomicU32::new(0);
         let atomic_u64 = AtomicU64::new(0);
+        let atomic_u128 = AtomicU128::new(0);
         let atomic_usize = AtomicUsize::new(0);
         let atomic_bool = AtomicBool::new(false);
         let atomic_ptr = AtomicPtr::new(std::ptr::null_mut::<i32>());
@@ -271,18 +273,20 @@ mod tests {
             atomic_i16.signature(),
             atomic_i32.signature(),
             atomic_i64.signature(),
+            atomic_i128.signature(),
             atomic_isize.signature(),
             atomic_u8.signature(),
             atomic_u16.signature(),
             atomic_u32.signature(),
             atomic_u64.signature(),
+            atomic_u128.signature(),
             atomic_usize.signature(),
             atomic_bool.signature(),
             atomic_ptr.signature(),
         ]);
 
         // Check all signatures are unique
-        assert_eq!(signatures.len(), 12);
+        assert_eq!(signatures.len(), 14);
     }
 
     #[test]
