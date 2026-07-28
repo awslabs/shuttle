@@ -130,7 +130,7 @@ pub fn serialize_schedule(schedule: &Schedule) -> String {
 
     let serialized = hex::encode(buf);
     let lines = serialized.as_bytes().chunks(LINE_WIDTH).collect::<Vec<_>>();
-    let wrapped = lines.join(&[b'\n'][..]);
+    let wrapped = lines.join(&b'\n');
     String::from_utf8(wrapped).unwrap()
 }
 

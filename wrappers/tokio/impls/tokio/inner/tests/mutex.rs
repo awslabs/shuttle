@@ -110,7 +110,7 @@ async fn owned_mutex_increment(num_locks: usize, mut locks: Vec<Vec<usize>>) -> 
         h.await.unwrap();
     }
     let mut values = Vec::new();
-    for (_, n) in map.iter() {
+    for n in map.values() {
         let v = n.lock().await.0;
         values.push(v);
     }
