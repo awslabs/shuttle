@@ -5,6 +5,9 @@
 //! architecture, but it means shuttle's scheduler can observe and control
 //! contention between any two concurrent operations.
 //!
+//! `DashSet` mirrors real dashmap's design as a thin wrapper around
+//! `DashMap<K, ()>` (see [`DashSet`]).
+//!
 //! # Key cloning
 //!
 //! DashMap's API returns guard types (`Ref`, `RefMut`) that hold a lock while
@@ -32,6 +35,10 @@ use deterministic_collections::HashMap;
 use shuttle::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::borrow::Borrow;
 use std::hash::Hash;
+
+mod set;
+
+pub use set::DashSet;
 
 // ── DashMap ──────────────────────────────────────────────────────
 
@@ -698,6 +705,20 @@ pub mod mapref {
     pub mod multiple {
         pub use crate::{RefMulti, RefMutMulti};
     }
+}
+
+pub mod setref {
+    pub mod one {
+        pub use crate::set::Ref;
+    }
+
+    pub mod multiple {
+        pub use crate::set::RefMulti;
+    }
+}
+
+pub mod iter_set {
+    pub use crate::set::{Iter, OwningIter};
 }
 
 pub mod try_result {
