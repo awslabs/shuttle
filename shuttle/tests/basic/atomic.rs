@@ -334,11 +334,13 @@ int_tests!(int_i8, AtomicI8);
 int_tests!(int_i16, AtomicI16);
 int_tests!(int_i32, AtomicI32);
 int_tests!(int_i64, AtomicI64);
+int_tests!(int_i128, AtomicI128);
 int_tests!(int_isize, AtomicIsize);
 int_tests!(int_u8, AtomicU8);
 int_tests!(int_u16, AtomicU16);
 int_tests!(int_u32, AtomicU32);
 int_tests!(int_u64, AtomicU64);
+int_tests!(int_u128, AtomicU128);
 int_tests!(int_usize, AtomicUsize);
 
 mod bool {
