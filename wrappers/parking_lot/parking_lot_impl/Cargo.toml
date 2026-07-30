@@ -6,14 +6,20 @@ license = "Apache-2.0"
 description = "Internal implementation of the `parking_lot` crate for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-parking_lot`."
 
 [features]
-arc_lock = []
+# Enable `Arc`-based lock guards (`lock_arc`, `read_arc`, `write_arc`, ...). Forwarded to `lock_api`.
+arc_lock = ["lock_api/arc_lock"]
+# `serde`/`owning_ref`/`nightly` are forwarded to `lock_api`, matching `parking_lot`'s feature set.
+serde = ["lock_api/serde"]
+owning_ref = ["lock_api/owning_ref"]
+nightly = ["lock_api/nightly"]
+# `send_guard` makes lock guards `Send` (when the data allows), mirroring `parking_lot`; see the
+# `GuardMarker` impls in mutex.rs/rwlock.rs. The remaining two features concern the native
+# `parking_lot_core` backend, which Shuttle replaces entirely, so they have no effect here.
+send_guard = []
 deadlock_detection = []
 hardware-lock-elision = []
-nightly = []
-owning_ref = []
-send_guard = []
-serde = []
 
 [dependencies]
 shuttle = { path = "../../../shuttle", version = "<0.10"}
+lock_api = "0.4"
 tracing = { version = "0.1.36", default-features = false, features = ["std"] }

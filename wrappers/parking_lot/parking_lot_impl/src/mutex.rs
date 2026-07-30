@@ -1,146 +1,100 @@
-//! An asynchronous mutual exclusion primitive.
+//! The user-facing `Mutex` types, mirroring [`parking_lot`]'s `mutex` module.
+//!
+//! These are the generic [`lock_api`] `Mutex` types specialised to Shuttle's
+//! [`RawMutex`](crate::RawMutex). The `Arc`-based [`ArcMutexGuard`](lock_api::ArcMutexGuard)
+//! is re-exported from the crate root (see `lib.rs`), matching `parking_lot`.
+//!
+//! [`parking_lot`]: <https://crates.io/crates/parking_lot>
 
-// This implementation is adapted from the one in shuttle-tokio
+use crate::raw_mutex::RawMutex;
 
-use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness, TryAcquireError};
-use std::cell::UnsafeCell;
-use std::error::Error;
-use std::fmt::{self, Debug, Display};
-use std::ops::{Deref, DerefMut};
-use std::thread;
-use tracing::trace;
+/// A mutual exclusion primitive, backed by Shuttle. Mirrors `parking_lot::Mutex`.
+pub type Mutex<T> = lock_api::Mutex<RawMutex, T>;
 
-/// An asynchronous mutex
-pub struct Mutex<T: ?Sized> {
-    semaphore: BatchSemaphore,
-    inner: UnsafeCell<T>,
+/// An RAII scoped lock guard for a [`Mutex`]. Mirrors `parking_lot::MutexGuard`.
+pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
+
+/// An RAII mutex guard returned by `MutexGuard::map`. Mirrors `parking_lot::MappedMutexGuard`.
+pub type MappedMutexGuard<'a, T> = lock_api::MappedMutexGuard<'a, RawMutex, T>;
+
+/// Creates a new mutex in an unlocked state ready for use.
+///
+/// This allows creating a mutex in a constant context on stable Rust. Mirrors
+/// `parking_lot::const_mutex`.
+pub const fn const_mutex<T>(val: T) -> Mutex<T> {
+    Mutex::const_new(<RawMutex as lock_api::RawMutex>::INIT, val)
 }
 
-/// A handle to a held `Mutex`. The guard can be held across any `.await` point
-/// as it is [`Send`].
-pub struct MutexGuard<'a, T: ?Sized> {
-    mutex: &'a Mutex<T>,
-}
+#[cfg(test)]
+mod tests {
+    use super::Mutex;
+    use shuttle::{check_dfs, thread};
+    use std::sync::Arc;
 
-impl<T: ?Sized + Display> Display for MutexGuard<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Display::fmt(&**self, f)
-    }
-}
-
-/// Error returned from the [`Mutex::try_lock`], `RwLock::try_read` and
-/// `RwLock::try_write` functions.
-#[derive(Debug)]
-pub struct TryLockError(pub(super) ());
-
-impl Display for TryLockError {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "operation would block")
-    }
-}
-
-impl Error for TryLockError {}
-
-// As long as T: Send, it's fine to send and share Mutex<T> between threads.
-// If T was not Send, sending and sharing a Mutex<T> would be bad, since you can
-// access T through Mutex<T>.
-unsafe impl<T> Send for Mutex<T> where T: ?Sized + Send {}
-unsafe impl<T> Sync for Mutex<T> where T: ?Sized + Send {}
-unsafe impl<T> Sync for MutexGuard<'_, T> where T: ?Sized + Send + Sync {}
-
-impl<T> Mutex<T> {
-    /// Creates a new lock in an unlocked state ready for use.
-    pub const fn new(t: T) -> Self {
-        Self {
-            semaphore: BatchSemaphore::const_new(1, Fairness::StrictlyFair),
-            inner: UnsafeCell::new(t),
-        }
+    #[test]
+    fn smoke() {
+        check_dfs(
+            || {
+                let m = Mutex::new(0);
+                *m.lock() += 1;
+                assert_eq!(*m.lock(), 1);
+            },
+            None,
+        );
     }
 
-    /// Consumes the mutex, returning the underlying data.
-    pub fn into_inner(self) -> T {
-        self.inner.into_inner()
-    }
-}
-
-impl<T: ?Sized> Mutex<T> {
-    fn acquire(&self) {
-        trace!("acquiring parking_lot lock {:p}", self);
-        self.semaphore.acquire_blocking(1).unwrap_or_else(|_| {
-            // The semaphore was closed. but, we never explicitly close it, and
-            // we own it exclusively, which means that this can never happen.
-            if !thread::panicking() {
-                unreachable!()
-            }
-        });
-        trace!("acquired parking_lot lock {:p}", self);
+    #[test]
+    fn try_lock_contended() {
+        check_dfs(
+            || {
+                let m = Arc::new(Mutex::new(()));
+                let _g = m.lock();
+                // Held by the current task, so a non-blocking try must fail.
+                assert!(m.try_lock().is_none());
+            },
+            None,
+        );
     }
 
-    /// Acquires a mutex, blocking the current thread until it is able to do so.
-    pub fn lock(&self) -> MutexGuard<'_, T> {
-        self.acquire();
-
-        MutexGuard { mutex: self }
+    #[test]
+    fn mutex_no_lost_updates() {
+        check_dfs(
+            || {
+                let m = Arc::new(Mutex::new(0usize));
+                let m2 = m.clone();
+                let t = thread::spawn(move || {
+                    *m2.lock() += 1;
+                });
+                *m.lock() += 1;
+                t.join().unwrap();
+                // Both increments must be observed; a broken `unlock` or missing exclusion would
+                // let the two read-modify-write sequences interleave and drop one update.
+                assert_eq!(*m.lock(), 2);
+            },
+            None,
+        );
     }
 
-    fn try_acquire(&self) -> Result<(), TryAcquireError> {
-        self.semaphore.try_acquire(1)
-    }
-
-    /// Attempts to acquire this lock.
-    pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
-        match self.try_acquire() {
-            Ok(()) => Some(MutexGuard { mutex: self }),
-            Err(_) => None,
-        }
-    }
-}
-
-impl<T: ?Sized + Debug> Debug for Mutex<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // SAFETY: Shuttle is running single-threaded, only we are able to access `inner` at the time of this call.
-        Debug::fmt(&unsafe { &*self.inner.get() }, f)
-    }
-}
-
-impl<T: ?Sized> Deref for MutexGuard<'_, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*self.mutex.inner.get() }
-    }
-}
-
-impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *self.mutex.inner.get() }
-    }
-}
-
-impl<T: ?Sized> Drop for MutexGuard<'_, T> {
-    fn drop(&mut self) {
-        trace!("releasing lock {:p}", self);
-        self.mutex.semaphore.release(1);
-    }
-}
-
-impl<T: ?Sized + Debug> Debug for MutexGuard<'_, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&self.mutex, f)
-    }
-}
-
-impl<T> From<T> for Mutex<T> {
-    fn from(s: T) -> Self {
-        Self::new(s)
-    }
-}
-
-impl<T> Default for Mutex<T>
-where
-    T: Default,
-{
-    fn default() -> Self {
-        Self::new(T::default())
+    #[cfg(feature = "arc_lock")]
+    #[test]
+    fn arc_guard_mutual_exclusion() {
+        check_dfs(
+            || {
+                let m = Arc::new(Mutex::new(0usize));
+                let m2 = m.clone();
+                let t = thread::spawn(move || {
+                    // `lock_arc` returns an owned guard with no lifetime tied to `m2`.
+                    let mut g = m2.lock_arc();
+                    *g += 1;
+                });
+                {
+                    let mut g = m.lock_arc();
+                    *g += 1;
+                }
+                t.join().unwrap();
+                assert_eq!(*m.lock(), 2);
+            },
+            None,
+        );
     }
 }
