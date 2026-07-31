@@ -3,7 +3,7 @@ name = "shuttle-schedulers"
 version = "0.1.0"
 edition = "2021"
 description = "Scheduler implementations for the Shuttle concurrency testing framework"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 shuttle-core = { path = "../shuttle-core" }
