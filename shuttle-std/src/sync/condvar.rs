@@ -1,10 +1,10 @@
 use crate::sync::{MutexGuard, ResourceSignature, ResourceType};
 use assoc::AssocExt;
-use shuttle_core::current;
-use shuttle_core::runtime::execution::ExecutionState;
-use shuttle_core::runtime::task::clock::VectorClock;
-use shuttle_core::runtime::task::TaskId;
-use shuttle_core::runtime::thread;
+use shuttle_runtime::current;
+use shuttle_runtime::runtime::execution::ExecutionState;
+use shuttle_runtime::runtime::task::clock::VectorClock;
+use shuttle_runtime::runtime::task::TaskId;
+use shuttle_runtime::runtime::thread;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{LockResult, PoisonError};

@@ -101,7 +101,7 @@ impl<'a> From<&'a TaskName> for &'a String {
 /// The following example shows how a `ChildLabelFn` can be used to set up names for the next child(ren)
 /// that will be spawned by a parent task (see `shuttle/tests/basic/labels.rs` for runnable versions).
 /// ```ignore
-/// # use shuttle_core::current::{me, set_label_for_task, get_name_for_task, ChildLabelFn, TaskName};
+/// # use shuttle_runtime::current::{me, set_label_for_task, get_name_for_task, ChildLabelFn, TaskName};
 /// # use std::sync::Arc;
 /// // In the parent, set up a `ChildLabelFn` that assigns a name to the child task
 /// shuttle::check_dfs(|| {

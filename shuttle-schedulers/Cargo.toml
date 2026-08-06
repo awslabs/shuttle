@@ -6,11 +6,11 @@ description = "Scheduler implementations for the Shuttle concurrency testing fra
 license = "Apache-2.0"
 
 [dependencies]
-shuttle-core = { path = "../shuttle-core" }
+shuttle-runtime = { path = "../shuttle-runtime" }
 rand = "0.8.6"
 rand_pcg = "0.3.1"
 smallvec = { version = "1.11.2", features = ["const_new"] }
 tracing = { version = "0.1.36", default-features = false, features = ["std"] }
 
 [features]
-annotation = ["shuttle-core/annotation"]
+annotation = ["shuttle-runtime/annotation"]

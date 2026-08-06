@@ -1,8 +1,8 @@
-use shuttle_core::runtime::task::{clock::VectorClock, Task, TaskId};
-use shuttle_core::scheduler::data::random::RandomDataSource;
-use shuttle_core::scheduler::data::DataSource;
-use shuttle_core::scheduler::serialization::deserialize_schedule;
-use shuttle_core::scheduler::{Schedule, ScheduleStep, Scheduler};
+use shuttle_runtime::runtime::task::{clock::VectorClock, Task, TaskId};
+use shuttle_runtime::scheduler::data::random::RandomDataSource;
+use shuttle_runtime::scheduler::data::DataSource;
+use shuttle_runtime::scheduler::serialization::deserialize_schedule;
+use shuttle_runtime::scheduler::{Schedule, ScheduleStep, Scheduler};
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;

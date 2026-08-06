@@ -1,7 +1,7 @@
-use shuttle_core::runtime::task::{Task, TaskId};
-use shuttle_core::scheduler::data::random::RandomDataSource;
-use shuttle_core::scheduler::data::DataSource;
-use shuttle_core::scheduler::{Schedule, Scheduler};
+use shuttle_runtime::runtime::task::{Task, TaskId};
+use shuttle_runtime::scheduler::data::random::RandomDataSource;
+use shuttle_runtime::scheduler::data::DataSource;
+use shuttle_runtime::scheduler::{Schedule, Scheduler};
 
 /// A round robin scheduler that chooses the next available runnable task at each context switch.
 #[derive(Debug)]
