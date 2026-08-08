@@ -18,6 +18,7 @@ members = [
     "wrappers/tokio/wrappers/shuttle-tokio",
     "wrappers/tokio/wrappers/shuttle-tokio-stream",
     "wrappers/tokio/wrappers/shuttle-tokio-retry",
+    "wrappers/tokio/wrappers/shuttle-tokio-util",
     "wrappers/tokio/impls/tokio-retry",
     "wrappers/parking_lot",
     "wrappers/async_stream",
