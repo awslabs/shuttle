@@ -1,6 +1,6 @@
-use shuttle_runtime::annotations::{record_random, record_schedule, start_annotations, stop_annotations};
-use shuttle_runtime::runtime::task::{Task, TaskId};
-use shuttle_runtime::scheduler::{Schedule, Scheduler};
+use shuttle_engine::annotations::{record_random, record_schedule, start_annotations, stop_annotations};
+use shuttle_engine::runtime::task::{Task, TaskId};
+use shuttle_engine::scheduler::{Schedule, Scheduler};
 
 /// An `AnnotationScheduler` wraps an inner `Scheduler` and enables the
 /// creation of an annotated schedule (for use with Shuttle Explorer).

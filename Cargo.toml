@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "shuttle-runtime",
+    "shuttle-engine",
     "shuttle-schedulers",
     "shuttle-std",
     "shuttle",

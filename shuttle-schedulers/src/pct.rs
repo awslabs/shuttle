@@ -2,11 +2,11 @@ use rand::rngs::OsRng;
 use rand::seq::{index::sample, SliceRandom};
 use rand::{Rng, RngCore, SeedableRng};
 use rand_pcg::Pcg64Mcg;
-use shuttle_runtime::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
-use shuttle_runtime::scheduler::data::random::RandomDataSource;
-use shuttle_runtime::scheduler::data::DataSource;
-use shuttle_runtime::scheduler::{Schedule, Scheduler};
-use shuttle_runtime::seed_from_env;
+use shuttle_engine::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
+use shuttle_engine::scheduler::data::random::RandomDataSource;
+use shuttle_engine::scheduler::data::DataSource;
+use shuttle_engine::scheduler::{Schedule, Scheduler};
+use shuttle_engine::seed_from_env;
 use std::collections::{HashMap, HashSet};
 
 /// A scheduler that implements the Probabilistic Concurrency Testing (PCT) algorithm.

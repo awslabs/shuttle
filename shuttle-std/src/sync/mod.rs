@@ -24,4 +24,4 @@ pub use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 // TODO implement true support for `Arc`
 pub use std::sync::{Arc, Weak};
 
-pub use shuttle_runtime::sync_types::{ResourceSignature, ResourceType};
+pub use shuttle_engine::sync_types::{ResourceSignature, ResourceType};

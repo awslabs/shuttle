@@ -1,4 +1,4 @@
-use shuttle_runtime::{Config, Runner};
+use shuttle_engine::{Config, Runner};
 
 #[cfg(feature = "annotation")]
 use crate::AnnotationScheduler;

@@ -45,8 +45,8 @@
 //! and partial support for Relaxed orderings.
 //!
 //! To disable the warning printed about this issue, set the `SHUTTLE_SILENCE_WARNINGS` environment
-//! variable to any value, or set the [`silence_warnings`](shuttle_runtime::Config::silence_warnings) field of
-//! [`Config`](shuttle_runtime::Config) to true.
+//! variable to any value, or set the [`silence_warnings`](shuttle_engine::Config::silence_warnings) field of
+//! [`Config`](shuttle_engine::Config) to true.
 //!
 //! [Loom]: https://crates.io/crates/loom
 
@@ -60,10 +60,10 @@ pub use ptr::AtomicPtr;
 pub use std::sync::atomic::Ordering;
 
 use crate::sync::{ResourceSignature, ResourceType};
-use shuttle_runtime::runtime::execution::ExecutionState;
-use shuttle_runtime::runtime::task::clock::VectorClock;
-use shuttle_runtime::runtime::thread;
-use shuttle_runtime::silence_warnings;
+use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::task::clock::VectorClock;
+use shuttle_engine::runtime::thread;
+use shuttle_engine::silence_warnings;
 use std::cell::RefCell;
 use std::panic::RefUnwindSafe;
 
