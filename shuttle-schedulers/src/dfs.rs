@@ -1,7 +1,7 @@
-use shuttle_core::runtime::task::{Task, TaskId};
-use shuttle_core::scheduler::data::fixed::FixedDataSource;
-use shuttle_core::scheduler::data::DataSource;
-use shuttle_core::scheduler::{Schedule, Scheduler};
+use shuttle_engine::runtime::task::{Task, TaskId};
+use shuttle_engine::scheduler::data::fixed::FixedDataSource;
+use shuttle_engine::scheduler::data::DataSource;
+use shuttle_engine::scheduler::{Schedule, Scheduler};
 
 const DFS_RANDOM_SEED: u64 = 0x12345678;
 

@@ -1,5 +1,5 @@
-use shuttle_core::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
-use shuttle_core::scheduler::{Schedule, Scheduler};
+use shuttle_engine::runtime::task::{Task, TaskId, DEFAULT_INLINE_TASKS};
+use shuttle_engine::scheduler::{Schedule, Scheduler};
 use smallvec::SmallVec;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

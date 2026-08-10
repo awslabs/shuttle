@@ -1,8 +1,8 @@
 use crate::sync::{ResourceSignature, ResourceType};
-use shuttle_core::future::batch_semaphore::{BatchSemaphore, Fairness};
-use shuttle_core::runtime::execution::ExecutionState;
-use shuttle_core::runtime::task::{TaskId, TaskSet};
-use shuttle_core::runtime::thread;
+use shuttle_engine::future::batch_semaphore::{BatchSemaphore, Fairness};
+use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::task::{TaskId, TaskSet};
+use shuttle_engine::runtime::thread;
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};

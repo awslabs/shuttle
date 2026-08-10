@@ -1,10 +1,10 @@
 //! Multi-producer, single-consumer FIFO queue communication primitives.
 
 use crate::sync::{ResourceSignature, ResourceType};
-use shuttle_core::runtime::execution::ExecutionState;
-use shuttle_core::runtime::task::clock::VectorClock;
-use shuttle_core::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
-use shuttle_core::runtime::thread;
+use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::task::clock::VectorClock;
+use shuttle_engine::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
+use shuttle_engine::runtime::thread;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::fmt::Debug;

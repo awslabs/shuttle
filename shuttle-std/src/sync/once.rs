@@ -1,7 +1,7 @@
 use crate::sync::{Mutex, ResourceSignature, ResourceType};
-use shuttle_core::runtime::execution::ExecutionState;
-use shuttle_core::runtime::storage::StorageKey;
-use shuttle_core::runtime::task::clock::VectorClock;
+use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::storage::StorageKey;
+use shuttle_engine::runtime::task::clock::VectorClock;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering};

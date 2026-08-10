@@ -1,9 +1,9 @@
 use crate::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use crate::sync::{ResourceSignature, ResourceType};
-use shuttle_core::current;
-use shuttle_core::future::batch_semaphore::{BatchSemaphore, Fairness};
-use shuttle_core::runtime::task::TaskId;
-use shuttle_core::runtime::thread;
+use shuttle_engine::current;
+use shuttle_engine::future::batch_semaphore::{BatchSemaphore, Fairness};
+use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::thread;
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -232,14 +232,14 @@ impl<T: Display + ?Sized> Display for MutexGuard<'_, T> {
     }
 }
 
-impl<T> shuttle_core::annotations::WithName for &Mutex<T> {
+impl<T> shuttle_engine::annotations::WithName for &Mutex<T> {
     fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self {
         (&self.semaphore).with_name_and_kind(name, kind.or(Some("shuttle::sync::Mutex")));
         self
     }
 }
 
-impl<T> shuttle_core::annotations::WithName for Mutex<T> {
+impl<T> shuttle_engine::annotations::WithName for Mutex<T> {
     fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self {
         (&self).with_name_and_kind(name, kind);
         self

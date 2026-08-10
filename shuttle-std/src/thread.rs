@@ -1,8 +1,8 @@
 //! Shuttle's implementation of [`std::thread`].
 
-use shuttle_core::runtime::execution::ExecutionState;
-use shuttle_core::runtime::task::TaskId;
-use shuttle_core::runtime::thread;
+use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::thread;
 use std::marker::PhantomData;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -212,7 +212,7 @@ where
 }
 
 /// Body of a Shuttle thread, that runs the given closure, handles thread-local destructors, and
-pub(crate) use shuttle_core::thread_support::thread_fn;
+pub(crate) use shuttle_engine::thread_support::thread_fn;
 
 /// An owned permission to join on a scoped thread (block on its termination).
 ///
@@ -391,4 +391,4 @@ impl Builder {
     }
 }
 
-pub use shuttle_core::thread_support::{AccessError, LocalKey};
+pub use shuttle_engine::thread_support::{AccessError, LocalKey};

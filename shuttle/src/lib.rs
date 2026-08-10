@@ -180,10 +180,10 @@
 //! [Loom]: https://github.com/tokio-rs/loom
 //! [pct]: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf
 
-// Re-export modules from shuttle-core
-pub use shuttle_core::annotations;
-pub use shuttle_core::current;
-pub use shuttle_core::hint;
+// Re-export modules from shuttle-engine
+pub use shuttle_engine::annotations;
+pub use shuttle_engine::current;
+pub use shuttle_engine::hint;
 
 pub mod future;
 pub mod lazy_static;
@@ -194,19 +194,19 @@ pub mod thread;
 pub mod scheduler;
 
 // Re-export the runtime (internal but needed by sub-crates)
-pub(crate) use shuttle_core::runtime;
+pub(crate) use shuttle_engine::runtime;
 
-// Re-export public types from shuttle-core
-pub use shuttle_core::{
+// Re-export public types from shuttle-engine
+pub use shuttle_engine::{
     Config, ContinuationFunctionBehavior, FailurePersistence, MaxSteps, PortfolioRunner, Runner,
     UngracefulShutdownConfig,
 };
 
 // Re-export constants
-pub use shuttle_core::{ANNOTATION_FILE, CAPTURE_BACKTRACE, SILENCE_WARNINGS};
+pub use shuttle_engine::{ANNOTATION_FILE, CAPTURE_BACKTRACE, SILENCE_WARNINGS};
 
 // Re-export internal helpers used in this crate
-pub(crate) use shuttle_core::silence_warnings;
+pub(crate) use shuttle_engine::silence_warnings;
 
 // Re-export check/replay functions from shuttle-schedulers
 pub use shuttle_schedulers::{
