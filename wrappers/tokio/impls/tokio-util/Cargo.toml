@@ -2,8 +2,9 @@
 name = "shuttle-tokio-util-impl"
 version = "0.1.0" # Forked from "0.7.11"
 edition = "2021"
-
-publish = false
+license = "MIT"
+description = "Shuttle's internal implementation of the `tokio-util` crate. Do not depend on this crate directly; use `shuttle-tokio-util`."
+repository = "https://github.com/awslabs/shuttle"
 
 [features]
 # Shorthand for enabling everything
@@ -21,8 +22,8 @@ __docs_rs = []
 
 [dependencies]
 pin-project-lite = "0.2.11"
-tokio = { version = "*", package = "shuttle-tokio-impl", path = "../tokio", features = ["sync"] }
-shuttle = { path = "../../../../shuttle", version = "*" }
+tokio = { version = "0.1", package = "shuttle-tokio-impl", path = "../tokio", features = ["sync"] }
+shuttle = { path = "../../../../shuttle", version = "0.9" }
 tokio-util-orig = { version = "0.7.11", package = "tokio-util" }
 
 [dev-dependencies]
