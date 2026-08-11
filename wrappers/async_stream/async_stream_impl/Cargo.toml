@@ -16,5 +16,5 @@ shuttle = { path = "../../../shuttle", version = "<0.10" }
 futures-util = "0.3"
 rustversion = "1"
 trybuild = "1"
-tokio = { package = "shuttle-tokio-impl", path = "../../tokio/impls/tokio", version = "*", features = ["full"] }
-tokio-test = { package = "shuttle-tokio-test-impl", path = "../../tokio/impls/tokio-test", version = "*" }
+tokio = { package = "shuttle-tokio-impl", path = "../../tokio/impls/tokio", features = ["full"] }
+tokio-test = { package = "shuttle-tokio-test-impl", path = "../../tokio/impls/tokio-test" }
