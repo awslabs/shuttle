@@ -3,7 +3,8 @@
 * Add support for 128-bit atomics (`AtomicI128`/`AtomicU128`) (#299)
 * Implement `Display` for `TaskId` to match tokio's `task::Id` (#307)
 * Add support for task abort (#278)
-* Refactor the `shuttle` crate into separate internal crates: `shuttle-runtime` (core runtime and the `Scheduler` trait), `shuttle-schedulers` (built-in schedulers and `check`/`replay` helpers), and `shuttle-std` (the `std` replacement primitives) (#286, #290, #292, #294). This is an internal reorganization and does not change the `shuttle` public API.
+* Refactor the `shuttle` crate into separate internal crates: `shuttle-engine` (core runtime and the `Scheduler` trait), `shuttle-schedulers` (built-in schedulers and `check`/`replay` helpers), and `shuttle-std` (the `std` replacement primitives) (#286, #290, #292, #294). This is an internal reorganization and does not change the `shuttle` public API.
+* Publish `shuttle-std`, `shuttle-schedulers` and `shuttle-engine`.
 
 # 0.9.1 (Apr 19, 2026)
 

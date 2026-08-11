@@ -10,9 +10,9 @@ categories = ["asynchronous", "concurrency", "development-tools::testing"]
 readme = "../README.md"
 
 [dependencies]
-shuttle-engine = { path = "../shuttle-engine" }
-shuttle-schedulers = { path = "../shuttle-schedulers" }
-shuttle-std = { path = "../shuttle-std" }
+shuttle-engine = { path = "../shuttle-engine", version = "0.1.0" }
+shuttle-schedulers = { path = "../shuttle-schedulers", version = "0.1.0" }
+shuttle-std = { path = "../shuttle-std", version = "0.1.0" }
 bitvec = "1.0.1"
 cfg-if = "1.0"
 hex = "0.4.2"
