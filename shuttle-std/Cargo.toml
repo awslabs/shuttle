@@ -7,7 +7,7 @@ description = "Mirrors of std compatible with the Shuttle concurrency testing to
 repository = "https://github.com/awslabs/shuttle"
 
 [dependencies]
-shuttle-engine = { path = "../shuttle-engine" }
+shuttle-engine = { path = "../shuttle-engine", version = "0.1.0" }
 assoc = "0.1.3"
 owo-colors = "4.3.0"
 smallvec = { version = "1.11.2", features = ["const_new"] }
