@@ -1,0 +1,25 @@
+[package]
+name = "shuttle-tokio-util"
+version = "0.7.0" 
+edition = "2021"
+license = "Apache-2.0"
+description = "tokio-util wrapper for the Shuttle concurrency testing tool."
+
+[features]
+shuttle = ["dep:shuttle-tokio-util-impl"]
+
+# Shorthand for enabling everything
+full = ["codec", "compat", "io", "io-util", "time", "net", "rt"]
+
+codec = ["tokio-util/codec", "shuttle-tokio-util-impl?/codec"]
+compat = ["tokio-util/compat", "shuttle-tokio-util-impl?/compat"]
+io = ["tokio-util/io", "shuttle-tokio-util-impl?/io"]
+io-util = ["tokio-util/io-util", "shuttle-tokio-util-impl?/io-util"]
+time = ["tokio-util/time", "shuttle-tokio-util-impl?/time"]
+net = ["tokio-util/net", "shuttle-tokio-util-impl?/net"]
+rt = ["tokio-util/rt", "shuttle-tokio-util-impl?/rt"]
+
+[dependencies]
+cfg-if = "1.0"
+tokio-util = "0.7"
+shuttle-tokio-util-impl = { version = "0.1", optional = true, path = "../../impls/tokio-util" }
