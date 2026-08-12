@@ -118,7 +118,8 @@ fn persist_failure_inner(config: &Config) {
             let serialized_schedule = serialize_schedule_with(
                 &CurrentSchedule::get_schedule(),
                 config.schedule_encoding,
-                config.schedule_text_encoding,
+                // A file is a byte sink, so the terminal's opinion about non-ASCII is irrelevant here.
+                config.schedule_text_encoding.resolve(true),
             );
 
             // Try to persist to a file, but fall through to stderr if that fails for some reason
