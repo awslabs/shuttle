@@ -23,8 +23,8 @@ pub use sync_types::{ResourceSignature, ResourceType};
 /// Capturing backtraces is quite expensive, so this should only be set when debugging a failing test.
 pub const CAPTURE_BACKTRACE: &str = "SHUTTLE_CAPTURE_BACKTRACE";
 
-/// The random seed used to initialize either the [`crate::scheduler::RandomScheduler`] or
-/// [`crate::scheduler::PctScheduler`]
+/// The random seed used to initialize either the `RandomScheduler` or `PctScheduler`
+/// (both in the `shuttle-schedulers` crate)
 const RANDOM_SEED: &str = "SHUTTLE_RANDOM_SEED";
 
 /// If this is set, then warnings about Shuttle's modelling of weak memory and differences between Shuttle's

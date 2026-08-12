@@ -32,7 +32,7 @@ enum UrwSchedulerState {
 /// Umang Mathur, and Abhik Roychoudhury, ASPLOS 2025. This algorithm samples all interleavings *uniformly* given
 /// an accurate estimate of the number of events which will take place on each task. This implementation uses a
 /// single trial run of the program to generate these estimates. During the trial run, it uses vanilla random walk
-/// for scheduling (identical to [`crate::scheduler::RandomScheduler`]). As discussed in the paper, the event count
+/// for scheduling (identical to [`crate::RandomScheduler`]). As discussed in the paper, the event count
 /// for a task is equal to the number of scheduling points remaining on that task added to the sum of event counts
 /// over each of the task's yet-to-be-spawned children.
 ///
