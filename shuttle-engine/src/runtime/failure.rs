@@ -168,8 +168,12 @@ fn persist_failure_inner(config: &Config) {
     match &config.failure_persistence {
         FailurePersistence::None => {}
         FailurePersistence::File(directory) => {
-            let serialized_schedule =
-                serialize_schedule_with(&schedule, config.schedule_encoding, config.schedule_text_encoding);
+            let serialized_schedule = serialize_schedule_with(
+                &schedule,
+                config.schedule_encoding,
+                // A file is a byte sink, so the terminal's opinion about non-ASCII is irrelevant here.
+                config.schedule_text_encoding.resolve(true),
+            );
 
             // Try to persist to a file, but fall through to stderr if that fails for some reason
             match persist_failure_to_file(&serialized_schedule, directory.as_ref(), reported_path()) {

@@ -199,6 +199,24 @@ pub enum FailurePersistence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ScheduleTextEncoding {
+    /// Choose between [`ScheduleTextEncoding::Hex`] and [`ScheduleTextEncoding::Unicode`] based on
+    /// whether the destination can carry non-ASCII text. This is the default.
+    ///
+    /// A schedule written to a file always gets the Unicode alphabet, because a file is a byte sink.
+    /// A schedule printed to a terminal gets it only if the locale says the terminal is expecting
+    /// UTF-8, which is the mechanism POSIX defines for exactly this question: `LC_ALL`, then
+    /// `LC_CTYPE`, then `LANG`, first one set wins. So a run under `LC_ALL=C`, or on a system whose
+    /// locale is not configured, falls back to hex on its own.
+    ///
+    /// Note what this does *not* detect. Whether the terminal accepts UTF-8 says nothing about
+    /// whether it renders stacked combining marks as zero-width, and no environment variable answers
+    /// that. Measuring it would mean writing the text and then querying the cursor position, which
+    /// needs raw mode on the same terminal, and Shuttle reports schedules from a panic hook, possibly
+    /// while a panic is still unwinding. So `Auto` decides the alphabet, which is knowable, and
+    /// leaves the stacking depth to you. If your terminal renders the marks as separate cells, set
+    /// `Unicode { marks_per_cell: 0 }`, whose cost does not depend on the terminal at all.
+    Auto,
+
     /// Render as hexadecimal.
     ///
     /// Four bits per character, and pure ASCII, so it survives anything. Use this if a schedule has
@@ -234,12 +252,51 @@ pub enum ScheduleTextEncoding {
 impl ScheduleTextEncoding {
     /// Create a new default `ScheduleTextEncoding`.
     pub const fn new() -> Self {
-        // More marks than any schedule has bits, so the whole payload lands in one cell: one column,
-        // and therefore one line, regardless of how long the schedule is.
-        Self::Unicode {
-            marks_per_cell: u32::MAX,
+        Self::Auto
+    }
+
+    /// What [`ScheduleTextEncoding::Auto`] resolves to when non-ASCII output is safe.
+    ///
+    /// More marks than any schedule has bits, so the whole payload lands in one cell: one column, and
+    /// therefore one line, regardless of how long the schedule is.
+    pub const DENSE: Self = Self::Unicode {
+        marks_per_cell: u32::MAX,
+    };
+
+    /// Resolve [`ScheduleTextEncoding::Auto`] for a destination that either can or cannot carry
+    /// non-ASCII text. Every other variant is returned unchanged, so this is idempotent and safe to
+    /// apply more than once.
+    pub const fn resolve(self, destination_accepts_non_ascii: bool) -> Self {
+        match self {
+            Self::Auto if destination_accepts_non_ascii => Self::DENSE,
+            Self::Auto => Self::Hex,
+            other => other,
         }
     }
+}
+
+/// Whether stderr, which is where Shuttle prints failing schedules, can carry non-ASCII text.
+///
+/// If stderr is not a terminal it is a file, a pipe or a captured test log, all of which are byte
+/// sinks that take UTF-8 without complaint. If it is a terminal, the locale decides, per POSIX.
+///
+/// Note that libtest's output capture intercepts `eprintln!` above the file descriptor rather than by
+/// replacing it, so this still sees the real terminal under `cargo test`, which is the terminal the
+/// captured output is eventually replayed to.
+pub fn stderr_accepts_non_ascii() -> bool {
+    use std::io::IsTerminal;
+
+    if !std::io::stderr().is_terminal() {
+        return true;
+    }
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .filter_map(|variable| std::env::var(variable).ok())
+        .find(|value| !value.is_empty())
+        .is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("utf-8") || value.contains("utf8")
+        })
 }
 
 impl Default for ScheduleTextEncoding {
