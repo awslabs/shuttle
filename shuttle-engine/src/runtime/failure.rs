@@ -18,7 +18,7 @@ use std::sync::Once;
 
 use crate::config::{Config, FailurePersistence};
 use crate::runtime::execution::{CurrentSchedule, ExecutionState};
-use crate::scheduler::serialization::serialize_schedule;
+use crate::scheduler::serialization::serialize_schedule_with;
 
 /// The execution currently running on this thread, for the benefit of the panic hook.
 ///
@@ -115,7 +115,11 @@ fn persist_failure_inner(config: &Config) {
     match &config.failure_persistence {
         FailurePersistence::None => {}
         FailurePersistence::File(directory) => {
-            let serialized_schedule = serialize_schedule(&CurrentSchedule::get_schedule());
+            let serialized_schedule = serialize_schedule_with(
+                &CurrentSchedule::get_schedule(),
+                config.schedule_encoding,
+                config.schedule_text_encoding,
+            );
 
             // Try to persist to a file, but fall through to stderr if that fails for some reason
             match persist_failure_to_file(&serialized_schedule, directory.as_ref()) {
@@ -129,7 +133,11 @@ fn persist_failure_inner(config: &Config) {
             }
         }
         FailurePersistence::Print => {
-            let serialized_schedule = serialize_schedule(&CurrentSchedule::get_schedule());
+            let serialized_schedule = serialize_schedule_with(
+                &CurrentSchedule::get_schedule(),
+                config.schedule_encoding,
+                config.schedule_text_encoding,
+            );
             eprintln!(
                 "failing schedule:\n\"\n{serialized_schedule}\n\"\npass that string to `shuttle::replay` to replay the failure"
             );
