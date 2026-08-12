@@ -10,6 +10,31 @@ pub struct Config {
     /// How to persist schedules when a test fails
     pub failure_persistence: FailurePersistence,
 
+    /// Whether to report a failing schedule from the panic hook, at the moment of the panic, in
+    /// addition to reporting one after the panic has finished unwinding.
+    ///
+    /// By default Shuttle reports once, after the unwind. That schedule also covers the scheduling
+    /// decisions the unwind itself needed, so it is the one that reproduces the failure most
+    /// faithfully, and reporting only once keeps the output to a single schedule.
+    ///
+    /// Set this to `true` if a test is at risk of *aborting* rather than unwinding. A panic raised
+    /// while another panic is unwinding aborts the process immediately, which is a common shape in
+    /// Rust: a panic poisons a lock, and then a `Drop` handler run by the unwind tries to acquire that
+    /// same lock. An abort runs no further code, so a report scheduled for after the unwind never
+    /// happens and the failure is lost. Reporting from the hook gets a schedule out before that can
+    /// occur.
+    ///
+    /// The cost is that a failure then reports twice, since the schedule keeps growing during the
+    /// unwind and the later, longer one supersedes it. Under [`FailurePersistence::File`] the second
+    /// report rewrites the first one's file, so this costs nothing but a little stderr. Under
+    /// [`FailurePersistence::Print`] both schedules appear in the output, the second marked as
+    /// superseding the first.
+    ///
+    /// This also affects panics a test catches itself, which run the hook just the same. With this
+    /// off, a swallowed panic reports nothing; with it on, it reports a schedule even if the test goes
+    /// on to pass.
+    pub eager_failure_reports: bool,
+
     /// Maximum number of steps a single iteration of a test can take, and how to react when the
     /// limit is reached
     pub max_steps: MaxSteps,
@@ -120,6 +145,7 @@ impl Config {
         Self {
             stack_size: 0xf000,
             failure_persistence: FailurePersistence::Print,
+            eager_failure_reports: false,
             max_steps: MaxSteps::FailAfter(1_000_000),
             max_time: None,
             silence_warnings: false,
