@@ -99,7 +99,7 @@ const SCHEDULE_MAGIC_V3: u8 = 0x92;
 const LINE_WIDTH: usize = 120;
 
 /// Serialize a schedule using the default encodings ([`ScheduleEncoding::MoveToFront`] rendered with
-/// [`ScheduleTextEncoding::Unicode`]).
+/// [`ScheduleTextEncoding::Auto`]).
 pub fn serialize_schedule(schedule: &Schedule) -> String {
     serialize_schedule_with(schedule, ScheduleEncoding::default(), ScheduleTextEncoding::default())
 }
@@ -114,9 +114,17 @@ pub fn serialize_schedule_with(
         ScheduleEncoding::FixedWidth => serialize_fixed_width(schedule),
         ScheduleEncoding::MoveToFront => mtf::serialize(schedule),
     };
-    match text_encoding {
-        ScheduleTextEncoding::Hex => wrap_lines(hex::encode(buf).chars()),
-        ScheduleTextEncoding::Unicode { marks_per_cell } => unicode_text::encode(&buf, marks_per_cell),
+    // Callers that know their destination (a file, say) resolve `Auto` themselves before calling. For
+    // everyone else the destination is wherever the schedule gets printed, which is stderr.
+    //
+    // Hex is the fallback rather than a panic: this runs on the failure-reporting path, where losing
+    // the schedule to a second panic is far worse than printing it in a less compact alphabet.
+    if let ScheduleTextEncoding::Unicode { marks_per_cell } =
+        text_encoding.resolve(crate::config::stderr_accepts_non_ascii())
+    {
+        unicode_text::encode(&buf, marks_per_cell)
+    } else {
+        wrap_lines(hex::encode(buf).chars())
     }
 }
 
@@ -758,7 +766,8 @@ mod test {
 
     const ENCODINGS: [ScheduleEncoding; 2] = [ScheduleEncoding::FixedWidth, ScheduleEncoding::MoveToFront];
 
-    const TEXT_ENCODINGS: [ScheduleTextEncoding; 7] = [
+    const TEXT_ENCODINGS: [ScheduleTextEncoding; 8] = [
+        ScheduleTextEncoding::Auto,
         ScheduleTextEncoding::Hex,
         ScheduleTextEncoding::Unicode { marks_per_cell: 0 },
         ScheduleTextEncoding::Unicode { marks_per_cell: 1 },
@@ -814,14 +823,9 @@ mod test {
 
     /// The defaults are what unadorned `serialize_schedule` emits.
     #[test]
-    fn defaults_are_move_to_front_and_unicode() {
+    fn defaults_are_move_to_front_and_auto() {
         assert_eq!(ScheduleEncoding::default(), ScheduleEncoding::MoveToFront);
-        assert_eq!(
-            ScheduleTextEncoding::default(),
-            ScheduleTextEncoding::Unicode {
-                marks_per_cell: u32::MAX
-            }
-        );
+        assert_eq!(ScheduleTextEncoding::default(), ScheduleTextEncoding::Auto);
 
         let schedule = Schedule {
             seed: 10,
@@ -829,15 +833,35 @@ mod test {
         };
         assert_eq!(
             serialize_schedule(&schedule),
-            serialize_schedule_with(
-                &schedule,
-                ScheduleEncoding::MoveToFront,
-                ScheduleTextEncoding::Unicode {
-                    marks_per_cell: u32::MAX
-                }
-            )
+            serialize_schedule_with(&schedule, ScheduleEncoding::MoveToFront, ScheduleTextEncoding::Auto)
         );
         assert_eq!(deserialize_schedule(&serialize_schedule(&schedule)), Some(schedule));
+    }
+
+    /// `Auto` picks the alphabet from the destination, and resolving is idempotent so that a caller
+    /// which has already resolved can hand the result straight back in.
+    #[test]
+    fn auto_resolves_from_the_destination() {
+        assert_eq!(ScheduleTextEncoding::Auto.resolve(true), ScheduleTextEncoding::DENSE);
+        assert_eq!(ScheduleTextEncoding::Auto.resolve(false), ScheduleTextEncoding::Hex);
+
+        // Whatever it resolved to, resolving again against either destination is a no-op.
+        for resolved in [ScheduleTextEncoding::DENSE, ScheduleTextEncoding::Hex] {
+            for accepts in [true, false] {
+                assert_eq!(resolved.resolve(accepts), resolved);
+            }
+        }
+
+        // The dense form is the one the default reaches for, and it is a single cell.
+        assert_eq!(
+            ScheduleTextEncoding::DENSE,
+            ScheduleTextEncoding::Unicode {
+                marks_per_cell: u32::MAX
+            }
+        );
+
+        // Detection must not panic, whatever the environment running the tests looks like.
+        let _ = crate::config::stderr_accepts_non_ascii();
     }
 
     /// The two axes are independent: the alphabet must not care which payload encoding it carries,
@@ -925,14 +949,12 @@ mod test {
             columns(&flat)
         );
 
-        // And the default packs the whole schedule into a single cell, so it prints on one line.
-        let dense = serialize_schedule_with(
-            &schedule,
-            ScheduleEncoding::MoveToFront,
-            ScheduleTextEncoding::default(),
-        );
-        assert_eq!(columns(&dense), 1, "the default should emit exactly one column");
-        assert_eq!(dense.lines().count(), 1, "the default should emit exactly one line");
+        // And the dense form, which is what `Auto` reaches for, packs the whole schedule into a single
+        // cell so that it prints on one line. Named explicitly rather than via `default()`, because
+        // `Auto` would make this depend on the locale of whoever is running the tests.
+        let dense = serialize_schedule_with(&schedule, ScheduleEncoding::MoveToFront, ScheduleTextEncoding::DENSE);
+        assert_eq!(columns(&dense), 1, "the dense form should emit exactly one column");
+        assert_eq!(dense.lines().count(), 1, "the dense form should emit exactly one line");
     }
 
     /// The base alphabet is generated, so guard the invariants the generator enforced. The Unicode
