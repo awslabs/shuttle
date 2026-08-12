@@ -17,9 +17,11 @@
 //!
 //! "Columns" is what the schedule costs if the terminal honours zero-width combining marks. "Chars" is
 //! what it costs if the terminal renders every mark as a cell of its own instead, which some do. The
-//! default trades the second number for the first, packing the whole schedule into one cell so that it
-//! prints on a single line however long it is. `marks_per_cell: 0` is the setting whose cost does not
-//! depend on the terminal at all, and it still beats hex better than three to one.
+//! dense form that `ScheduleTextEncoding::Auto` selects trades the second number for the first,
+//! packing the whole schedule into one cell so that it prints on a single line however long it is.
+//! `marks_per_cell: 0` is the setting whose cost does not depend on the terminal at all, and it still
+//! beats hex better than three to one. Under a locale that does not claim UTF-8, `Auto` falls back to
+//! the hex row on its own.
 //!
 //! The printed schedule replays as-is: paste it into `shuttle::replay` and the same panic comes back,
 //! with no need for `ReplayScheduler::set_allow_incomplete`.
@@ -73,15 +75,24 @@ fn run(encoding: ScheduleEncoding, text_encoding: ScheduleTextEncoding) {
     runner.run(many_tasks_then_panic);
 }
 
-/// Prints the schedule using the defaults: move-to-front payload, Unicode alphabet, marks stacked as
-/// deep as the encoding allows, which is one cell, one column, one line.
+/// Prints the schedule using the defaults: move-to-front payload, and the alphabet
+/// [`ScheduleTextEncoding::Auto`] picks for wherever the output is going.
 ///
 /// Run with:
 ///   cargo test --release -p shuttle --test mod -- --ignored --nocapture demo::large_schedule::prints_default
+///
+/// Prefix that with `LC_ALL=C` to watch `Auto` fall back to hex.
 #[test]
 #[ignore = "panics on purpose to print a very large schedule; run manually with --nocapture"]
 fn prints_default() {
     run(ScheduleEncoding::default(), ScheduleTextEncoding::default());
+}
+
+/// The densest form, requested explicitly rather than left to `Auto`: one cell, one column, one line.
+#[test]
+#[ignore = "panics on purpose to print a very large schedule; run manually with --nocapture"]
+fn prints_dense() {
+    run(ScheduleEncoding::default(), ScheduleTextEncoding::DENSE);
 }
 
 /// The same schedule with no combining marks, so every character is one visible column.
