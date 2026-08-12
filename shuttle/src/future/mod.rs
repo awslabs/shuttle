@@ -63,7 +63,7 @@ impl AbortHandle {
     pub fn abort(&self) {
         let res = ExecutionState::try_with(|state| {
             if !state.is_finished() {
-                state.get_mut(self.task_id).abort();
+                state.abort_task(self.task_id);
             }
         });
         if let Err(e) = res {
@@ -113,7 +113,7 @@ impl<T> JoinHandle<T> {
     pub fn abort(&self) {
         let res = ExecutionState::try_with(|state| {
             if !state.is_finished() {
-                state.get_mut(self.task_id).abort();
+                state.abort_task(self.task_id);
             }
         });
         if let Err(e) = res {
@@ -254,7 +254,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
         match future.as_mut().poll(cx) {
             Poll::Ready(result) => break result,
             Poll::Pending => {
-                ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
+                ExecutionState::with(|state| state.sleep_current_unless_woken());
                 thread::switch();
             }
         }

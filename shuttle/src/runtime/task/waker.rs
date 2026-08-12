@@ -32,13 +32,13 @@ unsafe fn raw_waker_wake(data: *const ()) {
             return;
         }
 
-        let waiter = state.get_mut(task_id);
-
-        if waiter.finished() {
+        if state.get(task_id).finished() {
             return;
         }
 
-        waiter.wake();
+        // Must go through `ExecutionState`: waking a sleeping task unblocks it, which changes whether
+        // it can be scheduled.
+        state.wake_task(task_id);
     });
 }
 

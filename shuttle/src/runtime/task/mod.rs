@@ -424,7 +424,7 @@ impl Task {
                 let waker = ExecutionState::with(|state| state.current_mut().waker());
                 let cx = &mut Context::from_waker(&waker);
                 while future.as_mut().poll(cx).is_pending() {
-                    ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
+                    ExecutionState::with(|state| state.sleep_current_unless_woken());
                     thread::switch();
                 }
             }),
@@ -477,11 +477,11 @@ impl Task {
         self.detached
     }
 
-    pub(crate) fn detach(&mut self) {
+    pub(in crate::runtime) fn detach(&mut self) {
         self.detached = true;
     }
 
-    pub(crate) fn abort(&mut self) {
+    pub(in crate::runtime) fn abort(&mut self) {
         // TODO: Change into actually aborting
         self.detach();
     }
@@ -493,7 +493,7 @@ impl Task {
     /// Block the current thread. If `allow_spurious_wakeups` is true, then the scheduler is
     /// permitted to spuriously wake up the thread (though it will still not count as a live thread
     /// for deadlock detection purposes for as long as it remains blocked).
-    pub(crate) fn block(&mut self, allow_spurious_wakeups: bool) {
+    pub(in crate::runtime) fn block(&mut self, allow_spurious_wakeups: bool) {
         self.backtrace = if backtrace_enabled() {
             Some(Backtrace::force_capture())
         } else {
@@ -504,7 +504,7 @@ impl Task {
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
 
-    pub(crate) fn sleep(&mut self) {
+    pub(in crate::runtime) fn sleep(&mut self) {
         self.backtrace = if backtrace_enabled() {
             Some(Backtrace::force_capture())
         } else {
@@ -515,7 +515,7 @@ impl Task {
         self.state = TaskState::Sleeping;
     }
 
-    pub(crate) fn unblock(&mut self) {
+    pub(in crate::runtime) fn unblock(&mut self) {
         // Note we don't assert the task is blocked here. For example, a task invoking its own waker
         // will not be blocked when this is called.
         assert!(self.state != TaskState::Finished);
@@ -528,7 +528,7 @@ impl Task {
         self.park_state.blocked_in_park = false;
     }
 
-    pub(crate) fn finish(&mut self) {
+    pub(in crate::runtime) fn finish(&mut self) {
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Finished;
     }
@@ -538,7 +538,7 @@ impl Task {
     ///
     /// A synchronous Task should never call this, because we want threads to be enabled-by-default
     /// to avoid bugs where Shuttle incorrectly omits a potential execution.
-    pub(crate) fn sleep_unless_woken(&mut self) {
+    pub(in crate::runtime) fn sleep_unless_woken(&mut self) {
         let was_woken = std::mem::replace(&mut self.woken, false);
         if !was_woken {
             self.sleep();
@@ -616,7 +616,7 @@ impl Task {
     /// documentation for [`std::thread::park`], which says that "it may also return spuriously,
     /// without consuming the token"). Returns true if the execution should switch to a different
     /// task (e.g., if the token was unavailable).
-    pub(crate) fn park(&mut self) -> bool {
+    pub(in crate::runtime) fn park(&mut self) -> bool {
         assert!(
             !self.park_state.blocked_in_park,
             "task cannot park while already parked"
@@ -634,7 +634,7 @@ impl Task {
     }
 
     /// Make the task's park token available, and unblock the task if it was parked.
-    pub(crate) fn unpark(&mut self) {
+    pub(in crate::runtime) fn unpark(&mut self) {
         if self.park_state.blocked_in_park {
             assert!(
                 self.blocked() && self.can_spuriously_wakeup(),

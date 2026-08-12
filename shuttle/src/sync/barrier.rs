@@ -133,7 +133,7 @@ impl Barrier {
         if state.waiters.len() < state.bound {
             trace!(waiters=?state.waiters, epoch=my_epoch, "blocked on barrier {:?}", self);
             drop(state);
-            ExecutionState::with(|s| s.current_mut().block(false));
+            ExecutionState::with(|s| s.block_current(false));
             thread::switch();
         } else {
             trace!(waiters=?state.waiters, epoch=my_epoch, "releasing waiters on barrier {:?}", self);
@@ -163,7 +163,7 @@ impl Barrier {
                     let t = s.get_mut(tid);
                     t.clock.increment(tid);
                     t.clock.update(&clock);
-                    t.unblock();
+                    s.unblock_task(tid);
                 }
             });
             drop(state);
