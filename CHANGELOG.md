@@ -1,3 +1,10 @@
+# Unreleased
+
+* Fix: a failing execution reported its schedule twice, once from the panic hook and once from the runtime after unwinding. Only the first is reported now, so a failure yields exactly one schedule.
+* Fix: the panic hook captured the `Config` of the first execution in the process, so later `Runner`s' `FailurePersistence` settings were ignored.
+* Fix: replaying a persisted schedule no longer reports "schedule ended early". A schedule recorded at the moment of failure stops there, but the replayed execution keeps scheduling as the panic unwinds; those decisions are now made freely instead of aborting the replay. `ReplayScheduler::set_allow_incomplete` is no longer needed to replay a schedule Shuttle wrote.
+* Fix: a panic occurring after a Shuttle test finished, including one raised by the surrounding test harness, was reported as a Shuttle failure and serialized the schedule of the execution that had already completed.
+
 # 0.9.2 (August 6, 2026)
 
 * Add support for 128-bit atomics (`AtomicI128`/`AtomicU128`) (#299)

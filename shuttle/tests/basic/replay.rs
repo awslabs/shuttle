@@ -28,29 +28,147 @@ fn concurrent_increment_buggy() {
     assert_eq!(*lock.lock().unwrap(), 2, "counter is wrong");
 }
 
+/// A schedule in which both threads read 0 before either writes, so the counter ends at 1.
+///
+/// Pinned in the legacy fixed-width hex encoding, which Shuttle is required to keep reading, so this
+/// doubles as a check that old schedules still replay. Note that it is a schedule Shuttle persisted at
+/// the moment of failure, so it stops there and says nothing about the steps taken while the panic
+/// unwinds; replaying it must still reproduce the failure without `set_allow_incomplete`.
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
-#[should_panic(expected = "91021000904092940400")]
+#[should_panic(expected = "counter is wrong")]
 fn replay_failing() {
-    replay(concurrent_increment_buggy, "91021000904092940400")
+    replay(concurrent_increment_buggy, "910211ed84dcbbe1bd8c946080408922290100")
 }
 
+/// A complete schedule in which the two increments do not overlap, so the counter reaches 2 and the
+/// test passes.
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_passing() {
-    replay(concurrent_increment_buggy, "9102110090205124480000")
+    replay(concurrent_increment_buggy, "9102120280404922480200")
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_roundtrip() {
     check_replay_roundtrip(concurrent_increment_buggy, PctScheduler::new(2, 100))
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_roundtrip_file() {
     check_replay_roundtrip_file(concurrent_increment_buggy, PctScheduler::new(2, 100))
+}
+
+/// Run `f` until it fails, persisting the failing schedule to a fresh directory, and return the
+/// contents of every schedule file that was written.
+fn persist_failing_schedules<F>(f: F, iterations: usize) -> Vec<String>
+where
+    F: Fn() + Send + Sync + std::panic::RefUnwindSafe + 'static,
+{
+    let dir = tempfile::tempdir().expect("could not create tempdir");
+
+    let mut config = Config::new();
+    config.failure_persistence = FailurePersistence::File(Some(dir.path().to_path_buf()));
+
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let runner = Runner::new(RandomScheduler::new(iterations), config);
+        runner.run(f);
+    }));
+    assert!(result.is_err(), "test was supposed to fail");
+
+    let mut schedules = std::fs::read_dir(dir.path())
+        .expect("could not read tempdir")
+        .map(|entry| {
+            let path = entry.expect("bad dir entry").path();
+            std::fs::read_to_string(&path).expect("could not read schedule file")
+        })
+        .collect::<Vec<_>>();
+    schedules.sort();
+    schedules
+}
+
+/// A schedule persisted from a real failure must replay that failure without any special handling.
+///
+/// This is the end-to-end property that matters: the schedule Shuttle hands you is enough to
+/// reproduce the failure. In particular the replay must not need `set_allow_incomplete`, even though
+/// the recorded schedule ends at the failure while the replayed execution goes on to make more
+/// scheduling decisions as the panic unwinds.
+#[test]
+fn persisted_schedule_replays_without_allow_incomplete() {
+    let schedules = persist_failing_schedules(concurrent_increment_buggy, 100);
+    assert_eq!(
+        schedules.len(),
+        1,
+        "expected exactly one schedule file per failure, got {}",
+        schedules.len()
+    );
+
+    let result = panic::catch_unwind(|| {
+        let scheduler = ReplayScheduler::new_from_encoded(&schedules[0]);
+        let mut config = Config::new();
+        // The replayed failure would otherwise persist a schedule of its own.
+        config.failure_persistence = FailurePersistence::None;
+        Runner::new(scheduler, config).run(concurrent_increment_buggy);
+    });
+
+    let payload = result.expect_err("replay should reproduce the failure");
+    let message = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("<non-string panic>");
+    assert!(
+        message.contains("counter is wrong"),
+        "replay panicked with {message:?} instead of reproducing the original failure"
+    );
+}
+
+/// A failure in a later execution must still be reported, even if an earlier execution of the same
+/// runner already reported one.
+#[test]
+fn every_failing_execution_reports_its_own_schedule() {
+    // `concurrent_increment_buggy` fails on some but not all schedules, so the runner reaches the
+    // failing execution only after some successful ones. If the report were suppressed by state left
+    // over from a previous execution, this would come back empty.
+    for _ in 0..5 {
+        let schedules = persist_failing_schedules(concurrent_increment_buggy, 100);
+        assert_eq!(schedules.len(), 1, "expected exactly one schedule per failure");
+        assert!(!schedules[0].trim().is_empty(), "persisted an empty schedule");
+    }
+}
+
+/// A panic *after* the test has finished running is not a Shuttle failure and must not be reported as
+/// one.
+///
+/// The panic hook is installed once per process and stays installed forever, so it has to know when it
+/// is inside an execution and when it is not. Otherwise an unrelated panic later in the test thread,
+/// including the test harness reporting a failure, gets a "failing schedule" report attached to it,
+/// naming a schedule that has nothing to do with what actually went wrong.
+#[test]
+fn panic_after_test_reports_no_schedule() {
+    let dir = tempfile::tempdir().expect("could not create tempdir");
+
+    let mut config = Config::new();
+    config.failure_persistence = FailurePersistence::File(Some(dir.path().to_path_buf()));
+    Runner::new(RandomScheduler::new(10), config).run(|| {
+        let lock = Arc::new(Mutex::new(0usize));
+        let thd = {
+            let lock = Arc::clone(&lock);
+            thread::spawn(move || *lock.lock().unwrap() += 1)
+        };
+        thd.join().unwrap();
+        assert_eq!(*lock.lock().unwrap(), 1);
+    });
+
+    let result = panic::catch_unwind(|| panic!("nothing to do with Shuttle"));
+    assert!(result.is_err(), "the panic should have been caught");
+
+    let persisted = std::fs::read_dir(dir.path())
+        .expect("could not read tempdir")
+        .map(|entry| entry.expect("bad dir entry").path())
+        .collect::<Vec<_>>();
+    assert!(
+        persisted.is_empty(),
+        "reported a schedule for a panic outside any execution: {persisted:?}"
+    );
 }
 
 fn deadlock() {
@@ -69,13 +187,11 @@ fn deadlock() {
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_deadlock_roundtrip() {
     check_replay_roundtrip(deadlock, PctScheduler::new(2, 100))
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_deadlock_roundtrip_file() {
     check_replay_roundtrip_file(deadlock, PctScheduler::new(2, 100))
 }
@@ -161,13 +277,11 @@ fn long_schedule() {
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_long_schedule() {
     check_replay_roundtrip(long_schedule, RandomScheduler::new(1));
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_long_schedule_file() {
     check_replay_roundtrip_file(long_schedule, RandomScheduler::new(1));
 }

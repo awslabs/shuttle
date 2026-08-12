@@ -1,4 +1,4 @@
-use crate::runtime::failure::{init_panic_hook, persist_failure};
+use crate::runtime::failure::{begin_execution, init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
@@ -146,7 +146,10 @@ impl Execution {
     {
         let state = RefCell::new(ExecutionState::new(config.clone(), Rc::clone(&self.scheduler)));
 
-        init_panic_hook(config.clone());
+        init_panic_hook();
+        // Held for the rest of this function, including while a failing execution unwinds, so that the
+        // panic hook only reports schedules for panics that actually happened inside the execution.
+        let _execution = begin_execution(config);
         CurrentSchedule::init(self.initial_schedule.clone());
         UNGRACEFUL_SHUTDOWN_CONFIG.set(config.ungraceful_shutdown_config);
 
