@@ -13,7 +13,7 @@ fn ui() {
 }
 
 use shuttle::scheduler::{RandomScheduler, ReplayScheduler, Scheduler};
-use shuttle::{replay_from_file, Config, FailurePersistence, Runner};
+use shuttle::{replay_from_file, Config, FailurePersistence, Runner, ScheduleEncoding, ScheduleTextEncoding};
 use std::any::Any;
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
 use std::path::{Path, PathBuf};
@@ -140,17 +140,18 @@ where
 /// Validates that replaying from a seed is deterministic, by running a failing seed found by a random
 /// scheduler for one iteration and checking that it persists exactly the expected schedule.
 ///
+/// The expected schedules are pinned in the legacy fixed-width hex encoding. That keeps the literals
+/// readable ASCII, and doubles as a check that Shuttle can still write the old format on request.
 fn check_replay_from_seed_match_schedule<F>(test_func: F, seed: u64, expected_schedule: &str)
 where
     F: Fn() + Send + Sync + UnwindSafe + 'static,
 {
+    let mut config = Config::new();
+    config.schedule_encoding = ScheduleEncoding::FixedWidth;
+    config.schedule_text_encoding = ScheduleTextEncoding::Hex;
+
     let dir = tempfile::tempdir().expect("could not create tempdir");
-    let (_, path) = run_expecting_failure(
-        test_func,
-        RandomScheduler::new_from_seed(seed, 1),
-        Config::new(),
-        dir.path(),
-    );
+    let (_, path) = run_expecting_failure(test_func, RandomScheduler::new_from_seed(seed, 1), config, dir.path());
 
     // Compared with whitespace stripped, because what this test pins is the sequence of scheduling
     // decisions, not the width a schedule happens to be wrapped at. Deserialization ignores
