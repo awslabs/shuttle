@@ -1,3 +1,11 @@
+# Unreleased
+
+* A failure now reports one schedule rather than two. Shuttle used to report from the panic hook and again after the panic had unwound; it now reports once, after the unwind, which also gives the more complete schedule. Reporting from the hook is still what gets a schedule out when a second panic during unwinding aborts the process, so it is available via the new `Config::eager_failure_reports`. With that set, reporting is grow-only: the later, longer schedule supersedes the earlier one, a panic the test catches itself no longer consumes the execution's report, and under `FailurePersistence::Print` the superseding block says so.
+* Fix: under `FailurePersistence::File`, a single failure could write two schedule files, the second a longer version of the first. The longer schedule now rewrites the same file, so one failure leaves one file holding the most complete schedule.
+* Fix: the panic hook captured the `Config` of the first execution in the process, so later `Runner`s' `FailurePersistence` settings were ignored.
+* Fix: replaying a persisted schedule no longer reports "schedule ended early". A schedule recorded at the moment of failure stops there, but the replayed execution keeps scheduling as the panic unwinds; those decisions are now made freely instead of aborting the replay. `ReplayScheduler::set_allow_incomplete` is no longer needed to replay a schedule Shuttle wrote.
+* Fix: a panic occurring after a Shuttle test finished, including one raised by the surrounding test harness, was reported as a Shuttle failure and serialized the schedule of the execution that had already completed.
+
 # 0.9.3 (August 19, 2026)
 
 * Fix `BatchSemaphore` waking the wrong task when an `Acquire` future is polled by a task other than the one that created it (the motivating case is an in-flight acquire cached inside a longer-lived object, such as a tokio `Receiver` that is moved between tasks). Waiters left behind by a cancelled `Acquire` whose task has since finished are now also treated as stale instead of consuming permits or blocking a finished task. (#317)
