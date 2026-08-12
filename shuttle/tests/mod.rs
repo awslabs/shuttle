@@ -12,13 +12,66 @@ fn ui() {
     t.compile_fail("tests/ui/*.rs");
 }
 
-use shuttle::scheduler::{ReplayScheduler, Scheduler};
-use shuttle::{check_random_with_seed, replay_from_file, Config, FailurePersistence, Runner};
+use shuttle::scheduler::{RandomScheduler, ReplayScheduler, Scheduler};
+use shuttle::{replay_from_file, Config, FailurePersistence, Runner};
+use std::any::Any;
 use std::panic::{self, RefUnwindSafe, UnwindSafe};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Validates that schedule replay works by running a test, expecting it to fail, and then parsing
-/// and replaying the failing schedule from its output.
+/// The message of a caught panic, whichever payload type it happened to use.
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_else(|| "<non-string panic payload>".to_owned())
+}
+
+/// Run a Shuttle test that is expected to fail, persisting the failing schedule into `dir`, and
+/// return the panic message together with the path of the schedule that was written.
+///
+/// Reading the schedule from a file rather than scraping it out of the panic message is deliberate.
+/// Shuttle reports the failing schedule from its panic hook, at the moment of the panic, so that a
+/// schedule is still reported if a second panic while unwinding aborts the process. That report goes
+/// to stderr (or a file), never into the panic payload.
+fn run_expecting_failure<F, S>(test_func: F, scheduler: S, config: Config, dir: &Path) -> (String, PathBuf)
+where
+    F: Fn() + Send + Sync + UnwindSafe + 'static,
+    S: Scheduler + UnwindSafe + 'static,
+{
+    let payload = {
+        let mut config = config;
+        config.failure_persistence = FailurePersistence::File(Some(dir.to_path_buf()));
+        panic::catch_unwind(move || Runner::new(scheduler, config).run(test_func)).expect_err("test should panic")
+    };
+
+    let mut schedules = std::fs::read_dir(dir)
+        .expect("could not read schedule directory")
+        .map(|entry| entry.expect("bad directory entry").path())
+        .collect::<Vec<_>>();
+    schedules.sort();
+    // One failure means one file. A failing execution reaches the failure reporting path twice, from
+    // the panic hook and again from the runtime once the panic has unwound, and the second schedule is
+    // a longer version of the first. The longer one rewrites the file rather than adding a second, so
+    // what is left behind is one file holding the most complete schedule.
+    assert_eq!(
+        schedules.len(),
+        1,
+        "expected exactly one persisted schedule, got {schedules:?}"
+    );
+
+    (panic_message(payload.as_ref()), schedules.pop().unwrap())
+}
+
+fn read_schedule(path: &Path) -> String {
+    let schedule = std::fs::read_to_string(path).expect("could not read schedule file");
+    assert!(!schedule.trim().is_empty(), "persisted an empty schedule");
+    schedule
+}
+
+/// Validates that schedule replay works by running a test, expecting it to fail, and then replaying
+/// the schedule it persisted. The replay must reproduce the same panic and record the same schedule.
 fn check_replay_roundtrip<F, S>(test_func: F, scheduler: S)
 where
     F: Fn() + Send + Sync + RefUnwindSafe + 'static,
@@ -26,133 +79,82 @@ where
 {
     let test_func = Arc::new(test_func);
 
-    // Run the test that should fail and capture the schedule it prints
-    let result = {
+    let dir = tempfile::tempdir().expect("could not create tempdir");
+    let (output, path) = {
         let test_func = test_func.clone();
-        panic::catch_unwind(move || {
-            let mut config = Config::new();
-            config.failure_persistence = FailurePersistence::Print;
-            let runner = Runner::new(scheduler, config);
-            runner.run(move || test_func())
-        })
-        .expect_err("test should panic")
+        run_expecting_failure(move || test_func(), scheduler, Config::new(), dir.path())
     };
-    let output = result.downcast::<String>().unwrap();
-    let schedule = parse_schedule::from_stdout(&output).expect("output should contain a schedule");
+    let schedule = read_schedule(&path);
 
-    // Now replay that schedule and make sure it still fails and outputs the same schedule
-    let result = {
-        let schedule = schedule.clone();
-        panic::catch_unwind(move || {
-            let mut config = Config::new();
-            config.failure_persistence = FailurePersistence::Print;
-            let scheduler = ReplayScheduler::new_from_encoded(&schedule);
-            let runner = Runner::new(scheduler, config);
+    // Note that this replay does not set `allow_incomplete`: a schedule Shuttle persisted has to be
+    // enough to reproduce the failure on its own.
+    let replay_dir = tempfile::tempdir().expect("could not create tempdir");
+    let (new_output, new_path) = run_expecting_failure(
+        move || test_func(),
+        ReplayScheduler::new_from_encoded(&schedule),
+        Config::new(),
+        replay_dir.path(),
+    );
 
-            runner.run(move || test_func());
-        })
-        .expect_err("replay should panic")
-    };
-    let new_output = result.downcast::<String>().unwrap();
-    let new_schedule = parse_schedule::from_stdout(&new_output).expect("output should contain a schedule");
-
-    assert_eq!(new_schedule, schedule);
+    assert_eq!(read_schedule(&new_path), schedule);
     // This might be too strong a check, but seems reasonable: the panics should be identical
     assert_eq!(new_output, output);
 }
 
-/// Validates that schedule replay works by running a test, expecting it to fail, and then parsing
-/// and replaying the failing schedule from its output.
+/// As [`check_replay_roundtrip`], but loading the schedule back through the file-based entry points,
+/// including the [`replay_from_file`] convenience wrapper.
 fn check_replay_roundtrip_file<F, S>(test_func: F, scheduler: S)
 where
     F: Fn() + Send + Sync + RefUnwindSafe + 'static,
     S: Scheduler + UnwindSafe + 'static,
 {
-    let tempdir = tempfile::tempdir().expect("could not create tempdir");
     let test_func = Arc::new(test_func);
 
-    // Run the test that should fail and capture the schedule it prints
-    let result = {
+    let dir = tempfile::tempdir().expect("could not create tempdir");
+    let (output, path) = {
         let test_func = test_func.clone();
-        let tempdir_path = tempdir.path().to_path_buf();
-        panic::catch_unwind(move || {
-            let mut config = Config::new();
-            config.failure_persistence = FailurePersistence::File(Some(tempdir_path));
-            let runner = Runner::new(scheduler, config);
-            runner.run(move || test_func())
-        })
-        .expect_err("test should panic")
+        run_expecting_failure(move || test_func(), scheduler, Config::new(), dir.path())
     };
-    let output = result.downcast::<String>().unwrap();
-    let (schedule, schedule_file) = parse_schedule::from_file(&output).expect("output should contain a schedule");
+    let schedule = read_schedule(&path);
 
-    // Now replay that schedule and make sure it still fails and outputs the same schedule. We want
-    // to test the `replay_from_file` function directly, so this time we'll default to printing the
-    // schedule to stdout.
-    let result = {
-        panic::catch_unwind(move || replay_from_file(move || test_func(), schedule_file))
-            .expect_err("replay should panic")
+    let replay_dir = tempfile::tempdir().expect("could not create tempdir");
+    let (new_output, new_path) = {
+        let test_func = test_func.clone();
+        run_expecting_failure(
+            move || test_func(),
+            ReplayScheduler::new_from_file(&path).expect("could not load schedule from file"),
+            Config::new(),
+            replay_dir.path(),
+        )
     };
-    let new_output = result.downcast::<String>().unwrap();
-    let new_schedule = parse_schedule::from_stdout(&new_output).expect("output should contain a schedule");
+    assert_eq!(read_schedule(&new_path), schedule);
+    assert_eq!(new_output, output);
 
-    assert_eq!(new_schedule, schedule);
-    // Stronger `output == new_output` check doesn't hold here because we used different values of
-    // `FailurePersistence`s for each test
+    // `replay_from_file` keeps the default `FailurePersistence`, so it prints its schedule rather
+    // than writing a file; all we can check here is that it reproduces the same failure.
+    let wrapper_output =
+        panic::catch_unwind(move || replay_from_file(move || test_func(), path)).expect_err("replay should panic");
+    assert_eq!(panic_message(wrapper_output.as_ref()), output);
 }
 
-/// Validates that the replay from seed functionality works by running a failing seed found by a random
-/// scheduler for one iteration, expecting it to fail, comparing the new failing schedule against the
-/// previously collected one, and checking the two schedules being identical.
+/// Validates that replaying from a seed is deterministic, by running a failing seed found by a random
+/// scheduler for one iteration and checking that it persists exactly the expected schedule.
+///
 fn check_replay_from_seed_match_schedule<F>(test_func: F, seed: u64, expected_schedule: &str)
 where
     F: Fn() + Send + Sync + UnwindSafe + 'static,
 {
-    let result = {
-        panic::catch_unwind(move || {
-            check_random_with_seed(test_func, seed, 1);
-        })
-        .expect_err("replay should panic")
-    };
-    let output = result.downcast::<String>().unwrap();
-    let schedule_from_replay = parse_schedule::from_stdout(&output).expect("output should contain a schedule");
+    let dir = tempfile::tempdir().expect("could not create tempdir");
+    let (_, path) = run_expecting_failure(
+        test_func,
+        RandomScheduler::new_from_seed(seed, 1),
+        Config::new(),
+        dir.path(),
+    );
 
-    assert_eq!(schedule_from_replay, expected_schedule);
-}
-
-/// Helpers to parse schedules from different types of output (as determined by [`FailurePersistence`])
-mod parse_schedule {
-    use regex::Regex;
-    use std::fs::OpenOptions;
-    use std::io::Read;
-    use std::path::PathBuf;
-
-    pub(super) fn from_file<S: AsRef<String>>(output: S) -> Option<(String, PathBuf)> {
-        let file_regex = Regex::new("persisted to file: (.*)").unwrap();
-        let file_match = file_regex.captures(output.as_ref().as_str())?.get(1)?.as_str();
-        let mut file = OpenOptions::new().read(true).open(file_match).ok()?;
-        let mut schedule = String::new();
-        file.read_to_string(&mut schedule).ok()?;
-        Some((schedule, PathBuf::from(file_match)))
-    }
-
-    pub(super) fn from_stdout<S: AsRef<String>>(output: S) -> Option<String> {
-        let mut schedule = String::new();
-        let mut lines = output.as_ref().lines();
-        for line in &mut lines {
-            if line.eq("failing schedule:") {
-                break;
-            }
-        }
-        assert_eq!(lines.next().unwrap(), "\"");
-        for line in lines {
-            if line.eq("\"") {
-                schedule.pop(); // trailing newline, if any
-                return Some(schedule);
-            }
-            schedule.push_str(line);
-            schedule.push('\n');
-        }
-        None
-    }
+    // Compared with whitespace stripped, because what this test pins is the sequence of scheduling
+    // decisions, not the width a schedule happens to be wrapped at. Deserialization ignores
+    // whitespace too, so a difference in wrapping is not a difference in schedule.
+    let strip = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    assert_eq!(strip(&read_schedule(&path)), strip(expected_schedule));
 }

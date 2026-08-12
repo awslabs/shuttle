@@ -76,10 +76,31 @@ impl Scheduler for ReplayScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[&Task], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
+    fn next_task(&mut self, runnable: &[&Task], current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
         loop {
             if self.steps >= self.schedule.steps.len() {
-                assert!(self.allow_incomplete, "schedule ended early");
+                // A schedule recorded from a failing test ends at the failure, but the replayed
+                // execution keeps asking for scheduling decisions while the panic unwinds, because a
+                // `Drop` handler that touches a synchronization primitive yields. Those decisions
+                // come after the failure has already been reproduced, so any of them will do; we
+                // just have to keep scheduling, because returning `None` here would stop the
+                // execution mid-unwind and abandon the panic we were trying to reproduce.
+                //
+                // Prefer the task that is unwinding so that it makes progress and finishes.
+                if std::thread::panicking() {
+                    return current
+                        .filter(|current| runnable.iter().any(|task| task.id() == *current))
+                        .or_else(|| runnable.first().map(|task| task.id()));
+                }
+
+                assert!(
+                    self.allow_incomplete,
+                    "schedule ended early: the execution asked for more scheduling decisions than \
+                     the schedule contains, without reproducing the recorded failure. This usually \
+                     means the test being replayed is not the one the schedule came from, or that it \
+                     contains nondeterminism Shuttle does not control. Call \
+                     `ReplayScheduler::set_allow_incomplete` if the schedule is deliberately partial."
+                );
                 return None;
             }
             match self.schedule.steps[self.steps] {
@@ -129,13 +150,24 @@ impl Scheduler for ReplayScheduler {
     }
 
     fn next_u64(&mut self) -> u64 {
-        match self.schedule.steps[self.steps] {
-            ScheduleStep::Random => {
+        match self.schedule.steps.get(self.steps) {
+            Some(ScheduleStep::Random) => {
                 self.steps += 1;
                 self.data_source.next_u64()
             }
-            ScheduleStep::Task(_) => {
+            Some(ScheduleStep::Task(_)) => {
                 panic!("expected random choice but next schedule step is context switch");
+            }
+            // As in `next_task`: code running after the recorded failure, such as a `Drop` handler
+            // unwinding, may ask for values the schedule does not have. Any value will do at that
+            // point, and refusing would abandon the panic being reproduced.
+            None => {
+                assert!(
+                    self.allow_incomplete || std::thread::panicking(),
+                    "schedule ended early: a random value was requested after the end of the \
+                     schedule, without reproducing the recorded failure"
+                );
+                self.data_source.next_u64()
             }
         }
     }

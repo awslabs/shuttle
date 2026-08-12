@@ -277,7 +277,6 @@ fn check_producer_consumer_broken1() {
     check_random(producer_consumer_broken1, 5000)
 }
 
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 #[test]
 #[should_panic(expected = "nothing to get")]
 fn replay_producer_consumer_broken1() {
