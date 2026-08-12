@@ -370,6 +370,113 @@ fn batch_semaphore_signal() {
     );
 }
 
+/// A queued `Acquire` that is polled by a second task must wake *that* task.
+///
+/// An `Acquire` is a future like any other: it can be created and first polled
+/// by one task, stored in a longer-lived object, and later polled by a different
+/// task. Tokio's `Receiver::poll_recv(&mut self, cx)` is the motivating example
+/// — it keeps its in-flight acquire inside the `Receiver`, so a `Receiver` that
+/// is moved between tasks carries the acquire with it.
+///
+/// The waiter therefore has to follow the poller, both its waker and the task it
+/// unblocks. If it keeps pointing at whoever polled first, a later `release`
+/// hands the permits to a task that is no longer waiting and never notifies the
+/// task that actually is.
+///
+/// The two pollers here use their own wakers so the test can assert *which* one
+/// the semaphore notified. Asserting on the wakers rather than on progress is
+/// deliberate: a lost wakeup does not reliably deadlock, because a `Pending`
+/// future is left sleeping and Shuttle may schedule a spurious re-poll that
+/// papers over the missing notification.
+#[test]
+fn queued_acquire_polled_by_second_task_is_woken() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::AtomicBool;
+    use std::task::Context;
+
+    shuttle::lazy_static! {
+        static ref SEM: BatchSemaphore = BatchSemaphore::new(0, Fairness::StrictlyFair);
+        // Parks the first task so it stays alive (and thus not "stale") while
+        // the second task waits on the acquire it registered.
+        static ref PARK: BatchSemaphore = BatchSemaphore::new(0, Fairness::StrictlyFair);
+    }
+
+    /// Records whether it was woken, so the test can tell *which* poller the
+    /// semaphore notified.
+    #[derive(Debug, Default)]
+    struct Recorder(AtomicBool);
+
+    impl Recorder {
+        fn woken(&self) -> bool {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    impl futures::task::ArcWake for Recorder {
+        fn wake_by_ref(arc_self: &Arc<Self>) {
+            arc_self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Polls `acquire` once with a waker belonging to `recorder`, asserting it
+    /// does not resolve, so the waiter stays queued.
+    fn poll_pending(acquire: &mut Pin<Box<Acquire<'static>>>, recorder: &Arc<Recorder>) {
+        let waker = futures::task::waker(recorder.clone());
+        let mut cx = Context::from_waker(&waker);
+        assert!(acquire.as_mut().poll(&mut cx).is_pending());
+    }
+
+    check_dfs(
+        || {
+            future::block_on(async {
+                // The `Acquire` outlives the task that first polls it. A stdlib
+                // mutex keeps the handoff free of extra yield points.
+                let acquire = Arc::new(Mutex::new(Some(Box::pin(SEM.acquire(1)))));
+                let recorder_a = Arc::new(Recorder::default());
+                let recorder_b = Arc::new(Recorder::default());
+                let (polled_tx, polled_rx) = shuttle::sync::mpsc::channel();
+
+                let mut tasks = vec![];
+                for recorder in [recorder_a.clone(), recorder_b.clone()] {
+                    let acquire = acquire.clone();
+                    let polled_tx = polled_tx.clone();
+                    tasks.push(future::spawn(async move {
+                        let mut acq = acquire.lock().unwrap().take().unwrap();
+                        // No permits are available, so this leaves a waiter
+                        // queued, pointing at this task and this waker.
+                        poll_pending(&mut acq, &recorder);
+                        // Hand the still-queued acquire on, then park without
+                        // ever polling it again.
+                        *acquire.lock().unwrap() = Some(acq);
+                        polled_tx.send(()).unwrap();
+                        PARK.acquire(1).await.unwrap();
+                    }));
+                    // Serialize the two polls: the second task must be the last
+                    // one to have polled when the release below happens.
+                    polled_rx.recv().unwrap();
+                }
+
+                // Grants the permit to the queued waiter, which must notify the
+                // task that polled most recently rather than the one that first
+                // registered.
+                SEM.release(1);
+                assert!(recorder_b.woken(), "second poller was not woken");
+                assert!(!recorder_a.woken(), "first poller was woken instead");
+
+                PARK.release(2);
+                for task in tasks {
+                    task.await.unwrap();
+                }
+            });
+        },
+        // The handshake above pins down the ordering the assertions depend on,
+        // so the remaining interleavings are incidental; a bounded search keeps
+        // this cheap.
+        Some(500),
+    );
+}
+
 #[test]
 fn batch_semaphore_close_acquire() {
     // Check that closing a semaphore is handled gracefully
