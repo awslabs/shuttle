@@ -477,6 +477,63 @@ fn queued_acquire_polled_by_second_task_is_woken() {
     );
 }
 
+/// Releasing permits to a waiter whose task has finished must not panic, and
+/// must not lose the permits.
+///
+/// The companion case to `queued_acquire_polled_by_second_task_is_woken`: here
+/// the task that registered the waiter exits without ever resolving or dropping
+/// its `Acquire`, because the `Acquire` was stored somewhere that outlives the
+/// task. Nobody is waiting on that waiter, so a later `release` has nobody to
+/// unblock — it must discard the waiter rather than assert that the registering
+/// task is still alive.
+///
+/// The permits must stay available: the abandoned `Acquire` is still a live
+/// future, and polling it from a task that *is* running has to succeed.
+#[test]
+fn release_to_waiter_of_finished_task() {
+    // A `lazy_static` semaphore gives the `Acquire` a `'static` borrow, so it can
+    // be handed to a `'static` spawned task and outlive it.
+    shuttle::lazy_static! {
+        static ref SEM: BatchSemaphore = BatchSemaphore::new(0, Fairness::StrictlyFair);
+    }
+
+    check_dfs(
+        || {
+            future::block_on(async {
+                // A stdlib mutex keeps the handoff free of extra yield points.
+                let acquire = Arc::new(Mutex::new(None));
+
+                let acquire2 = Arc::clone(&acquire);
+                let registrant = future::spawn(async move {
+                    // Created *and* first polled by this task, so the queued
+                    // waiter belongs to the task that is about to finish.
+                    let mut acq = Box::pin(SEM.acquire(1));
+                    // No permits are available, so this leaves a waiter queued.
+                    assert!(futures::poll!(acq.as_mut()).is_pending());
+                    // Hand the still-queued acquire back out so it outlives this
+                    // task, then finish without polling or dropping it again.
+                    *acquire2.lock().unwrap() = Some(acq);
+                });
+                registrant.await.unwrap();
+
+                // The only queued waiter belongs to a task that has finished.
+                SEM.release(1);
+                assert_eq!(
+                    SEM.available_permits(),
+                    1,
+                    "permits were consumed by a waiter nobody is waiting on"
+                );
+
+                // The abandoned acquire is still usable by a live task.
+                let acq = acquire.lock().unwrap().take().unwrap();
+                acq.await.unwrap();
+                assert_eq!(SEM.available_permits(), 0);
+            });
+        },
+        None,
+    );
+}
+
 #[test]
 fn batch_semaphore_close_acquire() {
     // Check that closing a semaphore is handled gracefully
