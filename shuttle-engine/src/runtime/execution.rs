@@ -293,7 +293,7 @@ impl Execution {
                 // Task finished
                 Ok(true) => {
                     crate::annotations::record_task_terminated();
-                    ExecutionState::with(|state| state.current_mut().finish());
+                    ExecutionState::with(|state| state.finish_current_task());
                 }
                 // Task yielded
                 Ok(false) => {
@@ -346,6 +346,19 @@ pub struct ExecutionState {
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
+
+    // Ids of all tasks that have not yet finished, kept sorted in ascending order.
+    //
+    // `tasks` never shrinks, so it accumulates every task ever created by the execution. Scanning it
+    // on every scheduling decision therefore costs O(tasks ever created), even though only the
+    // unfinished ones can ever be scheduled. This set lets `schedule` iterate just the live tasks.
+    //
+    // invariant: contains exactly the ids of the tasks in `tasks` that are not `Finished`, in
+    // ascending order. Maintained by pushing on task creation (ids are handed out sequentially, so
+    // pushing keeps this sorted) and removing in `finish_current_task`. This is sound because
+    // `Finished` is a terminal state: it is only ever set by `Task::finish`, and `block`, `sleep`,
+    // and `unblock` all assert that they are never applied to a finished task.
+    live_tasks: Vec<TaskId>,
 }
 
 impl std::fmt::Debug for ExecutionState {
@@ -401,6 +414,7 @@ impl ExecutionState {
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
+            live_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
         }
     }
 
@@ -548,7 +562,7 @@ impl ExecutionState {
                 None,
                 TaskSignature::new_parentless(caller),
             );
-            state.tasks.push(task);
+            state.add_task(task);
 
             task_id
         });
@@ -595,7 +609,7 @@ impl ExecutionState {
                 state.current_mut().signature.new_child(caller),
             );
 
-            state.tasks.push(task);
+            state.add_task(task);
 
             task_id
         });
@@ -641,7 +655,7 @@ impl ExecutionState {
                 Some(state.current().id()),
                 state.current_mut().signature.new_child(caller),
             );
-            state.tasks.push(task);
+            state.add_task(task);
 
             task_id
         });
@@ -659,6 +673,8 @@ impl ExecutionState {
         let (mut tasks, final_state) = Self::with(|state| {
             state.in_cleanup = true;
             assert!(state.current_task == ScheduledTask::Stopped || state.current_task == ScheduledTask::Finished);
+            // Keep the `live_tasks` invariant intact as the tasks are pulled out of the state.
+            state.live_tasks.clear();
             (std::mem::take(&mut state.tasks), state.current_task)
         });
 
@@ -782,6 +798,29 @@ impl ExecutionState {
         self.try_get(id).unwrap()
     }
 
+    /// Register a newly created task. Task ids are handed out sequentially as `tasks.len()`, so the
+    /// new id is always greater than every existing one and `live_tasks` stays sorted.
+    fn add_task(&mut self, task: Task) {
+        debug_assert!(self.live_tasks.last().is_none_or(|last| *last < task.id()));
+        self.live_tasks.push(task.id());
+        self.tasks.push(task);
+    }
+
+    /// Mark the task as finished and drop it from the set of live tasks.
+    fn finish_task(&mut self, task_id: TaskId) {
+        self.get_mut(task_id).finish();
+        let idx = self
+            .live_tasks
+            .binary_search(&task_id)
+            .expect("finished task must be live");
+        self.live_tasks.remove(idx);
+    }
+
+    /// Mark the current task as finished and drop it from the set of live tasks.
+    fn finish_current_task(&mut self) {
+        self.finish_task(self.current_task.id().unwrap());
+    }
+
     pub fn get_mut(&mut self, id: TaskId) -> &mut Task {
         self.tasks.get_mut(id.0).unwrap()
     }
@@ -879,10 +918,20 @@ impl ExecutionState {
         let mut all_runnable_detached = true;
         let mut any_runnable = false;
 
-        for task in &self.tasks {
-            if task.finished() {
-                continue;
-            }
+        // The loop below only looks at `live_tasks`, so a task missing from that set would silently
+        // never be scheduled. Check that direction of the invariant here; the loop itself checks the
+        // other direction (that no finished task is still in the set).
+        debug_assert!(
+            self.tasks
+                .iter()
+                .filter(|task| !task.finished() && task.runnable())
+                .all(|task| self.live_tasks.binary_search(&task.id()).is_ok()),
+            "live_tasks is missing a runnable unfinished task"
+        );
+
+        for &task_id in &self.live_tasks {
+            let task = &self.tasks[task_id.0];
+            debug_assert!(!task.finished());
             unfinished_attached |= !task.detached;
             let is_runnable = task.runnable();
             any_runnable |= is_runnable;
