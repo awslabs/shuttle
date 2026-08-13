@@ -9,17 +9,35 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use tracing::trace;
 
 struct Waiter {
-    task_id: TaskId,
+    /// The task waiting on this waiter's `Acquire`.
+    ///
+    /// Refreshed on every poll (like `waker`) rather than frozen at creation
+    /// time. An `Acquire` future is not necessarily owned by the task that
+    /// created it: it can be cached inside a longer-lived object and later
+    /// polled by a different task (tokio's `poll_recv(&mut self, cx)` is the
+    /// motivating example — the in-flight acquire lives in the `Receiver`, and
+    /// a `Receiver` may be moved between tasks). The semaphore must unblock
+    /// whoever is actually waiting now, so this follows the poller. This
+    /// mirrors tokio's own `batch_semaphore`, which refreshes its waiter's
+    /// `Waker` under a `will_wake` check.
+    ///
+    /// Stored as an atomic rather than a `Cell` to keep `Waiter` (and hence
+    /// `Acquire`) `Sync`.
+    task_id: AtomicUsize,
     num_permits: usize,
     is_queued: AtomicBool,
     has_permits: AtomicBool,
+    /// Clock of the task that created this waiter. Note this is *not* refreshed
+    /// when `task_id` is: it is only used to seed the causality of the acquired
+    /// permits, and keeping the original enqueue clock is conservative (it can
+    /// only add happens-before edges, never remove them).
     clock: VectorClock,
     waker: Mutex<Option<Waker>>,
 }
@@ -28,7 +46,7 @@ struct Waiter {
 impl fmt::Debug for Waiter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Waiter")
-            .field("task_id", &self.task_id)
+            .field("task_id", &self.task_id())
             .field("num_permits", &self.num_permits)
             .field("is_queued", &self.is_queued)
             .field("has_permits", &self.has_permits)
@@ -40,13 +58,24 @@ impl fmt::Debug for Waiter {
 impl Waiter {
     fn new(num_permits: usize) -> Self {
         Self {
-            task_id: ExecutionState::me(),
+            task_id: AtomicUsize::new(ExecutionState::me().into()),
             num_permits,
             is_queued: AtomicBool::new(false),
             has_permits: AtomicBool::new(false),
             clock: current::clock(),
             waker: Mutex::new(None),
         }
+    }
+
+    /// The task currently waiting on this waiter. See [`Waiter::task_id`].
+    fn task_id(&self) -> TaskId {
+        TaskId::from(self.task_id.load(Ordering::SeqCst))
+    }
+
+    /// Point this waiter at the task that is polling it now, so that a later
+    /// `release` unblocks the current poller rather than whoever polled first.
+    fn set_task_id(&self, task_id: TaskId) {
+        self.task_id.store(task_id.into(), Ordering::SeqCst);
     }
 }
 
@@ -242,12 +271,36 @@ impl BatchSemaphoreState {
 
     fn unblock_waiters_from_front(&mut self) {
         while let Some(front) = self.waiters.front() {
+            // A waiter whose task has already finished is stale: its `Acquire`
+            // future was cancelled (e.g. a `select!` branch lost, or a
+            // `poll_recv`-style API cached the `Acquire` inside a longer-lived
+            // object) and the registering task then exited. There is nobody to
+            // unblock, so discard the waiter without consuming permits; if the
+            // `Acquire` is still alive and some other task polls it, it will
+            // re-acquire from the (still available) permits.
+            //
+            // `remove_waiter` can reach this during execution cleanup, when the
+            // task list is gone, so probe defensively and treat "can't tell" as
+            // not stale (i.e. preserve the old behaviour).
+            let front_is_stale = ExecutionState::try_with(|s| {
+                !s.in_cleanup() && s.try_get(front.task_id()).is_some_and(|t| t.finished())
+            })
+            .unwrap_or(false);
+            if front_is_stale {
+                let waiter = self.waiters.pop_front().unwrap();
+                waiter.is_queued.store(false, Ordering::SeqCst);
+                // Preserve the "queued <=> waker registered" invariant asserted
+                // in `Acquire::poll`; waking a finished task's waker is a no-op.
+                waiter.waker.lock().unwrap().take();
+                trace!("dropping stale waiter {:?} for finished task", waiter);
+                continue;
+            }
             if front.num_permits <= self.permits_available.available() {
                 let waiter = self.waiters.pop_front().unwrap();
 
                 crate::annotations::record_semaphore_acquire_unblocked(
                     self.id.unwrap(),
-                    waiter.task_id,
+                    waiter.task_id(),
                     waiter.num_permits,
                 );
 
@@ -266,7 +319,7 @@ impl BatchSemaphoreState {
                 assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
                 assert!(!waiter.has_permits.swap(true, Ordering::SeqCst));
                 ExecutionState::with(|s| {
-                    let task = s.get_mut(waiter.task_id);
+                    let task = s.get_mut(waiter.task_id());
                     assert!(!task.finished());
                     // The acquiry is causally dependent on the event
                     // which released the acquired permits.
@@ -419,8 +472,10 @@ impl BatchSemaphore {
             assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
             assert!(!waiter.has_permits.load(Ordering::SeqCst)); // sanity check
             ExecutionState::with(|exec_state| {
-                if !exec_state.in_cleanup() {
-                    exec_state.get_mut(waiter.task_id).unblock();
+                // A waiter whose task has finished is stale (its `Acquire` was
+                // cancelled and the task exited); there is nothing to unblock.
+                if !exec_state.in_cleanup() && !exec_state.get(waiter.task_id()).finished() {
+                    exec_state.get_mut(waiter.task_id()).unblock();
                 }
             });
             let mut maybe_waker = waiter.waker.lock().unwrap();
@@ -487,11 +542,13 @@ impl BatchSemaphore {
             ExecutionState::with(|s| {
                 for waiter in &state.waiters {
                     let available = state.permits_available.available();
-                    if available < waiter.num_permits {
+                    // Skip stale waiters: the task that registered the waiter
+                    // has finished, so there is nothing to block.
+                    if available < waiter.num_permits && s.try_get(waiter.task_id()).is_some_and(|t| !t.finished()) {
                         // Block this waiter: it cannot succeed (there are not
                         // enough permits available); its `poll` would return
                         // without resolving.
-                        s.get_mut(waiter.task_id).block(false);
+                        s.get_mut(waiter.task_id()).block(false);
                     }
                 }
             });
@@ -605,11 +662,24 @@ impl BatchSemaphore {
                 let num_available = state.permits_available.available();
                 for waiter in &mut state.waiters {
                     if waiter.num_permits <= num_available {
-                        ExecutionState::with(|s| {
-                            let task = s.get_mut(waiter.task_id);
-                            assert!(!task.finished());
-                            task.unblock();
+                        // A waiter whose task has already finished is stale: its
+                        // `Acquire` was cancelled (and possibly cached in a
+                        // longer-lived object) and the task then exited. Unlike
+                        // the strictly fair case there is nothing to clean up —
+                        // an unfair waiter holds no permits, so it blocks
+                        // nobody — but there is also nobody to unblock.
+                        let stale = ExecutionState::with(|s| {
+                            let task = s.get_mut(waiter.task_id());
+                            if task.finished() {
+                                true
+                            } else {
+                                task.unblock();
+                                false
+                            }
                         });
+                        if stale {
+                            continue;
+                        }
                         let maybe_waker = waiter.waker.lock().unwrap();
                         if let Some(waker) = maybe_waker.as_ref() {
                             waker.wake_by_ref();
@@ -779,7 +849,7 @@ impl Future for Acquire<'_> {
                         if is_queued {
                             crate::annotations::record_semaphore_acquire_unblocked(
                                 id,
-                                self.waiter.task_id,
+                                self.waiter.task_id(),
                                 self.waiter.num_permits,
                             );
                             self.semaphore.remove_waiter(&self.waiter);
@@ -799,6 +869,9 @@ impl Future for Acquire<'_> {
                     Err(TryAcquireError::NoPermits) => {
                         let mut maybe_waker = self.waiter.waker.lock().unwrap();
                         *maybe_waker = Some(cx.waker().clone());
+                        // Point the waiter at whoever is polling now: this future
+                        // may have been created by a different task.
+                        self.waiter.set_task_id(ExecutionState::me());
                         if !is_queued {
                             crate::annotations::record_semaphore_acquire_blocked(id, self.waiter.num_permits);
                             self.semaphore.enqueue_waiter(&self.waiter);
@@ -810,7 +883,15 @@ impl Future for Acquire<'_> {
                     Err(TryAcquireError::Closed) => unreachable!(),
                 }
             } else {
-                // No progress made, future is still pending.
+                // No progress made, future is still pending. The waiter stays in
+                // the queue, but re-point it at the current poller and refresh
+                // its waker: this future may have been created by (or last
+                // polled by) another task, and `release` must wake whoever is
+                // waiting now. Without this, a permit granted to this waiter
+                // would unblock a task that is no longer interested, and the
+                // actual poller would never be woken.
+                *self.waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+                self.waiter.set_task_id(ExecutionState::me());
                 Poll::Pending
             }
         }
