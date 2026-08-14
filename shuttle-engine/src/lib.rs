@@ -12,7 +12,7 @@ pub mod sync_types;
 pub mod thread_support;
 
 pub use config::{
-    Config, ContinuationFunctionBehavior, FailurePersistence, MaxSteps, UngracefulShutdownConfig,
+    Config, ContinuationFunctionBehavior, FailurePersistence, MaxSteps, TaskBackend, UngracefulShutdownConfig,
     UNGRACEFUL_SHUTDOWN_CONFIG,
 };
 pub use runtime::runner::{PortfolioRunner, Runner};

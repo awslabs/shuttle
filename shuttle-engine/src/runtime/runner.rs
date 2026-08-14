@@ -75,13 +75,43 @@ impl<S: Scheduler + 'static> Runner<S> {
     where
         F: Fn() + Send + Sync + 'static,
     {
+        let caller = Location::caller();
+        let f = Arc::new(f);
+        self.run_iterations(move |execution, config| {
+            let f = Arc::clone(&f);
+            execution.run(config, move || f(), caller)
+        })
+    }
+
+    /// Test the given async function and return the number of iterations run.
+    ///
+    /// Unlike [`Runner::run`], the test body is a future, so it can run on
+    /// [`TaskBackend::Futures`](crate::config::TaskBackend::Futures): the root task is polled
+    /// directly instead of being driven from inside a coroutine. `f` is called once per iteration to
+    /// produce a fresh future.
+    #[track_caller]
+    pub fn run_async<F, Fut>(self, f: F) -> usize
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + 'static,
+    {
+        let caller = Location::caller();
+        let f = Arc::new(f);
+        self.run_iterations(move |execution, config| {
+            let f = Arc::clone(&f);
+            execution.run_async(config, async move { f().await }, caller)
+        })
+    }
+
+    fn run_iterations<R>(self, run_one: R) -> usize
+    where
+        R: Fn(Execution, &Config),
+    {
         let _span_drop_guard = ResetSpanOnDrop::new();
         // Share continuations across executions to avoid reallocating them
         // TODO it would be a lot nicer if this were a more generic "context" thing that we passed
         // TODO around explicitly rather than being a thread local
         CONTINUATION_POOL.set(&ContinuationPool::new(), || {
-            let f = Arc::new(f);
-
             let start = Instant::now();
 
             let mut i = 0;
@@ -97,15 +127,13 @@ impl<S: Scheduler + 'static> Runner<S> {
                 };
 
                 let execution = Execution::new(self.scheduler.clone(), schedule);
-                let f = Arc::clone(&f);
 
                 // This is a slightly lazy way to ensure that everything outside of the "execution" span gets
                 // established correctly between executions. Fully `exit`ing and fully `enter`ing (explicitly
                 // `enter`/`exit` all `Span`s) would most likely obviate the need for this.
                 let _span_drop_guard2 = ResetSpanOnDrop::new();
 
-                span!(Level::ERROR, "execution", i)
-                    .in_scope(|| execution.run(&self.config, move || f(), Location::caller()));
+                span!(Level::ERROR, "execution", i).in_scope(|| run_one(execution, &self.config));
 
                 i += 1;
             }

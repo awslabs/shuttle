@@ -1,3 +1,4 @@
 pub mod continuation;
+pub mod switch;
 
-pub use continuation::switch;
+pub use switch::{poll_switch, switch, switch_point, SwitchPoint};

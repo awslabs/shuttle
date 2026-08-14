@@ -198,7 +198,7 @@ pub(crate) use shuttle_engine::runtime;
 
 // Re-export public types from shuttle-engine
 pub use shuttle_engine::{
-    Config, ContinuationFunctionBehavior, FailurePersistence, MaxSteps, PortfolioRunner, Runner,
+    Config, ContinuationFunctionBehavior, FailurePersistence, MaxSteps, PortfolioRunner, Runner, TaskBackend,
     UngracefulShutdownConfig,
 };
 
@@ -212,6 +212,12 @@ pub(crate) use shuttle_engine::silence_warnings;
 pub use shuttle_schedulers::{
     check, check_dfs, check_pct, check_random, check_random_with_seed, check_uncontrolled_nondeterminism, check_urw,
     replay, replay_from_file,
+};
+
+// Entry points for the experimental futures backend, which polls each task as a future instead of
+// running it on its own stack. See [`TaskBackend::Futures`].
+pub use shuttle_schedulers::{
+    check_dfs_async, check_pct_async, check_random_async, check_random_with_seed_async, replay_async,
 };
 
 #[cfg(feature = "annotation")]

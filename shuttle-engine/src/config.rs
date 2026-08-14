@@ -47,7 +47,58 @@ pub struct Config {
 
     /// The config to define how to handle ungraceful shutdowns, ie. when the test panics.
     pub ungraceful_shutdown_config: UngracefulShutdownConfig,
+
+    /// Which execution backend to use to run tasks. See [`TaskBackend`].
+    ///
+    /// This is set automatically by the entry point used to start the test: the synchronous
+    /// entry points (e.g. `check_random`) use [`TaskBackend::Stackful`], and the async entry
+    /// points (e.g. `check_random_async`) use [`TaskBackend::Futures`].
+    pub backend: TaskBackend,
 }
+
+/// The mechanism Shuttle uses to suspend and resume a task at a scheduling point.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum TaskBackend {
+    /// Each task runs on its own stack, implemented as a stackful coroutine. A task can be
+    /// suspended at *any* point in its execution, including from deep inside synchronous code,
+    /// which is what allows Shuttle to model blocking synchronous primitives like
+    /// [`std::sync::Mutex`] and `std::thread`.
+    ///
+    /// This is the default, and the only backend that supports the full Shuttle API.
+    #[default]
+    Stackful,
+
+    /// Each task is a `Future`, and Shuttle drives it by polling it directly. A task can only be
+    /// suspended at an `.await` point, so this backend only supports programs whose concurrency is
+    /// expressed with `async`/`await`.
+    ///
+    /// The upside is that there are no stacks to allocate, guard, or switch between: resuming a
+    /// task is an ordinary function call. The downsides are the restrictions this places on the
+    /// program under test:
+    ///
+    /// * Synchronous *blocking* operations are unsupported and will panic. This includes
+    ///   [`std::thread`]-style APIs (`spawn`, `join`, `park`), the `std::sync` primitives
+    ///   (`Mutex`, `RwLock`, `Condvar`, `mpsc`, `Barrier`), and `block_on`. Use their async
+    ///   equivalents instead (e.g. `shuttle::future::spawn`, the `tokio::sync` wrappers).
+    /// * Scheduling points requested from synchronous code that *doesn't* block (an atomic
+    ///   access, or releasing a lock from a guard's `Drop`) cannot suspend the task, so they are
+    ///   dropped. The code between such a point and the next `.await` is explored as a single
+    ///   atomic step, which means some interleavings are not explored. Every execution that *is*
+    ///   explored is still a real one, so failures found this way are still real failures.
+    ///   [`crate::runtime::execution::ExecutionState::deferred_switches`] reports how many
+    ///   scheduling points were dropped, as a measure of the fidelity lost.
+    Futures,
+}
+
+impl TaskBackend {
+    /// Whether tasks on this backend are driven by polling a future.
+    pub fn is_futures(&self) -> bool {
+        matches!(self, TaskBackend::Futures)
+    }
+}
+
+
 
 std::thread_local! {
     pub static UNGRACEFUL_SHUTDOWN_CONFIG: Cell<UngracefulShutdownConfig> = const { Cell::new(UngracefulShutdownConfig::new()) };
@@ -125,7 +176,14 @@ impl Config {
             silence_warnings: false,
             record_steps_in_span: false,
             ungraceful_shutdown_config: UngracefulShutdownConfig::default(),
+            backend: TaskBackend::Stackful,
         }
+    }
+
+    /// Return a copy of this config that runs tasks on the given backend.
+    pub fn with_backend(mut self, backend: TaskBackend) -> Self {
+        self.backend = backend;
+        self
     }
 }
 

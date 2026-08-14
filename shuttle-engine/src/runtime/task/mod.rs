@@ -1,13 +1,13 @@
 use crate::backtrace_enabled;
+use crate::config::TaskBackend;
 use crate::current::get_name_for_task;
 use crate::runtime::execution::{ExecutionState, TASK_ID_TO_TAGS};
 use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
+use crate::runtime::task::body::TaskBody;
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
 use crate::runtime::thread;
-use crate::runtime::thread::continuation::{
-    ContinuationInput, ContinuationOutput, ContinuationPool, PooledContinuation,
-};
+use crate::runtime::thread::continuation::{ContinuationInput, ContinuationOutput, ContinuationPool};
 use crate::sync_types::{ResourceSignature, ResourceType};
 use crate::thread_support::LocalKey;
 use bitvec::prelude::*;
@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::task::{Context, Waker};
 use tracing::{error_span, event, field, Level, Span};
 
+pub mod body;
 pub mod clock;
 pub mod labels;
 pub mod waker;
@@ -265,7 +266,12 @@ pub struct Task {
     pub(super) detached: bool,
     park_state: ParkState,
 
-    pub(super) continuation: Rc<RefCell<PooledContinuation>>,
+    pub(super) body: Rc<RefCell<TaskBody>>,
+    /// Which backend this task's `body` uses. Cached here rather than read off `body`, because the
+    /// body is mutably borrowed for as long as the task is running, which is exactly when code
+    /// reaching a scheduling point needs to know how to suspend.
+    backend: TaskBackend,
+    /// Null for tasks on the futures backend, which have no continuation of their own.
     pub(super) yielder: *const Yielder<ContinuationInput, ContinuationOutput>,
 
     pub clock: VectorClock,
@@ -312,11 +318,10 @@ pub struct Task {
 
 #[allow(deprecated)]
 impl Task {
-    /// Create a task from a continuation
+    /// Create a task from an already-built body
     #[allow(clippy::too_many_arguments)]
     fn new(
-        f: Box<dyn FnOnce() + 'static>,
-        stack_size: usize,
+        body: TaskBody,
         id: TaskId,
         name: Option<String>,
         clock: VectorClock,
@@ -328,11 +333,12 @@ impl Task {
     ) -> Self {
         #[cfg(all(any(test, feature = "vector-clocks"), not(feature = "bench-no-vector-clocks")))]
         assert!(id.0 < clock.time.len());
-        let mut continuation = ContinuationPool::acquire(stack_size);
-        continuation.initialize(f);
-        let yielder = continuation.yielder;
+        let (backend, yielder) = match &body {
+            TaskBody::Stackful(continuation) => (TaskBackend::Stackful, continuation.yielder),
+            TaskBody::Stackless { .. } => (TaskBackend::Futures, std::ptr::null()),
+        };
         let waker = make_waker(id);
-        let continuation = Rc::new(RefCell::new(continuation));
+        let body = Rc::new(RefCell::new(body));
 
         let step_span =
             error_span!(parent: parent_span_id.clone(), "step", task = format!("{:?}", id), i = field::Empty);
@@ -345,7 +351,8 @@ impl Task {
             id,
             parent_task_id,
             state: TaskState::Runnable,
-            continuation,
+            body,
+            backend,
             yielder,
             clock,
             waiter: None,
@@ -374,6 +381,8 @@ impl Task {
         task
     }
 
+    /// Create a task that runs a synchronous closure. Only supported on the stackful backend, since
+    /// a closure has no way to suspend itself without a stack of its own.
     #[allow(clippy::too_many_arguments)]
     pub fn from_closure(
         f: Box<dyn FnOnce() + 'static>,
@@ -387,9 +396,11 @@ impl Task {
         parent_task_id: Option<TaskId>,
         signature: TaskSignature,
     ) -> Self {
+        let mut continuation = ContinuationPool::acquire(stack_size);
+        continuation.initialize(f);
+
         Self::new(
-            f,
-            stack_size,
+            TaskBody::Stackful(continuation),
             id,
             name,
             clock,
@@ -401,6 +412,8 @@ impl Task {
         )
     }
 
+    /// Create a task that drives a future on the stackful backend: the future is polled from inside
+    /// a continuation, which is what lets synchronous code inside the future suspend the task.
     #[allow(clippy::too_many_arguments)]
     pub fn from_future<F>(
         future: F,
@@ -419,7 +432,7 @@ impl Task {
     {
         let mut future = Box::pin(future);
 
-        Self::new(
+        Self::from_closure(
             Box::new(move || {
                 let waker = ExecutionState::with(|state| state.current_mut().waker());
                 let cx = &mut Context::from_waker(&waker);
@@ -438,6 +451,44 @@ impl Task {
             parent_task_id,
             signature,
         )
+    }
+
+    /// Create a task that *is* a future, to be polled directly by the executor with no stack of its
+    /// own. Used by the futures backend.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_polled_future<F>(
+        future: F,
+        id: TaskId,
+        name: Option<String>,
+        clock: VectorClock,
+        parent_span_id: Option<tracing::span::Id>,
+        schedule_len: usize,
+        tag: Option<Arc<dyn Tag>>,
+        parent_task_id: Option<TaskId>,
+        signature: TaskSignature,
+    ) -> Self
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        Self::new(
+            TaskBody::Stackless {
+                future: Box::pin(future),
+                waker: make_waker(id),
+            },
+            id,
+            name,
+            clock,
+            parent_span_id,
+            schedule_len,
+            tag,
+            parent_task_id,
+            signature,
+        )
+    }
+
+    /// Which backend this task runs on, and therefore how it suspends at a scheduling point.
+    pub fn backend(&self) -> TaskBackend {
+        self.backend
     }
 
     /// Returns the identifier of this task.

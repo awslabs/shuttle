@@ -1,4 +1,5 @@
-use shuttle_engine::{Config, Runner};
+use shuttle_engine::{Config, Runner, TaskBackend};
+use std::future::Future;
 
 #[cfg(feature = "annotation")]
 use crate::AnnotationScheduler;
@@ -138,4 +139,79 @@ where
     let scheduler = AnnotationScheduler::new(scheduler_inner);
     let runner = Runner::new(scheduler, Default::default());
     runner.run(f);
+}
+// ---------------------------------------------------------------------------------------------
+// Async entry points
+//
+// These mirror the functions above, but take an async test body and run it on
+// `TaskBackend::Futures`, where each task is a future that Shuttle polls directly instead of a
+// coroutine with its own stack. See `TaskBackend` for what that backend does and does not support.
+// ---------------------------------------------------------------------------------------------
+
+fn futures_config() -> Config {
+    Config::new().with_backend(TaskBackend::Futures)
+}
+
+/// Run the given async function under a randomized concurrency scheduler for some number of
+/// iterations, with each task polled directly as a future.
+///
+/// The test body and everything it spawns must express concurrency with `async`/`await`; see
+/// [`TaskBackend::Futures`] for the operations this cannot model.
+pub fn check_random_async<F, Fut>(f: F, iterations: usize)
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + 'static,
+{
+    let runner = Runner::new(RandomScheduler::new(iterations), futures_config());
+    runner.run_async(f);
+}
+
+/// Run the given async function under a randomized scheduler seeded with `seed`, with each task
+/// polled directly as a future.
+pub fn check_random_with_seed_async<F, Fut>(f: F, seed: u64, iterations: usize)
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + 'static,
+{
+    let scheduler = RandomScheduler::new_from_seed(seed, iterations);
+    let runner = Runner::new(scheduler, futures_config());
+    runner.run_async(f);
+}
+
+/// Run the given async function under a PCT concurrency scheduler, with each task polled directly
+/// as a future.
+pub fn check_pct_async<F, Fut>(f: F, iterations: usize, depth: usize)
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + 'static,
+{
+    let scheduler = PctScheduler::new(depth, iterations);
+    let runner = Runner::new(scheduler, futures_config());
+    runner.run_async(f);
+}
+
+/// Run the given async function under a depth-first-search scheduler until all interleavings have
+/// been explored, with each task polled directly as a future.
+pub fn check_dfs_async<F, Fut>(f: F, max_iterations: Option<usize>)
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + 'static,
+{
+    let scheduler = DfsScheduler::new(max_iterations, false);
+    let runner = Runner::new(scheduler, futures_config());
+    runner.run_async(f);
+}
+
+/// Replay a schedule for an async test body, with each task polled directly as a future.
+///
+/// Schedules are not portable between backends: a schedule recorded by [`check_random`] will not
+/// replay under this function, and vice versa.
+pub fn replay_async<F, Fut>(f: F, encoded_schedule: &str)
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + 'static,
+{
+    let scheduler = ReplayScheduler::new_from_encoded(encoded_schedule);
+    let runner = Runner::new(scheduler, futures_config());
+    runner.run_async(f);
 }

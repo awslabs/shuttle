@@ -640,6 +640,11 @@ impl BatchSemaphore {
         let waker = ExecutionState::with(|state| state.current_mut().waker());
         let cx = &mut Context::from_waker(&waker);
         let _poll = acquire.as_mut().poll(cx);
+        // We polled the future by hand rather than awaiting it, so a `Pending` asking to reach a
+        // scheduling point can't be honored here. Clear the request so it isn't mistaken for this
+        // task's own `Pending` later on. (`upgrade` is only reachable from synchronous locks, which
+        // the futures backend does not support, so this only matters for keeping state consistent.)
+        crate::runtime::thread::switch::take_yielded_for_switch();
 
         self.release(permits_currently_held);
 
@@ -715,10 +720,16 @@ impl Future for Acquire<'_> {
         // Thus we apply the double-yield optimization for *unfair* semaphores only
         let blocking_is_not_commutative = self.semaphore.fairness == Fairness::StrictlyFair;
 
-        if self.never_polled && (will_succeed || blocking_is_not_commutative) {
-            thread::switch();
+        if self.never_polled {
+            // Clear this before the scheduling point below, because on the futures backend the
+            // scheduling point suspends the task by returning `Pending` out of this `poll`. We'll be
+            // polled again once we're rescheduled, and must not ask for a second scheduling point
+            // then; everything above is recomputed against the state as of that later poll.
+            self.never_polled = false;
+            if (will_succeed || blocking_is_not_commutative) && thread::poll_switch().is_pending() {
+                return Poll::Pending;
+            }
         }
-        self.never_polled = false;
 
         if self.waiter.has_permits.load(Ordering::SeqCst) {
             assert!(!self.waiter.is_queued.load(Ordering::SeqCst));

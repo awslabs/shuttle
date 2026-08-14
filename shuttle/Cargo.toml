@@ -73,3 +73,7 @@ harness = false
 [[bench]]
 name = "create"
 harness = false
+
+[[bench]]
+name = "async_backend"
+harness = false

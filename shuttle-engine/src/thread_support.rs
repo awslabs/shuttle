@@ -1,5 +1,6 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::thread;
+use std::future::Future;
 use std::marker::PhantomData;
 
 /// Cooperatively gives up a timeslice to the Shuttle scheduler.
@@ -34,6 +35,31 @@ pub fn thread_fn<F, T>(
     tracing::trace!("done dropping thread locals");
 
     *result.lock().unwrap() = Some(Ok(ret));
+    ExecutionState::with(|state| {
+        if let Some(waiter) = state.current_mut().take_waiter() {
+            state.get_mut(waiter).unblock();
+        }
+    });
+}
+
+/// The body of a task whose code is a future. The async analogue of [`thread_fn`]: awaits `f`,
+/// drops task locals, and unblocks anyone waiting on this task.
+pub async fn async_task_fn<F: Future<Output = ()>>(f: F, switch_before_exit: bool) {
+    f.await;
+
+    if switch_before_exit && ExecutionState::with(|s| s.exit_current_truncates_execution()) {
+        thread::switch_point().await;
+    }
+
+    tracing::trace!("task finished, dropping task locals");
+
+    while let Some(local) = ExecutionState::with(|state| state.current_mut().pop_local()) {
+        tracing::trace!("dropping task local {:p}", local);
+        drop(local);
+    }
+
+    tracing::trace!("done dropping task locals");
+
     ExecutionState::with(|state| {
         if let Some(waiter) = state.current_mut().take_waiter() {
             state.get_mut(waiter).unblock();

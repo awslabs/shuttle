@@ -2,13 +2,13 @@ use crate::runtime::failure::{init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
+use crate::runtime::task::body::TaskBody;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
-use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::sync_types::{ResourceSignature, ResourceType};
-use crate::thread_support::thread_fn;
-use crate::{backtrace_enabled, Config, MaxSteps, UNGRACEFUL_SHUTDOWN_CONFIG};
+use crate::thread_support::{async_task_fn, thread_fn};
+use crate::{backtrace_enabled, Config, MaxSteps, TaskBackend, UNGRACEFUL_SHUTDOWN_CONFIG};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
@@ -79,6 +79,15 @@ thread_local! {
 }
 
 thread_local! {
+    /// The backend of the task that is currently running, mirrored out of the `ExecutionState` so
+    /// that reaching a scheduling point doesn't have to borrow the state just to find out how to
+    /// suspend. Kept in sync by `advance_to_next_task`, and reset to the default when no task is
+    /// running, which keeps the stackful path behaving exactly as it did before this existed.
+    static CURRENT_TASK_BACKEND: std::cell::Cell<TaskBackend> =
+        const { std::cell::Cell::new(TaskBackend::Stackful) };
+}
+
+thread_local! {
     pub static LABELS: RefCell<HashMap<TaskId, Labels>> = RefCell::new(HashMap::new());
 }
 
@@ -140,9 +149,38 @@ impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
     /// scheduler returns `None`, indicating the execution should not be explored any further.
-    pub fn run<F>(mut self, config: &Config, f: F, caller: &'static Location<'static>)
+    pub fn run<F>(self, config: &Config, f: F, caller: &'static Location<'static>)
     where
         F: FnOnce() + Send + 'static,
+    {
+        assert_eq!(
+            config.backend,
+            TaskBackend::Stackful,
+            "a synchronous test body can only run on the stackful backend"
+        );
+        self.run_inner(config, move |config| {
+            ExecutionState::spawn_main_thread(
+                Box::new(move || thread_fn(f, true, Default::default())),
+                config.stack_size,
+                caller,
+            );
+        })
+    }
+
+    /// Run an async function to be tested. Like [`Execution::run`], except that the root task is a
+    /// future rather than a closure, which is what allows it to run on the futures backend.
+    pub fn run_async<F>(self, config: &Config, future: F, caller: &'static Location<'static>)
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        self.run_inner(config, move |config| {
+            ExecutionState::spawn_main_future(async_task_fn(future, true), config, caller);
+        })
+    }
+
+    fn run_inner<S>(mut self, config: &Config, spawn_root: S)
+    where
+        S: FnOnce(&Config) + 'static,
     {
         let state = RefCell::new(ExecutionState::new(config.clone(), Rc::clone(&self.scheduler)));
 
@@ -151,12 +189,8 @@ impl Execution {
         UNGRACEFUL_SHUTDOWN_CONFIG.set(config.ungraceful_shutdown_config);
 
         EXECUTION_STATE.set(&state, move || {
-            // Spawn `f` as the first task
-            ExecutionState::spawn_main_thread(
-                Box::new(move || thread_fn(f, true, Default::default())),
-                config.stack_size,
-                caller,
-            );
+            // Spawn the test body as the first task
+            spawn_root(config);
 
                 // Run the test to completion
                 match self.run_to_completion(UNGRACEFUL_SHUTDOWN_CONFIG.get().immediately_return_on_panic) {
@@ -251,14 +285,14 @@ impl Execution {
     #[inline]
     fn run_to_completion(&mut self, immediately_return_on_panic: bool) -> Result<(), StepError> {
         loop {
-            let next_step: Option<Rc<RefCell<PooledContinuation>>> = ExecutionState::with(|state| {
+            let next_step: Option<Rc<RefCell<TaskBody>>> = ExecutionState::with(|state| {
                 state.schedule()?;
                 state.advance_to_next_task();
 
                 match state.current_task {
                     ScheduledTask::Some(tid) => {
                         let task = state.get(tid);
-                        Ok(Some(task.continuation.clone()))
+                        Ok(Some(task.body.clone()))
                     }
                     ScheduledTask::Finished => {
                         // The scheduler decided we're finished, so there are either no runnable tasks,
@@ -277,10 +311,10 @@ impl Execution {
 
             // Run a single step of the chosen task.
             let ret = match next_step {
-                Some(continuation) => {
+                Some(body) => {
                     Execution::enter_task_span();
 
-                    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
+                    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| body.borrow_mut().resume()));
 
                     Execution::exit_task_span();
 
@@ -327,6 +361,9 @@ pub struct ExecutionState {
     has_yielded: bool,
     // the number of scheduling decisions made so far
     context_switches: usize,
+    // the number of scheduling points that were requested from synchronous code by a task on the
+    // futures backend, and therefore had to be dropped because the task had no way to suspend
+    deferred_switches: usize,
     // the schedule length last time `reset_stop_bound()` was called
     pub steps_reset_at: usize,
 
@@ -375,6 +412,16 @@ enum ScheduledTask {
     Finished,     // all tasks have finished running
 }
 
+/// How the current task should suspend itself at a synchronous scheduling point.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SwitchMode {
+    /// Switch stacks, suspending the task wherever it currently is.
+    Stackful,
+    /// The task is a future being polled directly, so it cannot suspend from synchronous code. The
+    /// scheduling point has to be dropped.
+    DeferOnFutures,
+}
+
 impl ScheduledTask {
     fn id(&self) -> Option<TaskId> {
         match self {
@@ -406,6 +453,7 @@ impl ExecutionState {
             next_task: ScheduledTask::None,
             has_yielded: false,
             context_switches: 0,
+            deferred_switches: 0,
             steps_reset_at: 0,
             storage: StorageMap::new(),
             scheduler,
@@ -593,27 +641,97 @@ impl ExecutionState {
 
             Self::set_labels_for_new_task(state, task_id, name.clone());
 
+            let backend = state.config.backend;
             let clock = state.increment_clock_mut(); // Increment the parent's clock
             clock.extend(task_id); // and extend it with an entry for the new task
+            let clock = clock.clone();
 
-            let task = Task::from_future(
-                future,
-                stack_size,
-                task_id,
-                name,
-                clock.clone(),
-                parent_span_id,
-                schedule_len,
-                tag,
-                Some(state.current().id()),
-                state.current_mut().signature.new_child(caller),
-            );
+            let parent_task_id = Some(state.current().id());
+            let signature = state.current_mut().signature.new_child(caller);
+
+            let task = match backend {
+                TaskBackend::Stackful => Task::from_future(
+                    future,
+                    stack_size,
+                    task_id,
+                    name,
+                    clock,
+                    parent_span_id,
+                    schedule_len,
+                    tag,
+                    parent_task_id,
+                    signature,
+                ),
+                TaskBackend::Futures => Task::from_polled_future(
+                    future,
+                    task_id,
+                    name,
+                    clock,
+                    parent_span_id,
+                    schedule_len,
+                    tag,
+                    parent_task_id,
+                    signature,
+                ),
+            };
 
             state.add_task(task);
 
             task_id
         });
         crate::annotations::record_task_created(task_id, true);
+        task_id
+    }
+
+    /// Spawn the root task of an async test, as a future polled directly by the executor.
+    pub fn spawn_main_future<F>(future: F, config: &Config, caller: &'static Location<'static>) -> TaskId
+    where
+        F: Future<Output = ()> + 'static,
+    {
+        let name = "main-task".to_string();
+        let mut clock = VectorClock::new();
+
+        let task_id = Self::with(|state| {
+            let parent_span_id = state.top_level_span.id();
+            let task_id = TaskId(state.tasks.len());
+            let tag = state.get_tag_or_default_for_current_task();
+
+            Self::set_labels_for_new_task(state, task_id, Some(name.clone()));
+
+            clock.extend(task_id);
+
+            let schedule_len = CurrentSchedule::len();
+
+            let task = match config.backend {
+                TaskBackend::Futures => Task::from_polled_future(
+                    future,
+                    task_id,
+                    Some(name),
+                    clock,
+                    parent_span_id,
+                    schedule_len,
+                    tag,
+                    None,
+                    TaskSignature::new_parentless(caller),
+                ),
+                TaskBackend::Stackful => Task::from_future(
+                    future,
+                    config.stack_size,
+                    task_id,
+                    Some(name),
+                    clock,
+                    parent_span_id,
+                    schedule_len,
+                    tag,
+                    None,
+                    TaskSignature::new_parentless(caller),
+                ),
+            };
+            state.add_task(task);
+
+            task_id
+        });
+        crate::annotations::record_task_created(task_id, false);
         task_id
     }
 
@@ -683,7 +801,7 @@ impl ExecutionState {
                 final_state == ScheduledTask::Stopped || task.finished() || task.detached,
                 "execution finished but task is not"
             );
-            Rc::try_unwrap(task.continuation)
+            Rc::try_unwrap(task.body)
                 .map_err(|_| ())
                 .expect("couldn't cleanup a future");
         }
@@ -692,6 +810,8 @@ impl ExecutionState {
 
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().clear());
         LABELS.with(|cell| cell.borrow_mut().clear());
+        // No task is running any more, so don't leave a stale backend behind for the next execution.
+        CURRENT_TASK_BACKEND.set(TaskBackend::default());
 
         #[cfg(debug_assertions)]
         Self::with(|state| state.has_cleaned_up = true);
@@ -734,6 +854,75 @@ impl ExecutionState {
                 true
             }
         })
+    }
+
+    /// Decide how the current task should suspend itself at a synchronous scheduling point.
+    ///
+    /// For a task on the futures backend the answer is "it can't", so this is also where we account
+    /// for the scheduling point being dropped, and where we reject the case that dropping it would
+    /// be unsound: a task that has already marked itself blocked must not keep running.
+    #[inline]
+    pub fn switch_mode() -> SwitchMode {
+        // Fast path: reading a `Cell` rather than borrowing the `ExecutionState`, so that the
+        // stackful backend pays nothing for this check.
+        if !CURRENT_TASK_BACKEND.get().is_futures() {
+            return SwitchMode::Stackful;
+        }
+
+        // Note the panic below happens *outside* the `try_with`: panicking while the
+        // `ExecutionState` is borrowed would make every `with` on the unwind path fail with
+        // `AlreadyBorrowed`, burying the real error.
+        let blocked_task = Self::try_with(|state| {
+            state.deferred_switches += 1;
+
+            // A blocked task that can't suspend would keep running, which would let it observe
+            // state it shouldn't and break the scheduler's accounting. During cleanup or unwinding
+            // we're on the way out anyway, so let those through.
+            if state.in_cleanup || state.is_finished() || std::thread::panicking() {
+                return None;
+            }
+            let task = state.current();
+            (!task.runnable()).then_some(task.id())
+        })
+        .unwrap_or(None);
+
+        if let Some(task_id) = blocked_task {
+            panic!(
+                "task {task_id:?} tried to block in a synchronous operation, which the futures \
+                 backend cannot support because a task can only suspend at an `.await`. Use the \
+                 async equivalent of this operation, or run this test on the stackful backend."
+            );
+        }
+
+        SwitchMode::DeferOnFutures
+    }
+
+    /// Panic if the current task is running on a backend that cannot support `operation`, which is
+    /// the name of a synchronous blocking operation.
+    ///
+    /// Call this *before* the operation mutates any state. Failing early keeps the unwind clean,
+    /// whereas [`Self::switch_mode`]'s equivalent check fires halfway through the operation, once
+    /// the task has already marked itself blocked.
+    pub fn assert_backend_supports_blocking(operation: &str) {
+        if !CURRENT_TASK_BACKEND.get().is_futures() {
+            return;
+        }
+
+        let unsupported = Self::try_with(|state| !state.in_cleanup).unwrap_or(false);
+
+        assert!(
+            !unsupported,
+            "`{operation}` blocks the calling task, which the futures backend cannot support \
+             because a task can only suspend at an `.await`. Use the async equivalent of this \
+             operation, or run this test on the stackful backend."
+        );
+    }
+
+    /// The number of scheduling points that have been dropped because a task on the futures backend
+    /// requested one from synchronous code. A non-zero count means the execution explored fewer
+    /// interleavings than the stackful backend would have.
+    pub fn deferred_switches() -> usize {
+        Self::with(|state| state.deferred_switches)
     }
 
     /// Tell the scheduler that the next context switch is an explicit yield requested by the
@@ -1015,9 +1204,14 @@ impl ExecutionState {
         debug_assert_ne!(self.next_task, ScheduledTask::None);
         self.current_task = self.next_task.take();
 
-        if let ScheduledTask::Some(tid) = self.current_task {
-            CurrentSchedule::push_task(tid);
-        }
+        let backend = match self.current_task {
+            ScheduledTask::Some(tid) => {
+                CurrentSchedule::push_task(tid);
+                self.get(tid).backend()
+            }
+            _ => TaskBackend::default(),
+        };
+        CURRENT_TASK_BACKEND.set(backend);
     }
 
     // Sets the `tag` field of the current task.
