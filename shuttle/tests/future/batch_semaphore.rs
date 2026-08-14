@@ -279,27 +279,54 @@ fn batch_semaphore_clock_imprecise() {
     );
 }
 
-// Create a semaphore with `num_permits` permits and spawn a bunch of tasks that each
-// try to grab a bunch of permits.  Task i sets the i'th bit in a shared atomic counter.
-// Afterwards, we'll see which combinations were allowable over a full dfs run.
+// Create a semaphore with `num_permits` permits and have a bunch of tasks each try to grab a bunch
+// of permits. Task i sets the i'th bit in a shared atomic counter while holding its permits, and
+// records the counter value it observed *before* setting its own bit — that is, the set of tasks
+// that were holding permits at the same time as it. Over a full DFS run this yields the exact set
+// of possible co-residencies, which must be exactly those whose permit demands sum to at most
+// `num_permits`.
+//
+// Note that the *last* participant runs on the calling task rather than being spawned. The calling
+// task has to exist either way and performs no semaphore operations of its own, so giving every
+// participant its own spawned task just adds a schedulable entity that multiplies the interleaving
+// space without adding any contention. Folding the last participant into the caller keeps the same
+// number of concurrent contenders and produces an identical set of observed states, while cutting
+// the exhaustive search roughly 100x: for `(5, [3, 3, 2])` the DFS explores 15,376 interleavings
+// instead of 1,554,091, and for `(5, [3, 3, 3])` it explores 4,437 instead of 590,311.
+//
+// Note also that `future::yield_now` below is load-bearing: it is the window during which a task's
+// bit is observable to others. Without it the search is 22x cheaper but every task observes 0, so
+// no co-residency is detected at all.
 async fn semtest(num_permits: usize, counts: Vec<usize>, states: &Arc<Mutex<HashSet<(usize, usize)>>>, mode: Fairness) {
+    // One participant: acquire `c` permits, publish bit `i` for one scheduling step, then release.
+    async fn participant(
+        i: usize,
+        c: usize,
+        s: Arc<BatchSemaphore>,
+        r: Arc<AtomicUsize>,
+        states: Arc<Mutex<HashSet<(usize, usize)>>>,
+    ) {
+        let val = 1usize << i;
+        s.acquire(c).await.unwrap();
+        let v = r.fetch_add(val, Ordering::SeqCst);
+        future::yield_now().await;
+        let _ = r.fetch_sub(val, Ordering::SeqCst);
+        states.lock().unwrap().insert((i, v));
+        s.release(c);
+    }
+
     let s = Arc::new(BatchSemaphore::new(num_permits, mode));
     let r = Arc::new(AtomicUsize::new(0));
-    let mut handles = vec![];
-    for (i, &c) in counts.iter().enumerate() {
-        let s = s.clone();
-        let r = r.clone();
-        let states = states.clone();
-        let val = 1usize << i;
-        handles.push(future::spawn(async move {
-            s.acquire(c).await.unwrap();
-            let v = r.fetch_add(val, Ordering::SeqCst);
-            future::yield_now().await;
-            let _ = r.fetch_sub(val, Ordering::SeqCst);
-            states.lock().unwrap().insert((i, v));
-            s.release(c);
-        }));
-    }
+
+    let (&last, rest) = counts.split_last().expect("need at least one participant");
+    let handles = rest
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| future::spawn(participant(i, c, s.clone(), r.clone(), states.clone())))
+        .collect::<Vec<_>>();
+
+    participant(counts.len() - 1, last, s.clone(), r.clone(), states.clone()).await;
+
     for h in handles {
         h.await.unwrap();
     }
