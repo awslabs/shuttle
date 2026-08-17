@@ -51,6 +51,9 @@ bench = false
 [features]
 default = []
 vector-clocks = ["shuttle-engine/vector-clocks"]
+# Cross-check the schedulable-task index on every scheduling decision. Slow by
+# design; intended for CI runs. See `runtime::task::schedulable`.
+verify-schedulable = ["shuttle-engine/verify-schedulable"]
 annotation = ["shuttle-engine/annotation", "shuttle-schedulers/annotation", "dep:serde", "dep:serde_json", "dep:regex"]
 # The following feature overrides the `vector-clocks` feature. It SHOULD NOT be used in production.
 # Its purpose is solely to allow `cargo bench` to be run without vector clocks enabled, as they

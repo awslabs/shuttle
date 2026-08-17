@@ -2,6 +2,7 @@ use crate::runtime::failure::{init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
+use crate::runtime::task::schedulable::SchedulableTasks;
 use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
@@ -346,6 +347,17 @@ pub struct ExecutionState {
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
+
+    // Which tasks a scheduling decision needs to consider, maintained as tasks
+    // change state rather than rebuilt by walking `tasks` on every step. Shared
+    // with each `Task` so transitions can update it in place. See
+    // `runtime::task::schedulable`.
+    schedulable: Rc<RefCell<SchedulableTasks>>,
+
+    // Reused buffer for the `verify-schedulable` cross-check, so verification
+    // does not allocate on every scheduling decision.
+    #[cfg(feature = "verify-schedulable")]
+    verify_scratch: SchedulableTasks,
 }
 
 impl std::fmt::Debug for ExecutionState {
@@ -401,7 +413,17 @@ impl ExecutionState {
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
+            schedulable: Rc::new(RefCell::new(SchedulableTasks::default())),
+            #[cfg(feature = "verify-schedulable")]
+            verify_scratch: SchedulableTasks::default(),
         }
+    }
+
+    /// Push a newly created task and hook it up to the schedulable-task index.
+    /// All three spawn paths must go through here so no task escapes the index.
+    fn push_task(&mut self, mut task: Task) {
+        task.attach_schedulable(Rc::clone(&self.schedulable));
+        self.tasks.push(task);
     }
 
     /// Invoke a closure with access to the current execution state. Library code uses this to gain
@@ -473,19 +495,11 @@ impl ExecutionState {
             return false;
         }
 
-        let mut single_unfinished_attached = false;
-        let mut has_unfinished_detached = false;
-        for t in self.tasks.iter() {
-            let unfinished_attached = !t.finished() && !t.detached;
-            if single_unfinished_attached && unfinished_attached {
-                // there are more than one unfinished attached tasks, so one exiting won't truncate
-                return false;
-            }
-
-            single_unfinished_attached |= unfinished_attached;
-            has_unfinished_detached |= !t.finished() && t.detached;
-        }
-        has_unfinished_detached && single_unfinished_attached
+        // Served from the incrementally maintained tallies. This used to walk every
+        // task, and since it runs whenever a task exits, that made task teardown
+        // quadratic in the number of tasks an execution creates.
+        let schedulable = self.schedulable.borrow();
+        schedulable.has_unfinished_detached() && schedulable.unfinished_attached_count() == 1
     }
 
     fn set_labels_for_new_task(state: &ExecutionState, task_id: TaskId, name: Option<String>) {
@@ -548,7 +562,7 @@ impl ExecutionState {
                 None,
                 TaskSignature::new_parentless(caller),
             );
-            state.tasks.push(task);
+            state.push_task(task);
 
             task_id
         });
@@ -595,7 +609,7 @@ impl ExecutionState {
                 state.current_mut().signature.new_child(caller),
             );
 
-            state.tasks.push(task);
+            state.push_task(task);
 
             task_id
         });
@@ -641,7 +655,7 @@ impl ExecutionState {
                 Some(state.current().id()),
                 state.current_mut().signature.new_child(caller),
             );
-            state.tasks.push(task);
+            state.push_task(task);
 
             task_id
         });
@@ -659,6 +673,9 @@ impl ExecutionState {
         let (mut tasks, final_state) = Self::with(|state| {
             state.in_cleanup = true;
             assert!(state.current_task == ScheduledTask::Stopped || state.current_task == ScheduledTask::Finished);
+            // The index describes `tasks`, which is about to be emptied. Clear it
+            // together with them so nothing observes a stale index during teardown.
+            state.schedulable.borrow_mut().clear();
             (std::mem::take(&mut state.tasks), state.current_task)
         });
 
@@ -847,6 +864,35 @@ impl ExecutionState {
         CurrentSchedule::len() - self.steps_reset_at >= max_steps
     }
 
+    /// Cross-check the incrementally maintained schedulable-task index against a
+    /// full recomputation from `self.tasks`, which is the authoritative state.
+    ///
+    /// This is the safety net for the incremental updates: every task state
+    /// transition must keep the index in sync, and a missed one would silently
+    /// change scheduling rather than fail loudly. Enabling this restores the
+    /// O(tasks) work per scheduling decision that the index exists to avoid, so
+    /// it is off by default and intended for CI:
+    ///
+    /// ```text
+    /// cargo test --features verify-schedulable
+    /// ```
+    #[cfg(feature = "verify-schedulable")]
+    fn verify_schedulable(&mut self) {
+        let expected = &mut self.verify_scratch;
+        expected.recompute_from(self.tasks.iter().map(|t| (t.id(), t.state, t.detached)));
+        let actual = self.schedulable.borrow();
+        assert!(
+            actual.matches(expected),
+            "schedulable task index drifted from the task list.\n  \
+             incremental: {actual:?}\n  recomputed:  {expected:?}\n\
+             A task state transition did not go through Task::set_state or Task::detach."
+        );
+    }
+
+    #[cfg(not(feature = "verify-schedulable"))]
+    #[inline(always)]
+    fn verify_schedulable(&mut self) {}
+
     /// Run the scheduler to choose the next task to run. `has_yielded` should be false if the
     /// scheduler is being invoked from within a running task. If scheduling fails, returns an Err
     /// with a String describing the failure.
@@ -875,30 +921,19 @@ impl ExecutionState {
             MaxSteps::None => {}
         }
 
-        let mut unfinished_attached = false;
-        let mut all_runnable_detached = true;
-        let mut any_runnable = false;
+        self.verify_schedulable();
 
-        for task in &self.tasks {
-            if task.finished() {
-                continue;
-            }
-            unfinished_attached |= !task.detached;
-            let is_runnable = task.runnable();
-            any_runnable |= is_runnable;
-
-            if is_runnable {
-                all_runnable_detached &= task.detached;
-                self.runnable_tasks.push(task as *const Task);
-            } else if task.can_spuriously_wakeup() {
-                // Some blocked tasks can be woken up spuriously, even though the condition the task is
-                // blocked on hasn't happened yet. We'll add such tasks to the list of runnable tasks, but
-                // they won't contribute to the check on `any_runnable`; if the only runnable tasks
-                // are ones that are waiting for a potential spurious wakeup, it should still be treated as
-                // a deadlock since there's no guarantee that spurious wakeups will ever occur.
-                self.runnable_tasks.push(task as *const Task);
-            }
-        }
+        // These facts used to be recomputed by walking every task ever created.
+        // They are now maintained incrementally as tasks change state, so a
+        // scheduling decision costs O(schedulable tasks) rather than O(tasks).
+        let (any_runnable, unfinished_attached, all_runnable_detached) = {
+            let schedulable = self.schedulable.borrow();
+            (
+                schedulable.any_runnable(),
+                schedulable.has_unfinished_attached(),
+                schedulable.all_runnable_detached(),
+            )
+        };
 
         // We should finish execution when either
         // (1) There are no runnable tasks, or
@@ -908,6 +943,25 @@ impl ExecutionState {
         if !any_runnable || (!unfinished_attached && all_runnable_detached) {
             self.next_task = ScheduledTask::Finished;
             return Ok(());
+        }
+
+        // Tasks eligible for scheduling: runnable ones, plus blocked ones that are
+        // permitted to wake up spuriously. The latter are offered to the scheduler
+        // but did not contribute to `any_runnable` above, because there is no
+        // guarantee a spurious wakeup ever happens, so an execution left with only
+        // those is still a deadlock.
+        //
+        // Visited in ascending `TaskId` order, matching the old `self.tasks` walk.
+        // Schedulers index into this slice, so the order is load-bearing: changing
+        // it would change which task a given random choice picks and would
+        // invalidate previously recorded schedules.
+        {
+            let schedulable = self.schedulable.borrow();
+            let tasks = &self.tasks;
+            let runnable_tasks = &mut self.runnable_tasks;
+            schedulable.for_each(|tid| {
+                runnable_tasks.push(&tasks[tid.0] as *const Task);
+            });
         }
 
         let is_yielding = std::mem::replace(&mut self.has_yielded, false);

@@ -22,6 +22,27 @@ jobs:
       - name: cargo audit
         run: cargo audit
   
+  # Cross-checks the incrementally maintained schedulable-task index against a full
+  # recomputation on every scheduling decision. This restores the O(tasks) per-step
+  # work that the index exists to avoid, so it is too slow for per-PR CI, but it is
+  # the safety net for the invariant that every task state transition keeps the
+  # index in sync.
+  verify-schedulable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: cargo nextest with verify-schedulable
+        run: cargo nextest run --release -p shuttle --features verify-schedulable
+      - name: Notify failed build
+        uses: jayqi/failed-build-issue-action@v1
+        if: failure()
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
   # Runs Clippy, fmt, doc and tests on beta. 
   # Exists to not get "caught off guard" by new Rust versions bringing new clippies.
   beta:

@@ -27,7 +27,9 @@ use tracing::{error_span, event, field, Level, Span};
 
 pub mod clock;
 pub mod labels;
+pub(crate) mod schedulable;
 pub mod waker;
+use schedulable::SchedulableTasks;
 use waker::make_waker;
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
@@ -308,6 +310,13 @@ pub struct Task {
     /// stable across iterations in a single Shuttle test. Tasks with the same signature are very likely to exhibit
     /// similar behavior
     pub signature: TaskSignature,
+
+    /// Shared with the owning `ExecutionState`, so that state transitions can
+    /// keep the set of schedulable tasks up to date without the scheduler having
+    /// to rescan every task on each step. `None` only in the window between
+    /// construction and being pushed into `ExecutionState::tasks`, during which
+    /// the task is unreachable and so cannot transition.
+    schedulable: Option<Rc<RefCell<SchedulableTasks>>>,
 }
 
 #[allow(deprecated)]
@@ -360,6 +369,7 @@ impl Task {
             tag: None,
             backtrace: None,
             signature,
+            schedulable: None,
         };
 
         if let Some(tag) = tag {
@@ -477,8 +487,34 @@ impl Task {
         self.detached
     }
 
+    /// Attach this task to its execution's schedulable-task index and register
+    /// its initial state. Called once, when the task is pushed into
+    /// `ExecutionState::tasks`.
+    pub(super) fn attach_schedulable(&mut self, schedulable: Rc<RefCell<SchedulableTasks>>) {
+        debug_assert!(self.schedulable.is_none(), "task attached twice");
+        debug_assert_eq!(self.state, TaskState::Runnable);
+        debug_assert!(!self.detached);
+        schedulable.borrow_mut().register(self.id);
+        self.schedulable = Some(schedulable);
+    }
+
+    /// The single place where `state` changes. Keeps the execution's
+    /// schedulable-task index in sync so scheduling never has to rescan.
+    fn set_state(&mut self, new: TaskState) {
+        let old = std::mem::replace(&mut self.state, new);
+        if let Some(schedulable) = &self.schedulable {
+            schedulable.borrow_mut().transition(self.id, old, new, self.detached);
+        }
+    }
+
     pub fn detach(&mut self) {
+        if self.detached {
+            return;
+        }
         self.detached = true;
+        if let Some(schedulable) = &self.schedulable {
+            schedulable.borrow_mut().detach(self.id, self.state);
+        }
     }
 
     /// Wake this task so the Wrapper future can observe the abort flag on its next poll.
@@ -504,7 +540,7 @@ impl Task {
         };
 
         assert!(self.state != TaskState::Finished);
-        self.state = TaskState::Blocked { allow_spurious_wakeups };
+        self.set_state(TaskState::Blocked { allow_spurious_wakeups });
     }
 
     pub fn sleep(&mut self) {
@@ -515,14 +551,14 @@ impl Task {
         };
 
         assert!(self.state != TaskState::Finished);
-        self.state = TaskState::Sleeping;
+        self.set_state(TaskState::Sleeping);
     }
 
     pub fn unblock(&mut self) {
         // Note we don't assert the task is blocked here. For example, a task invoking its own waker
         // will not be blocked when this is called.
         assert!(self.state != TaskState::Finished);
-        self.state = TaskState::Runnable;
+        self.set_state(TaskState::Runnable);
 
         // When a task gets unblocked, it's definitely no longer blocked in a call to `park`. This
         // is necessary to do here because a parked task could be spuriously woken up outside of the
@@ -533,7 +569,7 @@ impl Task {
 
     pub fn finish(&mut self) {
         assert!(self.state != TaskState::Finished);
-        self.state = TaskState::Finished;
+        self.set_state(TaskState::Finished);
     }
 
     /// Potentially put this task to sleep after it was polled by the executor, unless someone has

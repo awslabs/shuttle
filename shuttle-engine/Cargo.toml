@@ -34,3 +34,7 @@ default = []
 vector-clocks = []
 annotation = ["dep:serde", "dep:serde_json", "dep:regex"]
 bench-no-vector-clocks = []
+# Cross-check the incrementally maintained schedulable-task index against a full
+# recomputation on every scheduling decision. Restores the O(tasks) per-step cost
+# that the index removes, so it is meant for CI rather than normal development.
+verify-schedulable = []

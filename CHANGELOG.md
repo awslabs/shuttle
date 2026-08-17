@@ -1,3 +1,7 @@
+# Unreleased
+
+* Performance: scheduling decisions no longer walk the whole task list. `ExecutionState` maintains the set of schedulable tasks incrementally as tasks change state, so a scheduling decision costs O(schedulable tasks) instead of O(tasks ever created). `exit_current_truncates_execution` is served from the same tallies rather than walking the task list on every task exit. Adds a `verify-schedulable` feature that cross-checks the index against a full recomputation on every scheduling decision.
+
 # 0.9.2 (August 6, 2026)
 
 * Add support for 128-bit atomics (`AtomicI128`/`AtomicU128`) (#299)
