@@ -647,8 +647,10 @@ impl BatchSemaphore {
             state.permits_available.release(num_permits, clock.clone());
         });
 
-        let me = ExecutionState::me();
-        trace!(task = ?me, avail = ?state.permits_available, waiters = ?state.waiters, "released {} permits for semaphore {:p}", num_permits, &self.state);
+        // `ExecutionState::me()` is only wanted for this trace, so let the macro's
+        // level check decide whether to pay for it. Computing it eagerly cost an
+        // `ExecutionState::with` on every release even with tracing disabled.
+        trace!(task = ?ExecutionState::me(), avail = ?state.permits_available, waiters = ?state.waiters, "released {} permits for semaphore {:p}", num_permits, &self.state);
 
         match self.fairness {
             Fairness::StrictlyFair => {
@@ -759,9 +761,15 @@ impl Future for Acquire<'_> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         assert!(!self.completed);
 
-        let will_succeed = self.waiter.has_permits.load(Ordering::SeqCst)
-            || self.semaphore.is_closed()
-            || self.semaphore.available_permits() >= self.waiter.num_permits;
+        // One borrow of the semaphore state rather than two (`is_closed` and
+        // `available_permits` each took their own). Both reads describe the same
+        // instant, before the scheduling point below, so merging them is sound.
+        // Reads *after* the switch must stay separate and fresh, because other
+        // tasks may have run in between.
+        let will_succeed = self.waiter.has_permits.load(Ordering::SeqCst) || {
+            let state = self.semaphore.state.borrow();
+            state.closed || state.permits_available.available() >= self.waiter.num_permits
+        };
 
         // If the acquire will succeed on the first try, we need to context switch once to allow the previous
         // event to become visible. If we won't succeed, then we still need to context switch if the act of
@@ -806,7 +814,11 @@ impl Future for Acquire<'_> {
 
             // Sanity check: there should be a waker if the waiter is in
             // the queue. Also true for unfair semaphores, which wake by ref.
-            assert_eq!(is_queued, self.waiter.waker.lock().unwrap().is_some());
+            //
+            // `debug_assert` rather than `assert`: this takes a `std::sync::Mutex`
+            // on every poll, including the uncontended fast path, purely to check
+            // an internal invariant.
+            debug_assert_eq!(is_queued, self.waiter.waker.lock().unwrap().is_some());
 
             // Should the waiter try to acquire permits here? Four cases:
             // 1. unfair semaphore, waiter not yet enqueued;
