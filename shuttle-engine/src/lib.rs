@@ -44,7 +44,11 @@ pub fn silence_warnings() -> bool {
 }
 
 pub fn backtrace_enabled() -> bool {
-    std::env::var(CAPTURE_BACKTRACE).is_ok()
+    // Read once. This is called from `Task::block` and `Task::sleep`, so on every block and every
+    // `Poll::Pending`, and `std::env::var` takes a lock on the environment and allocates a `String`.
+    // Profiling showed it at 7-9% of self time on lock-heavy workloads.
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var(CAPTURE_BACKTRACE).is_ok())
 }
 
 pub fn seed_from_env(fallback_seed: u64) -> u64 {

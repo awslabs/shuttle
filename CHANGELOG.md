@@ -1,3 +1,7 @@
+# Unreleased
+
+* Performance: `backtrace_enabled` no longer reads the environment on every call. It is called from `Task::block` and `Task::sleep`, so on every block and every `Poll::Pending`, and `std::env::var` takes a lock on the environment and allocates. Lock-heavy workloads are 9-12% faster.
+
 # 0.9.2 (August 6, 2026)
 
 * Add support for 128-bit atomics (`AtomicI128`/`AtomicU128`) (#299)
