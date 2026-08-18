@@ -56,13 +56,22 @@ impl fmt::Debug for Waiter {
 }
 
 impl Waiter {
-    fn new(num_permits: usize) -> Self {
+    /// A `Waiter` is the part of an acquire that a *releasing* task can see and
+    /// mutate, so it only needs to exist once an acquire actually blocks.
+    ///
+    /// `clock` is passed in rather than read from the ambient execution state,
+    /// because it must be snapshotted when the `Acquire` was created, not when it
+    /// later blocks: it feeds the happens-before edge recorded in
+    /// `unblock_waiters_from_front`, and a scheduling point sits between those two
+    /// moments. `task_id`, in contrast, tracks the current poller (see
+    /// [`Waiter::task_id`]), so it is read here and refreshed on later polls.
+    fn new(num_permits: usize, clock: VectorClock) -> Self {
         Self {
             task_id: AtomicUsize::new(ExecutionState::me().into()),
             num_permits,
             is_queued: AtomicBool::new(false),
             has_permits: AtomicBool::new(false),
-            clock: current::clock(),
+            clock,
             waker: Mutex::new(None),
         }
     }
@@ -735,23 +744,90 @@ impl Default for BatchSemaphore {
 
 /// The future that results from async calls to `acquire*`.
 /// Callers must `await` on this future to obtain the necessary permits.
-#[derive(Debug)]
 pub struct Acquire<'a> {
-    waiter: Arc<Waiter>,
     semaphore: &'a BatchSemaphore,
+    num_permits: usize,
+
+    /// Snapshotted when this `Acquire` is created, and moved into the `Waiter` if
+    /// this acquire ends up blocking. See `Waiter::new` for why the snapshot must
+    /// happen here rather than at enqueue time.
+    clock: VectorClock,
+
+    /// The shared part of this acquire, allocated only once the acquire has to
+    /// block. An acquire that gets its permits immediately is never visible to
+    /// any other task, so it needs no shared state and no allocation. While this
+    /// is `None`, `has_permits` below is authoritative.
+    waiter: Option<Arc<Waiter>>,
+
+    /// Whether permits have been granted, for the case where no `Waiter` exists.
+    /// Once one does, the releasing task writes `Waiter::has_permits` instead and
+    /// this field is unused; read through `Acquire::has_permits`.
+    has_permits: bool,
+
     completed: bool, // Has the future completed yet?
     never_polled: bool,
 }
 
+// Implement Debug in order to not output the `VectorClock`, matching `Waiter`.
+impl fmt::Debug for Acquire<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Acquire")
+            .field("num_permits", &self.num_permits)
+            .field("waiter", &self.waiter)
+            .field("has_permits", &self.has_permits())
+            .field("completed", &self.completed)
+            .finish()
+    }
+}
+
 impl<'a> Acquire<'a> {
     fn new(semaphore: &'a BatchSemaphore, num_permits: usize) -> Self {
-        let waiter = Arc::new(Waiter::new(num_permits));
         Self {
-            waiter,
             semaphore,
+            num_permits,
+            clock: current::clock(),
+            waiter: None,
+            has_permits: false,
             completed: false,
             never_polled: true,
         }
+    }
+
+    /// Have permits been granted to this acquire? Once a `Waiter` exists the
+    /// releasing task owns that flag, so the shared copy is authoritative.
+    fn has_permits(&self) -> bool {
+        match &self.waiter {
+            Some(waiter) => waiter.has_permits.load(Ordering::SeqCst),
+            None => self.has_permits,
+        }
+    }
+
+    /// Is this acquire in the semaphore's waiter queue? Only possible once a
+    /// `Waiter` has been allocated, since the queue holds `Arc<Waiter>`.
+    fn is_queued(&self) -> bool {
+        match &self.waiter {
+            Some(waiter) => waiter.is_queued.load(Ordering::SeqCst),
+            None => false,
+        }
+    }
+
+    fn grant_permits(&mut self) {
+        match &self.waiter {
+            Some(waiter) => waiter.has_permits.store(true, Ordering::SeqCst),
+            None => self.has_permits = true,
+        }
+    }
+
+    /// The shared `Waiter` for this acquire, allocating it if this is the first
+    /// time the acquire has had to block. Returns an owned handle so callers can
+    /// still use `self.semaphore` without holding a borrow of `self`.
+    fn waiter_for_blocking(&mut self) -> Arc<Waiter> {
+        if let Some(waiter) = &self.waiter {
+            return Arc::clone(waiter);
+        }
+        let waiter = Arc::new(Waiter::new(self.num_permits, self.clock.clone()));
+        self.waiter = Some(Arc::clone(&waiter));
+        waiter
     }
 }
 
@@ -766,9 +842,9 @@ impl Future for Acquire<'_> {
         // instant, before the scheduling point below, so merging them is sound.
         // Reads *after* the switch must stay separate and fresh, because other
         // tasks may have run in between.
-        let will_succeed = self.waiter.has_permits.load(Ordering::SeqCst) || {
+        let will_succeed = self.has_permits() || {
             let state = self.semaphore.state.borrow();
-            state.closed || state.permits_available.available() >= self.waiter.num_permits
+            state.closed || state.permits_available.available() >= self.num_permits
         };
 
         // If the acquire will succeed on the first try, we need to context switch once to allow the previous
@@ -798,19 +874,19 @@ impl Future for Acquire<'_> {
         }
         self.never_polled = false;
 
-        if self.waiter.has_permits.load(Ordering::SeqCst) {
-            assert!(!self.waiter.is_queued.load(Ordering::SeqCst));
+        if self.has_permits() {
+            assert!(!self.is_queued());
             self.completed = true;
-            trace!("Acquire::poll for waiter {:?} with permits", self.waiter);
+            trace!("Acquire::poll for {:?} with permits", self);
             Poll::Ready(Ok(()))
         } else if self.semaphore.is_closed() {
-            assert!(!self.waiter.is_queued.load(Ordering::SeqCst));
+            assert!(!self.is_queued());
             self.completed = true;
-            trace!("Acquire::poll for waiter {:?} with closed", self.waiter);
+            trace!("Acquire::poll for {:?} with closed", self);
             Poll::Ready(Err(AcquireError::closed()))
         } else {
-            let is_queued = self.waiter.is_queued.load(Ordering::SeqCst);
-            trace!("Acquire::poll for waiter {:?}; is queued: {is_queued:?}", self.waiter);
+            let is_queued = self.is_queued();
+            trace!("Acquire::poll for {:?}; is queued: {is_queued:?}", self);
 
             // Sanity check: there should be a waker if the waiter is in
             // the queue. Also true for unfair semaphores, which wake by ref.
@@ -818,7 +894,12 @@ impl Future for Acquire<'_> {
             // `debug_assert` rather than `assert`: this takes a `std::sync::Mutex`
             // on every poll, including the uncontended fast path, purely to check
             // an internal invariant.
-            debug_assert_eq!(is_queued, self.waiter.waker.lock().unwrap().is_some());
+            debug_assert_eq!(
+                is_queued,
+                self.waiter
+                    .as_ref()
+                    .is_some_and(|waiter| waiter.waker.lock().unwrap().is_some())
+            );
 
             // Should the waiter try to acquire permits here? Four cases:
             // 1. unfair semaphore, waiter not yet enqueued;
@@ -853,24 +934,28 @@ impl Future for Acquire<'_> {
                 // clock, as this thread will be blocked below.
                 let mut state = self.semaphore.state.borrow_mut();
                 let id = state.id.unwrap();
-                let acquire_result = state.acquire_permits(self.waiter.num_permits, self.semaphore.fairness);
+                let acquire_result = state.acquire_permits(self.num_permits, self.semaphore.fairness);
                 drop(state);
 
                 match acquire_result {
                     Ok(()) => {
                         if is_queued {
+                            let waiter = self
+                                .waiter
+                                .clone()
+                                .expect("a queued acquire must have an allocated waiter");
                             crate::annotations::record_semaphore_acquire_unblocked(
                                 id,
-                                self.waiter.task_id(),
-                                self.waiter.num_permits,
+                                waiter.task_id(),
+                                waiter.num_permits,
                             );
-                            self.semaphore.remove_waiter(&self.waiter);
+                            self.semaphore.remove_waiter(&waiter);
                         } else {
-                            crate::annotations::record_semaphore_acquire_fast(id, self.waiter.num_permits);
+                            crate::annotations::record_semaphore_acquire_fast(id, self.num_permits);
                         }
-                        self.waiter.has_permits.store(true, Ordering::SeqCst);
+                        self.grant_permits();
                         self.completed = true;
-                        trace!("Acquire::poll for waiter {:?} that got permits", self.waiter);
+                        trace!("Acquire::poll for {:?} that got permits", self);
 
                         // If the semaphore is unfair, re-block other waiting
                         // threads that can no longer succeed.
@@ -879,17 +964,26 @@ impl Future for Acquire<'_> {
                         Poll::Ready(Ok(()))
                     }
                     Err(TryAcquireError::NoPermits) => {
-                        let mut maybe_waker = self.waiter.waker.lock().unwrap();
+                        // This acquire has to block, so it now becomes visible to
+                        // whichever task releases permits. That is the first point
+                        // at which shared state is needed, so it is where the
+                        // `Waiter` gets allocated.
+                        let waiter = self.waiter_for_blocking();
+
+                        let mut maybe_waker = waiter.waker.lock().unwrap();
                         *maybe_waker = Some(cx.waker().clone());
+                        drop(maybe_waker);
+
                         // Point the waiter at whoever is polling now: this future
                         // may have been created by a different task.
-                        self.waiter.set_task_id(ExecutionState::me());
+                        waiter.set_task_id(ExecutionState::me());
+
                         if !is_queued {
-                            crate::annotations::record_semaphore_acquire_blocked(id, self.waiter.num_permits);
-                            self.semaphore.enqueue_waiter(&self.waiter);
-                            self.waiter.is_queued.store(true, Ordering::SeqCst);
+                            crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
+                            // `enqueue_waiter` sets `is_queued` itself.
+                            self.semaphore.enqueue_waiter(&waiter);
                         }
-                        trace!("Acquire::poll for waiter {:?} that is enqueued", self.waiter);
+                        trace!("Acquire::poll for {:?} that is enqueued", self);
                         Poll::Pending
                     }
                     Err(TryAcquireError::Closed) => unreachable!(),
@@ -902,8 +996,12 @@ impl Future for Acquire<'_> {
                 // waiting now. Without this, a permit granted to this waiter
                 // would unblock a task that is no longer interested, and the
                 // actual poller would never be woken.
-                *self.waiter.waker.lock().unwrap() = Some(cx.waker().clone());
-                self.waiter.set_task_id(ExecutionState::me());
+                let waiter = self
+                    .waiter
+                    .as_ref()
+                    .expect("a queued acquire must have an allocated waiter");
+                *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+                waiter.set_task_id(ExecutionState::me());
                 Poll::Pending
             }
         }
@@ -912,13 +1010,19 @@ impl Future for Acquire<'_> {
 
 impl Drop for Acquire<'_> {
     fn drop(&mut self) {
-        trace!("Acquire::drop for Acquire {:p} with waiter {:?}", self, self.waiter);
-        if self.waiter.is_queued.load(Ordering::SeqCst) {
+        trace!("Acquire::drop for {:?}", self);
+        if self.is_queued() {
             // If the associated waiter is in the wait list, remove it
-            self.semaphore.remove_waiter(&self.waiter);
-        } else if self.waiter.has_permits.load(Ordering::SeqCst) && !self.completed {
-            // If the waiter was granted permits, release them
-            self.semaphore.release(self.waiter.num_permits);
+            let waiter = self
+                .waiter
+                .clone()
+                .expect("a queued acquire must have an allocated waiter");
+            self.semaphore.remove_waiter(&waiter);
+        } else if self.has_permits() && !self.completed {
+            // If the waiter was granted permits, release them. Note this must also
+            // fire for an acquire that got its permits without ever allocating a
+            // waiter, otherwise the semaphore leaks permits.
+            self.semaphore.release(self.num_permits);
         }
     }
 }
