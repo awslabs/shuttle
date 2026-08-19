@@ -1,6 +1,7 @@
 # Unreleased
 
 * Performance: `BatchSemaphore` no longer takes a `std::sync::Mutex` in a release-mode assertion on every `Acquire` poll, and allocates its `Waiter` only when an acquire actually blocks. Uncontended synchronization operations (`Mutex`, `RwLock`, `Semaphore`, channels) are 43-50% faster.
+* Performance: a `Waiter`'s waker slot is a `RefCell` rather than a `std::sync::Mutex`, removing a `pthread_mutex_init`/`_destroy` pair and a heap allocation per blocking acquire.
 
 # 0.9.2 (August 6, 2026)
 
