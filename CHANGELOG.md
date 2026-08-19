@@ -1,3 +1,7 @@
+# Unreleased
+
+* Performance: a `Waiter`'s waker slot is a `RefCell` rather than a `std::sync::Mutex`, removing a `pthread_mutex_init`/`_destroy` pair and a heap allocation per blocking acquire. (#323)
+
 # 0.9.10 (November 4, 2026)
 
 * A task now returns its continuation, and with it its stack, to the continuation pool as soon as it finishes, instead of keeping it until execution teardown, so a task spawned later in the same execution reuses it. The stack memory an execution uses therefore grows with the number of tasks alive at the same time rather than with the number of tasks it has ever spawned, which is what made long-running, spawn-heavy executions impractical. Spawning and joining 30,000 threads one after the other in a single execution went from 152 MB resident and 1.9 GB of mapped stacks to 29 MB and 42 MB (release build, without vector clocks, Linux x86-64). Before this change the same program could not get much further: at 33,000 threads it ran out of memory mappings (each stack takes two, and Linux allows 65,530 by default), and the test died in `DefaultStack::new` with `Cannot allocate memory`. It now reaches 50,000 threads at 47 MB.

@@ -11,7 +11,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::task::{Context, Poll, Waker};
 use tracing::trace;
 
@@ -44,8 +43,21 @@ struct Waiter {
     /// permits, and keeping the original enqueue clock is conservative (it can
     /// only add happens-before edges, never remove them).
     clock: VectorClock,
-    waker: Mutex<Option<Waker>>,
+    /// `RefCell` rather than `std::sync::Mutex`: a `Waiter` is shared between the blocking task and
+    /// whichever task releases permits, but those are continuations on a single OS thread, never real
+    /// threads. The mutex cost a `pthread_mutex_init`/`_destroy` pair per blocking acquire, which
+    /// showed up in profiles.
+    waker: RefCell<Option<Waker>>,
 }
+
+// Safety: as for `BatchSemaphore` below, a `Waiter` is never actually passed across true threads,
+// only across continuations, so the `RefCell` cannot be preempted mid-borrow.
+//
+// This impl is load bearing, not belt-and-braces: `Acquire` holds an `Arc<Waiter>`, so without it
+// any future holding an outstanding acquire across an await stops being `Send` and cannot be
+// spawned. `timeout(.., mutex.lock())` inside `future::spawn` is exactly that shape, and there are
+// tests which do it.
+unsafe impl Sync for Waiter {}
 
 // Implement debug in order to not output the `VectorClock`
 impl fmt::Debug for Waiter {
@@ -81,7 +93,7 @@ impl Waiter {
             is_queued: AtomicBool::new(false),
             has_permits: AtomicBool::new(false),
             clock,
-            waker: Mutex::new(None),
+            waker: RefCell::new(None),
         }
     }
 
@@ -376,7 +388,8 @@ impl BatchSemaphoreState {
             } else {
                 if holder.num_permits <= self.permits_available.available() {
                     ExecutionState::with(|s| s.get_mut(holder.task_id()).unblock());
-                    if let Some(waker) = holder.waker.lock().unwrap().as_ref() {
+                    let maybe_waker = holder.waker.borrow().clone();
+                    if let Some(waker) = maybe_waker {
                         waker.wake_by_ref();
                     }
                 }
@@ -396,8 +409,8 @@ impl BatchSemaphoreState {
                 if !unblock_unless_stale(waiter) {
                     continue;
                 }
-                let maybe_waker = waiter.waker.lock().unwrap();
-                if let Some(waker) = maybe_waker.as_ref() {
+                let maybe_waker = waiter.waker.borrow().clone();
+                if let Some(waker) = maybe_waker {
                     waker.wake_by_ref();
                 }
             }
@@ -416,7 +429,7 @@ impl BatchSemaphoreState {
                 waiter.is_queued.store(false, Ordering::SeqCst);
                 // Preserve the "queued <=> waker registered" invariant asserted
                 // in `Acquire::poll`; waking a finished task's waker is a no-op.
-                waiter.waker.lock().unwrap().take();
+                waiter.waker.borrow_mut().take();
                 trace!("dropping stale waiter {:?} for finished task", waiter);
                 continue;
             }
@@ -451,8 +464,8 @@ impl BatchSemaphoreState {
                     task.clock.update(&clock);
                     task.unblock();
                 });
-                let mut maybe_waker = waiter.waker.lock().unwrap();
-                if let Some(waker) = maybe_waker.take() {
+                let maybe_waker = waiter.waker.borrow_mut().take();
+                if let Some(waker) = maybe_waker {
                     waker.wake();
                 }
             } else if front.priority == Priority::Bypassable {
@@ -633,8 +646,8 @@ impl BatchSemaphore {
             assert!(!waiter.has_permits.load(Ordering::SeqCst)); // sanity check
                                                                  // There is nothing to unblock for a stale waiter (see `is_stale`).
             unblock_unless_stale(&waiter);
-            let mut maybe_waker = waiter.waker.lock().unwrap();
-            if let Some(waker) = maybe_waker.take() {
+            let maybe_waker = waiter.waker.borrow_mut().take();
+            if let Some(waker) = maybe_waker {
                 waker.wake();
             }
         }
@@ -1183,7 +1196,7 @@ impl<'a> Acquire<'a> {
                 // waiter, follow the current poller.
                 drop(state);
                 let waiter = self.waiter_for_blocking();
-                *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+                *waiter.waker.borrow_mut() = Some(cx.waker().clone());
                 waiter.set_task_id(ExecutionState::me());
                 return Poll::Pending;
             }
@@ -1211,7 +1224,7 @@ impl<'a> Acquire<'a> {
             // semaphore.
             drop(state);
             let waiter = self.waiter_for_blocking();
-            *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+            *waiter.waker.borrow_mut() = Some(cx.waker().clone());
             waiter.set_task_id(ExecutionState::me());
             if !is_queued {
                 crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
@@ -1245,7 +1258,7 @@ impl<'a> Acquire<'a> {
         // Reserve the semaphore, and wait for the rest of the permits.
         drop(state);
         let waiter = self.waiter_for_blocking();
-        *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+        *waiter.waker.borrow_mut() = Some(cx.waker().clone());
         waiter.set_task_id(ExecutionState::me());
         if is_queued {
             semaphore.remove_waiter(&waiter);
@@ -1331,7 +1344,7 @@ impl Future for Acquire<'_> {
                 is_queued,
                 self.waiter
                     .as_ref()
-                    .is_some_and(|waiter| waiter.waker.lock().unwrap().is_some())
+                    .is_some_and(|waiter| waiter.waker.borrow().is_some())
             );
 
             // Should the waiter try to acquire permits here? Four cases:
@@ -1403,9 +1416,7 @@ impl Future for Acquire<'_> {
                         // `Waiter` gets allocated.
                         let waiter = self.waiter_for_blocking();
 
-                        let mut maybe_waker = waiter.waker.lock().unwrap();
-                        *maybe_waker = Some(cx.waker().clone());
-                        drop(maybe_waker);
+                        *waiter.waker.borrow_mut() = Some(cx.waker().clone());
 
                         // Point the waiter at whoever is polling now: this future
                         // may have been created by a different task.
@@ -1433,7 +1444,7 @@ impl Future for Acquire<'_> {
                     .waiter
                     .as_ref()
                     .expect("a queued acquire must have an allocated waiter");
-                *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+                *waiter.waker.borrow_mut() = Some(cx.waker().clone());
                 waiter.set_task_id(ExecutionState::me());
                 Poll::Pending
             }
