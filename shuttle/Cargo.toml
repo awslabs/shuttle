@@ -1,6 +1,6 @@
 [package]
 name = "shuttle"
-version = "0.9.2"
+version = "0.9.3"
 edition = "2021"
 license = "Apache-2.0"
 description = "A library for testing concurrent Rust code"
@@ -10,9 +10,9 @@ categories = ["asynchronous", "concurrency", "development-tools::testing"]
 readme = "../README.md"
 
 [dependencies]
-shuttle-engine = { path = "../shuttle-engine", version = "0.1.0" }
-shuttle-schedulers = { path = "../shuttle-schedulers", version = "0.1.0" }
-shuttle-std = { path = "../shuttle-std", version = "0.1.0" }
+shuttle-engine = { path = "../shuttle-engine", version = "0.1.1" }
+shuttle-schedulers = { path = "../shuttle-schedulers", version = "0.1.1" }
+shuttle-std = { path = "../shuttle-std", version = "0.1.1" }
 bitvec = "1.0.1"
 cfg-if = "1.0"
 hex = "0.4.2"
