@@ -1,13 +1,13 @@
 [package]
 name = "shuttle-schedulers"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Scheduler implementations for the Shuttle concurrency testing framework"
 license = "Apache-2.0"
 repository = "https://github.com/awslabs/shuttle"
 
 [dependencies]
-shuttle-engine = { path = "../shuttle-engine", version = "0.1.0" }
+shuttle-engine = { path = "../shuttle-engine", version = "0.1.1" }
 rand = "0.8.6"
 rand_pcg = "0.3.1"
 smallvec = { version = "1.11.2", features = ["const_new"] }

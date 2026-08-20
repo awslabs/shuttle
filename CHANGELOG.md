@@ -1,3 +1,11 @@
+# 0.9.3 (August 19, 2026)
+
+* Fix `BatchSemaphore` waking the wrong task when an `Acquire` future is polled by a task other than the one that created it (the motivating case is an in-flight acquire cached inside a longer-lived object, such as a tokio `Receiver` that is moved between tasks). Waiters left behind by a cancelled `Acquire` whose task has since finished are now also treated as stale instead of consuming permits or blocking a finished task. (#317)
+* Performance: `schedule` no longer iterates over tasks that have already finished. This does not change scheduling decisions. (#318)
+* Add READMEs for `shuttle-engine`, `shuttle-schedulers`, `shuttle-std` and the wrapper crates. Make `shuttle-async-stream-impl` publishable. (#315)
+* Fix doc comment paths that got broken in the crate refactoring.
+* Publish `shuttle-engine`, `shuttle-schedulers` and `shuttle-std` 0.1.1.
+
 # 0.9.2 (August 6, 2026)
 
 * Add support for 128-bit atomics (`AtomicI128`/`AtomicU128`) (#299)
