@@ -4,12 +4,12 @@ use crate::runtime::task::{clock::VectorClock, TaskId};
 use crate::runtime::thread;
 use crate::sync_types::{ResourceSignature, ResourceType};
 use crate::{backtrace_enabled, current};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use tracing::trace;
@@ -27,9 +27,10 @@ struct Waiter {
     /// mirrors tokio's own `batch_semaphore`, which refreshes its waiter's
     /// `Waker` under a `will_wake` check.
     ///
-    /// Stored as an atomic rather than a `Cell` to keep `Waiter` (and hence
-    /// `Acquire`) `Sync`.
-    task_id: AtomicUsize,
+    /// A plain `Cell` suffices: `Waiter` is `Sync` by the `unsafe impl` below,
+    /// which the `waker` field needs anyway, so there is nothing for an atomic
+    /// to buy here.
+    task_id: Cell<TaskId>,
     num_permits: usize,
     is_queued: AtomicBool,
     has_permits: AtomicBool,
@@ -46,7 +47,7 @@ struct Waiter {
 }
 
 // Safety: as for `BatchSemaphore` below, a `Waiter` is never actually passed across true threads,
-// only across continuations, so the `RefCell` cannot be preempted mid-borrow.
+// only across continuations, so the `RefCell` and `Cell` cannot be preempted mid-borrow.
 //
 // This impl is load bearing, not belt-and-braces: `Acquire` holds an `Arc<Waiter>`, so without it
 // any future holding an outstanding acquire across an await stops being `Send` and cannot be
@@ -79,7 +80,7 @@ impl Waiter {
     /// [`Waiter::task_id`]), so it is read here and refreshed on later polls.
     fn new(num_permits: usize, clock: VectorClock) -> Self {
         Self {
-            task_id: AtomicUsize::new(ExecutionState::me().into()),
+            task_id: Cell::new(ExecutionState::me()),
             num_permits,
             is_queued: AtomicBool::new(false),
             has_permits: AtomicBool::new(false),
@@ -90,13 +91,13 @@ impl Waiter {
 
     /// The task currently waiting on this waiter. See [`Waiter::task_id`].
     fn task_id(&self) -> TaskId {
-        TaskId::from(self.task_id.load(Ordering::SeqCst))
+        self.task_id.get()
     }
 
     /// Point this waiter at the task that is polling it now, so that a later
     /// `release` unblocks the current poller rather than whoever polled first.
     fn set_task_id(&self, task_id: TaskId) {
-        self.task_id.store(task_id.into(), Ordering::SeqCst);
+        self.task_id.set(task_id);
     }
 }
 
