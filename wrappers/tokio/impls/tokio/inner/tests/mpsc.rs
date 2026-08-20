@@ -314,6 +314,9 @@ fn async_mpsc_some_senders_with_blocking() {
     );
 }
 
+// Each iteration spawns 1000 tasks, so iterations are expensive. The synchronous analogue
+// (`shuttle::tests::basic::mpsc::mpsc_many_senders_with_blocking`) uses 10 for the same body; this
+// test is about scaling to many senders, not about breadth of schedules, so match that.
 #[test]
 fn async_mpsc_many_senders_with_blocking() {
     shuttle::check_random(
@@ -322,7 +325,7 @@ fn async_mpsc_many_senders_with_blocking() {
                 mpsc_senders_with_blocking_inner(1000, 500).await;
             });
         },
-        1000,
+        10,
     );
 }
 

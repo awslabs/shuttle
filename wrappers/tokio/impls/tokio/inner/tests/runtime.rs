@@ -40,6 +40,7 @@ fn runtime_mpsc_many_senders_with_blocking() {
                 mpsc_senders_with_blocking_inner(1000, 500).await;
             });
         },
-        1000,
+        // 1000 tasks spawned per iteration; see the note on `async_mpsc_many_senders_with_blocking`.
+        10,
     );
 }

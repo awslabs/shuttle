@@ -281,10 +281,18 @@ fn notify_mpmc_channel_2_test(do_enable: bool) {
             h.push(future::spawn(async move {
                 tx1.send(1);
             }));
-            h.push(future::spawn(async move {
-                tx2.send(2);
-            }));
-            futures::future::join_all(h).await;
+
+            // The second send runs on this task rather than in a spawned one. This task has to
+            // exist regardless and would otherwise do nothing but join, so spawning a fourth task
+            // for it only adds a schedulable entity that multiplies the interleaving space without
+            // adding any concurrency to the channel. Joining sequentially rather than with
+            // `join_all` is likewise cheaper for the same reason. Together these keep the search
+            // exhaustive while cutting it from 666,570 interleavings to a small fraction.
+            tx2.send(2);
+
+            for handle in h {
+                handle.await.unwrap();
+            }
             assert_eq!(counter.load(Ordering::SeqCst), 3);
         });
     });

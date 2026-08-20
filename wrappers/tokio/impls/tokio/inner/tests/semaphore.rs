@@ -64,24 +64,46 @@ fn semaphore_acquire() {
     );
 }
 
+// Task i acquires `counts[i]` permits, sets bit i in a shared counter while holding them, and
+// records which other tasks were holding permits at the same time. A full DFS run therefore yields
+// the exact set of possible co-residencies, which must be exactly those whose permit demands sum to
+// at most `num_permits`.
+//
+// The last participant runs on the calling task rather than being spawned: the caller has to exist
+// either way and performs no semaphore operations itself, so spawning a task per participant just
+// adds a schedulable entity that multiplies the interleaving space without adding contention. This
+// keeps the search exhaustive and the observed states identical while cutting `(5, [3, 3, 2])` from
+// 1,554,091 interleavings to 15,376. The `yield_now` is load-bearing — it is the window in which a
+// task's bit is observable to others.
 async fn semtest(num_permits: usize, counts: Vec<usize>, states: &Arc<Mutex<HashSet<(usize, usize)>>>) {
+    async fn participant(
+        i: usize,
+        c: usize,
+        s: Arc<Semaphore>,
+        r: Arc<AtomicUsize>,
+        states: Arc<Mutex<HashSet<(usize, usize)>>>,
+    ) {
+        let val = 1usize << i;
+        let permit = s.acquire_many(c as u32).await.unwrap();
+        let v = r.fetch_add(val, Ordering::SeqCst);
+        future::yield_now().await;
+        let _ = r.fetch_sub(val, Ordering::SeqCst);
+        states.lock().unwrap().insert((i, v));
+        drop(permit);
+    }
+
     let s = Arc::new(Semaphore::new(num_permits));
     let r = Arc::new(AtomicUsize::new(0));
-    let mut handles = vec![];
-    for (i, &c) in counts.iter().enumerate() {
-        let s = s.clone();
-        let r = r.clone();
-        let states = states.clone();
-        let val = 1usize << i;
-        handles.push(future::spawn(async move {
-            let permit = s.acquire_many(c as u32).await.unwrap();
-            let v = r.fetch_add(val, Ordering::SeqCst);
-            future::yield_now().await;
-            let _ = r.fetch_sub(val, Ordering::SeqCst);
-            states.lock().unwrap().insert((i, v));
-            drop(permit);
-        }));
-    }
+
+    let (&last, rest) = counts.split_last().expect("need at least one participant");
+    let handles = rest
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| future::spawn(participant(i, c, s.clone(), r.clone(), states.clone())))
+        .collect::<Vec<_>>();
+
+    participant(counts.len() - 1, last, s.clone(), r.clone(), states.clone()).await;
+
     for h in handles {
         h.await.unwrap();
     }

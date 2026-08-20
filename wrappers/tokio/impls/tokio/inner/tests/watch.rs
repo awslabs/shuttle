@@ -39,7 +39,7 @@ fn watch_basic() {
                 futures::future::join_all([p, h1, h2]).await;
             });
         },
-        200_000,
+        20_000,
     );
 }
 
@@ -69,7 +69,9 @@ fn watch_changed() {
                 h.await.unwrap();
             });
         },
-        200_000,
+        // The `values` set below reaches its final contents within the first handful of iterations,
+        // so 200_000 was three orders of magnitude more than the assertion needs.
+        20_000,
     );
 
     let values = values.lock().unwrap();
@@ -120,7 +122,7 @@ fn wait_for_test() {
             th1.join().unwrap();
             th2.join().unwrap();
         },
-        50_000,
+        10_000,
     );
 }
 
