@@ -4,8 +4,9 @@
 * Better instrument backtraces for blocked futures. (#215)
 * Fix the `annotation` feature. (#334)
 * `shuttle-tokio`'s `full` feature now matches tokio's, and tokio's remaining features (including its implicit optional-dependency features) are mirrored as pass-throughs, so switching a crate from `tokio` to `shuttle-tokio` no longer breaks on an unknown feature. (#335, #337)
-* Publish `shuttle-tokio`, `shuttle-tokio-impl` and `shuttle-tokio-impl-inner` 0.1.1.
+* Publish `shuttle-tokio-impl` and `shuttle-tokio-impl-inner` 0.1.1.
 * Publish `shuttle-tokio-retry` 0.3.0 and `shuttle-tokio-retry-impl` 0.1.0 for the first time. (#275)
+* `shuttle-tokio` is now versioned 1.0.0, so that it mirrors the version of the crate it wraps like every other wrapper does and a downstream crate can depend on it with the same `version = "1"` requirement it would have used for `tokio`. The 0.1 line is unchanged and still resolves to 0.1.1; moving to the 1.x line is opt-in. (#327)
 
 # 0.9.3 (August 19, 2026)
 
