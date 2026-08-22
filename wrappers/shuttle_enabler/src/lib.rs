@@ -26,7 +26,7 @@
 //!
 //! [dependencies]
 //! shuttle_enabler = "0.1.0"
-//! tokio = { package = "shuttle-tokio", version = "0.1" }
+//! tokio = { package = "shuttle-tokio", version = "1" }
 //! parking_lot = { package = "shuttle-parking_lot", version = "0.12" }
 //! ```
 //!
