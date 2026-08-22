@@ -1,6 +1,9 @@
 name: Cron jobs
+
+# Least privilege by default. Note that naming any scope here implicitly sets
+# every unnamed scope to `none`, so jobs needing more must opt in explicitly.
 permissions:
-  contents: write
+  contents: read
 
 on:
   push:
@@ -14,7 +17,7 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v5
       - name: Install Rust
         run: rustup update stable
       - name: Install Audit
@@ -26,8 +29,14 @@ jobs:
   # Exists to not get "caught off guard" by new Rust versions bringing new clippies.
   beta:
     runs-on: ubuntu-latest
+    # `issues: write` is required by the "Notify failed build" step below, which
+    # opens an issue when this job fails. Job-level permissions replace the
+    # top-level block outright, so `contents: read` has to be restated here.
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v5
       - name: Install Rust
         run: rustup update beta
       - name: Default to beta
