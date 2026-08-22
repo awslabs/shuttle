@@ -1,0 +1,51 @@
+[package]
+name = "shuttle_enabler"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Enables the Shuttle-compatible implementation of every Shuttle wrapper crate with a single feature flag."
+repository = "https://github.com/awslabs/shuttle"
+readme = "README.md"
+
+# This crate contains no code. Its only purpose is to own a single `shuttle` feature that turns on
+# the `shuttle` feature of every wrapper crate, so that downstream crates do not have to enumerate
+# them (and cannot forget to update the list when adding a dependency).
+#
+# Every dependency is optional and is only pulled in by the `shuttle` feature, so depending on this
+# crate costs nothing when the feature is off.
+#
+# Dependencies deliberately use `default-features = false`. Cargo unifies features as a union, so
+# this crate contributes *only* the `shuttle` feature and never silently turns on any other feature
+# of a wrapper on a downstream crate's behalf.
+[features]
+default = []
+shuttle = [
+    "determinizable_collections/deterministic",
+    "shuttle-async-stream/shuttle",
+    "shuttle-dashmap/shuttle",
+    "shuttle-lazy_static/shuttle",
+    "shuttle-parking_lot/shuttle",
+    "shuttle-rand/shuttle",
+    "shuttle-sync/shuttle",
+    "shuttle-tokio/shuttle",
+    "shuttle-tokio-retry/shuttle",
+    "shuttle-tokio-stream/shuttle",
+    "shuttle-tokio-util/shuttle",
+]
+
+# Version requirements are deliberately as permissive as semver allows. The whole mechanism relies on
+# Cargo unifying this crate's dependency on a wrapper with the downstream crate's own dependency on
+# that same wrapper; a tighter requirement here would risk resolving to a second, separate copy that
+# does not get the `shuttle` feature.
+[dependencies]
+determinizable_collections = { path = "../collections", version = "0.1", optional = true, default-features = false }
+shuttle-async-stream = { path = "../async_stream", version = "0.3", optional = true, default-features = false }
+shuttle-dashmap = { path = "../dashmap", version = "6", optional = true, default-features = false }
+shuttle-lazy_static = { path = "../lazy_static", version = "1", optional = true, default-features = false }
+shuttle-parking_lot = { path = "../parking_lot", version = "0.12", optional = true, default-features = false }
+shuttle-rand = { path = "../shuttle_rand_0.8", version = "0.8", optional = true, default-features = false }
+shuttle-sync = { path = "../shuttle_sync", version = "0.1", optional = true, default-features = false }
+shuttle-tokio = { path = "../tokio/wrappers/shuttle-tokio", version = "0.1", optional = true, default-features = false }
+shuttle-tokio-retry = { path = "../tokio/wrappers/shuttle-tokio-retry", version = "0.3", optional = true, default-features = false }
+shuttle-tokio-stream = { path = "../tokio/wrappers/shuttle-tokio-stream", version = "0.1", optional = true, default-features = false }
+shuttle-tokio-util = { path = "../tokio/wrappers/shuttle-tokio-util", version = "0.7", optional = true, default-features = false }
