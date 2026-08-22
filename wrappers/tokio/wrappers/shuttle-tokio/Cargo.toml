@@ -1,6 +1,9 @@
 [package]
 name = "shuttle-tokio"
-version = "0.1.0"
+# Wrappers mirror the version of the crate they wrap, so that a downstream crate can depend on the
+# wrapper using the same version requirement it would have used for the real crate. `tokio` is at
+# 1.x, so this is too.
+version = "1.0.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "tokio wrapper for the Shuttle concurrency testing tool."
