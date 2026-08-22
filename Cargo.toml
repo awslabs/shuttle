@@ -4,6 +4,7 @@ members = [
     "shuttle-schedulers",
     "shuttle-std",
     "shuttle",
+    "wrappers/shuttle_enabler",
     "wrappers/shuttle_rand_0.8",
     "wrappers/shuttle_sync",
     "wrappers/collections",
