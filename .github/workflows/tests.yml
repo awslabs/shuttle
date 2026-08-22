@@ -20,7 +20,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - name: Install Rust
         run: rustup update stable
       - name: Install nextest
@@ -34,7 +34,7 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - name: Install Rust
         run: rustup update stable
       - name: Install rustfmt
@@ -46,11 +46,11 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - name: Install Rust
         run: rustup update stable
       - name: Install clippy
-        run: rustup component add rustfmt
+        run: rustup component add clippy
       - name: clippy
         run: cargo clippy --all-targets -- -D clippy::all
 
@@ -58,7 +58,7 @@ jobs:
     name: Docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - name: Install Rust
         run: rustup update stable
       - name: cargo doc
