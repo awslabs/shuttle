@@ -205,7 +205,7 @@ shuttle = [
 ]
 
 [dependencies]
-tokio = { package = "shuttle-tokio", version = "0.1" }
+tokio = { package = "shuttle-tokio", version = "1" }
 ```
 
 Every `use tokio::...` in your codebase stays exactly as it is. Without the `shuttle` feature you
@@ -383,7 +383,7 @@ The tokio ecosystem crates follow the same swap pattern, each with its own `shut
 
 ```toml
 [dependencies]
-tokio = { package = "shuttle-tokio", version = "0.1" }
+tokio = { package = "shuttle-tokio", version = "1" }
 tokio-stream = { package = "shuttle-tokio-stream", version = "0.1" }
 tokio-util = { package = "shuttle-tokio-util", version = "0.7" }
 tokio-retry = { package = "shuttle-tokio-retry", version = "0.3" }
