@@ -4,6 +4,7 @@ version = "6.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "dashmap wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
 
 [features]
 shuttle = [ "dep:shuttle-dashmap-impl" ]

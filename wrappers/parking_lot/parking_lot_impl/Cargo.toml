@@ -4,6 +4,7 @@ version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 description = "Internal implementation of the `parking_lot` crate for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-parking_lot`."
+repository = "https://github.com/awslabs/shuttle"
 
 [features]
 # Enable `Arc`-based lock guards (`lock_arc`, `read_arc`, `write_arc`, ...). Forwarded to `lock_api`.

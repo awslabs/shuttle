@@ -4,6 +4,7 @@ version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "tokio-retry wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
 
 [lib]
 name = "shuttle_tokio_retry"

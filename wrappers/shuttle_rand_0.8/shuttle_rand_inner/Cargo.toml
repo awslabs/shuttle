@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 description = "Shuttle's internal implementation of the `rand` 0.8 crate. Do not depend on this crate directly; use `shuttle-rand`."
+repository = "https://github.com/awslabs/shuttle"
 
 [features]
 alloc = []

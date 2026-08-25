@@ -4,6 +4,7 @@ version = "0.1.0" # Forked from "0.1.14"
 edition = "2021"
 license = "Apache-2.0"
 description = "tokio-stream wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
 
 [features]
 shuttle = ["shuttle-tokio-stream-impl"]

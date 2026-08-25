@@ -4,6 +4,7 @@ version = "0.3.6"
 edition = "2021"
 license = "MIT"
 description = "A Shuttle-compatible wrapper for the `async-stream` crate"
+repository = "https://github.com/awslabs/shuttle"
 
 [features]
 shuttle = [ "dep:shuttle-async-stream-impl" ]
