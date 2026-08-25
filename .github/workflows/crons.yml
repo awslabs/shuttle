@@ -16,6 +16,10 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    # See the note on the `beta` job below.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust
@@ -24,6 +28,17 @@ jobs:
         run: cargo install cargo-audit
       - name: cargo audit
         run: cargo audit
+      # Uses its own label so this is tracked separately from the `beta` job's
+      # notification: a new advisory and a beta toolchain regression are
+      # unrelated failures with unrelated fixes, and should not share an issue
+      # thread.
+      - name: Notify failed build
+        uses: drivendataorg/failed-build-issue-action@v1
+        if: failure()
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          label-name: "audit failed"
+          title-template: "Failed cargo audit: {{workflow}}"
   
   # Runs Clippy, fmt, doc and tests on beta. 
   # Exists to not get "caught off guard" by new Rust versions bringing new clippies.
@@ -57,8 +72,14 @@ jobs:
         run: cargo nextest run --release --workspace
       - name: cargo test --doc
         run: cargo test --release --doc --workspace
+      # Requires v1.3.0 or newer: earlier releases declare `runs.using: node20`,
+      # and Node 20 is removed from the runners on 2026-09-16. The action also
+      # moved from jayqi/ to drivendataorg/; the old path still redirects, but
+      # naming the canonical owner avoids depending on that.
       - name: Notify failed build
-        uses: jayqi/failed-build-issue-action@v1
-        if: failure() 
+        uses: drivendataorg/failed-build-issue-action@v1
+        if: failure()
         with:
+          # Optional as of v1.3.0, which defaults it to `github.token`, but kept
+          # explicit to keep the token this step uses obvious at the call site.
           github-token: ${{ secrets.GITHUB_TOKEN }}
