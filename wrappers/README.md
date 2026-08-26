@@ -49,7 +49,7 @@ For example, if you want to pin `tokio` to `1.36.0`, you can add the following:
 ```toml
 [dependencies]
 tokio = { package = "shuttle-tokio", version = "0.1.0" }
-tokio-version-importer-do-not-use-directly = { version = "=1.36.0" }
+tokio-version-importer-do-not-use-directly = { package = "tokio", version = "=1.36.0" }
 ```
 
 A more robust alternative which removes the possibility of accidentally using the version importer crate is the following:
