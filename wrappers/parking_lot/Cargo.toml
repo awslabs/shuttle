@@ -4,6 +4,7 @@ version = "0.12.5"
 edition = "2024"
 license = "Apache-2.0"
 description = "parking_lot wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
 
 [features]
 shuttle = [ "dep:shuttle-parking_lot-impl" ]

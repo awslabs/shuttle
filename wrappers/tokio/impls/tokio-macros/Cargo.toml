@@ -4,6 +4,7 @@ version = "0.1.0" # Forked from "2.2.0"
 edition = "2021"
 license = "MIT"
 description = "A fork of tokio-macros 2.2.0 which is compatible with the Shuttle concurrency checker."
+repository = "https://github.com/awslabs/shuttle"
 
 [lib]
 proc-macro = true

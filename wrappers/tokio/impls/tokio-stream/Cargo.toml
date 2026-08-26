@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.63"
 license = "MIT"
 description = "A fork of tokio-stream 0.1.14 which is compatible with the Shuttle concurrency checker."
+repository = "https://github.com/awslabs/shuttle"
 
 [features]
 default = ["time"]

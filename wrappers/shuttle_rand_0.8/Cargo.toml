@@ -4,6 +4,7 @@ version = "0.8.6"
 edition = "2024"
 license = "Apache-2.0"
 description = "rand wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
 
 [features]
 shuttle = [ "dep:shuttle", "dep:shuttle-rand-inner" ]
