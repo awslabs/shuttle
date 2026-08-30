@@ -6,22 +6,22 @@
 
 Shuttle is a library for testing concurrent Rust code. It takes control of the scheduler, so that
 thread interleavings are chosen by Shuttle rather than by the OS. That gives you two things a normal
-concurrency test cannot: interleavings are explored deliberately instead of by luck, and any failure
-you find can be replayed deterministically.
+concurrency test cannot: interleavings are explored systematically, under a policy you choose, and
+any failure you find can be replayed deterministically.
 
-Shuttle implements a number of *randomized concurrency testing* techniques, including
-[A Randomized Scheduler with Probabilistic Guarantees of Finding Bugs](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf)
-(PCT).
+Shuttle is inspired by [Loom](https://github.com/tokio-rs/loom), but defaults to randomized testing
+rather than exhaustive testing. This is a soundness–scalability trade-off: randomized testing is not
+sound (a passing Shuttle test does not prove the code is correct), but it scales to much larger test
+cases than exhaustive exploration does. Empirically, randomized testing is successful at finding most
+concurrency bugs, which tend not to be adversarial. Shuttle *can* also run exhaustively, through
+[`check_dfs`](#choosing-a-scheduler), but it implements no partial order reduction, so exhaustive
+runs stay tractable only for very small tests.
 
-Shuttle is inspired by [Loom](https://github.com/tokio-rs/loom), but focuses on randomized testing
-rather than exhaustive testing. This is a soundness–scalability trade-off: Shuttle is not sound (a
-passing Shuttle test does not prove the code is correct), but it scales to much larger test cases
-than Loom. Empirically, randomized testing is successful at finding most concurrency bugs, which
-tend not to be adversarial.
-
-Beyond the core library, this repository houses a collection of drop-in
-[wrappers](/wrappers) for popular crates, so that existing code can be run under Shuttle without
-being rewritten. The largest of these is [tokio support](#testing-tokio-code).
+A core goal of Shuttle is to require minimal changes to the code under test: you should be able to
+point Shuttle at existing code rather than restructure that code for testing. To that end, beyond
+the core library, this repository houses a collection of drop-in [wrappers](/wrappers) for popular
+crates, which swap out a dependency rather than asking you to rewrite the code that uses it. The
+largest of these is [tokio support](#testing-tokio-code).
 
 ## Getting started
 
@@ -70,27 +70,41 @@ shuttle::check_random(|| {
 This runs the test body 100 times, each under a different randomized schedule, and detects the
 assertion failure with extremely high probability (over 99.9999%).
 
-To test code that lives in your own crate, put Shuttle behind a feature flag so that production
-builds are unaffected:
+The example above rewrites its imports because it is a self-contained snippet. Don't do that to a
+real codebase. Depend on the [`shuttle-sync`](/wrappers/shuttle_sync) wrapper instead, and put it
+behind a feature flag so that production builds are unaffected:
 
 ```toml
 [features]
-shuttle = ["dep:shuttle"]
+shuttle = ["shuttle-sync/shuttle"]
 
 [dependencies]
-shuttle = { version = "0.9", optional = true }
+shuttle-sync = "0.1"
 ```
 
-Then funnel all synchronization imports through a single module that switches on the feature:
+Import from `shuttle_sync::sync` in place of `std::sync`, once, and then leave your code alone:
 
 ```rust
-#[cfg(all(feature = "shuttle", test))]
-use shuttle::{sync::*, thread};
-#[cfg(not(all(feature = "shuttle", test)))]
-use std::{sync::*, thread};
+use shuttle_sync::sync::{Arc, Mutex};
 ```
 
-and run your Shuttle tests with `cargo test --features shuttle`.
+Without the `shuttle` feature that import *is* `std::sync`. With it, the same import resolves to
+Shuttle's instrumented primitives. Run your Shuttle tests with `cargo test --features shuttle`.
+
+Two things to know. `shuttle-sync` re-exports all of `std::sync`, which is a superset of what
+`shuttle::sync` models, so anything Shuttle does not implement (`OnceLock`, `LazyLock`, `mpmc`) has
+to keep coming from `std` directly. And there is no wrapper for `std::thread` yet, so spawning is
+still a feature switch at the import site:
+
+```rust
+#[cfg(feature = "shuttle")]
+use shuttle::thread;
+#[cfg(not(feature = "shuttle"))]
+use std::thread;
+```
+
+The [wrappers README](/wrappers/README.md) covers the same dependency-swap pattern for `tokio`,
+`parking_lot`, `dashmap`, `rand`, and the rest.
 
 ## Reproducing a failure
 
@@ -112,6 +126,21 @@ shuttle::replay(|| {
 
 Because the execution is deterministic, you can now attach a debugger, add logging, or bisect the
 bug without the failure evaporating.
+
+`check_random` also prints the seed its RNG was started from:
+
+```text
+failing seed:
+"
+13500762202844185232
+"
+```
+
+Pass that to `shuttle::check_random_with_seed`, or set `SHUTTLE_RANDOM_SEED` and re-run
+`check_random`. A seed is more compact than a schedule, but it reproduces something different: a
+schedule replays one specific interleaving exactly once, whereas a seed re-runs the whole randomized
+search from the start, reproducing every iteration up to and including the failing one. Reach for the
+schedule when you want to debug the failure, and the seed when you want to repeat the run.
 
 Schedules for long-running tests can get large. Set `Config::failure_persistence` to
 `FailurePersistence::File` to write them to disk instead of stdout, and replay with
@@ -154,6 +183,10 @@ The scheduler decides which runnable task to run at each scheduling point. Diffe
 different classes of bugs, at the cost of exploring more executions. Each is reachable through a
 convenience function, or directly through `Runner` when you need more control.
 
+Shuttle implements a number of *randomized concurrency testing* techniques, including
+[A Randomized Scheduler with Probabilistic Guarantees of Finding Bugs](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/asplos277-pct.pdf)
+(PCT).
+
 | Scheduler | Entry point | When to use it |
 | --- | --- | --- |
 | `RandomScheduler` | `check_random(f, iterations)` | The default. Picks uniformly at random among runnable tasks. |
@@ -161,13 +194,32 @@ convenience function, or directly through `Runner` when you need more control.
 | `DfsScheduler` | `check_dfs(f, max_iterations)` | Exhaustive depth-first search. Intractable beyond very small tests, but thorough for individual primitives. |
 | `UrwRandomScheduler` | `check_urw(f, iterations)` | Uniform random walk over the schedule space. Helps when tasks have very uneven amounts of work and plain random scheduling biases away from the interesting interleavings. |
 | `ReplayScheduler` | `replay(f, schedule)`, `replay_from_file(f, path)` | Reproduce a recorded failure. |
-| `UncontrolledNondeterminismCheckScheduler` | `check_uncontrolled_nondeterminism(f, iterations)` | Detects tests whose behavior depends on nondeterminism Shuttle does not control, which would otherwise make failures unreproducible. |
+| `UncontrolledNondeterminismCheckScheduler` | `check_uncontrolled_nondeterminism(f, iterations)` | Detects tests whose behavior depends on nondeterminism Shuttle does not control, which would otherwise make failures unreproducible. See [below](#checking-for-uncontrolled-nondeterminism). |
 | `RoundRobinScheduler` | — | Cycles through tasks in a fixed order. Almost never what you want. |
 | `AnnotationScheduler` | — | Records an annotated schedule for [Shuttle Explorer](#shuttle-explorer). Requires the `annotation` feature. |
 
 `Runner::new(scheduler, config).run(f)` runs a test with an explicit scheduler and configuration.
 `PortfolioRunner` runs several schedulers in parallel, which is a cheap way to increase the number
 of executions explored.
+
+### Checking for uncontrolled nondeterminism
+
+Everything above rests on Shuttle being the only source of nondeterminism in the test. When that is
+not true — the test branches on a real clock, a `HashMap` iteration order, an `OsRng`, or the
+environment — schedules stop being reproducible, and a failure you find may not replay.
+
+`check_uncontrolled_nondeterminism(f, iterations)` looks for exactly that. It wraps the random
+scheduler and runs each generated schedule *twice*, checking on the second run that the schedule is
+still valid and that the set of runnable tasks, the yielding flag, and the random values requested
+all match the first run. Any divergence panics with a `possible nondeterminism:` message describing
+what differed.
+
+It is worth running when replay does not reproduce a failure, or when adopting Shuttle on a codebase
+for the first time. Two caveats: it halves the number of distinct schedules explored for a given
+iteration count, since every schedule is run twice; and it is a bug-finder rather than a proof —
+passing does not establish that the test is free of uncontrolled nondeterminism, only that none was
+observed on the schedules tried. The usual fixes are the `shuttle::rand` and
+`determinizable_collections` wrappers.
 
 ## Configuration
 
