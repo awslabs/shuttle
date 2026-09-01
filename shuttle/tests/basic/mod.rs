@@ -1,3 +1,5 @@
+#[cfg(feature = "annotation")]
+mod annotation;
 mod atomic;
 mod barrier;
 pub(crate) mod clocks;
