@@ -1,0 +1,24 @@
+# Configuration for `cargo audit`, run by the weekly cron in
+# .github/workflows/crons.yml. See:
+# https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+ignore = [
+    # RUSTSEC-2022-0040: multiple soundness issues in `owning_ref`.
+    #
+    # Not reachable in any build we produce. `owning_ref` enters Cargo.lock only
+    # as an *optional* dependency of `lock_api`, which is reached three ways:
+    # `parking_lot` 0.12 and `dashmap` 6 (transitively), and
+    # `shuttle-parking_lot-impl` (directly). In every case pulling in
+    # `owning_ref` requires the non-default `owning_ref` feature, which nothing
+    # in this workspace enables. `cargo tree -i owning_ref --workspace` reports
+    # no match, confirming it is absent from the resolved build graph; `cargo
+    # audit` flags it anyway because it scans the lockfile, which records
+    # optional dependencies whether or not their feature is activated.
+    #
+    # The advisory has no fixed upgrade available, so it cannot be resolved by
+    # bumping. Revisit if `lock_api` drops the `owning_ref` dependency, or if
+    # this workspace ever enables the `owning_ref` feature by default -- at that
+    # point the code would genuinely be exposed and this entry must be removed.
+    "RUSTSEC-2022-0040",
+]
