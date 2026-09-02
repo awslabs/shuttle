@@ -51,7 +51,7 @@ bench = false
 [features]
 default = []
 vector-clocks = ["shuttle-engine/vector-clocks"]
-annotation = ["shuttle-engine/annotation", "shuttle-schedulers/annotation", "dep:serde", "dep:serde_json", "dep:regex"]
+annotation = ["vector-clocks", "shuttle-engine/annotation", "shuttle-schedulers/annotation", "dep:serde", "dep:serde_json", "dep:regex"]
 # The following feature overrides the `vector-clocks` feature. It SHOULD NOT be used in production.
 # Its purpose is solely to allow `cargo bench` to be run without vector clocks enabled, as they
 # are otherwise always enabled via a dev-dependency to ensure all *test* assertions utilizing vector

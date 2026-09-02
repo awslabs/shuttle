@@ -11,8 +11,17 @@
 //       also be reflected in the parsing
 // TODO: introduce version numbers to make sure breaking changes are noticed
 
+// `annotation` turns on `vector-clocks`, but `bench-no-vector-clocks` overrides it and would
+// leave every clock in the annotated schedule empty, hiding all causal dependence from the
+// Shuttle Explorer.
+#[cfg(all(feature = "annotation", feature = "bench-no-vector-clocks"))]
+compile_error!(
+    "the `annotation` feature requires vector clocks, so it cannot be combined with `bench-no-vector-clocks`"
+);
+
 cfg_if::cfg_if! {
     if #[cfg(feature = "annotation")] {
+        use crate::annotation_file;
         use crate::runtime::{
             execution::ExecutionState,
             task::{clock::VectorClock, Task, TaskId},
@@ -142,8 +151,11 @@ cfg_if::cfg_if! {
                 S: serde::ser::Serializer,
             {
                 use serde::ser::SerializeSeq;
-                let mut seq = serializer.serialize_seq(Some(self.time.len()))?;
-                for e in &self.time {
+                // `VectorClock` derefs to `[u32]` in both its real and its stubbed
+                // form, so go through the slice rather than the `time` field, which
+                // only exists when the `vector-clocks` feature is enabled.
+                let mut seq = serializer.serialize_seq(Some(self.len()))?;
+                for e in self.iter() {
                     seq.serialize_element(e)?;
                 }
                 seq.end()
@@ -252,7 +264,7 @@ cfg_if::cfg_if! {
                     task_id,
                     info,
                     event,
-                    ExecutionState::try_with(|state| state.get_clock(task_id).clone()),
+                    ExecutionState::try_with(|state| state.get_clock(task_id).clone()).ok(),
                     state.last_runnable_ids.take(),
                 ))
             });
