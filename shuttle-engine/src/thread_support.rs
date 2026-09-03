@@ -1,13 +1,15 @@
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::Event;
 use crate::runtime::thread;
 use std::marker::PhantomData;
 
 /// Cooperatively gives up a timeslice to the Shuttle scheduler.
+#[track_caller]
 pub fn yield_now() {
     let waker = ExecutionState::with(|state| state.current().waker());
     waker.wake_by_ref();
     ExecutionState::request_yield();
-    thread::switch();
+    thread::switch(Event::yield_now());
 }
 
 /// The body of a spawned thread. Runs `f`, drops thread locals, publishes result.
@@ -21,7 +23,7 @@ pub fn thread_fn<F, T>(
     let ret = f();
 
     if switch_before_exit && ExecutionState::with(|s| s.exit_current_truncates_execution()) {
-        thread::switch();
+        thread::switch(Event::Exit);
     }
 
     tracing::trace!("thread finished, dropping thread locals");

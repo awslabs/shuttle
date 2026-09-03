@@ -23,14 +23,14 @@ impl<S: Scheduler> Scheduler for AnnotationScheduler<S> {
         self.0.new_execution()
     }
 
-    fn next_task(
+    fn next_task<'a>(
         &mut self,
-        runnable_tasks: &[&Task],
+        runnable_tasks: &'a [&'a Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
-    ) -> Option<TaskId> {
+    ) -> Option<&'a Task> {
         let choice = self.0.next_task(runnable_tasks, current_task, is_yielding)?;
-        record_schedule(choice, runnable_tasks);
+        record_schedule(choice.id(), runnable_tasks);
         Some(choice)
     }
 

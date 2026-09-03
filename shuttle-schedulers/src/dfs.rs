@@ -12,8 +12,8 @@ pub struct DfsScheduler {
     allow_random_data: bool,
 
     iterations: usize,
-    // Vec<(previous choice, was that the last choice at that level)>
-    levels: Vec<(TaskId, bool)>,
+    // Vec<(previous choice index, was that the last choice at that level)>
+    levels: Vec<(usize, bool)>,
     steps: usize,
 
     data_source: FixedDataSource,
@@ -66,35 +66,39 @@ impl Scheduler for DfsScheduler {
 
     // TODO should we respect `is_yielding` by not allowing `current` to be scheduled next? That
     // TODO would be unsound but perhaps useful for validating some code
-    fn next_task(&mut self, runnable: &[&Task], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
-        let next = if self.steps >= self.levels.len() {
+    fn next_task<'a>(
+        &mut self,
+        runnable: &'a [&'a Task],
+        _current: Option<TaskId>,
+        _is_yielding: bool,
+    ) -> Option<&'a Task> {
+        let next_idx = if self.steps >= self.levels.len() {
             // First time we've reached this level
             assert_eq!(self.steps, self.levels.len());
-            let to_run = runnable.first().unwrap().id();
-            self.levels.push((to_run, runnable.len() == 1));
-            to_run
+            let idx = 0;
+            self.levels.push((idx, runnable.len() == 1));
+            idx
         } else {
-            let (last_choice, was_last) = self.levels[self.steps];
+            let (last_choice_idx, was_last) = self.levels[self.steps];
             if self.has_more_choices(self.steps + 1) {
                 // Keep the same choice, because there's more work to do somewhere below us
-                last_choice
+                last_choice_idx
             } else {
                 // Time to make a change at this level
                 assert!(
                     !was_last,
                     "if we are making a change, there should be another available option"
                 );
-                let next_idx = runnable.iter().position(|t| t.id() == last_choice).unwrap() + 1;
-                let next = runnable[next_idx].id();
+                let next_idx = last_choice_idx + 1;
                 self.levels.drain(self.steps..);
-                self.levels.push((next, next_idx == runnable.len() - 1));
-                next
+                self.levels.push((next_idx, next_idx == runnable.len() - 1));
+                next_idx
             }
         };
 
         self.steps += 1;
 
-        Some(next)
+        Some(runnable[next_idx])
     }
 
     fn next_u64(&mut self) -> u64 {
