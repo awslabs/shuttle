@@ -24,19 +24,18 @@ fn random_mod_10_equals_7_fails() {
 #[test]
 #[should_panic(expected = "found failing value")]
 fn random_mod_10_equals_7_replay_fails() {
-    // A schedule in which the random value is 12690273488315200547 == 7 mod 10
-    replay(random_mod_10_equals_7, "910102fe93a9cef4f3faaf5a04")
+    // A schedule in which the random value is 7 mod 10. Persisted at the moment of failure, so it
+    // ends there; replaying it must still reproduce the panic.
+    replay(random_mod_10_equals_7, "910102e084c5caf48baaf00404")
 }
 
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 #[test]
 fn random_mod_10_equals_7_replay_succeeds() {
-    // A schedule in which the random value is 8809595901112014164 != 7 mod 10
-    replay(random_mod_10_equals_7, "910102e5d591a18ffeb9d21804")
+    // A complete schedule in which the random value is not 7 mod 10, so the test runs to completion.
+    replay(random_mod_10_equals_7, "9101030004")
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn random_mod_10_equals_7_replay_roundtrip() {
     check_replay_roundtrip(random_mod_10_equals_7, RandomScheduler::new(1000))
 }
@@ -155,7 +154,6 @@ fn broken_atomic_counter_stress_random() {
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn broken_atomic_counter_stress_roundtrip() {
     check_replay_roundtrip(broken_atomic_counter_stress, RandomScheduler::new(1000))
 }
@@ -176,42 +174,38 @@ fn dfs_threads_decorrelated_enabled() {
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_from_seed_match_schedule0() {
     check_replay_from_seed_match_schedule(
         broken_atomic_counter_stress,
-        15603830570056246250,
-        "91022ceac7d5bcb1a7fcc5d801a8050ea528954032492693491200000000",
+        0,
+        "91023c000868f14551a44a52a954a228954a52492a010000000000",
     );
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_from_seed_match_schedule1() {
     check_replay_from_seed_match_schedule(
         broken_atomic_counter_stress,
-        2185777353610950419,
-        "91023c93eecb80c29ddcaa1ef81a1c5251494a2c92928a2a954a25a904000000000000",
+        1,
+        "91025501081d5c90bfe9362915952c2a45a99462912a910926c964920400000000000000",
     );
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_from_seed_match_schedule2() {
     check_replay_from_seed_match_schedule(
         broken_atomic_counter_stress,
-        14231716651102207764,
-        "91024b94fed5e7c2dccdc0c501185a9c0a889e169b64ca455b2d954a52492a49a59204000000\n00000000",
+        8,
+        "9102610818d09ca418927c2a59548a76bb49276dd96ab764bb2dcb725b2a95a4120000000000000000",
     );
 }
 
 #[test]
-#[ignore = "replay mechanism is broken because the schedule is not emitted in the panic output. reintroduce once replay mechanism is fixed."]
 fn replay_from_seed_match_schedule3() {
     check_replay_from_seed_match_schedule(
         broken_atomic_counter_stress,
-        14271799263003420363,
-        "910278cbcd808888bae787c601081eda4f904cb34937e96cb72db9da965c65d2969b29956dab\ne81625a54432c83469d24c020000000000000000",
+        13,
+        "91027d0d38a00fdf2e15b74a14db246d36e93445955262912a2593a26cbb65592d93493229a5c4a42401000000000000000000",
     );
 }
 
