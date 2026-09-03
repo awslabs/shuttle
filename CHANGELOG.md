@@ -1,3 +1,7 @@
+# Unreleased
+
+* Performance: `backtrace_enabled` no longer reads the environment on every call. It is called from `Task::block` and `Task::sleep`, so on every block and every `Poll::Pending`, and `std::env::var` takes a lock on the environment and allocates. Lock-heavy workloads are 9-12% faster.
+
 # 0.9.3 (August 19, 2026)
 
 * Fix `BatchSemaphore` waking the wrong task when an `Acquire` future is polled by a task other than the one that created it (the motivating case is an in-flight acquire cached inside a longer-lived object, such as a tokio `Receiver` that is moved between tasks). Waiters left behind by a cancelled `Acquire` whose task has since finished are now also treated as stale instead of consuming permits or blocking a finished task. (#317)
