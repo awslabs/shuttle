@@ -2,7 +2,7 @@ use crate::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use crate::sync::{ResourceSignature, ResourceType};
 use shuttle_engine::current;
 use shuttle_engine::future::batch_semaphore::{BatchSemaphore, Fairness};
-use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::task::{Event, TaskId};
 use shuttle_engine::runtime::thread;
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
@@ -69,7 +69,7 @@ impl<T: ?Sized> Mutex<T> {
             self.semaphore.acquire_blocking(1).unwrap();
         } else {
             // we always need to allow for a context switch to make the previous event visible for completeness
-            thread::switch();
+            thread::switch(Event::Unknown);
         }
 
         state = self.state.borrow_mut();
