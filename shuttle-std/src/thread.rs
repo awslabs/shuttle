@@ -3,11 +3,13 @@
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::TaskId;
 use shuttle_engine::runtime::thread;
+use shuttle_engine::time::Duration;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
 
+pub use shuttle_engine::time::sleep;
 pub use std::thread::{panicking, Result};
 
 /// A unique identifier for a running thread
@@ -303,12 +305,6 @@ pub fn yield_now() {
     let waker = ExecutionState::with(|state| state.current().waker());
     waker.wake_by_ref();
     ExecutionState::request_yield();
-    thread::switch();
-}
-
-/// Puts the current thread to sleep for at least the specified amount of time.
-// Note that Shuttle does not model time, so this behaves just like a context switch.
-pub fn sleep(_dur: Duration) {
     thread::switch();
 }
 
