@@ -21,6 +21,10 @@ io-util = ["tokio/io-util", "shuttle-tokio-impl?/io-util"]
 io-std = ["tokio/io-std", "shuttle-tokio-impl?/io-std"]
 macros = ["tokio/macros", "shuttle-tokio-impl?/macros"]
 net = ["tokio/net", "shuttle-tokio-impl?/net"]
+# Pass-through for tokio's internal performance feature, so `shuttle-tokio`
+# stays a drop-in replacement. Irrelevant to the Shuttle implementation, so
+# there is no matching feature in the impl crate.
+parking_lot = ["tokio/parking_lot"]
 process = ["tokio/process", "shuttle-tokio-impl?/process"]
 # Includes basic task execution capabilities
 rt = ["tokio/rt", "shuttle-tokio-impl?/rt"]

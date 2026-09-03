@@ -10,8 +10,35 @@ repository = "https://github.com/awslabs/shuttle"
 # Include nothing by default
 default = []
 
-# enable everything
-full = ["tokio-orig/full", "shuttle-tokio-impl-inner/full"]
+# Enable everything.
+#
+# This must list this crate's own features (not just forward `full` to the
+# dependencies), because the `cfg(feature = ...)` gates in this crate's source
+# check its own features. Forwarding `tokio-orig/full` also covers tokio
+# features that have no equivalent here. As in tokio, `test-util` and unstable
+# features are not part of `full`.
+#
+# There is intentionally no `parking_lot` feature in this crate: it is an
+# internal tokio performance feature and irrelevant to the Shuttle
+# implementation. `shuttle-tokio` forwards it to tokio directly.
+#
+# Note: not all features are modeled by Shuttle; several (e.g. `io`, `net`, `fs`)
+# are plain re-exports of tokio. See the crate docs for details.
+full = [
+    "fs",
+    "io-util",
+    "io-std",
+    "macros",
+    "net",
+    "process",
+    "rt",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+    "tokio-orig/full",
+    "shuttle-tokio-impl-inner/full",
+]
 
 fs = ["tokio-orig/fs", "shuttle-tokio-impl-inner/fs"]
 io-util = ["tokio-orig/io-util", "shuttle-tokio-impl-inner/io-util"]
