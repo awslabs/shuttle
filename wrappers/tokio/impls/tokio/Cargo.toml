@@ -14,13 +14,9 @@ default = []
 #
 # This must list this crate's own features (not just forward `full` to the
 # dependencies), because the `cfg(feature = ...)` gates in this crate's source
-# check its own features. Forwarding `tokio-orig/full` also covers tokio
-# features that have no equivalent here. As in tokio, `test-util` and unstable
+# check its own features. Forwarding `tokio-orig/full` also covers any tokio
+# feature that has no equivalent here. As in tokio, `test-util` and unstable
 # features are not part of `full`.
-#
-# There is intentionally no `parking_lot` feature in this crate: it is an
-# internal tokio performance feature and irrelevant to the Shuttle
-# implementation. `shuttle-tokio` forwards it to tokio directly.
 #
 # Note: not all features are modeled by Shuttle; several (e.g. `io`, `net`, `fs`)
 # are plain re-exports of tokio. See the crate docs for details.
@@ -30,6 +26,7 @@ full = [
     "io-std",
     "macros",
     "net",
+    "parking_lot",
     "process",
     "rt",
     "rt-multi-thread",
@@ -46,6 +43,7 @@ io-util = ["tokio-orig/io-util", "shuttle-tokio-impl-inner/io-util"]
 io-std = ["tokio-orig/io-std", "shuttle-tokio-impl-inner/io-std"]
 macros = ["tokio-orig/macros", "shuttle-tokio-impl-inner/macros"]
 net = ["tokio-orig/net", "shuttle-tokio-impl-inner/net"]
+parking_lot = ["tokio-orig/parking_lot", "shuttle-tokio-impl-inner/parking_lot"]
 process = ["tokio-orig/process", "shuttle-tokio-impl-inner/process"]
 # Includes basic task execution capabilities
 rt = ["tokio-orig/rt", "shuttle-tokio-impl-inner/rt"]
@@ -58,6 +56,20 @@ time = ["tokio-orig/time", "shuttle-tokio-impl-inner/time"]
 io-uring = ["tokio-orig/io-uring", "shuttle-tokio-impl-inner/io-uring"]
 # Unstable feature. Requires `--cfg tokio_unstable` to enable.
 taskdump = ["tokio-orig/taskdump", "shuttle-tokio-impl-inner/taskdump"]
+
+# tokio's optional dependencies are also implicit features, so mirror them here
+# too, keeping this crate's feature set identical to tokio's. They only pull in a
+# dependency in tokio and mean nothing here, but having them means `shuttle-tokio`
+# can forward every one of its features uniformly, and means nothing gets missed
+# if one of them ever does start to mean something here.
+bytes = ["tokio-orig/bytes", "shuttle-tokio-impl-inner/bytes"]
+libc = ["tokio-orig/libc", "shuttle-tokio-impl-inner/libc"]
+mio = ["tokio-orig/mio", "shuttle-tokio-impl-inner/mio"]
+signal-hook-registry = ["tokio-orig/signal-hook-registry", "shuttle-tokio-impl-inner/signal-hook-registry"]
+socket2 = ["tokio-orig/socket2", "shuttle-tokio-impl-inner/socket2"]
+tokio-macros = ["tokio-orig/tokio-macros", "shuttle-tokio-impl-inner/tokio-macros"]
+tracing = ["tokio-orig/tracing", "shuttle-tokio-impl-inner/tracing"]
+windows-sys = ["tokio-orig/windows-sys", "shuttle-tokio-impl-inner/windows-sys"]
 
 [dependencies]
 cfg-if = "1.0"
