@@ -502,9 +502,20 @@ fn mpsc_senders_with_blocking_inner(num_senders: usize, channel_size: usize) {
     }
 }
 
+// The interleaving space here grows superexponentially in the number of senders: an exhaustive DFS
+// of (4, 2) takes 4,339,144 iterations (~30s), versus 35,675 for (3, 1) and 8,117 for (3, 2).
+//
+// The behavior that matters is the channel's blocked-sender queue, and the maximum number of
+// simultaneously blocked senders is `num_senders - channel_size`. So (3, 1) exercises two
+// concurrently blocked senders just as (4, 2) did, while (3, 2) covers a buffer holding more than
+// one message alongside a blocking sender. Together they keep the search exhaustive and cover both
+// dimensions in ~0.3s.
 #[test]
 fn mpsc_some_senders_with_blocking() {
-    check_dfs(|| mpsc_senders_with_blocking_inner(4, 2), None);
+    // Two senders blocked simultaneously on a full channel.
+    check_dfs(|| mpsc_senders_with_blocking_inner(3, 1), None);
+    // Buffer depth > 1 with one blocked sender.
+    check_dfs(|| mpsc_senders_with_blocking_inner(3, 2), None);
 }
 
 #[test]

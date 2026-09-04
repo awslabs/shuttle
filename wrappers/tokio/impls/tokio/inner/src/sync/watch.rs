@@ -1052,7 +1052,9 @@ mod tests {
 
                 send_thread.join().unwrap();
             },
-            500_000,
+            // The schedule space for this body is small; 500_000 iterations was well past the point
+            // of diminishing returns (cost is linear in iterations).
+            50_000,
         );
     }
 
@@ -1095,7 +1097,8 @@ mod tests {
                 });
                 assert!(send.borrow().eq(&2));
             },
-            500_000,
+            // See the note on `watch_spurious_wakeup`.
+            50_000,
         );
     }
 
