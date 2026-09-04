@@ -19,6 +19,7 @@ io-util = []
 io-std = []
 macros = []
 net = []
+parking_lot = []
 process = []
 # Includes basic task execution capabilities
 rt = []
@@ -31,6 +32,19 @@ time = []
 io-uring = []
 # Unstable feature. Requires `--cfg tokio_unstable` to enable.
 taskdump = []
+
+# tokio's optional dependencies are also implicit features. They mean nothing
+# here, but are mirrored so that every feature of `shuttle-tokio` has a
+# counterpart all the way down and nothing gets missed if one of them ever does
+# start to mean something here.
+bytes = []
+libc = []
+mio = []
+signal-hook-registry = []
+socket2 = []
+tokio-macros = []
+tracing = []
+windows-sys = []
 
 [dependencies]
 criterion = { version = "0.8", features = [

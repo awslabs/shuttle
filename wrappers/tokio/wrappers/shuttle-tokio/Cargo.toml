@@ -21,10 +21,7 @@ io-util = ["tokio/io-util", "shuttle-tokio-impl?/io-util"]
 io-std = ["tokio/io-std", "shuttle-tokio-impl?/io-std"]
 macros = ["tokio/macros", "shuttle-tokio-impl?/macros"]
 net = ["tokio/net", "shuttle-tokio-impl?/net"]
-# Pass-through for tokio's internal performance feature, so `shuttle-tokio`
-# stays a drop-in replacement. Irrelevant to the Shuttle implementation, so
-# there is no matching feature in the impl crate.
-parking_lot = ["tokio/parking_lot"]
+parking_lot = ["tokio/parking_lot", "shuttle-tokio-impl?/parking_lot"]
 process = ["tokio/process", "shuttle-tokio-impl?/process"]
 # Includes basic task execution capabilities
 rt = ["tokio/rt", "shuttle-tokio-impl?/rt"]
@@ -37,6 +34,21 @@ time = ["tokio/time", "shuttle-tokio-impl?/time"]
 io-uring = ["tokio/io-uring", "shuttle-tokio-impl?/io-uring"]
 # Unstable feature. Requires `--cfg tokio_unstable` to enable.
 taskdump = ["tokio/taskdump", "shuttle-tokio-impl?/taskdump"]
+
+# tokio's optional dependencies are also implicit features, so mirror them here
+# too: a crate that depends on `tokio` with, say, `features = ["socket2"]` must
+# keep building after switching to `shuttle-tokio`. These features only pull in
+# a dependency in tokio and mean nothing to the Shuttle implementation, but they
+# are still forwarded to the impl crate so that every feature of this crate is
+# forwarded uniformly.
+bytes = ["tokio/bytes", "shuttle-tokio-impl?/bytes"]
+libc = ["tokio/libc", "shuttle-tokio-impl?/libc"]
+mio = ["tokio/mio", "shuttle-tokio-impl?/mio"]
+signal-hook-registry = ["tokio/signal-hook-registry", "shuttle-tokio-impl?/signal-hook-registry"]
+socket2 = ["tokio/socket2", "shuttle-tokio-impl?/socket2"]
+tokio-macros = ["tokio/tokio-macros", "shuttle-tokio-impl?/tokio-macros"]
+tracing = ["tokio/tracing", "shuttle-tokio-impl?/tracing"]
+windows-sys = ["tokio/windows-sys", "shuttle-tokio-impl?/windows-sys"]
 
 
 [dependencies]
