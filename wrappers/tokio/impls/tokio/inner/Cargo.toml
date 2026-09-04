@@ -67,3 +67,7 @@ tokio-macros = { package = "shuttle-tokio-macros-impl", path = "../../tokio-macr
 
 [dev-dependencies]
 assert_matches = "1.5"
+
+# docs.rs builds with no features by default, which hides most of the crate.
+[package.metadata.docs.rs]
+features = ["full"]

@@ -55,3 +55,9 @@ windows-sys = ["tokio/windows-sys", "shuttle-tokio-impl?/windows-sys"]
 cfg-if = "1.0"
 tokio = "1"
 shuttle-tokio-impl = { path = "../../impls/tokio", version = "0.1.1", optional = true }
+
+# docs.rs builds with no features by default, which hides most of the crate.
+# `all-features` is not usable here: `io-uring` and `taskdump` require
+# `--cfg tokio_unstable` and are platform-gated, so they fail the build.
+[package.metadata.docs.rs]
+features = ["full"]
