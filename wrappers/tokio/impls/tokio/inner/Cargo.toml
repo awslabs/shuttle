@@ -1,6 +1,6 @@
 [package]
 name = "shuttle-tokio-impl-inner"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Internal implementation of the `tokio` crate for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-tokio`."
@@ -67,3 +67,7 @@ tokio-macros = { package = "shuttle-tokio-macros-impl", path = "../../tokio-macr
 
 [dev-dependencies]
 assert_matches = "1.5"
+
+# docs.rs builds with no features by default, which hides most of the crate.
+[package.metadata.docs.rs]
+features = ["full"]

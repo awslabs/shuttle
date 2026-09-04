@@ -20,4 +20,4 @@ The code will then behave as before when the `shuttle` feature flag is not provi
 
 ## Limitations
 
-For the list of current limitations, see the [tokio-retry](https://crates.io/crates/shuttle-tokio-retry-impl) inner crate.
+For the list of current limitations, see the [shuttle-tokio-retry-impl](https://crates.io/crates/shuttle-tokio-retry-impl) inner crate.

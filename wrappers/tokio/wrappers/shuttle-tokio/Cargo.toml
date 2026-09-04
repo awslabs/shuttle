@@ -1,6 +1,6 @@
 [package]
 name = "shuttle-tokio"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 description = "tokio wrapper for the Shuttle concurrency testing tool."
@@ -54,4 +54,10 @@ windows-sys = ["tokio/windows-sys", "shuttle-tokio-impl?/windows-sys"]
 [dependencies]
 cfg-if = "1.0"
 tokio = "1"
-shuttle-tokio-impl = { path = "../../impls/tokio", version = "0.1.0", optional = true }
+shuttle-tokio-impl = { path = "../../impls/tokio", version = "0.1.1", optional = true }
+
+# docs.rs builds with no features by default, which hides most of the crate.
+# `all-features` is not usable here: `io-uring` and `taskdump` require
+# `--cfg tokio_unstable` and are platform-gated, so they fail the build.
+[package.metadata.docs.rs]
+features = ["full"]
