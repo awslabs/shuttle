@@ -10,6 +10,8 @@
 * Publish `shuttle-tokio-retry` 0.3.0 and `shuttle-tokio-retry-impl` 0.1.0 for the first time. (#275)
 * `shuttle-tokio` is now versioned 1.0.0, so that it mirrors the version of the crate it wraps like every other wrapper does and a downstream crate can depend on it with the same `version = "1"` requirement it would have used for `tokio`. The 0.1 line is unchanged and still resolves to 0.1.1; moving to the 1.x line is opt-in. (#327)
 * Implement the `mpsc` reservation APIs in `shuttle-tokio`: `Sender::{reserve, try_reserve, reserve_owned, try_reserve_owned}`, `Permit::send` and `OwnedPermit::{send, release, same_channel, same_channel_as_sender}`. `reserve` and `reserve_owned` previously panicked with `unimplemented!()` and the rest were missing. An unused permit returns its capacity to the channel when dropped. Note that `Permit` has gained a lifetime parameter (`Permit<'a, T>`) to match tokio; this is a breaking change in principle, but the only way to obtain a `Permit` used to panic. `reserve_many`/`try_reserve_many` and `PermitIterator` are still unimplemented. (#339)
+* Implement `mpsc::Receiver::poll_recv` in `shuttle-tokio`. (#319)
+* Publish `shuttle-tokio-impl-inner` 0.1.2. The already-published `shuttle-tokio-impl` 0.1.1 and `shuttle-tokio` 1.0.0 both require it as `^0.1.1` and re-export it with a glob, so they pick the new version up without needing to be republished.
 
 # 0.9.3 (August 19, 2026)
 
