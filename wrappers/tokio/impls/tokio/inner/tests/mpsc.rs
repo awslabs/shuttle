@@ -1,4 +1,4 @@
-use crate::mpsc::error::TryRecvError;
+use crate::mpsc::error::{SendError, TryRecvError, TrySendError};
 use assert_matches::assert_matches;
 use shuttle::future;
 use shuttle::sync::Arc;
@@ -881,6 +881,372 @@ fn poll_recv_then_recv_no_leak() {
 
                 drop(tx);
                 assert_eq!(rx.recv().await, None);
+            });
+        },
+        None,
+    );
+}
+
+// === Reservations ===
+
+#[test]
+fn mpsc_reserve_send() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(2);
+
+                let permit = tx.reserve().await.unwrap();
+                permit.send(1);
+
+                assert_eq!(Some(1), rx.recv().await);
+            });
+        },
+        None,
+    );
+}
+
+// A permit holds one message worth of capacity for as long as it lives, and gives it back if it is
+// dropped without sending.
+#[test]
+fn mpsc_reserve_holds_capacity() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(2);
+                assert_eq!(2, tx.capacity());
+
+                let permit = tx.reserve().await.unwrap();
+                assert_eq!(1, tx.capacity());
+
+                // Dropping without sending returns the capacity, and does not enqueue a message.
+                drop(permit);
+                assert_eq!(2, tx.capacity());
+                assert_eq!(0, rx.len());
+
+                // Sending consumes the capacity until the message is received.
+                let permit = tx.reserve().await.unwrap();
+                permit.send(1);
+                assert_eq!(1, tx.capacity());
+                assert_eq!(Some(1), rx.recv().await);
+                assert_eq!(2, tx.capacity());
+            });
+        },
+        None,
+    );
+}
+
+// Dropping an unused permit must return the capacity to a sender that is waiting for it, not just
+// to `capacity()`.
+#[test]
+fn mpsc_reserve_drop_unblocks_sender() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+                let permit = tx.reserve().await.unwrap();
+
+                let sender = {
+                    let tx = tx.clone();
+                    future::spawn(async move { tx.send(1).await })
+                };
+
+                // The channel is full as far as the spawned sender is concerned, so it can only
+                // make progress once the permit hands the capacity back.
+                drop(permit);
+
+                sender.await.unwrap().unwrap();
+                assert_eq!(Some(1), rx.recv().await);
+            });
+        },
+        None,
+    );
+}
+
+// Reserving on a full channel waits, like `send` does.
+#[test]
+fn mpsc_reserve_blocks_when_full() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+                tx.send(1).await.unwrap();
+
+                let reserver = {
+                    let tx = tx.clone();
+                    future::spawn(async move {
+                        let permit = tx.reserve().await.unwrap();
+                        permit.send(2);
+                    })
+                };
+
+                assert_eq!(Some(1), rx.recv().await);
+                reserver.await.unwrap();
+                assert_eq!(Some(2), rx.recv().await);
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn mpsc_try_reserve() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+
+                let permit = tx.try_reserve().unwrap();
+                // The single slot is reserved, so a second reservation has nowhere to go.
+                assert_matches!(tx.try_reserve(), Err(TrySendError::Full(())));
+                permit.send(1);
+                assert_matches!(tx.try_reserve(), Err(TrySendError::Full(())));
+
+                assert_eq!(Some(1), rx.recv().await);
+                assert!(tx.try_reserve().is_ok());
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn mpsc_reserve_after_receiver_dropped() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, rx) = mpsc::channel::<u32>(1);
+                drop(rx);
+
+                assert_matches!(tx.reserve().await, Err(SendError(())));
+                assert_matches!(tx.try_reserve(), Err(TrySendError::Closed(())));
+            });
+        },
+        None,
+    );
+}
+
+// A permit outlives the receiver being dropped. `Permit::send` returns `()`, so the message is
+// dropped rather than returned, but it must not panic.
+#[test]
+fn mpsc_permit_send_after_receiver_dropped() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, rx) = mpsc::channel::<u32>(1);
+                let permit = tx.reserve().await.unwrap();
+                drop(rx);
+                permit.send(1);
+                assert!(tx.is_closed());
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn mpsc_reserve_owned_send() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+
+                let permit = tx.reserve_owned().await.unwrap();
+                // Sending gives the `Sender` back, and it is still connected to the same channel.
+                let tx = permit.send(1);
+                assert_eq!(Some(1), rx.recv().await);
+
+                tx.send(2).await.unwrap();
+                assert_eq!(Some(2), rx.recv().await);
+            });
+        },
+        None,
+    );
+}
+
+// `release` returns both the capacity and the `Sender`, without sending anything.
+#[test]
+fn mpsc_reserve_owned_release() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+
+                let permit = tx.reserve_owned().await.unwrap();
+                let tx = permit.release();
+                assert_eq!(1, tx.capacity());
+                assert_eq!(0, rx.len());
+
+                tx.send(1).await.unwrap();
+                assert_eq!(Some(1), rx.recv().await);
+            });
+        },
+        None,
+    );
+}
+
+// An `OwnedPermit` holds the moved-in sender's slot, so the channel must stay open while it lives
+// and close exactly once when it is dropped.
+#[test]
+fn mpsc_reserve_owned_holds_sender_slot() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+
+                let permit = tx.reserve_owned().await.unwrap();
+                assert!(!rx.is_closed());
+
+                drop(permit);
+                assert!(rx.is_closed());
+                assert_eq!(None, rx.recv().await);
+            });
+        },
+        None,
+    );
+}
+
+// The same, but the permit is dropped from another task while the receiver is waiting: the receiver
+// must be woken rather than deadlocking.
+#[test]
+fn mpsc_reserve_owned_drop_wakes_receiver() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+
+                let dropper = future::spawn(async move {
+                    let permit = tx.reserve_owned().await.unwrap();
+                    drop(permit);
+                });
+
+                assert_eq!(None, rx.recv().await);
+                dropper.await.unwrap();
+            });
+        },
+        None,
+    );
+}
+
+// A failed `try_reserve_owned` hands the `Sender` back rather than dropping it, so the channel must
+// not close.
+#[test]
+fn mpsc_try_reserve_owned_full_returns_sender() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+                let blocker = tx.clone().reserve_owned().await.unwrap();
+
+                let tx = match tx.try_reserve_owned() {
+                    Err(TrySendError::Full(tx)) => tx,
+                    other => panic!("expected the channel to be full, got {:?}", other.is_ok()),
+                };
+                assert!(!rx.is_closed());
+
+                // Once the blocking permit sends, the recovered `Sender` can reserve again.
+                let blocker_tx = blocker.send(1);
+                assert_eq!(Some(1), rx.recv().await);
+                drop(blocker_tx);
+
+                let permit = tx.try_reserve_owned().unwrap();
+                let tx = permit.send(2);
+                assert_eq!(Some(2), rx.recv().await);
+                drop(tx);
+                assert_eq!(None, rx.recv().await);
+            });
+        },
+        None,
+    );
+}
+
+// Reservations and plain sends contend for the same capacity, so mixing them must not let more than
+// `bound` messages into the channel (which `Channel::send` asserts on) or lose capacity.
+#[test]
+fn mpsc_reserve_and_send_contend() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+
+                let reserver = {
+                    let tx = tx.clone();
+                    future::spawn(async move {
+                        let permit = tx.reserve().await.unwrap();
+                        permit.send(1);
+                    })
+                };
+                let sender = {
+                    let tx = tx.clone();
+                    future::spawn(async move { tx.send(2).await.unwrap() })
+                };
+
+                let first = rx.recv().await.unwrap();
+                let second = rx.recv().await.unwrap();
+                assert_eq!(3, first + second);
+
+                reserver.await.unwrap();
+                sender.await.unwrap();
+                assert_eq!(1, tx.capacity());
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn mpsc_reserve_many_senders() {
+    check_random(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<usize>(2);
+                let senders = (0..4)
+                    .map(|i| {
+                        let tx = tx.clone();
+                        future::spawn(async move {
+                            let permit = tx.reserve().await.unwrap();
+                            // Half the reservations go unused, so their capacity has to come back.
+                            if i % 2 == 0 {
+                                permit.send(i);
+                            }
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                drop(tx);
+
+                let mut received = vec![];
+                while let Some(i) = rx.recv().await {
+                    received.push(i);
+                }
+                received.sort_unstable();
+                assert_eq!(vec![0, 2], received);
+
+                for sender in senders {
+                    sender.await.unwrap();
+                }
+            });
+        },
+        1000,
+    );
+}
+
+#[test]
+fn mpsc_owned_permit_same_channel() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, _rx) = mpsc::channel::<()>(2);
+                let (tx2, _rx2) = mpsc::channel::<()>(2);
+
+                let permit = tx.clone().reserve_owned().await.unwrap();
+                let permit2 = tx.clone().reserve_owned().await.unwrap();
+                let permit3 = tx2.clone().reserve_owned().await.unwrap();
+
+                assert!(permit.same_channel(&permit2));
+                assert!(!permit.same_channel(&permit3));
+
+                assert!(permit.same_channel_as_sender(&tx));
+                assert!(!permit.same_channel_as_sender(&tx2));
             });
         },
         None,
