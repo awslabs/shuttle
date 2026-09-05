@@ -1,6 +1,6 @@
 [package]
 name = "shuttle-tokio-impl-inner"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "Internal implementation of the `tokio` crate for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-tokio`."
