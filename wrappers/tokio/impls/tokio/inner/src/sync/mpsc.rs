@@ -18,6 +18,9 @@ use tokio::sync::mpsc::error::{SendError, TryRecvError, TrySendError};
 
 const MAX_INLINE_MESSAGES: usize = 32;
 
+const PERMIT_ALREADY_USED: &str =
+    "Internal Shuttle error. A permit was used after it had already been consumed. This should never happen.";
+
 // === Base Channel ===
 
 struct Channel<T> {
@@ -201,6 +204,47 @@ impl<T> Channel<T> {
     fn is_bounded(&self) -> bool {
         self.bound.is_some()
     }
+
+    // Acquires the capacity for one message, blocking until there is room. Callers of `send` must
+    // hold capacity acquired this way, and must return it with `release_capacity` if they end up
+    // not sending.
+    async fn acquire_capacity(&self) -> Result<(), SendError<()>> {
+        if self.is_bounded() {
+            self.send_semaphore.acquire(1).await.map_err(|_| SendError(()))
+        } else if self.is_closed() {
+            // An unbounded channel does not take capacity from the `send_semaphore` (nothing ever
+            // releases back into it), so the closed check that `acquire` would have done for free
+            // has to happen explicitly.
+            Err(SendError(()))
+        } else {
+            Ok(())
+        }
+    }
+
+    // Like `acquire_capacity`, but fails instead of blocking if the channel is full.
+    fn try_acquire_capacity(&self) -> Result<(), TrySendError<()>> {
+        if !self.is_bounded() {
+            return if self.is_closed() {
+                Err(TrySendError::Closed(()))
+            } else {
+                Ok(())
+            };
+        }
+
+        match self.send_semaphore.try_acquire(1) {
+            Err(TryAcquireError::Closed) => Err(TrySendError::Closed(())),
+            Err(TryAcquireError::NoPermits) => Err(TrySendError::Full(())),
+            Ok(()) => Ok(()),
+        }
+    }
+
+    // Returns the capacity for one message to the channel. Called by the receiver once a message
+    // has been taken out, and by `Permit`/`OwnedPermit` when a reservation goes unused.
+    fn release_capacity(&self) {
+        if self.is_bounded() {
+            self.send_semaphore.release(1);
+        }
+    }
 }
 
 /// Common building block to build [`Receiver`]/[`UnboundedReceiver`] atop.
@@ -303,9 +347,7 @@ impl<T> ReceiverInternal<T> {
                 let message = self.chan.recv().expect(
                     "Internal Shuttle error. We acquired a permit for an empty channel. This should never happen.",
                 );
-                if self.chan.is_bounded() {
-                    self.chan.send_semaphore.release(1);
-                }
+                self.chan.release_capacity();
                 Poll::Ready(Some(message))
             }
             Poll::Ready(Err(_)) => {
@@ -401,15 +443,68 @@ impl<T> SenderInternal<T> {
 
     /// Waits for channel capacity. Once capacity to send one message is
     /// available, it is reserved for the caller.
-    pub async fn reserve(&self) -> Result<Permit<T>, SendError<()>> {
-        unimplemented!()
+    pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
+        self.chan.acquire_capacity().await?;
+
+        Ok(Permit {
+            chan: Some(&*self.chan),
+        })
+    }
+
+    /// Tries to acquire a slot in the channel without waiting for the slot to
+    /// become available.
+    pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
+        self.chan.try_acquire_capacity()?;
+
+        Ok(Permit {
+            chan: Some(&*self.chan),
+        })
     }
 
     /// Waits for channel capacity, moving the `Sender` and returning an owned
     /// permit. Once capacity to send one message is available, it is reserved
     /// for the caller.
     pub async fn reserve_owned(self) -> Result<OwnedPermit<T>, SendError<()>> {
-        unimplemented!()
+        // An `OwnedPermit` holds a sender slot for as long as it lives, so claim one up front.
+        // `self` is dropped when this function returns, giving its own slot back, so
+        // `known_senders` is unchanged overall. Claiming before the `await` rather than after
+        // matters: it keeps the count from dipping to zero (which would close the channel) while
+        // we are waiting for capacity.
+        self.claim_sender_slot();
+        let chan = Arc::clone(&self.chan);
+
+        if let Err(err) = chan.acquire_capacity().await {
+            // Hand the slot we just claimed back. `self` still holds one, so this cannot be the
+            // drop that closes the channel.
+            chan.drop_sender();
+            return Err(err);
+        }
+
+        Ok(OwnedPermit { chan: Some(chan) })
+    }
+
+    /// Tries to acquire a slot in the channel without waiting for the slot to
+    /// become available, moving the `Sender` and returning an owned permit.
+    pub fn try_reserve_owned(self) -> Result<OwnedPermit<T>, TrySendError<Self>> {
+        match self.chan.try_acquire_capacity() {
+            Err(TrySendError::Closed(())) => Err(TrySendError::Closed(self)),
+            Err(TrySendError::Full(())) => Err(TrySendError::Full(self)),
+            Ok(()) => {
+                // See `reserve_owned`. There is no `await` here, so `self`'s slot is live for the
+                // whole function and the ordering is not delicate, but the bookkeeping is the same.
+                self.claim_sender_slot();
+
+                Ok(OwnedPermit {
+                    chan: Some(Arc::clone(&self.chan)),
+                })
+            }
+        }
+    }
+
+    // Registers an additional sender on the channel, to be given back with `Channel::drop_sender`.
+    fn claim_sender_slot(&self) {
+        let mut state = self.chan.state.try_lock().unwrap();
+        state.known_senders += 1;
     }
 
     /// Returns `true` if senders belong to the same channel.
@@ -433,10 +528,7 @@ impl<T> SenderInternal<T> {
 
 impl<T> Clone for SenderInternal<T> {
     fn clone(&self) -> Self {
-        {
-            let mut state = self.chan.state.try_lock().unwrap();
-            state.known_senders += 1;
-        }
+        self.claim_sender_slot();
 
         SenderInternal {
             chan: self.chan.clone(),
@@ -698,13 +790,42 @@ impl<T> Clone for Sender<T> {
 }
 
 /// Permits to send one value into the channel.
-pub struct Permit<T> {
-    chan: Arc<Channel<T>>,
+///
+/// The permit holds one message worth of the channel's capacity. Sending consumes it; dropping it
+/// without sending returns the capacity to the channel.
+//
+// `chan` is `None` only after `send` has taken it, which consumes the `Permit`, so every method
+// other than `send` and `drop` can rely on it being `Some`.
+pub struct Permit<'a, T> {
+    chan: Option<&'a Channel<T>>,
 }
 
-impl<T> fmt::Debug for Permit<T> {
+impl<T> fmt::Debug for Permit<'_, T> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Permit").field("chan", &self.chan).finish()
+    }
+}
+
+impl<T> Permit<'_, T> {
+    /// Sends a value using the reserved capacity.
+    pub fn send(mut self, value: T) {
+        let chan = self.chan.take().expect(PERMIT_ALREADY_USED);
+
+        // Unlike `Sender::send` this returns `()`, so a channel that closed after the permit was
+        // handed out simply drops the value. The capacity is not returned: a closed channel has no
+        // capacity to hand out, and nothing is waiting for it.
+        if chan.send(value).is_ok() {
+            chan.recv_semaphore.release(1);
+        }
+    }
+}
+
+impl<T> Drop for Permit<'_, T> {
+    fn drop(&mut self) {
+        // `None` here means `send` consumed the permit and the capacity became a message.
+        if let Some(chan) = self.chan.take() {
+            chan.release_capacity();
+        }
     }
 }
 
@@ -712,6 +833,10 @@ impl<T> fmt::Debug for Permit<T> {
 ///
 /// This is identical to the [`Permit`] type, except that it moves the sender
 /// rather than borrowing it.
+//
+// As well as one message worth of capacity, this holds the moved-in sender's slot in
+// `ChannelState::known_senders`. `send` and `release` pass that slot on to the `Sender` they
+// return; `drop` gives it back to the channel.
 pub struct OwnedPermit<T> {
     chan: Option<Arc<Channel<T>>>,
 }
@@ -719,6 +844,64 @@ pub struct OwnedPermit<T> {
 impl<T> fmt::Debug for OwnedPermit<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("OwnedPermit").field("chan", &self.chan).finish()
+    }
+}
+
+impl<T> OwnedPermit<T> {
+    /// Sends a value using the reserved capacity, returning the [`Sender`] the
+    /// permit was created from.
+    pub fn send(mut self, value: T) -> Sender<T> {
+        let chan = self.chan.take().expect(PERMIT_ALREADY_USED);
+
+        // See `Permit::send` for why the error is swallowed.
+        if chan.send(value).is_ok() {
+            chan.recv_semaphore.release(1);
+        }
+
+        Sender {
+            inner: SenderInternal { chan },
+        }
+    }
+
+    /// Releases the reserved capacity without sending a message, returning the
+    /// [`Sender`] the permit was created from.
+    pub fn release(mut self) -> Sender<T> {
+        let chan = self.chan.take().expect(PERMIT_ALREADY_USED);
+        chan.release_capacity();
+
+        Sender {
+            inner: SenderInternal { chan },
+        }
+    }
+
+    /// Returns `true` if permits belong to the same channel.
+    pub fn same_channel(&self, other: &Self) -> bool {
+        // Like tokio, a consumed permit belongs to no channel rather than panicking.
+        match (self.chan.as_ref(), other.chan.as_ref()) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    /// Returns `true` if this permit belongs to the same channel as the given
+    /// [`Sender`].
+    pub fn same_channel_as_sender(&self, sender: &Sender<T>) -> bool {
+        match self.chan.as_ref() {
+            Some(chan) => Arc::ptr_eq(chan, &sender.inner.chan),
+            None => false,
+        }
+    }
+}
+
+impl<T> Drop for OwnedPermit<T> {
+    fn drop(&mut self) {
+        // `None` here means `send`/`release` handed the sender slot on to a `Sender`.
+        if let Some(chan) = self.chan.take() {
+            // Return the capacity before giving up the sender slot: `drop_sender` may close the
+            // channel, and a task blocked waiting for capacity should see it first.
+            chan.release_capacity();
+            chan.drop_sender();
+        }
     }
 }
 
@@ -752,8 +935,14 @@ impl<T> Sender<T> {
 
     /// Waits for channel capacity. Once capacity to send one message is
     /// available, it is reserved for the caller.
-    pub async fn reserve(&self) -> Result<Permit<T>, SendError<()>> {
+    pub async fn reserve(&self) -> Result<Permit<'_, T>, SendError<()>> {
         self.inner.reserve().await
+    }
+
+    /// Tries to acquire a slot in the channel without waiting for the slot to
+    /// become available.
+    pub fn try_reserve(&self) -> Result<Permit<'_, T>, TrySendError<()>> {
+        self.inner.try_reserve()
     }
 
     /// Waits for channel capacity, moving the `Sender` and returning an owned
@@ -761,6 +950,17 @@ impl<T> Sender<T> {
     /// for the caller.
     pub async fn reserve_owned(self) -> Result<OwnedPermit<T>, SendError<()>> {
         self.inner.reserve_owned().await
+    }
+
+    /// Tries to acquire a slot in the channel without waiting for the slot to
+    /// become available, moving the `Sender` and returning an owned permit.
+    ///
+    /// If no capacity is available, the `Sender` is returned in the error.
+    pub fn try_reserve_owned(self) -> Result<OwnedPermit<T>, TrySendError<Self>> {
+        self.inner.try_reserve_owned().map_err(|err| match err {
+            TrySendError::Closed(inner) => TrySendError::Closed(Self { inner }),
+            TrySendError::Full(inner) => TrySendError::Full(Self { inner }),
+        })
     }
 
     /// Returns `true` if senders belong to the same channel.
