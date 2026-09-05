@@ -5,6 +5,7 @@ use shuttle::sync::Arc;
 use shuttle::{check_dfs, check_random};
 use shuttle_tokio_impl_inner::sync::{mpsc, oneshot};
 use std::sync::atomic::Ordering;
+use std::task::Poll;
 use test_log::test;
 use tracing::trace;
 
@@ -794,4 +795,94 @@ fn mpsc_recv_and_friends_correct_on_sender_drop_bounded() {
 
     assert!(has_seen_disconnects.load(Ordering::SeqCst));
     assert!(has_seen_empties.load(Ordering::SeqCst));
+}
+
+#[test]
+fn bounded_poll_recv() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel(2);
+
+                future::spawn(async move {
+                    tx.send(10).await.unwrap();
+                    tx.send(20).await.unwrap();
+                });
+
+                let val = futures::future::poll_fn(|cx| rx.poll_recv(cx)).await;
+                assert_eq!(val, Some(10));
+                let val = futures::future::poll_fn(|cx| rx.poll_recv(cx)).await;
+                assert_eq!(val, Some(20));
+                let val = futures::future::poll_fn(|cx| rx.poll_recv(cx)).await;
+                assert_eq!(val, None);
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn unbounded_poll_recv() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::unbounded_channel();
+
+                future::spawn(async move {
+                    tx.send(10).unwrap();
+                    tx.send(20).unwrap();
+                });
+
+                let val = futures::future::poll_fn(|cx| rx.poll_recv(cx)).await;
+                assert_eq!(val, Some(10));
+                let val = futures::future::poll_fn(|cx| rx.poll_recv(cx)).await;
+                assert_eq!(val, Some(20));
+                let val = futures::future::poll_fn(|cx| rx.poll_recv(cx)).await;
+                assert_eq!(val, None);
+            });
+        },
+        None,
+    );
+}
+
+/// Verify that switching from poll_recv to recv doesn't leak permits.
+/// poll_recv registers a waiter via pending_acquire, then recv reuses
+/// the same pending_acquire through poll_fn.
+#[test]
+fn poll_recv_then_recv_no_leak() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                // Capacity 1 so a leaked permit is observable: if `poll_recv`'s
+                // pending acquire consumed a permit without delivering a
+                // message, the effective capacity would drop to 0 and the
+                // `tx.send(42)` below would deadlock.
+                let (tx, mut rx) = mpsc::channel(1);
+
+                // poll_recv on empty channel → Pending (registers waiter)
+                let _ = futures::future::poll_fn(|cx| {
+                    let result = rx.poll_recv(cx);
+                    // Should be Pending since nothing sent yet
+                    assert!(result.is_pending());
+                    // Return Ready to exit poll_fn
+                    Poll::Ready(())
+                })
+                .await;
+
+                // Now send a message and use recv() instead
+                tx.send(42).await.unwrap();
+                let val = rx.recv().await;
+                assert_eq!(val, Some(42));
+
+                // Send another and verify no permit leak
+                tx.send(99).await.unwrap();
+                let val = rx.recv().await;
+                assert_eq!(val, Some(99));
+
+                drop(tx);
+                assert_eq!(rx.recv().await, None);
+            });
+        },
+        None,
+    );
 }
