@@ -490,7 +490,11 @@ impl Instant {
     /// Returns t where t is the time self + duration if t can be represented as Instant otherwise it saturates to the maximum time value
     pub fn saturating_add(&self, duration: Duration) -> Self {
         match self {
-            Instant::Simulated(_) => self.checked_add(duration).unwrap_or(Instant::Simulated(Duration::MAX)),
+            // `Instant::Simulated` holds a `std::time::Duration`, which is not the same type as
+            // `Duration` when `advanced-time-models` is on.
+            Instant::Simulated(_) => self
+                .checked_add(duration)
+                .unwrap_or(Instant::Simulated(std::time::Duration::MAX)),
         }
     }
 }
