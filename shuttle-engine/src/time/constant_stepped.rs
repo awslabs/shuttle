@@ -88,6 +88,11 @@ impl TimeModel for ConstantSteppedTimeModel {
     }
 
     fn advance(&mut self, dur: Duration) {
+        // `Duration` is `std::time::Duration` unless `advanced-time-models` is on, in which case it
+        // is the enum that wraps it. The `From` conversion covers both, since the reflexive impl
+        // handles the former; that is also why it is only a no-op in one of the two configurations.
+        #[allow(clippy::useless_conversion)]
+        let dur = std::time::Duration::from(dur);
         self.current_time_elapsed += dur;
     }
 
