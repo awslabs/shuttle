@@ -1,5 +1,6 @@
 use crate::config::{ContinuationFunctionBehavior, UNGRACEFUL_SHUTDOWN_CONFIG};
 use crate::runtime::execution::ExecutionState;
+use crate::time::get_time_model;
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
@@ -356,6 +357,7 @@ pub fn switch() {
             ContinuationInput::Resume => {}
         };
     }
+    get_time_model().borrow_mut().step()
 }
 
 #[cfg(test)]
