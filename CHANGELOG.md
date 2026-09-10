@@ -124,6 +124,13 @@ Published `shuttle-tokio-impl-inner` 0.1.3. The already-published `shuttle-tokio
 
 * Publish `shuttle-engine`, `shuttle-std` and `shuttle-parking_lot-impl` 0.1.2. `shuttle-schedulers` is unchanged at 0.1.1; it takes `shuttle-engine` as `^0.1.1`, so it builds against 0.1.2 as it stands. `shuttle-parking_lot` itself stays at 0.12.5, mirroring the `parking_lot` version it wraps: it requires the impl as `^0.1.0` and re-exports it with a glob, so it picks the `RwLock` fix up without being republished. The impl now requires `shuttle >=0.9.4`, since the fix is built on the new `BatchSemaphore::upgrade`.
 
+# wrapper crates (September 9, 2026)
+
+Published `shuttle-async-stream` 0.3.6 and `shuttle-async-stream-impl` 0.1.0 for the first time, and `shuttle-lazy_static-impl` 0.1.1. The already-published `shuttle-lazy_static` 1.5.0 requires the impl crate as `^0.1.0`, so it picks 0.1.1 up without being republished. The `shuttle` crate is unchanged at 0.9.3.
+
+* `shuttle-async-stream` is now published. It was made publishable in #315 but never uploaded, so the wrapper was only usable from a git dependency.
+* `shuttle-lazy_static-impl` 0.1.1 narrows its requirement on `shuttle` from `<1` to `<0.10` (#268), and adds a README (#315) and `repository` metadata (#329). The bump has been in the tree unpublished since #268.
+
 # tokio wrappers (September 6, 2026)
 
 Published `shuttle-tokio-impl-inner` 0.1.2. The already-published `shuttle-tokio-impl` 0.1.1 and `shuttle-tokio` 1.0.0 both require it as `^0.1.1` and re-export it with a glob, so they pick these changes up without being republished. The `shuttle` crate is unchanged at 0.9.3.
