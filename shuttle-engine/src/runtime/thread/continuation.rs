@@ -191,17 +191,21 @@ impl Drop for Continuation {
             }
             ContinuationState::Running | ContinuationState::Ready => {
                 // If already panicking or at the end of the execution, don't worry about cleaning up resources
-                // on individual coroutines which are still in-flight
-                if std::thread::panicking() {
-                    // SAFETY: `force_reset` leaks the coroutine. However, given that the execution is *already* panicking
-                    // at this point and will soon exit due to the original panic, this is unlikely to cause issues. Leaking
-                    // the corouting here also avoids most tricky issues with scheduling points in drop handlers during a panic,
-                    // which can often result in difficult-to-debug aborts from double-panics.
+                // on individual coroutines which are still in-flight. In particular, unwinding a
+                // stopped execution runs drop handlers, which can then panic if they interact with
+                // shuttle atomics, causing a panic-on-drop abort.
+                //
+                // SAFETY: `force_reset` leaks the coroutine. However, given that the execution is *already* aborting
+                // at this point and will soon exit, this is unlikely to cause issues. Leaking the coroutine here also
+                // avoids most tricky issues with scheduling points in drop handlers during a panic, which can often
+                // result in difficult-to-debug aborts from double-panics.
+                if std::thread::panicking() || ExecutionState::execution_stopped() {
                     unsafe {
                         self.coroutine.force_reset();
                     }
+                } else {
+                    self.coroutine.force_unwind();
                 }
-                self.coroutine.force_unwind();
             }
             ContinuationState::Exited => {
                 // Already exited, nothing to do

@@ -1,8 +1,8 @@
 use shuttle::scheduler::{PctScheduler, RandomScheduler};
-use shuttle::sync::Mutex;
+use shuttle::sync::{atomic::AtomicUsize as ShuttleAtomicUsize, Mutex};
 use shuttle::{thread, PortfolioRunner, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Barrier};
 use test_log::test;
 
 #[test]
@@ -99,4 +99,49 @@ fn two_thread_deadlock_portfolio_no_early_stop() {
         counter_clone.load(Ordering::SeqCst) >= 100,
         "PCT depth 1 should have run to completion"
     );
+}
+
+struct AtomicLoadOnDrop(ShuttleAtomicUsize, Arc<AtomicUsize>);
+
+impl Drop for AtomicLoadOnDrop {
+    fn drop(&mut self) {
+        self.0.load(Ordering::SeqCst);
+        self.1.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn portfolio_stop_force_unwinds_atomic_drop() {
+    let barrier = Arc::new(Barrier::new(2));
+    let next_role = Arc::new(AtomicUsize::new(0));
+    let drop_count = Arc::new(AtomicUsize::new(0));
+    let drop_count_for_run = drop_count.clone();
+
+    let mut runner = PortfolioRunner::new(true, Default::default());
+    runner.add(RandomScheduler::new(1));
+    runner.add(RandomScheduler::new(1));
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        runner.run(move || {
+            let role = next_role.fetch_add(1, Ordering::SeqCst);
+            assert!(role < 2, "each scheduler should run exactly one execution");
+
+            let atomic_on_drop =
+                (role == 0).then(|| AtomicLoadOnDrop(ShuttleAtomicUsize::new(0), drop_count_for_run.clone()));
+            barrier.wait();
+
+            if role == 1 {
+                panic!("portfolio failure");
+            }
+
+            let atomic_on_drop = atomic_on_drop.unwrap();
+            loop {
+                atomic_on_drop.0.load(Ordering::SeqCst);
+            }
+        });
+    }));
+
+    let panic = result.expect_err("portfolio failure should propagate");
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"portfolio failure"));
+    assert_eq!(drop_count.load(Ordering::SeqCst), 0);
 }
