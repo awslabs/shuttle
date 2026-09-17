@@ -759,6 +759,10 @@ impl ExecutionState {
             })
     }
 
+    pub(crate) fn execution_stopped() -> bool {
+        Self::try_with(|state| state.current_task == ScheduledTask::Stopped).unwrap_or(false)
+    }
+
     /// Generate some diagnostic information used when persisting failures.
     ///
     /// Because this method may be called from a panic hook, it must not panic.
