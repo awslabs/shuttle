@@ -5,7 +5,7 @@ use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, ParkedDefault, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
-use crate::runtime::thread::continuation::PooledContinuation;
+use crate::runtime::thread::continuation::{PooledContinuation, BACKTRACE_CAPTURE_SLOT};
 use crate::scheduler::{Schedule, Scheduler};
 use crate::sync_types::{ResourceSignature, ResourceType};
 use crate::thread_support::thread_fn;
@@ -248,6 +248,13 @@ impl Execution {
                 Failure::Unwind(payload)
             }
             StepError::Deadlock => {
+                // Now that we know we've deadlocked, go collect a backtrace from each blocked task.
+                // Their coroutine stacks are still suspended and intact at this point: teardown has
+                // not run, so nothing has been dropped, reset, or returned to the pool.
+                if backtrace_enabled() {
+                    Self::capture_blocked_task_backtraces();
+                }
+
                 let blocked_tasks = ExecutionState::with(|state| {
                     state
                         .tasks
@@ -271,6 +278,49 @@ impl Execution {
                 "exceeded max_steps bound {max_steps}. this might be caused by an unfair schedule (e.g., a spin loop)?"
             )),
             StepError::TaskPanicEarlyReturn => Failure::Unwind(Box::new("Task panicked, and early return is enabled.")),
+        }
+    }
+
+    /// Resume each unfinished task just long enough for it to capture a backtrace of its own
+    /// suspended stack, then store it on the task for `format_for_deadlock` to print.
+    ///
+    /// Only tasks suspended part-way through a user function are candidates. In particular a task
+    /// that was handed a function but never started it must be skipped: resuming it would *run* the
+    /// function rather than capture anything.
+    ///
+    /// Tasks parked on a pending future are not reachable this way — their `poll` stack was already
+    /// unwound before they suspended, so there is nothing left to walk. Those sites still capture
+    /// eagerly, and any backtrace they recorded is left untouched here.
+    fn capture_blocked_task_backtraces() {
+        // Clone the `Rc`s out from under the borrow: the resumed continuation calls back into
+        // `ExecutionState::with`, which would fail if the state were still borrowed.
+        let targets = ExecutionState::with(|state| {
+            state
+                .tasks
+                .iter()
+                .filter(|t| !t.finished())
+                // A task that already has a backtrace captured it eagerly on `Poll::Pending`, with
+                // its await sites still on the stack. That is strictly more informative than the
+                // bare poll loop we would see now, so leave it alone.
+                .filter(|t| t.backtrace.is_none())
+                // A task whose continuation teardown has already taken has no stack left to walk.
+                .filter_map(|t| t.continuation.as_ref().map(|c| (t.id(), Rc::clone(c))))
+                .filter(|(_, continuation)| continuation.borrow().is_suspended_in_user_code())
+                .collect::<Vec<_>>()
+        });
+
+        for (tid, continuation) in targets {
+            // Resuming runs no user code, but it does re-enter a coroutine, so contain any panic
+            // rather than let it replace the deadlock diagnostic we are in the middle of building.
+            let captured = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                continuation.borrow_mut().capture_backtrace();
+                BACKTRACE_CAPTURE_SLOT.with(|slot| slot.borrow_mut().take())
+            }))
+            .unwrap_or_default();
+
+            if let Some(backtrace) = captured {
+                ExecutionState::with(|state| state.get_mut(tid).backtrace = Some(backtrace));
+            }
         }
     }
 
