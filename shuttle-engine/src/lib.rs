@@ -114,6 +114,11 @@ pub mod await_backtrace {
 
     /// Called from the waker vtable's `clone`. If we are inside a user future's `poll`, this stack
     /// contains the await chain, so record it.
+    ///
+    /// Inlined because it sits on the waker-clone path, which every future that returns `Pending`
+    /// exercises whether or not backtraces are enabled; inlining lets the `should_capture` check
+    /// collapse to a load and a branch.
+    #[inline]
     pub fn note_waker_clone() {
         if should_capture() {
             let backtrace = Backtrace::force_capture();
