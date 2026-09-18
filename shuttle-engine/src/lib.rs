@@ -43,6 +43,97 @@ pub fn silence_warnings() -> bool {
     std::env::var(SILENCE_WARNINGS).is_ok()
 }
 
+pub mod await_backtrace {
+    //! Recovering the *await site* of a task parked on a pending future.
+    //!
+    //! A stack backtrace cannot find it after the fact: when a future returns [`std::task::Poll::Pending`]
+    //! its `poll` stack unwinds, and the await chain lives on in the compiler-generated state
+    //! machine, which no unwinder can walk. So it has to be captured while that stack is still live.
+    //!
+    //! The hook with the right timing is the waker. A future that returns `Pending` is contractually
+    //! obliged to arrange for a wakeup, and the ordinary way to do that is `cx.waker().clone()` —
+    //! which runs *inside* the future's own `poll`, on the live stack, through a vtable Shuttle owns
+    //! (see [`crate::runtime::task::waker`]). That works for arbitrary user futures, not just
+    //! Shuttle's own leaves.
+    //!
+    //! Two guards keep it honest:
+    //! - [`PollGuard`] marks the dynamic extent of a driver-loop `poll`, so clones made by the
+    //!   executor itself (e.g. `Task::waker()`) are not mistaken for await sites.
+    //! - [`InternalBlockOnGuard`] marks the `block_on` that the *synchronous* primitives use
+    //!   internally. A task parked there keeps its whole call chain on its coroutine stack, so it is
+    //!   captured lazily on deadlock instead. This is the hot path: capturing it eagerly is what
+    //!   made `SHUTTLE_CAPTURE_BACKTRACE` cost ~79x.
+
+    use std::backtrace::Backtrace;
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        static IN_POLL_DEPTH: Cell<usize> = const { Cell::new(0) };
+        static INTERNAL_BLOCK_ON_DEPTH: Cell<usize> = const { Cell::new(0) };
+        /// Await-site backtrace for the poll currently in progress, if one was captured.
+        static CAPTURED: RefCell<Option<Backtrace>> = const { RefCell::new(None) };
+    }
+
+    macro_rules! depth_guard {
+        ($name:ident, $slot:ident, $doc:literal) => {
+            #[doc = $doc]
+            #[derive(Debug)]
+            pub struct $name;
+
+            impl $name {
+                #[allow(clippy::new_without_default)]
+                pub fn new() -> Self {
+                    $slot.set($slot.get() + 1);
+                    Self
+                }
+            }
+
+            impl Drop for $name {
+                fn drop(&mut self) {
+                    $slot.set($slot.get() - 1);
+                }
+            }
+        };
+    }
+
+    depth_guard!(
+        PollGuard,
+        IN_POLL_DEPTH,
+        "Marks the dynamic extent of a `Future::poll` call made by one of Shuttle's driver loops."
+    );
+    depth_guard!(
+        InternalBlockOnGuard,
+        INTERNAL_BLOCK_ON_DEPTH,
+        "Marks a `block_on` that Shuttle itself performs on the task's behalf, rather than one the user wrote."
+    );
+
+    /// Whether an await-site capture is worth taking right now.
+    fn should_capture() -> bool {
+        crate::backtrace_enabled() && IN_POLL_DEPTH.get() > 0 && INTERNAL_BLOCK_ON_DEPTH.get() == 0
+    }
+
+    /// Called from the waker vtable's `clone`. If we are inside a user future's `poll`, this stack
+    /// contains the await chain, so record it.
+    pub fn note_waker_clone() {
+        if should_capture() {
+            let backtrace = Backtrace::force_capture();
+            CAPTURED.with(|slot| *slot.borrow_mut() = Some(backtrace));
+        }
+    }
+
+    /// Take whatever the in-progress poll captured. Called by the driver loops once `poll` has
+    /// returned `Pending`.
+    ///
+    /// `None` means no await site was recovered — either backtraces are off, or the future returned
+    /// `Pending` without cloning the waker (some futures skip the clone when they already hold an
+    /// equivalent one). Returning `None` rather than a stale value is deliberate: it lets the
+    /// deadlock handler fall back to its lazy capture instead of printing a backtrace from an
+    /// earlier, unrelated park.
+    pub fn take_captured() -> Option<Backtrace> {
+        CAPTURED.with(|slot| slot.borrow_mut().take())
+    }
+}
+
 pub fn backtrace_enabled() -> bool {
     // Read once. This is called from `Task::block` and `Task::sleep`, so on every block and every
     // `Poll::Pending`, and `std::env::var` takes a lock on the environment and allocates a `String`.
