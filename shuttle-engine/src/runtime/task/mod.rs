@@ -1,4 +1,3 @@
-use crate::backtrace_enabled;
 use crate::current::get_name_for_task;
 use crate::runtime::execution::{ExecutionState, TASK_ID_TO_TAGS};
 use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
@@ -300,8 +299,16 @@ pub struct Task {
     #[allow(deprecated)]
     tag: Option<Arc<dyn Tag>>,
 
-    /// If [`crate::CAPTURE_BACKTRACE`] is set then this will be populated on task block.
-    /// If the test then fails, then each task's backtrace will be printed.
+    /// If [`crate::CAPTURE_BACKTRACE`] is set then this holds the backtrace to print if the test
+    /// fails. It is filled in by whichever of two paths applies:
+    ///
+    /// - A task blocked in a synchronous primitive stays suspended inside `continuation::switch`
+    ///   with its whole call chain intact on its coroutine stack, so nothing is captured while it
+    ///   runs; the deadlock handler resumes it to walk its own stack (see
+    ///   [`crate::runtime::thread::continuation::ContinuationInput::CaptureBacktrace`]).
+    /// - A task parked on a pending future has already unwound its `poll` stack by the time it
+    ///   suspends, so there is nothing left to walk. Those sites capture eagerly, at the point
+    ///   `Poll::Pending` is produced.
     pub backtrace: Option<Backtrace>,
 
     /// The signature of a Task; this is an identifier that is *not* guaranteed to be unique but should be *mostly*
@@ -497,12 +504,11 @@ impl Task {
     /// permitted to spuriously wake up the thread (though it will still not count as a live thread
     /// for deadlock detection purposes for as long as it remains blocked).
     pub fn block(&mut self, allow_spurious_wakeups: bool) {
-        self.backtrace = if backtrace_enabled() {
-            Some(Backtrace::force_capture())
-        } else {
-            None
-        };
-
+        // Note: no backtrace is captured here. A blocked task stays suspended inside
+        // `continuation::switch` with its blocking call chain intact on its own coroutine stack, so
+        // if the execution deadlocks we can resume it then and have it capture its own backtrace
+        // (see `ContinuationInput::CaptureBacktrace`). Capturing here instead would mean ~70k stack
+        // walks to print a handful, since this field is overwritten on every block.
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
