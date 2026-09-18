@@ -12,11 +12,28 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     let waker = ExecutionState::with(|state| state.current_mut().waker());
     let cx = &mut Context::from_waker(&waker);
 
+    // Read once, outside the loop: this is a process-wide constant, and the whole await-site
+    // machinery is dead weight when backtraces are off.
+    let capture_await_sites = crate::backtrace_enabled();
+
     loop {
-        match future.as_mut().poll(cx) {
+        let polled = {
+            let _guard = capture_await_sites.then(crate::await_backtrace::PollGuard::new);
+            future.as_mut().poll(cx)
+        };
+        match polled {
             Poll::Ready(result) => break result,
             Poll::Pending => {
-                ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
+                // The poll stack (and with it the await chain) is gone now; keep whatever the waker
+                // clone recorded while it was still live.
+                let await_site = capture_await_sites
+                    .then(crate::await_backtrace::take_captured)
+                    .flatten();
+                ExecutionState::with(|state| {
+                    let task = state.current_mut();
+                    task.backtrace = await_site;
+                    task.sleep_unless_woken();
+                });
                 thread::switch();
             }
         }

@@ -1,9 +1,9 @@
 //! A counting semaphore supporting both async and sync operations.
+use crate::current;
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{clock::VectorClock, TaskId};
 use crate::runtime::thread;
 use crate::sync_types::{ResourceSignature, ResourceType};
-use crate::{backtrace_enabled, current};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
@@ -616,6 +616,12 @@ impl BatchSemaphore {
 
     /// Acquire the specified number of permits (blocking API)
     pub fn acquire_blocking(&self, num_permits: usize) -> Result<(), AcquireError> {
+        // This `block_on` is an implementation detail of the *synchronous* primitives (`Mutex`,
+        // `RwLock`), not something the user wrote. Mark it so no await-site backtrace is captured:
+        // a task parked here keeps its whole call chain (`Mutex::lock` -> `acquire_blocking` ->
+        // `block_on`) on its coroutine stack, so the lazy capture on deadlock finds the user's frame
+        // anyway — and this is the hot path that made eager capture cost 79x.
+        let _guard = crate::await_backtrace::InternalBlockOnGuard::new();
         crate::future::block_on(self.acquire(num_permits))
     }
 
@@ -1005,16 +1011,9 @@ impl Future for Acquire<'_> {
                 Poll::Pending
             }
         };
-        if matches!(out, Poll::Pending) {
-            // `Backtrace::capture()` is a noop (it returns the constant `disabled()`) if `RUST_BACKTRACE`/`RUST_LIB_BACKTRACE` is not set.
-            ExecutionState::with(|state| {
-                state.current_mut().backtrace = if backtrace_enabled() {
-                    Some(std::backtrace::Backtrace::force_capture())
-                } else {
-                    None
-                }
-            })
-        }
+        // No backtrace capture here: the `cx.waker().clone()` calls above already route through
+        // Shuttle's waker vtable, which records the await site generically for *any* future. See
+        // `crate::await_backtrace`.
         out
     }
 }
