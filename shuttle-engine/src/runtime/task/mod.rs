@@ -307,8 +307,8 @@ pub struct Task {
     ///   runs; the deadlock handler resumes it to walk its own stack (see
     ///   [`crate::runtime::thread::continuation::ContinuationInput::CaptureBacktrace`]).
     /// - A task parked on a pending future has already unwound its `poll` stack by the time it
-    ///   suspends, so there is nothing left to walk. Those sites capture eagerly, at the point
-    ///   `Poll::Pending` is produced.
+    ///   suspends, so its await site is captured while that stack is still live, from the waker
+    ///   (see [`crate::await_backtrace`]).
     pub backtrace: Option<Backtrace>,
 
     /// The signature of a Task; this is an identifier that is *not* guaranteed to be unique but should be *mostly*
@@ -430,8 +430,22 @@ impl Task {
             Box::new(move || {
                 let waker = ExecutionState::with(|state| state.current_mut().waker());
                 let cx = &mut Context::from_waker(&waker);
-                while future.as_mut().poll(cx).is_pending() {
-                    ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
+                loop {
+                    let pending = {
+                        let _guard = crate::await_backtrace::PollGuard::new();
+                        future.as_mut().poll(cx).is_pending()
+                    };
+                    if !pending {
+                        break;
+                    }
+                    // The poll stack (and with it the await chain) is gone now; keep whatever the
+                    // waker clone recorded while it was still live.
+                    let await_site = crate::await_backtrace::take_captured();
+                    ExecutionState::with(|state| {
+                        let task = state.current_mut();
+                        task.backtrace = await_site;
+                        task.sleep_unless_woken();
+                    });
                     thread::switch();
                 }
             }),
