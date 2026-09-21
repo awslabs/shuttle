@@ -47,7 +47,10 @@ mod tests {
         check_dfs,
         thread::{self, spawn},
     };
-    use std::sync::{Arc, atomic::Ordering};
+    use std::{
+        collections::HashSet,
+        sync::{Arc, atomic::Ordering},
+    };
 
     #[test]
     #[should_panic = "deadlock"]
@@ -154,16 +157,24 @@ mod tests {
     // so the upgrade waits for it to leave. It must still be granted ahead of the waiting writer.
     #[test]
     fn upgrade_waits_for_reader_then_precedes_writer() {
+        // What the plain reader saw, across all executions. The reader is ordered against the writer
+        // only by the schedule, so both values must show up: `{0}` alone would mean the schedule
+        // where the reader runs after the writer was never explored, and the test would not actually
+        // be exercising the interesting case.
+        let reader_observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let reader_observed_clone = Arc::clone(&reader_observed);
+
         check_dfs(
             move || {
                 let rwlock = Arc::new(RwLock::new(0));
                 let (r1, r2) = (rwlock.clone(), rwlock.clone());
+                let reader_observed = Arc::clone(&reader_observed_clone);
                 let writer = spawn(move || {
                     *r1.write() += 1;
                 });
                 let reader = spawn(move || {
                     let g = r2.read();
-                    assert!(*g == 0 || *g == 1);
+                    reader_observed.lock().unwrap().insert(*g);
                 });
                 let u = rwlock.upgradable_read();
                 let observed = *u;
@@ -174,6 +185,12 @@ mod tests {
                 writer.join().unwrap();
             },
             None,
+        );
+
+        assert_eq!(
+            *reader_observed.lock().unwrap(),
+            HashSet::from([0, 1]),
+            "the reader should have observed the value both before and after the writer's increment",
         );
     }
 
