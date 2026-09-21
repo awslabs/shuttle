@@ -198,8 +198,8 @@ pub(crate) use shuttle_engine::runtime;
 
 // Re-export public types from shuttle-engine
 pub use shuttle_engine::{
-    Config, ContinuationFunctionBehavior, FailurePersistence, MaxSteps, PortfolioRunner, Runner,
-    UngracefulShutdownConfig,
+    Config, ContinuationFunctionBehavior, FailurePersistence, MaxSteps, PortfolioRunner, Runner, ScheduleEncoding,
+    ScheduleTextEncoding, UngracefulShutdownConfig,
 };
 
 // Re-export constants

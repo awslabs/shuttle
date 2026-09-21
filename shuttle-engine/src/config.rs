@@ -10,6 +10,31 @@ pub struct Config {
     /// How to persist schedules when a test fails
     pub failure_persistence: FailurePersistence,
 
+    /// Whether to report a failing schedule from the panic hook, at the moment of the panic, in
+    /// addition to reporting one after the panic has finished unwinding.
+    ///
+    /// By default Shuttle reports once, after the unwind. That schedule also covers the scheduling
+    /// decisions the unwind itself needed, so it is the one that reproduces the failure most
+    /// faithfully, and reporting only once keeps the output to a single schedule.
+    ///
+    /// Set this to `true` if a test is at risk of *aborting* rather than unwinding. A panic raised
+    /// while another panic is unwinding aborts the process immediately, which is a common shape in
+    /// Rust: a panic poisons a lock, and then a `Drop` handler run by the unwind tries to acquire that
+    /// same lock. An abort runs no further code, so a report scheduled for after the unwind never
+    /// happens and the failure is lost. Reporting from the hook gets a schedule out before that can
+    /// occur.
+    ///
+    /// The cost is that a failure then reports twice, since the schedule keeps growing during the
+    /// unwind and the later, longer one supersedes it. Under [`FailurePersistence::File`] the second
+    /// report rewrites the first one's file, so this costs nothing but a little stderr. Under
+    /// [`FailurePersistence::Print`] both schedules appear in the output, the second marked as
+    /// superseding the first.
+    ///
+    /// This also affects panics a test catches itself, which run the hook just the same. With this
+    /// off, a swallowed panic reports nothing; with it on, it reports a schedule even if the test goes
+    /// on to pass.
+    pub eager_failure_reports: bool,
+
     /// Maximum number of steps a single iteration of a test can take, and how to react when the
     /// limit is reached
     pub max_steps: MaxSteps,
@@ -47,6 +72,15 @@ pub struct Config {
 
     /// The config to define how to handle ungraceful shutdowns, ie. when the test panics.
     pub ungraceful_shutdown_config: UngracefulShutdownConfig,
+
+    /// Which encoding to use when serializing a failing schedule. This only affects schedules
+    /// Shuttle *writes*; both encodings can always be read back, so changing this does not
+    /// invalidate schedules you have already saved.
+    pub schedule_encoding: ScheduleEncoding,
+
+    /// Which alphabet to use when rendering a serialized schedule as text. As with
+    /// [`Config::schedule_encoding`], this only affects schedules Shuttle *writes*.
+    pub schedule_text_encoding: ScheduleTextEncoding,
 }
 
 std::thread_local! {
@@ -120,11 +154,14 @@ impl Config {
         Self {
             stack_size: 0xf000,
             failure_persistence: FailurePersistence::Print,
+            eager_failure_reports: false,
             max_steps: MaxSteps::FailAfter(1_000_000),
             max_time: None,
             silence_warnings: false,
             record_steps_in_span: false,
             ungraceful_shutdown_config: UngracefulShutdownConfig::default(),
+            schedule_encoding: ScheduleEncoding::default(),
+            schedule_text_encoding: ScheduleTextEncoding::default(),
         }
     }
 }
@@ -150,6 +187,146 @@ pub enum FailurePersistence {
     Print,
     /// Persist schedules as files in the given directory, or the current directory if None.
     File(Option<std::path::PathBuf>),
+}
+
+/// Specifies the alphabet used to render a serialized [`Schedule`](crate::scheduler::Schedule) as
+/// text.
+///
+/// This is independent of [`ScheduleEncoding`], which chooses how the schedule's *bytes* are
+/// produced; this chooses how those bytes are turned into a printable string. As with
+/// `ScheduleEncoding`, deserialization detects the alphabet automatically, so changing this never
+/// prevents an existing schedule from being replayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ScheduleTextEncoding {
+    /// Choose between [`ScheduleTextEncoding::Hex`] and [`ScheduleTextEncoding::Unicode`] based on
+    /// whether the destination can carry non-ASCII text. This is the default.
+    ///
+    /// A schedule written to a file always gets the Unicode alphabet, because a file is a byte sink.
+    /// A schedule printed to a terminal gets it only if the locale says the terminal is expecting
+    /// UTF-8, which is the mechanism POSIX defines for exactly this question: `LC_ALL`, then
+    /// `LC_CTYPE`, then `LANG`, first one set wins. So a run under `LC_ALL=C`, or on a system whose
+    /// locale is not configured, falls back to hex on its own.
+    ///
+    /// Note what this does *not* detect. Whether the terminal accepts UTF-8 says nothing about
+    /// whether it renders stacked combining marks as zero-width, and no environment variable answers
+    /// that. Measuring it would mean writing the text and then querying the cursor position, which
+    /// needs raw mode on the same terminal, and Shuttle reports schedules from a panic hook, possibly
+    /// while a panic is still unwinding. So `Auto` decides the alphabet, which is knowable, and
+    /// leaves the stacking depth to you. If your terminal renders the marks as separate cells, set
+    /// `Unicode { marks_per_cell: 0 }`, whose cost does not depend on the terminal at all.
+    Auto,
+
+    /// Render as hexadecimal.
+    ///
+    /// Four bits per character, and pure ASCII, so it survives anything. Use this if a schedule has
+    /// to pass through tooling that mangles or strips non-ASCII text.
+    Hex,
+
+    /// Render using a dense Unicode alphabet, optionally stacking invisible combining marks to fit
+    /// more data into each terminal column.
+    ///
+    /// Each column carries a 14-bit base character plus `marks_per_cell` combining marks of 8 bits
+    /// each, against hex's 4 bits per column. At the default depth the whole schedule occupies a
+    /// single cell and prints on one line, however long it is. A checksum is included, so a schedule
+    /// damaged in transit is reported rather than silently replayed as a different schedule.
+    ///
+    /// Deeper stacking is denser but relies on the terminal treating every mark as zero-width.
+    /// Terminals cap how many marks they will attach to one cell, and the cap varies between them.
+    /// Past that cap a terminal either drops the excess, which damages the schedule and is what the
+    /// checksum is there to catch, or renders each mark as its own cell, which is harmless but means
+    /// the output takes one column per character rather than one per cell. If either bothers you,
+    /// lower this, set it to zero to emit base characters only, or use [`ScheduleTextEncoding::Hex`]
+    /// or [`FailurePersistence::File`] instead.
+    Unicode {
+        /// Number of combining marks to stack on each base character. Zero emits base characters
+        /// only. Any value beyond the number of marks the payload needs simply puts the remainder of
+        /// the schedule in the current cell, so a large value means "as few cells as possible".
+        ///
+        /// The depth is not recorded in the output. The decoder infers each character's width from
+        /// the character itself, so schedules written at any depth are readable by any version.
+        marks_per_cell: u32,
+    },
+}
+
+impl ScheduleTextEncoding {
+    /// Create a new default `ScheduleTextEncoding`.
+    pub const fn new() -> Self {
+        Self::Auto
+    }
+
+    /// What [`ScheduleTextEncoding::Auto`] resolves to when non-ASCII output is safe.
+    ///
+    /// More marks than any schedule has bits, so the whole payload lands in one cell: one column, and
+    /// therefore one line, regardless of how long the schedule is.
+    pub const DENSE: Self = Self::Unicode {
+        marks_per_cell: u32::MAX,
+    };
+
+    /// Resolve [`ScheduleTextEncoding::Auto`] for a destination that either can or cannot carry
+    /// non-ASCII text. Every other variant is returned unchanged, so this is idempotent and safe to
+    /// apply more than once.
+    pub const fn resolve(self, destination_accepts_non_ascii: bool) -> Self {
+        match self {
+            Self::Auto if destination_accepts_non_ascii => Self::DENSE,
+            Self::Auto => Self::Hex,
+            other => other,
+        }
+    }
+}
+
+/// Whether stderr, which is where Shuttle prints failing schedules, can carry non-ASCII text.
+///
+/// If stderr is not a terminal it is a file, a pipe or a captured test log, all of which are byte
+/// sinks that take UTF-8 without complaint. If it is a terminal, the locale decides, per POSIX.
+///
+/// Note that libtest's output capture intercepts `eprintln!` above the file descriptor rather than by
+/// replacing it, so this still sees the real terminal under `cargo test`, which is the terminal the
+/// captured output is eventually replayed to.
+pub fn stderr_accepts_non_ascii() -> bool {
+    use std::io::IsTerminal;
+
+    if !std::io::stderr().is_terminal() {
+        return true;
+    }
+    ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .filter_map(|variable| std::env::var(variable).ok())
+        .find(|value| !value.is_empty())
+        .is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("utf-8") || value.contains("utf8")
+        })
+}
+
+impl Default for ScheduleTextEncoding {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Specifies how a [`Schedule`](crate::scheduler::Schedule) is encoded when it is serialized.
+///
+/// Deserialization always auto-detects the encoding from the schedule's leading magic byte, so this
+/// setting only affects newly written schedules and never prevents an existing schedule from being
+/// replayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ScheduleEncoding {
+    /// Encode each step as a fixed-width field, sized to hold the largest
+    /// [`TaskId`](crate::runtime::task::TaskId) appearing anywhere in the schedule.
+    ///
+    /// This is simple and fast, but it pays for the largest task ID on *every* step, so it is a
+    /// poor fit for long schedules over many tasks. Prefer [`ScheduleEncoding::MoveToFront`].
+    FixedWidth,
+
+    /// Encode each step as its rank in a move-to-front list of recently scheduled tasks.
+    ///
+    /// Schedules typically rotate among a small set of live tasks even when many tasks exist, so
+    /// ranks are small and cluster near the front of the list. This is the default, and is
+    /// substantially more compact than [`ScheduleEncoding::FixedWidth`] for long schedules.
+    #[default]
+    MoveToFront,
 }
 
 /// Specifies an upper bound on the number of steps a single iteration of a Shuttle test can take,
