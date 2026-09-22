@@ -2,11 +2,24 @@
 
 * `ReplayScheduler` can now continue an execution after the end of the recorded schedule instead of ending it: `set_continue_after_schedule` hands the remaining scheduling decisions to a `RandomScheduler` seeded from the replayed schedule, and `set_continue_after_schedule_with` continues under a scheduler of your choice. The same happens if the schedule diverges from the program (the task it names next is not runnable), and can be requested without touching the call site by setting the `SHUTTLE_CONTINUE_AFTER_SCHEDULE` environment variable, which is how a harness-driven replay (`SHUTTLE_TRACE_FILE`) reaches it. This is for exploring what a program does *after* a recorded prefix: replay a schedule to reach the interesting state — or replay a schedule recorded before a bound or a test parameter was changed — and let the execution run on from there. Random values keep coming from the replayed schedule's seed, so the schedule the runner records for a failure found in the continuation replays the whole execution on its own.
 
-* Performance: `BatchSemaphore` no longer takes a `std::sync::Mutex` in a release-mode assertion on every `Acquire` poll, and allocates its `Waiter` only when an acquire actually blocks. Uncontended synchronization operations (`Mutex`, `RwLock`, `Semaphore`, channels) are 43-50% faster.
 
-* Performance: `backtrace_enabled` no longer reads the environment on every call. It is called from `Task::block` and `Task::sleep`, so on every block and every `Poll::Pending`, and `std::env::var` takes a lock on the environment and allocates. Lock-heavy workloads are 9-12% faster.
+# 0.9.4 (September 21, 2026)
+
+* Fix `shuttle-parking_lot`'s upgradable read locks letting a writer in part-way through an upgrade. `RwLockUpgradableReadGuard::upgrade` released the permits it held before taking the rest, so a writer already blocked on the lock was granted it first by the strictly fair semaphore: the value an upgradable reader had just read could change underneath it before its own upgrade completed. Real `parking_lot` guarantees the opposite — it swaps `ONE_READER | UPGRADABLE_BIT` for `WRITER_BIT` in a single atomic step and then waits only for existing readers to drain — and that guarantee is the reason to use an upgradable read at all. The lock is now modelled as permit counts on a single semaphore (shared takes 1, upgradable a strict majority, exclusive all of them), which keeps every transition between the three states atomic. Two further consequences of the old two-semaphore model are fixed along with it: `try_upgrade` no longer fails spuriously when a writer is merely queued, and `downgrade_to_upgradable` no longer deadlocks against a task that is waiting to take an upgradable read. (#351)
+
+* `BatchSemaphore::upgrade` now keeps the permits it already holds and acquires only the missing ones, with priority over queued waiters, instead of releasing its permits and re-acquiring the full count from the back of the queue. An upgrade therefore blocks only on tasks that *currently hold* permits, and cannot be overtaken by a waiter that arrived first. `BatchSemaphore::try_upgrade` is added as the non-blocking counterpart. (#351)
+
+* Fix a process abort when the portfolio runner aborts the remaining executions after finding a counterexample. The drop handlers of the aborted execution then ran in the context of a stopped execution, and any that touched a Shuttle primitive panicked from a drop. A stopped execution now leaks its state on the way out, as a panicking one already did. (#346)
+
+* Performance: `BatchSemaphore` no longer takes a `std::sync::Mutex` in a release-mode assertion on every `Acquire` poll, and allocates its `Waiter` only when an acquire actually blocks. Uncontended synchronization operations (`Mutex`, `RwLock`, `Semaphore`, channels) are 43-50% faster. (#321)
+
+* Performance: `backtrace_enabled` no longer reads the environment on every call. It is called from `Task::block` and `Task::sleep`, so on every block and every `Poll::Pending`, and `std::env::var` takes a lock on the environment and allocates. Lock-heavy workloads are 9-12% faster. (#322)
+
 * Better instrument backtraces for blocked futures. (#215)
+
 * Fix the `annotation` feature. (#334)
+
+* Publish `shuttle-engine`, `shuttle-std` and `shuttle-parking_lot-impl` 0.1.2. `shuttle-schedulers` is unchanged at 0.1.1; it takes `shuttle-engine` as `^0.1.1`, so it builds against 0.1.2 as it stands. `shuttle-parking_lot` itself stays at 0.12.5, mirroring the `parking_lot` version it wraps: it requires the impl as `^0.1.0` and re-exports it with a glob, so it picks the `RwLock` fix up without being republished. The impl now requires `shuttle >=0.9.4`, since the fix is built on the new `BatchSemaphore::upgrade`.
 
 # tokio wrappers (September 6, 2026)
 

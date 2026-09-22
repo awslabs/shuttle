@@ -224,6 +224,27 @@ pub enum Fairness {
     Unfair,
 }
 
+/// Where an acquire request sits relative to waiters that are already queued on
+/// a [`Fairness::StrictlyFair`] semaphore. Ignored by an unfair semaphore, which
+/// has no queue order to speak of.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Priority {
+    /// The default: queue behind existing waiters, and do not take available
+    /// permits while any waiter is queued.
+    Back,
+
+    /// Overtake every queued waiter: take available permits even when others are
+    /// waiting, and if there still aren't enough, queue at the *front*.
+    ///
+    /// This is only correct for a requester that already holds permits of this
+    /// semaphore and is escalating its own claim (see [`BatchSemaphore::upgrade`]).
+    /// Such a request cannot be satisfied by making the queue wait its turn --
+    /// queued waiters hold no permits, so they can never release what the
+    /// requester is missing, and the requester will not release what it holds.
+    /// Deadlock is avoided precisely by letting it overtake them.
+    Front,
+}
+
 /// A counting semaphore which permits waiting on multiple permits at once,
 /// and supports both asychronous and synchronous blocking operations.
 #[derive(Debug)]
@@ -251,18 +272,26 @@ struct BatchSemaphoreState {
 }
 
 impl BatchSemaphoreState {
-    fn acquire_permits(&mut self, num_permits: usize, fairness: Fairness) -> Result<(), TryAcquireError> {
+    fn acquire_permits(
+        &mut self,
+        num_permits: usize,
+        fairness: Fairness,
+        priority: Priority,
+    ) -> Result<(), TryAcquireError> {
         assert!(num_permits > 0);
         if self.closed {
             Err(TryAcquireError::Closed)
-        } else if self.waiters.is_empty() || matches!(fairness, Fairness::Unfair) {
-            // Permits here can be acquired in one of two scenarios:
+        } else if self.waiters.is_empty() || matches!(fairness, Fairness::Unfair) || priority == Priority::Front {
+            // Permits here can be acquired in one of three scenarios:
             // - The waiter queue is empty; nobody else is waiting for permits,
             //   so if there are enough available, immediately succeed.
             // - The semaphore is operating in an unfair mode; the current
             //   thread is either requesting permits for the first time, or it
             //   was woken and selected by the scheduler. In either case, the
             //   thread may succeed, as long as there are enough permits.
+            // - The request has `Priority::Front`, so it deliberately overtakes
+            //   the queue (see `BatchSemaphore::upgrade`). Queued waiters hold
+            //   no permits, so they cannot prevent this request from succeeding.
 
             let clock = self.permits_available.acquire(num_permits, current::clock())?;
 
@@ -510,24 +539,26 @@ impl BatchSemaphore {
         self.init_object_id();
         let mut state = self.state.borrow_mut();
         let id = state.id.unwrap();
-        let res = state.acquire_permits(num_permits, self.fairness).inspect_err(|_err| {
-            // Conservatively, the requester causally depends on the
-            // last successful acquire.
-            // TODO: This is not precise, but `try_acquire` causal dependency
-            // TODO: is both hard to define, and is most likely not worth the
-            // TODO: effort. The cases where causality would be tracked
-            // TODO: "imprecisely" do not correspond to commonly used sync.
-            // TODO: primitives, such as mutexes, mutexes, or condvars.
-            // TODO: An example would be a counting semaphore used to guard
-            // TODO: access to N homogenous resources (as opposed to FIFO,
-            // TODO: heterogenous resources).
-            // TODO: More precision could be gained by tracking clocks for all
-            // TODO: current permit holders, with a data structure similar to
-            // TODO: `permits_available`.
-            ExecutionState::with(|s| {
-                s.update_clock(&state.permits_available.last_acquire);
+        let res = state
+            .acquire_permits(num_permits, self.fairness, Priority::Back)
+            .inspect_err(|_err| {
+                // Conservatively, the requester causally depends on the
+                // last successful acquire.
+                // TODO: This is not precise, but `try_acquire` causal dependency
+                // TODO: is both hard to define, and is most likely not worth the
+                // TODO: effort. The cases where causality would be tracked
+                // TODO: "imprecisely" do not correspond to commonly used sync.
+                // TODO: primitives, such as mutexes, mutexes, or condvars.
+                // TODO: An example would be a counting semaphore used to guard
+                // TODO: access to N homogenous resources (as opposed to FIFO,
+                // TODO: heterogenous resources).
+                // TODO: More precision could be gained by tracking clocks for all
+                // TODO: current permit holders, with a data structure similar to
+                // TODO: `permits_available`.
+                ExecutionState::with(|s| {
+                    s.update_clock(&state.permits_available.last_acquire);
+                });
             });
-        });
         drop(state);
 
         // If we won the race for permits of an unfair semaphore, re-block
@@ -564,11 +595,22 @@ impl BatchSemaphore {
         }
     }
 
-    fn enqueue_waiter(&self, waiter: &Arc<Waiter>) {
+    fn enqueue_waiter(&self, waiter: &Arc<Waiter>, priority: Priority) {
         let mut state = self.state.borrow_mut();
 
-        trace!("enqueuing waiter {:?} for semaphore {:p}", waiter, &self.state);
-        state.waiters.push_back(waiter.clone());
+        trace!(
+            "enqueuing waiter {:?} ({priority:?}) for semaphore {:p}",
+            waiter,
+            &self.state
+        );
+        match priority {
+            Priority::Back => state.waiters.push_back(waiter.clone()),
+            // Overtakes the queue rather than joining its tail. Key invariant (1)
+            // still holds: we only get here because the acquire failed, and a
+            // `Priority::Front` acquire only fails when there really aren't
+            // enough permits available, so the new head cannot be grantable.
+            Priority::Front => state.waiters.push_front(waiter.clone()),
+        }
 
         assert!(!waiter.has_permits.load(Ordering::SeqCst));
         assert!(!waiter.is_queued.swap(true, Ordering::SeqCst));
@@ -611,7 +653,7 @@ impl BatchSemaphore {
     pub fn acquire(&self, num_permits: usize) -> Acquire<'_> {
         // No switch here; switch should be triggered on polling future
         self.init_object_id();
-        Acquire::new(self, num_permits)
+        Acquire::new(self, num_permits, Priority::Back)
     }
 
     /// Acquire the specified number of permits (blocking API)
@@ -702,29 +744,76 @@ impl BatchSemaphore {
         drop(state);
     }
 
-    /// Atomically `upgrade`s from holding `permits_currently_held` to holding `permits_to_be_held`.
-    /// The motivating use case for this is `parking_lot`s `RwLockUpgradableReadGuard::ugrade`, where we want to be able to
-    /// go from having a read guard to a write guard while honoring the order of `acquire`s.
+    /// Atomically `upgrade` from holding `permits_currently_held` permits to holding
+    /// `permits_to_be_held`, without ever dropping below `permits_currently_held` in between.
+    /// The motivating use case is `parking_lot`'s `RwLockUpgradableReadGuard::upgrade`, which must
+    /// take a read guard to a write guard without letting any writer in along the way.
     ///
-    /// This is implemented by first trying to `acquire` `permits_to_be_held` (which for the `RwLock::upgrade` case would never
-    /// succeed, as the task is holding one permit, and wants to acquire all of them, meaning even with no other tasks it will
-    /// block on itself), then `release`ing `permits_currently_held`.
+    /// This is implemented by acquiring only the *missing* permits
+    /// (`permits_to_be_held - permits_currently_held`), with priority over any waiter already
+    /// queued, so that the request overtakes the queue. Both halves of that matter:
     ///
-    /// This ensures the order of `acquire`s is honored, and prevents the potential deadlock situation which could occur in the
-    /// naive implementation where `permits_to_be_held - permits_currently_held` is `acquire`d, and two tasks try to `upgrade`
-    /// concurrently (or one `upgrade` in the presence of a `write`).
+    /// * Keeping the held permits means no other task can claim the resource mid-upgrade. Releasing
+    ///   them first (even for an instant) would hand the resource to a queued waiter, which for an
+    ///   `RwLock` means a writer mutating the data an upgradable reader had already observed.
+    /// * Overtaking the queue is what makes that safe rather than deadlock-prone. Since we hold
+    ///   permits we will not release, a queued waiter ahead of us may be unsatisfiable (an `RwLock`
+    ///   writer wants *all* permits), so waiting our turn behind it could deadlock. Queued waiters
+    ///   hold no permits, so overtaking them costs nothing but their place in line -- which is
+    ///   exactly the priority a real upgradable read lock gives an upgrade.
+    ///
+    /// The upgrade therefore blocks only on tasks that *currently hold* permits, and is granted as
+    /// soon as they release. The returned future must be driven to completion; if it is dropped
+    /// first, the caller still holds `permits_currently_held`.
+    ///
+    /// At most one `upgrade` may be in flight on a semaphore at a time. Two concurrent upgraders
+    /// could each be waiting for permits the other holds, which no queue discipline can resolve.
+    /// Callers are expected to enforce this (an `RwLock` does: there is only ever one upgradable
+    /// reader).
     pub fn upgrade(&self, permits_currently_held: usize, permits_to_be_held: usize) -> Acquire<'_> {
         assert!(permits_currently_held > 0);
         assert!(permits_to_be_held > permits_currently_held);
 
-        let mut acquire = Box::pin(self.acquire(permits_to_be_held));
-        let waker = ExecutionState::with(|state| state.current_mut().waker());
-        let cx = &mut Context::from_waker(&waker);
-        let _poll = acquire.as_mut().poll(cx);
+        self.init_object_id();
+        Acquire::new(self, permits_to_be_held - permits_currently_held, Priority::Front)
+    }
 
-        self.release(permits_currently_held);
+    /// The non-blocking analogue of [`BatchSemaphore::upgrade`]: succeeds only if the missing
+    /// permits are available right now, and never blocks or queues.
+    ///
+    /// Like `upgrade`, this ignores queued waiters (they hold no permits, so they cannot be the
+    /// reason the upgrade is short of permits). A `try_upgrade` therefore fails only when some
+    /// other task actually *holds* permits the upgrade needs.
+    pub fn try_upgrade(&self, permits_currently_held: usize, permits_to_be_held: usize) -> Result<(), TryAcquireError> {
+        assert!(permits_currently_held > 0);
+        assert!(permits_to_be_held > permits_currently_held);
 
-        *Pin::into_inner(acquire)
+        thread::switch();
+
+        self.init_object_id();
+        let num_permits = permits_to_be_held - permits_currently_held;
+        let mut state = self.state.borrow_mut();
+        let id = state.id.unwrap();
+        let res = state
+            .acquire_permits(num_permits, self.fairness, Priority::Front)
+            .inspect_err(|_err| {
+                // Conservatively, the requester causally depends on the last successful acquire;
+                // see the equivalent reasoning in `try_acquire`.
+                ExecutionState::with(|s| {
+                    s.update_clock(&state.permits_available.last_acquire);
+                });
+            });
+        drop(state);
+
+        // If we took permits from an unfair semaphore, re-block waiting threads that can no longer
+        // succeed.
+        if res.is_ok() {
+            self.reblock_if_unfair();
+        }
+
+        crate::annotations::record_semaphore_try_acquire(id, num_permits, res.is_ok());
+
+        res
     }
 }
 
@@ -747,6 +836,11 @@ impl Default for BatchSemaphore {
 pub struct Acquire<'a> {
     semaphore: &'a BatchSemaphore,
     num_permits: usize,
+
+    /// Where this acquire sits relative to waiters already queued on a fair
+    /// semaphore. Only [`BatchSemaphore::upgrade`] uses [`Priority::Front`]; see
+    /// there for why an upgrade must overtake the queue.
+    priority: Priority,
 
     /// Snapshotted when this `Acquire` is created, and moved into the `Waiter` if
     /// this acquire ends up blocking. See `Waiter::new` for why the snapshot must
@@ -773,6 +867,7 @@ impl fmt::Debug for Acquire<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Acquire")
             .field("num_permits", &self.num_permits)
+            .field("priority", &self.priority)
             .field("waiter", &self.waiter)
             .field("has_permits", &self.has_permits())
             .field("completed", &self.completed)
@@ -781,10 +876,11 @@ impl fmt::Debug for Acquire<'_> {
 }
 
 impl<'a> Acquire<'a> {
-    fn new(semaphore: &'a BatchSemaphore, num_permits: usize) -> Self {
+    fn new(semaphore: &'a BatchSemaphore, num_permits: usize, priority: Priority) -> Self {
         Self {
             semaphore,
             num_permits,
+            priority,
             clock: current::clock(),
             waiter: None,
             has_permits: false,
@@ -934,7 +1030,7 @@ impl Future for Acquire<'_> {
                 // clock, as this thread will be blocked below.
                 let mut state = self.semaphore.state.borrow_mut();
                 let id = state.id.unwrap();
-                let acquire_result = state.acquire_permits(self.num_permits, self.semaphore.fairness);
+                let acquire_result = state.acquire_permits(self.num_permits, self.semaphore.fairness, self.priority);
                 drop(state);
 
                 match acquire_result {
@@ -981,7 +1077,7 @@ impl Future for Acquire<'_> {
                         if !is_queued {
                             crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
                             // `enqueue_waiter` sets `is_queued` itself.
-                            self.semaphore.enqueue_waiter(&waiter);
+                            self.semaphore.enqueue_waiter(&waiter, self.priority);
                         }
                         trace!("Acquire::poll for {:?} that is enqueued", self);
                         Poll::Pending

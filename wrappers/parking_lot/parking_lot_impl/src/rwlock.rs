@@ -47,7 +47,10 @@ mod tests {
         check_dfs,
         thread::{self, spawn},
     };
-    use std::sync::{Arc, atomic::Ordering};
+    use std::{
+        collections::HashSet,
+        sync::{Arc, atomic::Ordering},
+    };
 
     #[test]
     #[should_panic = "deadlock"]
@@ -127,19 +130,109 @@ mod tests {
         );
     }
 
+    // An upgrade is atomic with respect to writers: a writer blocked when the upgrade starts cannot
+    // be granted the lock first, so the data an upgradable reader observed cannot change across its
+    // own upgrade. That guarantee is the whole point of an upgradable read.
     #[test]
-    fn upgradable_read_does_not_block_write() {
+    fn upgrade_excludes_blocked_writer() {
         check_dfs(
             move || {
                 let rwlock = Arc::new(RwLock::new(0));
                 let r1 = rwlock.clone();
-                let rg = rwlock.upgradable_read();
-                let t2 = spawn(move || {
-                    let _g = r1.write();
+                let t = spawn(move || {
+                    *r1.write() += 1;
                 });
-                let g = RwLockUpgradableReadGuard::upgrade(rg);
-                drop(g);
-                t2.join().unwrap();
+                let u = rwlock.upgradable_read();
+                let observed = *u;
+                let w = RwLockUpgradableReadGuard::upgrade(u);
+                assert_eq!(*w, observed, "a writer was granted the lock during the upgrade");
+                drop(w);
+                t.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    // Same guarantee, but on the path where the upgrade has to block: a plain reader is in the lock,
+    // so the upgrade waits for it to leave. It must still be granted ahead of the waiting writer.
+    #[test]
+    fn upgrade_waits_for_reader_then_precedes_writer() {
+        // What the plain reader saw, across all executions. The reader is ordered against the writer
+        // only by the schedule, so both values must show up: `{0}` alone would mean the schedule
+        // where the reader runs after the writer was never explored, and the test would not actually
+        // be exercising the interesting case.
+        let reader_observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let reader_observed_clone = Arc::clone(&reader_observed);
+
+        check_dfs(
+            move || {
+                let rwlock = Arc::new(RwLock::new(0));
+                let (r1, r2) = (rwlock.clone(), rwlock.clone());
+                let reader_observed = Arc::clone(&reader_observed_clone);
+                let writer = spawn(move || {
+                    *r1.write() += 1;
+                });
+                let reader = spawn(move || {
+                    let g = r2.read();
+                    reader_observed.lock().unwrap().insert(*g);
+                });
+                let u = rwlock.upgradable_read();
+                let observed = *u;
+                let w = RwLockUpgradableReadGuard::upgrade(u);
+                assert_eq!(*w, observed, "a writer was granted the lock during the upgrade");
+                drop(w);
+                reader.join().unwrap();
+                writer.join().unwrap();
+            },
+            None,
+        );
+
+        assert_eq!(
+            *reader_observed.lock().unwrap(),
+            HashSet::from([0, 1]),
+            "the reader should have observed the value both before and after the writer's increment",
+        );
+    }
+
+    // A blocked writer does not make `try_upgrade` fail: it holds nothing, and `parking_lot`'s
+    // `try_upgrade` only cares whether other *readers* are in the lock.
+    #[test]
+    fn try_upgrade_ignores_blocked_writer() {
+        check_dfs(
+            move || {
+                let lock = Arc::new(RwLock::new(0));
+                let l2 = lock.clone();
+                let u = lock.upgradable_read();
+                let t = spawn(move || {
+                    let _w = l2.write();
+                });
+                match RwLockUpgradableReadGuard::try_upgrade(u) {
+                    Ok(w) => drop(w),
+                    Err(_) => panic!("try_upgrade must succeed when no other reader holds the lock"),
+                }
+                t.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    // `downgrade_to_upgradable` cannot block, so a task waiting for an upgradable read cannot
+    // deadlock against it. In `parking_lot` the downgrade is an atomic `WRITER_BIT` -> `ONE_READER |
+    // UPGRADABLE_BIT` swap, and a task merely waiting for an upgradable read holds nothing.
+    #[test]
+    fn downgrade_to_upgradable_with_waiting_upgradable_reader() {
+        check_dfs(
+            move || {
+                let lock = Arc::new(RwLock::new(0));
+                let l2 = lock.clone();
+                let mut w = lock.write();
+                let t = spawn(move || {
+                    let _u = l2.upgradable_read();
+                });
+                *w = 1;
+                let u = RwLockWriteGuard::downgrade_to_upgradable(w);
+                drop(u);
+                t.join().unwrap();
             },
             None,
         );
@@ -336,6 +429,133 @@ mod tests {
                     let _g = rwlock.read_arc();
                 }
                 t.join().unwrap();
+                assert_eq!(*rwlock.read(), 1);
+            },
+            None,
+        );
+    }
+}
+
+#[cfg(test)]
+mod parking_lot_upgrade_parity {
+    use super::{RwLock, RwLockUpgradableReadGuard};
+    use shuttle::{
+        check_dfs,
+        thread::{self, spawn},
+    };
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    /// Test 1: two tasks each take an upgradable read, observe the value, upgrade, and increment.
+    ///
+    /// `parking_lot` prints `GETTING / UPGRADING / UPGRADED / GOT`: the second task's
+    /// `upgradable_read()` is not granted until the first has finished upgrading. The `sleep`s in
+    /// the original only select *one* interleaving; the properties that hold for *every*
+    /// interleaving are asserted below, and `check_dfs` checks them on all of them.
+    #[test]
+    fn upgradable_read_is_exclusive_and_upgrade_is_atomic() {
+        check_dfs(
+            || {
+                let rwlock = Arc::new(RwLock::new(0));
+                // Counts tasks inside the upgradable-read..upgraded region. `parking_lot` admits at
+                // most one, so this must read 0 on entry and 1 on exit -- the original's
+                // `current_holders`.
+                let holders = Arc::new(AtomicUsize::new(0));
+
+                let threads = (0..2)
+                    .map(|_| {
+                        let rwlock = Arc::clone(&rwlock);
+                        let holders = Arc::clone(&holders);
+                        spawn(move || {
+                            let guard = rwlock.upgradable_read();
+
+                            // At most one upgradable reader: `parking_lot` has a single
+                            // UPGRADABLE_BIT. This is what makes `GOT` come after `UPGRADED`.
+                            assert_eq!(
+                                holders.fetch_add(1, Ordering::SeqCst),
+                                0,
+                                "two tasks held an upgradable read at once",
+                            );
+                            // Stands in for the original's `sleep`: offer the scheduler a
+                            // preemption point here, so DFS will try to interleave the other task
+                            // into this region if the lock lets it.
+                            thread::yield_now();
+
+                            // An upgradable read excludes writers, so the other task cannot have
+                            // incremented twice while we hold it.
+                            let observed = *guard;
+                            assert!(observed < 2, "the value changed under an upgradable read");
+
+                            let mut write = RwLockUpgradableReadGuard::upgrade(guard);
+
+                            // The upgrade is atomic with respect to writers: what we read through
+                            // the upgradable guard cannot change across our own upgrade. This is
+                            // the guarantee that makes an upgradable read worth having, and the one
+                            // a naive "drop the read, then take the write" upgrade breaks.
+                            assert_eq!(*write, observed, "a writer was granted the lock during the upgrade");
+
+                            // ...and the upgrade never let go of the lock, so we are still the only
+                            // holder on the way out.
+                            assert_eq!(
+                                holders.fetch_sub(1, Ordering::SeqCst),
+                                1,
+                                "another task entered the lock during the upgrade",
+                            );
+
+                            *write += 1;
+                        })
+                    })
+                    .collect::<Vec<_>>();
+
+                for t in threads {
+                    t.join().unwrap();
+                }
+
+                // Both upgrades were granted -- neither deadlocked, and no update was lost.
+                assert_eq!(*rwlock.read(), 2);
+            },
+            None,
+        );
+    }
+
+    /// Test 2: the main task holds an upgradable read while another task blocks in `write()`, then
+    /// upgrades.
+    #[test]
+    fn upgrade_precedes_an_already_waiting_writer() {
+        check_dfs(
+            || {
+                let rwlock = Arc::new(RwLock::new(0));
+                let writer_finished = Arc::new(AtomicUsize::new(0));
+
+                let upgradable = rwlock.upgradable_read();
+                let observed = *upgradable;
+
+                let writer = {
+                    let rwlock = Arc::clone(&rwlock);
+                    let writer_finished = Arc::clone(&writer_finished);
+                    spawn(move || {
+                        *rwlock.write() += 1;
+                        writer_finished.store(1, Ordering::SeqCst);
+                    })
+                };
+
+                // Stands in for the `sleep` that let the writer reach `write()` and block. DFS also
+                // explores the schedules where it has not got there yet.
+                thread::yield_now();
+
+                let write = RwLockUpgradableReadGuard::upgrade(upgradable);
+
+                assert_eq!(
+                    writer_finished.load(Ordering::SeqCst),
+                    0,
+                    "the waiting writer was granted the lock before the upgrade",
+                );
+                assert_eq!(*write, observed, "a writer was granted the lock during the upgrade");
+                drop(write);
+
+                writer.join().unwrap();
                 assert_eq!(*rwlock.read(), 1);
             },
             None,
