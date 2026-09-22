@@ -51,6 +51,22 @@ unsafe impl Send for ContinuationFunction {}
 pub enum ContinuationInput {
     Resume,
     Exit,
+    /// Capture a backtrace of the continuation's own (suspended) stack and immediately re-suspend,
+    /// without running any user code. Used to lazily collect backtraces for blocked tasks once we
+    /// know the execution has deadlocked, instead of eagerly on every block. See
+    /// [`BACKTRACE_CAPTURE_SLOT`].
+    CaptureBacktrace,
+}
+
+thread_local! {
+    /// Where a continuation deposits the backtrace it captured in response to
+    /// [`ContinuationInput::CaptureBacktrace`].
+    ///
+    /// A thread-local hand-off rather than a write to `Task::backtrace` because at deadlock time
+    /// `ExecutionState::current_task` is `ScheduledTask::Finished`, so the resumed continuation
+    /// cannot call `current_mut()` — it would panic. The driver moves the value into the right
+    /// `Task` after the resume returns, where it has the `TaskId` to hand.
+    pub static BACKTRACE_CAPTURE_SLOT: RefCell<Option<std::backtrace::Backtrace>> = const { RefCell::new(None) };
 }
 
 /// Outputs that a continuation can pass back to us
@@ -87,14 +103,22 @@ impl Continuation {
                 // Move the whole `ContinuationFunction`, not just its field (Rust 2021 thing)
                 let _ = &function;
 
-                loop {
+                'outer: loop {
                     // Tell the caller we've finished the previous user function (or if this is our
                     // first time around the loop, the caller below expects us to pretend we've
                     // finished the previous function).
-                    match yielder.suspend(ContinuationOutput::Finished(yielder as *const _)) {
-                        ContinuationInput::Exit => break,
-                        ContinuationInput::Resume => {}
-                    };
+                    loop {
+                        match yielder.suspend(ContinuationOutput::Finished(yielder as *const _)) {
+                            ContinuationInput::Exit => break 'outer,
+                            ContinuationInput::Resume => break,
+                            // There is no user code on this stack to capture — we're parked between
+                            // functions. Leave the slot empty and wait for the next input. Callers
+                            // are expected to filter these out via `is_suspended_in_user_code`, so
+                            // reaching this is a bug, but silently declining to capture is a much
+                            // better failure mode than panicking during deadlock reporting.
+                            ContinuationInput::CaptureBacktrace => {}
+                        }
+                    }
 
                     let f = function.0.take().expect("must have a function to run");
 
@@ -145,6 +169,40 @@ impl Continuation {
         );
 
         matches!(ret, ContinuationOutput::Finished(_))
+    }
+
+    /// Whether this continuation is suspended part-way through a user function, and so has user
+    /// frames on its stack that are worth capturing a backtrace of. False for a continuation that
+    /// is parked between functions (`NotReady`/`FinishedIteration`), has been handed a function it
+    /// has not started yet (`Initialized`), or has exited.
+    pub fn is_suspended_in_user_code(&self) -> bool {
+        self.state == ContinuationState::Ready
+    }
+
+    /// Resume the continuation solely so that it can capture a backtrace of its own suspended
+    /// stack, then immediately re-suspend. No user code runs.
+    ///
+    /// The captured backtrace is left in [`BACKTRACE_CAPTURE_SLOT`] for the caller to collect.
+    /// Returns false if the continuation declined to capture (i.e. it was not suspended in user
+    /// code after all).
+    ///
+    /// This is deliberately schedule-neutral: it re-enters the task at its `yielder.suspend` call
+    /// inside `switch`, which is *after* `record_tick` and `maybe_yield`, so it makes no scheduling
+    /// decision, records no annotation tick, and does not extend `CurrentSchedule`. That matters
+    /// because `persist_failure` dedups on `CurrentSchedule::len()`; growing the schedule here
+    /// would make the panic hook persist a second, mutated schedule that no longer replays.
+    pub fn capture_backtrace(&mut self) -> bool {
+        debug_assert!(
+            self.is_suspended_in_user_code(),
+            "only a continuation suspended inside user code has a stack worth capturing"
+        );
+        let ret = self.resume_with_input(ContinuationInput::CaptureBacktrace);
+        debug_assert_eq!(
+            ret,
+            ContinuationOutput::Yielded,
+            "a capture-only resume must leave the continuation suspended exactly where it was"
+        );
+        BACKTRACE_CAPTURE_SLOT.with(|slot| slot.borrow().is_some())
     }
 
     fn resume_with_input(&mut self, input: ContinuationInput) -> ContinuationOutput {
@@ -355,10 +413,24 @@ pub fn switch() {
         // SAFETY: A yielder reference will be valid for the lifetime of the continuation (see `corosensei::Coroutine::with_stack`)
         // The yielder field is stored on the Task, whose lifetime is necessarily subsumed by the lifetime of the continuation which contains it.
         // As a result, the task struct cannot contain an invalidated pointer to it's yielder. There are no mutable references to the yielder.
-        match unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded) {
-            ContinuationInput::Exit => panic!("unexpected exit continuation"),
-            ContinuationInput::Resume => {}
-        };
+        //
+        // The loop exists so that a `CaptureBacktrace` resume can walk this stack and hand control
+        // straight back, leaving the task suspended at this same point. Note we do not re-read
+        // `state.current()` after the first suspend: at deadlock time `current_task` is
+        // `ScheduledTask::Finished` and `current()` would panic, so we reuse the `yielder` bound
+        // above.
+        loop {
+            match unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded) {
+                ContinuationInput::Exit => panic!("unexpected exit continuation"),
+                ContinuationInput::Resume => break,
+                ContinuationInput::CaptureBacktrace => {
+                    // We are on the blocked task's own stack here, so this walks the frames that
+                    // actually blocked (`Mutex::lock` -> ... -> `switch`).
+                    BACKTRACE_CAPTURE_SLOT
+                        .with(|slot| *slot.borrow_mut() = Some(std::backtrace::Backtrace::force_capture()));
+                }
+            }
+        }
     }
 }
 
