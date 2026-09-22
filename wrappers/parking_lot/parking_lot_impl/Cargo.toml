@@ -1,6 +1,6 @@
 [package]
 name = "shuttle-parking_lot-impl"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "Apache-2.0"
 description = "Internal implementation of the `parking_lot` crate for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-parking_lot`."
@@ -21,6 +21,8 @@ deadlock_detection = []
 hardware-lock-elision = []
 
 [dependencies]
-shuttle = { path = "../../../shuttle", version = "<0.10"}
+# `RawRwLock` needs `BatchSemaphore::{upgrade, try_upgrade}`'s 0.9.4 semantics, and `try_upgrade`
+# does not exist before 0.9.4 at all.
+shuttle = { path = "../../../shuttle", version = ">=0.9.4, <0.10"}
 lock_api = "0.4"
 tracing = { version = "0.1.36", default-features = false, features = ["std"] }
