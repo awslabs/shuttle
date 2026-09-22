@@ -49,6 +49,32 @@ cargo test --release --doc --workspace    # doctests (nextest does not run these
 ```
 
 
+## Releasing
+
+The crates in this workspace are versioned independently. The wrapper crates mirror the version of the crate they wrap, so that a downstream crate can depend on the wrapper using the same version requirement it would have used for the real crate: `shuttle-tokio` is on 1.x because `tokio` is, `shuttle-parking_lot` tracks `parking_lot` 0.12.x, and so on. The internal `-impl`/`-inner` crates are on their own 0.1.x lines. A release is therefore never "bump everything to X" — it is "these crates changed, publish these crates".
+
+`scripts/publish.py` handles the bookkeeping. It compares every crate's local version against crates.io and publishes exactly the ones that aren't there yet, in dependency order. It publishes nothing when there is nothing to publish, so it is safe to re-run.
+
+```bash
+scripts/publish.py             # show what would be published, change nothing
+scripts/publish.py --dry-run   # package and verify it, without uploading
+scripts/publish.py --markdown  # preview the summary reviewers approve against
+scripts/publish.py --all       # ignore what's already published; for checking manifests
+```
+
+A release is driven by the version bump itself. There is no separate release command to run:
+
+1. Open a PR that bumps the versions of the crates you want to release and adds a `CHANGELOG.md` section for them. When a crate's version requirement on a sibling still matches the sibling's new version, the dependent doesn't need republishing — it picks the new version up on its own. Say so in the changelog entry, as the earlier `tokio wrappers` entries do.
+2. Merge it once CI is green. The `Publish dry run` job packages every crate and checks it against the rules crates.io enforces, so manifest problems surface here rather than halfway through a release.
+3. Merging triggers the **Publish** workflow. It works out which crates are now ahead of crates.io, builds each one from its packaged tarball to prove it can be published, and writes the list to the run summary.
+4. The workflow then waits for approval on the `crates-io` environment, and GitHub notifies its reviewers. Approve the deployment and exactly the crates in that list are published, in dependency order.
+
+Nothing is requested when no version was bumped, so ordinary commits to `main` don't ask anyone to approve anything.
+
+A published version can never be replaced or removed. That approval gate is the only thing standing in front of an irreversible action, so it needs required reviewers configured on the `crates-io` environment under **Settings → Environments** — without them GitHub approves automatically and uploads proceed unattended. If a release fails partway through, re-running is safe: the workflow re-reads crates.io and publishes only what is still missing.
+
+Publishing authenticates with [crates.io trusted publishing](https://crates.io/docs/trusted-publishing) rather than a stored API token. Each crate needs a Trusted Publisher configured once on its crates.io page, pointing at this repository, `publish.yml`, and the `crates-io` environment. A crate published for the first time needs that done before it can go out.
+
 ## Finding contributions to work on
 Looking at the existing issues is a great way to find something to contribute on. As our projects, by default, use the default GitHub issue labels (enhancement/bug/duplicate/help wanted/invalid/question/wontfix), looking at any 'help wanted' issues is a great place to start.
 
