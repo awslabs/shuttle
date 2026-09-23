@@ -33,25 +33,20 @@ pub fn context_switches() -> usize {
     ExecutionState::context_switches()
 }
 
-/// Get the current thread's vector clock.
+/// Get the current thread's vector clock, or an empty clock if there is no current task.
 ///
-/// Returns an empty clock when there is no current task. That happens when this is reached from
-/// outside a scheduled task -- most importantly from a `Drop` handler running while an execution is
-/// being torn down, where `ExecutionState::current_task` is `Stopped` or `Finished`. Panicking there
-/// is not recoverable: the panic originates inside a destructor, so Rust escalates it to a
-/// non-unwinding abort that kills the process and discards the failure report the user was about to
-/// get. There is no causality to record for an operation that belongs to no task, so an empty clock
-/// is the honest answer.
-///
-/// This is reachable from ordinary user code: every `BatchSemaphore` operation calls this, so any
-/// `Drop` that touches a modelled `Mutex`, `RwLock` or semaphore during teardown lands here.
+/// Every `BatchSemaphore` operation calls this, so a `Drop` handler that touches a modelled
+/// primitive during execution teardown reaches it with `ExecutionState` unavailable or no task
+/// scheduled. Panicking there happens inside a destructor, which aborts the process instead of
+/// reporting the failure under investigation.
 pub fn clock() -> VectorClock {
-    ExecutionState::with(|state| {
-        match state.try_current() {
-            Some(me) => state.get_clock(me.id()).clone(),
-            None => VectorClock::new(),
-        }
+    ExecutionState::try_with(|state| {
+        let id = state.try_current().map(|me| me.id());
+        id.map(|id| state.get_clock(id).clone())
     })
+    .ok()
+    .flatten()
+    .unwrap_or_else(VectorClock::new)
 }
 
 /// Gets the clock for the thread with the given task ID
