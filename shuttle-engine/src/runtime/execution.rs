@@ -210,40 +210,45 @@ impl Execution {
         // 3) storing `top_level_span` as a stack
         // should be tried.)
         ExecutionState::with(|state| {
-            tracing::dispatcher::get_default(|subscriber| {
-                if let Some(span_id) = tracing::Span::current().id().as_ref() {
-                    subscriber.exit(span_id);
-                }
+            // Go through `Span::with_subscriber` rather than calling `Span::current()` inside
+            // `tracing::dispatcher::get_default`; see `exit_task_span` for why.
+            tracing::Span::current().with_subscriber(|(id, subscriber)| subscriber.exit(id));
 
-                // The `span_stack` stores `Span`s such that the top of the stack is the outermost `Span`,
-                // meaning that parents (left-most when printed) are entered first.
-                while let Some(span) = state.current_mut().span_stack.pop() {
-                    if let Some(span_id) = span.id().as_ref() {
-                        subscriber.enter(span_id)
-                    }
-                }
+            // The `span_stack` stores `Span`s such that the top of the stack is the outermost `Span`,
+            // meaning that parents (left-most when printed) are entered first.
+            while let Some(span) = state.current_mut().span_stack.pop() {
+                span.with_subscriber(|(id, subscriber)| subscriber.enter(id));
+            }
 
-                if state.config.record_steps_in_span {
-                    state.current().step_span.record("i", CurrentSchedule::len());
-                }
-            });
+            if state.config.record_steps_in_span {
+                state.current().step_span.record("i", CurrentSchedule::len());
+            }
         });
     }
 
     fn exit_task_span() {
         // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
         ExecutionState::with(|state| {
-            tracing::dispatcher::get_default(|subscriber| {
-                debug_assert!(state.current().span_stack.is_empty());
-                while let Some(span_id) = tracing::Span::current().id().as_ref() {
-                    state.current_mut().span_stack.push(tracing::Span::current().clone());
-                    subscriber.exit(span_id);
-                }
+            debug_assert!(state.current().span_stack.is_empty());
+            // Note that `Span::current()` must not be called from inside a
+            // `tracing::dispatcher::get_default` callback: `get_default` marks the thread's
+            // dispatcher state as in use for the duration of the callback, and while any thread in
+            // the process holds a scoped default subscriber, a nested `Span::current()` then
+            // returns `Span::none()`. This loop would then exit nothing while we still enter
+            // `top_level_span` below, leaking one entry per scheduling step until a later
+            // `Span::current()` resolved to a closed span and panicked. So each exit goes through
+            // `Span::with_subscriber`, which hands us the span's own dispatcher directly.
+            loop {
+                let current = tracing::Span::current();
+                let Some(()) = current.with_subscriber(|(id, subscriber)| subscriber.exit(id)) else {
+                    break;
+                };
+                state.current_mut().span_stack.push(current);
+            }
 
-                if let Some(span_id) = state.top_level_span.id().as_ref() {
-                    subscriber.enter(span_id)
-                }
-            });
+            state
+                .top_level_span
+                .with_subscriber(|(id, subscriber)| subscriber.enter(id));
         });
     }
 
