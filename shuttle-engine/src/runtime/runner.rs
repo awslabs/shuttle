@@ -34,15 +34,17 @@ impl ResetSpanOnDrop {
 
 impl Drop for ResetSpanOnDrop {
     // Exits all current spans, then enters the span which was entered when `self` was constructed.
+    //
+    // This goes through `Span::with_subscriber` rather than calling `Span::current()` inside
+    // `tracing::dispatcher::get_default`: while another thread holds a scoped default subscriber, a
+    // `Span::current()` nested in `get_default` returns `Span::none()`, so the loop below would
+    // silently exit nothing (see `Execution::exit_task_span`).
     fn drop(&mut self) {
-        tracing::dispatcher::get_default(|subscriber| {
-            while let Some(span_id) = tracing::Span::current().id().as_ref() {
-                subscriber.exit(span_id);
-            }
-            if let Some(span_id) = self.span.id().as_ref() {
-                subscriber.enter(span_id);
-            }
-        });
+        while tracing::Span::current()
+            .with_subscriber(|(id, subscriber)| subscriber.exit(id))
+            .is_some()
+        {}
+        self.span.with_subscriber(|(id, subscriber)| subscriber.enter(id));
     }
 }
 
