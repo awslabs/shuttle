@@ -255,6 +255,37 @@ impl PartialEq for TaskSignature {
 
 impl Eq for TaskSignature {}
 
+/// A task's default `tracing` dispatcher, parked while the task is switched out (see
+/// `Execution::park_task_default`).
+#[derive(Debug)]
+pub(crate) struct ParkedDefault(Option<tracing::dispatcher::DefaultGuard>);
+
+impl ParkedDefault {
+    pub(crate) fn new(guard: tracing::dispatcher::DefaultGuard) -> Self {
+        Self(Some(guard))
+    }
+
+    /// Reinstates the task's default dispatcher.
+    pub(crate) fn reinstate(mut self) {
+        drop(self.0.take());
+    }
+}
+
+impl Drop for ParkedDefault {
+    // Only reached when the task is torn down while switched out. Reinstating the task's default then
+    // lets the guards on its stack restore their priors in order as the stack unwinds, which leaves
+    // the execution's default in place. A stack that is leaked instead of unwound (see
+    // `Continuation::drop`) would leave the task's default installed for good, so in that case keep
+    // the execution's default, and leak the guard along with the stack.
+    fn drop(&mut self) {
+        if let Some(guard) = self.0.take() {
+            if std::thread::panicking() || ExecutionState::execution_stopped() {
+                std::mem::forget(guard);
+            }
+        }
+    }
+}
+
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
 /// the execution, and a `state` reflecting whether the task is runnable (enabled) or not.
 #[derive(Debug)]
@@ -264,6 +295,10 @@ pub struct Task {
     pub(super) state: TaskState,
     pub(super) detached: bool,
     park_state: ParkState,
+
+    // The task's default `tracing` dispatcher while the task is switched out. Declared before
+    // `continuation`, so that it is dropped before the task's stack is (see `ParkedDefault`).
+    pub(super) parked_default: Option<ParkedDefault>,
 
     pub(super) continuation: Rc<RefCell<PooledContinuation>>,
     pub(super) yielder: *const Yielder<ContinuationInput, ContinuationOutput>,
@@ -345,6 +380,7 @@ impl Task {
             id,
             parent_task_id,
             state: TaskState::Runnable,
+            parked_default: None,
             continuation,
             yielder,
             clock,

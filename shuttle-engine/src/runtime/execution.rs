@@ -2,7 +2,7 @@ use crate::runtime::failure::{init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
-use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{ChildLabelFn, ParkedDefault, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
@@ -251,6 +251,34 @@ impl Execution {
         });
     }
 
+    /// Saves the running task's default `tracing` dispatcher and reinstates the execution's.
+    ///
+    /// `tracing`'s default dispatcher is per OS thread, and every task runs on this one. Without
+    /// this, a task that yields inside `tracing::subscriber::with_default` would leave its dispatcher
+    /// installed for the scheduler and every other task, and `exit_task_span` would look for the
+    /// task's spans in that dispatcher instead of the one they were entered in.
+    fn park_task_default(yielded: bool) {
+        // A task can only have a default of its own through a scoped default. While no thread has
+        // one, everything uses the global default and there is nothing to park; installing a guard
+        // anyway would put `tracing` on its slower scoped path for the whole process.
+        if !yielded || !scoped_default_exists() {
+            return;
+        }
+        let dispatch = ExecutionState::with(|state| state.top_level_dispatch.clone());
+        // The guard remembers the task's current default, and `restore_task_default` drops it to
+        // reinstate exactly that.
+        let guard = tracing::dispatcher::set_default(&dispatch);
+        ExecutionState::with(|state| state.current_mut().parked_default = Some(ParkedDefault::new(guard)));
+    }
+
+    /// Reinstates the default dispatcher the task had when it last switched out.
+    fn restore_task_default() {
+        // Reinstated outside `ExecutionState::with`, as that can drop a dispatcher.
+        if let Some(parked) = ExecutionState::with(|state| state.current_mut().parked_default.take()) {
+            parked.reinstate();
+        }
+    }
+
     /// Run the execution to completion.
     #[inline]
     fn run_to_completion(&mut self, immediately_return_on_panic: bool) -> Result<(), StepError> {
@@ -283,9 +311,11 @@ impl Execution {
             let ret = match next_step {
                 Some(continuation) => {
                     Execution::enter_task_span();
+                    Execution::restore_task_default();
 
                     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
 
+                    Execution::park_task_default(matches!(result, Ok(false)));
                     Execution::exit_task_span();
 
                     result
@@ -346,6 +376,10 @@ pub struct ExecutionState {
 
     // The `Span` which the `ExecutionState` was created under. Will be the parent of all `Task` `Span`s
     pub top_level_span: Span,
+
+    // The default `tracing` dispatcher the `ExecutionState` was created under. Tasks start out with it,
+    // and it is reinstated whenever a task with a different default switches out.
+    top_level_dispatch: tracing::Dispatch,
 
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
@@ -417,6 +451,7 @@ impl ExecutionState {
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
+            top_level_dispatch: tracing::dispatcher::get_default(|dispatch| dispatch.clone()),
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
             live_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
         }
@@ -687,6 +722,8 @@ impl ExecutionState {
                 final_state == ScheduledTask::Stopped || task.finished() || task.detached,
                 "execution finished but task is not"
             );
+            // The parked default has to go before the task's stack does (see `ParkedDefault`).
+            drop(task.parked_default);
             Rc::try_unwrap(task.continuation)
                 .map_err(|_| ())
                 .expect("couldn't cleanup a future");
@@ -1056,4 +1093,13 @@ impl Drop for ExecutionState {
     fn drop(&mut self) {
         assert!(self.has_cleaned_up || std::thread::panicking());
     }
+}
+
+/// Whether any thread in the process currently has a scoped default dispatcher.
+fn scoped_default_exists() -> bool {
+    // `get_default` only hands nested calls `Dispatch::none()` when some thread has a scoped default;
+    // otherwise it gives them the global default. This is only called outside `get_default`.
+    tracing::dispatcher::get_default(|_| {
+        tracing::dispatcher::get_default(|nested| nested.is::<tracing::subscriber::NoSubscriber>())
+    })
 }
