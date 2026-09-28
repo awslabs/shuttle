@@ -1121,8 +1121,9 @@ fn task_may_have_own_default(state: &ExecutionState) -> bool {
     tracing::dispatcher::get_default(|current| {
         if let Some(global) = state.top_level_dispatch_global_ptr {
             // `get_default` hands out the global default from where it lives, and anything else from
-            // this thread's scoped default, which a task can only have installed itself. If
-            // `tracing` ever handed out the global default from elsewhere, this would just park.
+            // this thread's scoped default. So if it hands out the global default, the task has no
+            // default of its own. Parking otherwise is sometimes unnecessary but always safe,
+            // including if `tracing` ever handed out the global default from elsewhere.
             !std::ptr::eq(current, global)
         } else if current.is::<NoSubscriber>() {
             // Nothing is recorded either way if the execution's default is `Dispatch::none()` too.
