@@ -238,11 +238,10 @@ impl Execution {
             // `top_level_span` below, leaking one entry per scheduling step until a later
             // `Span::current()` resolved to a closed span and panicked. So each exit goes through
             // `Span::with_subscriber`, which hands us the span's own dispatcher directly.
-            loop {
-                let current = tracing::Span::current();
-                let Some(()) = current.with_subscriber(|(id, subscriber)| subscriber.exit(id)) else {
-                    break;
-                };
+            // `Span::current()` returns a disabled span once no span is entered, and a disabled span
+            // is exactly one `with_subscriber` does nothing for, so every iteration exits a span.
+            while let Some(current) = Some(tracing::Span::current()).filter(|span| !span.is_disabled()) {
+                current.with_subscriber(|(id, subscriber)| subscriber.exit(id));
                 state.current_mut().span_stack.push(current);
             }
 

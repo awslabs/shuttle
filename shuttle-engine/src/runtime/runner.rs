@@ -40,10 +40,9 @@ impl Drop for ResetSpanOnDrop {
     // `Span::current()` nested in `get_default` returns `Span::none()`, so the loop below would
     // silently exit nothing (see `Execution::exit_task_span`).
     fn drop(&mut self) {
-        while tracing::Span::current()
-            .with_subscriber(|(id, subscriber)| subscriber.exit(id))
-            .is_some()
-        {}
+        while let Some(current) = Some(tracing::Span::current()).filter(|span| !span.is_disabled()) {
+            current.with_subscriber(|(id, subscriber)| subscriber.exit(id));
+        }
         self.span.with_subscriber(|(id, subscriber)| subscriber.enter(id));
     }
 }
