@@ -669,10 +669,12 @@ impl Task {
             self.id(),
             if self.detached { ", detached" } else { "" },
             if self.sleeping() { ", pending future" } else { "" },
-            if backtrace_enabled() {
-                format!("\nBacktrace:\n{:#?}\n", self.backtrace)
-            } else {
-                "".into()
+            match (backtrace_enabled(), &self.backtrace) {
+                // `Display` prints the numbered `N: function` / `at file:line:col` layout that panics
+                // use under `RUST_BACKTRACE=1`, and ends each frame with a newline.
+                (true, Some(backtrace)) => format!("\nBacktrace:\n{backtrace}"),
+                (true, None) => "\nBacktrace: <not captured>\n".into(),
+                (false, _) => "".into(),
             }
         )
     }
