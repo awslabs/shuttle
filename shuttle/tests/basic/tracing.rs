@@ -347,6 +347,49 @@ fn default_dispatcher_is_per_task() {
     );
 }
 
+/// Like `default_dispatcher_is_per_task`, but with the execution running under the global default
+/// (installed by `test_log`) rather than a scoped one, which Shuttle checks for differently.
+#[test]
+fn default_dispatcher_is_per_task_under_global_default() {
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    const ITERATIONS: usize = 50;
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let task_default = tracing::Dispatch::new(tracing_subscriber::registry().with(RecordEvents(Arc::clone(&events))));
+
+    check_random(
+        move || {
+            let task_default = task_default.clone();
+            let t = thread::spawn(move || {
+                tracing::dispatcher::with_default(&task_default, || {
+                    for _ in 0..3 {
+                        thread::yield_now();
+                        warn!("task");
+                    }
+                })
+            });
+            for _ in 0..3 {
+                warn!("main");
+                thread::yield_now();
+            }
+            t.join().unwrap();
+        },
+        ITERATIONS,
+    );
+
+    let events = std::mem::take(&mut *events.lock().unwrap());
+    assert!(
+        events.iter().all(|(message, _)| message != "main"),
+        "an event from the main task went to the other task's default"
+    );
+    assert_eq!(
+        events.iter().filter(|(message, _)| message == "task").count(),
+        3 * ITERATIONS,
+        "the task's own default was not reinstated after it switched back in"
+    );
+}
+
 /// Spawns a task that yields forever inside `with_default(other)`, and returns once it is inside.
 fn spawn_task_yielding_inside_with_default(other: tracing::Dispatch) {
     use shuttle::sync::atomic::{AtomicBool, Ordering};
