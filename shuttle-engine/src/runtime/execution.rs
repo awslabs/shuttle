@@ -401,7 +401,8 @@ pub struct ExecutionState {
     //
     // `tasks` never shrinks, so it accumulates every task ever created by the execution. Scanning it
     // on every scheduling decision therefore costs O(tasks ever created), even though only the
-    // unfinished ones can ever be scheduled. This set lets `schedule` iterate just the live tasks.
+    // unfinished ones can ever be scheduled. This set lets `schedule` (and
+    // `exit_current_truncates_execution`) iterate just the live tasks.
     //
     // invariant: contains exactly the ids of the tasks in `tasks` that are not `Finished`, in
     // ascending order. Maintained by pushing on task creation (ids are handed out sequentially, so
@@ -545,17 +546,21 @@ impl ExecutionState {
             return false;
         }
 
+        // Only unfinished tasks matter here, so look at `live_tasks` rather than every task the
+        // execution has ever created: this runs every time a thread exits.
         let mut single_unfinished_attached = false;
         let mut has_unfinished_detached = false;
-        for t in self.tasks.iter() {
-            let unfinished_attached = !t.finished() && !t.detached;
+        for &task_id in &self.live_tasks {
+            let t = &self.tasks[task_id.0];
+            debug_assert!(!t.finished());
+            let unfinished_attached = !t.detached;
             if single_unfinished_attached && unfinished_attached {
                 // there are more than one unfinished attached tasks, so one exiting won't truncate
                 return false;
             }
 
             single_unfinished_attached |= unfinished_attached;
-            has_unfinished_detached |= !t.finished() && t.detached;
+            has_unfinished_detached |= t.detached;
         }
         has_unfinished_detached && single_unfinished_attached
     }
