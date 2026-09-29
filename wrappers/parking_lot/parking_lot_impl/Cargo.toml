@@ -26,3 +26,11 @@ hardware-lock-elision = []
 shuttle = { path = "../../../shuttle", version = ">=0.9.4, <0.10"}
 lock_api = "0.4"
 tracing = { version = "0.1.36", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# `tests/rwlock_reference_model.rs` checks the parity tests' reference model against the real
+# `parking_lot`. The model copies 0.12.5. `Cargo.lock` is not tracked, so each CI run uses the newest
+# 0.12.x release, and a release that changes the behavior that the model copies fails the test, also
+# on an unrelated PR. The failure message gives this cause. The weekly `beta` job in
+# `.github/workflows/crons.yml` also runs the test, and opens an issue when it fails.
+parking_lot = "0.12.5"
