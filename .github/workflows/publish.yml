@@ -1,0 +1,115 @@
+name: Publish
+
+# Releases are driven by version bumps, not by this workflow. Bump a crate's
+# version in a PR, and when that PR lands here this workflow works out what is
+# publishable, verifies it, and asks the maintainers to approve the upload.
+#
+#   1. Bump versions and update CHANGELOG.md in a PR. The `publish-dry-run` job
+#      in tests.yml checks the manifests while it is still a PR.
+#   2. Merge it. This workflow packages every crate whose version is not on
+#      crates.io yet, builds each one from its packaged tarball, and writes the
+#      list to the run summary.
+#   3. It then waits on the `crates-io` environment. Approve the deployment and
+#      exactly the crates in that list are published.
+#
+# Nothing is requested when no version was bumped: the publish job is skipped
+# and no one is asked to approve anything.
+#
+# Uploads are permanent, so the approval gate is the point. It only works if the
+# `crates-io` environment has required reviewers configured, under
+# Settings -> Environments. Without them GitHub auto-approves and the upload
+# proceeds unattended.
+on:
+  push:
+    branches: [main]
+    # A publish is impossible without a version change, and a version lives in a
+    # Cargo.toml, so this misses nothing. Use the manual trigger to retry a
+    # release whose original commit has already been through here.
+    paths:
+      - "**/Cargo.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+# Two runs publishing at once would race on the same versions.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  # Unauthenticated and ungated: works out what would be published and proves it
+  # can be, so the approval decision is made against a verified plan rather than
+  # a guess.
+  plan:
+    name: Plan the release
+    runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update stable
+
+      - name: Work out what to publish
+        id: plan
+        run: |
+          python3 scripts/publish.py --markdown >> "$GITHUB_STEP_SUMMARY"
+          count=$(python3 scripts/publish.py --json \
+            | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["publish"]))')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "$count crate(s) to publish"
+
+      # Skipped on an ordinary main push, so this only costs a full build when a
+      # release is actually pending.
+      - name: Package and verify
+        if: steps.plan.outputs.count != '0'
+        run: python3 scripts/publish.py --dry-run
+
+  publish:
+    name: Publish to crates.io
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    runs-on: ubuntu-latest
+    # The approval gate. GitHub holds the job here and notifies this
+    # environment's reviewers; the run summary from `plan` is the list they are
+    # approving.
+    environment: crates-io
+    permissions:
+      contents: read
+      # Lets GitHub mint the OIDC token that crates.io exchanges for a
+      # short-lived publish token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update stable
+
+      # Trusted publishing: crates.io issues a token scoped to this repository
+      # and workflow, valid for this job only and revoked when it ends. Each
+      # crate needs a Trusted Publisher configured once, under Settings ->
+      # Trusted Publishing on its crates.io page, pointing at this repository,
+      # `publish.yml`, and the `crates-io` environment.
+      #
+      # To use a long-lived API token instead, drop this step and set
+      # CARGO_REGISTRY_TOKEN from `secrets.CARGO_REGISTRY_TOKEN` below. Trusted
+      # publishing is preferred: there is no secret to leak or rotate.
+      - name: Authenticate to crates.io
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      # Re-reads crates.io rather than trusting the plan job, so anything that
+      # went out in the meantime drops off and a re-run after a partial failure
+      # publishes only what is still missing.
+      - name: Publish
+        run: python3 scripts/publish.py --execute
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: Record what went out
+        if: always()
+        run: python3 scripts/publish.py --markdown >> "$GITHUB_STEP_SUMMARY"
