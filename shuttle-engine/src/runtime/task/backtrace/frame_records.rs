@@ -1,24 +1,36 @@
-//! Frame-pointer backtraces for Apple arm64.
+//! Frame-pointer backtraces for arm64 and x86_64, on macOS and Linux.
 //!
-//! Apple's arm64 ABI requires `x29` to always point at a valid *frame record*: two words holding the
-//! caller's `x29` and the return address. Every function that makes a call pushes one, so the
-//! records form a linked list from the innermost frame outwards, and a backtrace is two loads per
-//! frame. Symbolizing the return addresses is the expensive part, and waits until the backtrace is
-//! printed.
+//! A function that keeps a frame pointer stores a *frame record* on the stack: two words holding
+//! its caller's frame pointer and its own return address, with the frame pointer register (`x29`
+//! or `rbp`) pointing at it. The records form a linked list from the innermost frame outwards, so a
+//! backtrace is two loads per frame. Symbolizing the return addresses is the expensive part, and
+//! waits until the backtrace is printed.
+//!
+//! Whether every frame keeps a record depends on the build. Apple's ABIs require it, and Rust keeps
+//! them by default on arm64 Linux, but x86_64 Linux omits them unless built with
+//! `-C force-frame-pointers=yes`. A frame without a record either breaks the chain or silently drops
+//! out of it, so the first walk in a process is checked against a DWARF unwind of the same stack,
+//! and if they disagree we use std's backtrace for the rest of the process.
 //!
 //! What a frame-pointer walk must never do is read an address that is not mapped. A general-purpose
 //! unwinder cannot know where the stack ends, so it has to guess or catch the fault. We know:
 //! Shuttle allocated the task's stack, so we only read records that lie between the current stack
 //! pointer and the stack's base, which is live, mapped memory. A link that leaves that range, or
-//! does not move outwards, ends the walk.
+//! does not move outwards, ends the walk, and a walk that ends anywhere but the root record at the
+//! base of the stack is discarded.
 
 use super::StackBounds;
+use crate::runtime::execution::ExecutionState;
 use ::backtrace::{BacktraceFmt, BytesOrWideString, PrintFmt};
+use owo_colors::OwoColorize;
 use std::arch::asm;
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::fmt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
+
+const WORD: usize = std::mem::size_of::<usize>();
 
 thread_local! {
     /// The task stack this thread is running on, if any. See [`OnStack`].
@@ -56,69 +68,92 @@ impl Drop for OnStack {
     }
 }
 
+/// Whether frame-pointer walks can be trusted in this process. It only ever increases, so that
+/// once one check has failed, no later one can bring the walks back.
+static TRUST: AtomicU8 = AtomicU8::new(UNCHECKED);
+/// No walk has reached a verdict yet.
+const UNCHECKED: u8 = 0;
+/// The first walk agreed with a DWARF unwind of the same stack.
+const TRUSTED: u8 = 1;
+/// The first walk did not, so this build omits frame pointers, at least in places.
+const DISTRUSTED: u8 = 2;
+
 /// Return addresses from a walk of a task stack, innermost first. Symbolized when printed.
 pub(super) struct Frames(Vec<usize>);
 
-/// Walk the current task stack, starting at the caller of the function this is inlined into, whose
-/// own frame is skipped. `None` if we are not on a task stack.
+/// Walk the current task stack, starting with the return address of the function this is inlined
+/// into. `None` if we are not on a task stack, or cannot trust the walk.
 #[inline(always)]
 pub(super) fn capture() -> Option<Frames> {
-    // Read the bounds here rather than in `walk`: on macOS a thread-local access is a call, and
-    // `walk` must not make a call before it has read its return address out of `x30`.
     let stack = CURRENT_STACK.get()?;
-    walk(stack).map(Frames)
+    let trust = TRUST.load(Ordering::Relaxed);
+    if trust == DISTRUSTED {
+        return None;
+    }
+    match walk(stack, trust == UNCHECKED) {
+        Walk::OffStack => None,
+        Walk::Complete(frames) => {
+            if trust == UNCHECKED {
+                TRUST.fetch_max(TRUSTED, Ordering::Relaxed);
+            }
+            Some(Frames(frames))
+        }
+        // After the first walk, a broken one is a one-off, like a frame from C code, so it only
+        // costs this backtrace.
+        Walk::Broken | Walk::Disagrees => {
+            if trust == UNCHECKED {
+                distrust();
+            }
+            None
+        }
+    }
 }
 
-/// The return address of each frame on the current stack, innermost first, starting with the one
-/// our caller returns to: our caller's own frame is skipped. `None` if the current stack is not
-/// `stack` after all, e.g. because user code switched to a stack of its own.
+/// How a walk of the current stack ended.
+enum Walk {
+    /// The stack pointer is not on the task's stack: we are on the executor's, or user code
+    /// switched to a stack of its own.
+    OffStack,
+    /// The chain of records broke before it reached the root: some frame on the stack keeps no
+    /// record, or uses the frame pointer register for something else.
+    Broken,
+    /// The chain reached the root, but a DWARF unwind of the same stack found different frames.
+    Disagrees,
+    /// The chain reached the root, and these are its return addresses, innermost first.
+    Complete(Vec<usize>),
+}
+
+/// Walk the current stack's frame records, starting with our caller's return address, and, if
+/// `check`, compare the result against a DWARF unwind.
 #[inline(never)]
-fn walk(stack: StackBounds) -> Option<Vec<usize>> {
-    let (fp, lr, sp): (usize, usize, usize);
-    // SAFETY: copies three registers and touches nothing else. It has to come first, because `x30`
-    // only holds our return address until we make a call.
-    unsafe {
-        asm!(
-            "mov {fp}, x29",
-            "mov {lr}, x30",
-            "mov {sp}, sp",
-            fp = out(reg) fp,
-            lr = out(reg) lr,
-            sp = out(reg) sp,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
+fn walk(stack: StackBounds, check: bool) -> Walk {
+    // Our own frame record need not exist before we make a call: the compiler can move our prologue
+    // past code that does not use the stack. The allocation is a call, so read the registers after
+    // it.
+    let mut frames = Vec::with_capacity(32);
+    let (fp, sp) = frame_and_stack_pointers(frames.as_ptr());
 
     // Everything from the stack pointer up to the stack's base is live, mapped memory, so a frame
     // record that lies entirely within that range is safe to read. Nothing else is.
     if !(stack.limit < sp && sp < stack.base) {
-        return None;
+        return Walk::OffStack;
     }
     let readable = |record: usize| {
-        let in_range = record >= sp && record.checked_add(16).is_some_and(|end| end <= stack.base);
-        in_range && record.is_multiple_of(8)
+        let in_range = record >= sp && record.checked_add(2 * WORD).is_some_and(|end| end <= stack.base);
+        in_range && (record & (WORD - 1)) == 0
     };
     if !readable(fp) {
-        return None;
+        return Walk::Broken;
     }
 
-    // `x29` is our own frame record, unless the compiler shrink-wrapped our prologue past the
-    // `asm!` above, in which case it is already our caller's. Ours is the one that returns to `lr`.
-    // Either way, start from our caller's, which returns to the first frame we want.
+    // Skip our own record, which returns into our caller, and start from our caller's.
     // SAFETY: `fp` is readable.
-    let mut record = if unsafe { read(fp + 8) } == lr {
-        unsafe { read(fp) }
-    } else {
-        fp
-    };
-
-    let mut frames = Vec::with_capacity(32);
+    let mut record = unsafe { read(fp) };
     while readable(record) {
         // SAFETY: `record` is readable.
-        let (next, return_address) = unsafe { (read(record), read(record + 8)) };
-        // Only a record that links to an outer one holds a return address. The one at the root of
-        // the chain is corosensei's parent link at the base of the stack, whose second word is the
-        // coroutine's entry point.
+        let (next, return_address) = unsafe { (read(record), read(record + WORD)) };
+        // Only a record that links to an outer one holds a return address. The root's second word
+        // is the coroutine's entry point.
         if next <= record || !readable(next) {
             break;
         }
@@ -126,14 +161,87 @@ fn walk(stack: StackBounds) -> Option<Vec<usize>> {
         record = next;
     }
 
-    (!frames.is_empty()).then_some(frames)
+    if record != stack.root || frames.is_empty() {
+        Walk::Broken
+    } else if check && !agrees_with_dwarf(&frames) {
+        Walk::Disagrees
+    } else {
+        Walk::Complete(frames)
+    }
+}
+
+/// Whether `frames`, from a walk further up this stack, are a run of the frames a DWARF unwind finds.
+///
+/// A frame without a record does not always break the chain of records: if it leaves the frame
+/// pointer register alone, its callee links straight to its caller's record, and the frame drops
+/// out of the walk without a trace. Only an unwinder that does not rely on frame records can tell.
+/// Checking once per process is enough, because which frames keep records is a property of the
+/// build.
+#[cold]
+#[inline(never)]
+fn agrees_with_dwarf(frames: &[usize]) -> bool {
+    let mut unwound = Vec::new();
+    ::backtrace::trace(|frame| {
+        unwound.push(frame.ip() as usize);
+        true
+    });
+    // The unwinder starts in here, reaches the frame the walk started at a few frames later, and
+    // carries on past the base of the task stack.
+    unwound.windows(frames.len()).any(|window| window == frames)
+}
+
+/// Stop walking frame pointers in this process, and say why, once.
+#[cold]
+fn distrust() {
+    if TRUST.fetch_max(DISTRUSTED, Ordering::Relaxed) == DISTRUSTED {
+        return;
+    }
+    // Only `try_with`: we may be capturing from inside a borrow of the execution state.
+    let silenced =
+        crate::silence_warnings() || ExecutionState::try_with(|state| state.config.silence_warnings).unwrap_or(false);
+    if !silenced {
+        eprintln!(
+            "{}: {} is set, but this build does not keep a frame pointer in every frame, so Shuttle \
+            captures backtraces with std::backtrace instead, which is much slower. Build with \
+            RUSTFLAGS=\"-C force-frame-pointers=yes\" to make capturing them fast.",
+            "WARNING".yellow(),
+            crate::CAPTURE_BACKTRACE,
+        );
+    }
+}
+
+/// The frame pointer and the stack pointer. `after` is not used, except to keep the compiler from
+/// reading them before whatever produced it.
+#[inline(always)]
+fn frame_and_stack_pointers<T>(after: *const T) -> (usize, usize) {
+    let (fp, sp): (usize, usize);
+    // SAFETY: copies two registers and touches nothing else.
+    unsafe {
+        #[cfg(target_arch = "aarch64")]
+        asm!(
+            "mov {fp}, x29",
+            "mov {sp}, sp",
+            fp = inout(reg) after as usize => fp,
+            sp = out(reg) sp,
+            options(nomem, nostack, preserves_flags),
+        );
+        #[cfg(target_arch = "x86_64")]
+        asm!(
+            "mov {fp}, rbp",
+            "mov {sp}, rsp",
+            fp = inout(reg) after as usize => fp,
+            sp = out(reg) sp,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    (fp, sp)
 }
 
 /// Read the word at `addr`.
 ///
 /// # Safety
 ///
-/// `addr` must be 8-byte aligned and mapped.
+/// `addr` must be word-aligned and mapped.
 #[inline(always)]
 unsafe fn read(addr: usize) -> usize {
     // Volatile because these are other functions' frames, whose contents the compiler knows nothing
@@ -143,6 +251,7 @@ unsafe fn read(addr: usize) -> usize {
 
 /// Strip any pointer authentication code from a return address. Rust code on arm64 does not sign
 /// return addresses, but system code built for arm64e does.
+#[cfg(target_arch = "aarch64")]
 #[inline(always)]
 fn strip_pac(mut address: usize) -> usize {
     // SAFETY: `xpaclri` only rewrites `x30`. It is spelled `hint #7` so that it assembles without
@@ -150,6 +259,13 @@ fn strip_pac(mut address: usize) -> usize {
     unsafe {
         asm!("hint #7", inout("x30") address, options(nomem, nostack, preserves_flags));
     }
+    address
+}
+
+/// x86_64 has no pointer authentication.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn strip_pac(address: usize) -> usize {
     address
 }
 
@@ -257,6 +373,14 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    /// Whether this build keeps a frame pointer in every frame. Apple's ABIs require it, and Rust
+    /// does it by default on arm64 Linux. On x86_64 Linux it takes `-C force-frame-pointers`, which
+    /// we can only see if it came from `RUSTFLAGS`.
+    fn frame_pointers_expected() -> bool {
+        cfg!(any(target_vendor = "apple", target_arch = "aarch64"))
+            || option_env!("RUSTFLAGS").is_some_and(|flags| flags.contains("force-frame-pointers"))
+    }
+
     /// Run `f` on a task stack, the way Shuttle runs a task, and return its result.
     fn on_task_stack<T: 'static>(f: impl FnOnce() -> T + 'static) -> T {
         let result = Rc::new(RefCell::new(None));
@@ -268,10 +392,14 @@ mod tests {
         result.expect("the function should have stored its result")
     }
 
-    /// Walk the stack and unwind it with DWARF, from the same frame.
+    fn current_stack() -> StackBounds {
+        CURRENT_STACK.get().expect("should be running on a task stack")
+    }
+
+    /// Walk the stack, without checking the walk, and unwind it with DWARF, from the same function.
     #[inline(never)]
-    fn walk_and_unwind() -> (Vec<usize>, Vec<usize>) {
-        let walked = capture().expect("a task stack can be walked").0;
+    fn walk_and_unwind() -> (Walk, Vec<usize>) {
+        let walked = walk(current_stack(), false);
         let mut unwound = Vec::new();
         ::backtrace::trace(|frame| {
             unwound.push(frame.ip() as usize);
@@ -280,27 +408,30 @@ mod tests {
         (walked, unwound)
     }
 
+    /// Whether a walk from `walk_and_unwind` found the same frames as its DWARF unwind. The walk
+    /// starts with `walk_and_unwind`'s return address, and the unwinder inside `trace`, so the walk
+    /// must be a run of the unwinder's frames. The unwinder must also carry on past the base of the
+    /// task stack, where the walk stops.
+    fn agrees(walked: &[usize], unwound: &[usize]) -> bool {
+        (0..unwound.len().saturating_sub(walked.len())).any(|start| unwound[start..start + walked.len()] == *walked)
+    }
+
     #[test]
     fn walk_matches_dwarf_unwind() {
-        let (walked, unwound) = on_task_stack(walk_and_unwind);
+        let (result, unwound) = on_task_stack(walk_and_unwind);
+        if !frame_pointers_expected() {
+            // This build may omit frame pointers, in which case there is nothing to match.
+            // `capture_uses_the_walk_only_if_dwarf_agrees` checks that we notice.
+            return;
+        }
+        let Walk::Complete(walked) = result else {
+            panic!("the walk should reach the base of the task stack");
+        };
+        assert!(agrees(&walked, &unwound), "walked {walked:x?} but unwound {unwound:x?}");
 
-        // The walk skips `walk_and_unwind`'s own frame, and the unwinder starts inside `trace`.
-        // From the caller of `walk_and_unwind` onwards, they must see the same frames.
-        let start = unwound
-            .iter()
-            .position(|&ip| ip == walked[0])
-            .unwrap_or_else(|| panic!("walked {walked:x?} but unwound {unwound:x?}"));
-        let end = start + walked.len();
-        assert!(end <= unwound.len(), "walked {walked:x?} but unwound {unwound:x?}");
-        assert_eq!(
-            walked,
-            unwound[start..end],
-            "walked {walked:x?} but unwound {unwound:x?}"
-        );
-
-        // The walk stops at the base of the task stack, while the unwinder carries on into the stack
-        // that resumed the task.
-        assert!(end < unwound.len(), "walked {walked:x?} but unwound {unwound:x?}");
+        // And so does the check that `capture` makes.
+        let checked = on_task_stack(|| walk(current_stack(), true));
+        assert!(matches!(checked, Walk::Complete(_)));
     }
 
     #[inline(never)]
@@ -312,11 +443,25 @@ mod tests {
     }
 
     #[test]
+    fn capture_uses_the_walk_only_if_dwarf_agrees() {
+        let (result, unwound) = on_task_stack(walk_and_unwind);
+        let walk_agrees = matches!(&result, Walk::Complete(walked) if agrees(walked, &unwound));
+        let walked = matches!(on_task_stack(capture_here).0, Repr::Walked(_));
+        assert_eq!(walked, walk_agrees);
+    }
+
+    #[test]
     fn walked_backtrace_prints_like_std() {
         const CALLER: &str = "shuttle_engine::runtime::task::backtrace::frame_records::tests::capture_here";
 
         let backtrace = on_task_stack(capture_here);
-        assert!(matches!(backtrace.0, Repr::Walked(_)));
+        if !matches!(backtrace.0, Repr::Walked(_)) {
+            assert!(
+                !frame_pointers_expected(),
+                "a build with frame pointers should walk them"
+            );
+            return;
+        }
 
         // The first frame is the caller of `capture`, and, where there is debuginfo to say so, its
         // source location.
@@ -341,10 +486,7 @@ mod tests {
         assert!(matches!(capture_here().0, Repr::Std(_)));
 
         // Claiming to be on a stack we are not on.
-        let _on_stack = OnStack::enter(StackBounds {
-            limit: 0x1000,
-            base: 0x2000,
-        });
+        let _on_stack = OnStack::enter(StackBounds::new(0x1000, 0x2000, 0x1ff0));
         assert!(capture().is_none());
         assert!(matches!(capture_here().0, Repr::Std(_)));
     }
