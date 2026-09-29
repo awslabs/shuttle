@@ -76,8 +76,7 @@ pub mod await_backtrace {
     //!   tasks then run on the same thread, so the guard sets the task's state aside until it is
     //!   switched back in.
 
-    use crate::runtime::task::Task;
-    use std::backtrace::Backtrace;
+    use crate::runtime::task::{Task, TaskBacktrace};
     use std::cell::{Cell, RefCell};
 
     thread_local! {
@@ -85,7 +84,7 @@ pub mod await_backtrace {
         static IN_POLL_DEPTH: Cell<usize> = const { Cell::new(0) };
         static INTERNAL_BLOCK_ON_DEPTH: Cell<usize> = const { Cell::new(0) };
         /// Await-site backtrace for the poll currently in progress, if one was captured.
-        static CAPTURED: RefCell<Option<Backtrace>> = const { RefCell::new(None) };
+        static CAPTURED: RefCell<Option<TaskBacktrace>> = const { RefCell::new(None) };
     }
 
     /// Marks the dynamic extent of a `Future::poll` call made by one of Shuttle's driver loops, and
@@ -94,7 +93,7 @@ pub mod await_backtrace {
     pub struct PollGuard {
         /// What the poll enclosing this one had captured so far, if this one is nested in it. Set
         /// aside so this poll starts with nothing, and put back when it ends.
-        enclosing: Option<Backtrace>,
+        enclosing: Option<TaskBacktrace>,
     }
 
     impl PollGuard {
@@ -107,7 +106,7 @@ pub mod await_backtrace {
         }
 
         /// End the poll, and return the await site it captured, if it cloned the waker.
-        pub fn finish(self) -> Option<Backtrace> {
+        pub fn finish(self) -> Option<TaskBacktrace> {
             CAPTURED.with(|slot| slot.borrow_mut().take())
         }
     }
@@ -151,7 +150,7 @@ pub mod await_backtrace {
     pub struct SwitchGuard {
         in_poll_depth: usize,
         internal_block_on_depth: usize,
-        captured: Option<Backtrace>,
+        captured: Option<TaskBacktrace>,
     }
 
     impl SwitchGuard {
@@ -191,7 +190,7 @@ pub mod await_backtrace {
     #[inline]
     pub fn note_waker_clone() {
         if should_capture() {
-            let backtrace = Backtrace::force_capture();
+            let backtrace = TaskBacktrace::capture();
             CAPTURED.with(|slot| *slot.borrow_mut() = Some(backtrace));
         }
     }
@@ -204,14 +203,14 @@ pub mod await_backtrace {
     /// somewhere else, in a `Mutex::lock` inside its next poll or anywhere after `block_on`
     /// returns, and the deadlock handler only captures a backtrace for a task that has none.
     #[derive(Debug, Default)]
-    pub struct AwaitSite(Option<Backtrace>);
+    pub struct AwaitSite(Option<TaskBacktrace>);
 
     impl AwaitSite {
         /// Record where `task` is waiting, just before it parks after its future returned `Pending`:
         /// `captured`, the await site that poll captured (see [`PollGuard::finish`]), if it cloned
         /// the waker, and otherwise the one recorded for the task's previous park, marked as coming
         /// from an earlier poll.
-        pub fn park(&mut self, task: &mut Task, captured: Option<Backtrace>) {
+        pub fn park(&mut self, task: &mut Task, captured: Option<TaskBacktrace>) {
             match captured {
                 Some(backtrace) => {
                     task.backtrace = Some(backtrace);
