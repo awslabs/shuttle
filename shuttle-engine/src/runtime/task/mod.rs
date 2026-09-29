@@ -514,9 +514,10 @@ impl Task {
                 let mut await_site = crate::await_backtrace::AwaitSite::default();
 
                 loop {
-                    let pending = {
-                        let _guard = capture_await_sites.then(crate::await_backtrace::PollGuard::new);
-                        poll_in_place(&slot, cx).is_pending()
+                    let (pending, captured) = {
+                        let guard = capture_await_sites.then(crate::await_backtrace::PollGuard::new);
+                        let pending = poll_in_place(&slot, cx).is_pending();
+                        (pending, guard.and_then(crate::await_backtrace::PollGuard::finish))
                     };
                     if !pending {
                         break;
@@ -526,7 +527,7 @@ impl Task {
                         if capture_await_sites {
                             // The poll stack (and with it the await chain) is gone now; keep
                             // whatever the waker clone recorded while it was still live.
-                            await_site.park(task);
+                            await_site.park(task, captured);
                         }
                         task.sleep_unless_woken();
                     });
@@ -663,7 +664,10 @@ impl Task {
     }
 
     pub fn waker(&self) -> Waker {
-        // A task's waker is just the task's id (see `make_waker`), so there's nothing to keep.
+        // A task's waker is just the task's id (see `make_waker`), so there's nothing to keep. Made
+        // afresh rather than cloned from a stored one: the vtable's `clone` records an await site
+        // when it runs inside a poll (see `crate::await_backtrace`), and the executor's own calls,
+        // like a `block_on` or `yield_now` in an async fn, are not one.
         make_waker(self.id)
     }
 
