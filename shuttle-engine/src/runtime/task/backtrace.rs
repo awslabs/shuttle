@@ -5,17 +5,21 @@
 //! [`crate::await_backtrace`]). A test can do that millions of times, so capture has to be cheap,
 //! and a DWARF unwind through [`std::backtrace::Backtrace`] costs tens of microseconds.
 //!
-//! On Apple arm64 we walk the task stack's frame-pointer chain instead, which costs nanoseconds,
-//! and symbolize only when the backtrace is printed (see `frame_records`). Everywhere else, and
-//! whenever we are not on a task stack whose bounds we know, we fall back to
-//! [`std::backtrace::Backtrace::force_capture`].
+//! On macOS and Linux, on arm64 and x86_64, we walk the task stack's frame-pointer chain instead,
+//! which costs nanoseconds, and symbolize only when the backtrace is printed (see
+//! `frame_records`). We fall back to [`std::backtrace::Backtrace::force_capture`] on other
+//! targets, whenever we are not on a task stack whose bounds we know, and in builds that omit frame
+//! pointers.
 
-use corosensei::stack::Stack;
 use std::backtrace::Backtrace;
 use std::fmt;
 
 cfg_if::cfg_if! {
-    if #[cfg(all(target_arch = "aarch64", target_vendor = "apple", target_pointer_width = "64"))] {
+    if #[cfg(all(
+        any(target_vendor = "apple", target_os = "linux"),
+        any(target_arch = "aarch64", target_arch = "x86_64"),
+        target_pointer_width = "64",
+    ))] {
         mod frame_records;
         use frame_records as platform;
     } else {
@@ -63,16 +67,24 @@ enum Repr {
 impl TaskBacktrace {
     /// Capture a backtrace of the current stack. Its first frame is the caller of `capture`.
     //
-    // Both kinds of backtrace must start at our caller. The frame-pointer walk skips the frame it
-    // is called from, so there `capture` must not be inlined, or the walk would skip our caller's
-    // frame instead of ours. std's backtrace starts at whatever calls `force_capture`, so elsewhere
-    // `capture` must be inlined.
+    // Both kinds of backtrace must start at our caller. The frame-pointer walk starts with the
+    // return address of the function it is called from, so there `capture` must not be inlined, or
+    // the walk would start with our caller's return address and leave our caller out. std's
+    // backtrace starts at whatever calls `force_capture`, so elsewhere `capture` must be inlined.
     #[cfg_attr(
-        all(target_arch = "aarch64", target_vendor = "apple", target_pointer_width = "64"),
+        all(
+            any(target_vendor = "apple", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64"),
+            target_pointer_width = "64",
+        ),
         inline(never)
     )]
     #[cfg_attr(
-        not(all(target_arch = "aarch64", target_vendor = "apple", target_pointer_width = "64")),
+        not(all(
+            any(target_vendor = "apple", target_os = "linux"),
+            any(target_arch = "aarch64", target_arch = "x86_64"),
+            target_pointer_width = "64",
+        )),
         inline(always)
     )]
     pub fn capture() -> Self {
@@ -108,13 +120,14 @@ pub(crate) struct StackBounds {
     limit: usize,
     /// The highest address. The stack grows down from here.
     base: usize,
+    /// The frame record at the root of the stack's chain of records: corosensei's parent link, just
+    /// below the base, which is where the coroutine's `Yielder` lives. A walk that ends anywhere else
+    /// was broken by a frame without a record.
+    root: usize,
 }
 
 impl StackBounds {
-    pub(crate) fn of(stack: &impl Stack) -> Self {
-        Self {
-            limit: stack.limit().get(),
-            base: stack.base().get(),
-        }
+    pub(crate) fn new(limit: usize, base: usize, root: usize) -> Self {
+        Self { limit, base, root }
     }
 }

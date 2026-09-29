@@ -20,7 +20,12 @@ pub use sync_types::{ResourceSignature, ResourceType};
 
 /// If this environment variable is set, then Shuttle will capture the backtrace of each task and display
 /// the backtraces in the panic message.
-/// Capturing backtraces is quite expensive, so this should only be set when debugging a failing test.
+///
+/// On macOS and Linux, on arm64 and x86_64, Shuttle captures them by walking frame pointers, which is
+/// cheap, but only if the build keeps a frame pointer in every frame. Apple's ABIs require that, and Rust
+/// does it by default on arm64 Linux; on x86_64 Linux, build with `RUSTFLAGS="-C force-frame-pointers=yes"`.
+/// Otherwise capturing backtraces is quite expensive, so this should only be set when debugging a failing
+/// test.
 pub const CAPTURE_BACKTRACE: &str = "SHUTTLE_CAPTURE_BACKTRACE";
 
 /// The random seed used to initialize either the `RandomScheduler` or `PctScheduler`
