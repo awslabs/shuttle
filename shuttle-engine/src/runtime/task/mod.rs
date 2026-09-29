@@ -312,6 +312,11 @@ pub struct Task {
     ///   (see [`crate::await_backtrace`]).
     pub backtrace: Option<TaskBacktrace>,
 
+    /// Whether `backtrace` is an await site recorded by an earlier poll than the one the task is
+    /// parked after, because that one returned `Pending` without cloning the waker (see
+    /// [`crate::await_backtrace::AwaitSite`]).
+    pub(crate) await_site_from_earlier_poll: bool,
+
     /// The signature of a Task; this is an identifier that is *not* guaranteed to be unique but should be *mostly*
     /// stable across iterations in a single Shuttle test. Tasks with the same signature are very likely to exhibit
     /// similar behavior
@@ -367,6 +372,7 @@ impl Task {
             local_storage: StorageMap::new(),
             tag: None,
             backtrace: None,
+            await_site_from_earlier_poll: false,
             signature,
         };
 
@@ -434,6 +440,7 @@ impl Task {
                 // Read once, outside the loop: this is a process-wide constant, and the whole
                 // await-site machinery is dead weight when backtraces are off.
                 let capture_await_sites = crate::backtrace_enabled();
+                let mut await_site = crate::await_backtrace::AwaitSite::default();
 
                 loop {
                     let pending = {
@@ -443,17 +450,19 @@ impl Task {
                     if !pending {
                         break;
                     }
-                    // The poll stack (and with it the await chain) is gone now; keep whatever the
-                    // waker clone recorded while it was still live.
-                    let await_site = capture_await_sites
-                        .then(crate::await_backtrace::take_captured)
-                        .flatten();
                     ExecutionState::with(|state| {
                         let task = state.current_mut();
-                        task.backtrace = await_site;
+                        if capture_await_sites {
+                            // The poll stack (and with it the await chain) is gone now; keep
+                            // whatever the waker clone recorded while it was still live.
+                            await_site.park(task);
+                        }
                         task.sleep_unless_woken();
                     });
                     thread::switch();
+                    if capture_await_sites {
+                        ExecutionState::with(|state| await_site.unpark(state.current_mut()));
+                    }
                 }
             }),
             stack_size,
@@ -530,6 +539,12 @@ impl Task {
         // if the execution deadlocks we can resume it then and have it capture its own backtrace
         // (see `ContinuationInput::CaptureBacktrace`). Capturing here instead would mean ~70k stack
         // walks to print a handful, since this field is overwritten on every block.
+        //
+        // But do drop whatever an earlier `Poll::Pending` captured: the task is not parked there any
+        // more, and the deadlock handler only captures for a task that has no backtrace, so leaving
+        // it would print where the task used to wait instead of where it blocks now.
+        self.backtrace = None;
+        self.await_site_from_earlier_poll = false;
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
@@ -697,7 +712,13 @@ impl Task {
             if self.detached { ", detached" } else { "" },
             if self.sleeping() { ", pending future" } else { "" },
             if backtrace_enabled() {
-                format!("\nBacktrace:\n{:#?}\n", self.backtrace)
+                let note = if self.await_site_from_earlier_poll {
+                    " (from an earlier poll: later polls returned `Pending` without cloning the waker, so the task may \
+                     be waiting at a later await)"
+                } else {
+                    ""
+                };
+                format!("\nBacktrace{note}:\n{:#?}\n", self.backtrace)
             } else {
                 "".into()
             }

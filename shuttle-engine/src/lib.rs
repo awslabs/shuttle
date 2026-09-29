@@ -61,6 +61,13 @@ pub mod await_backtrace {
     //! (see [`crate::runtime::task::waker`]). That works for arbitrary user futures, not just
     //! Shuttle's own leaves.
     //!
+    //! Not every `Pending` comes with a clone, though. A future that already holds a waker that
+    //! [`will_wake`](std::task::Waker::will_wake) the task may skip it, as `AtomicWaker::register`
+    //! does, so polling it again records nothing. [`AwaitSite`] then keeps the site recorded for the
+    //! task's previous park and marks it as coming from an earlier poll. Usually the task is still
+    //! waiting on that same future, but it may have moved on to a later await whose future skipped
+    //! the clone too, and the report says it may be stale.
+    //!
     //! Three guards keep it honest:
     //! - [`PollGuard`] marks the dynamic extent of a driver-loop `poll`, so clones made by the
     //!   executor itself (e.g. `Task::waker()`) are not mistaken for await sites.
@@ -73,7 +80,7 @@ pub mod await_backtrace {
     //!   tasks then run on the same thread, so the guard sets the task's state aside until it is
     //!   switched back in.
 
-    use crate::runtime::task::TaskBacktrace;
+    use crate::runtime::task::{Task, TaskBacktrace};
     use std::cell::{Cell, RefCell};
 
     thread_local! {
@@ -184,16 +191,45 @@ pub mod await_backtrace {
         }
     }
 
-    /// Take whatever the in-progress poll captured. Called by the driver loops once `poll` has
-    /// returned `Pending`.
-    ///
-    /// `None` means no await site was recovered — either backtraces are off, or the future returned
-    /// `Pending` without cloning the waker (some futures skip the clone when they already hold an
-    /// equivalent one). Returning `None` rather than a stale value is deliberate: it lets the
-    /// deadlock handler fall back to its lazy capture instead of printing a backtrace from an
-    /// earlier, unrelated park.
-    pub fn take_captured() -> Option<TaskBacktrace> {
+    /// Take whatever the in-progress poll captured. `None` if it returned `Pending` without cloning
+    /// the waker.
+    fn take_captured() -> Option<TaskBacktrace> {
         CAPTURED.with(|slot| slot.borrow_mut().take())
+    }
+
+    /// Where a future driver loop's task is waiting, kept from one park to the next.
+    ///
+    /// Each of Shuttle's driver loops keeps one, and calls [`park`](Self::park) once `poll` has
+    /// returned `Pending` and [`unpark`](Self::unpark) once the task is switched back in. So the
+    /// task carries an await site only while it is parked in that loop. While it runs it may block
+    /// somewhere else, in a `Mutex::lock` inside its next poll or anywhere after `block_on`
+    /// returns, and the deadlock handler only captures a backtrace for a task that has none.
+    #[derive(Debug, Default)]
+    pub struct AwaitSite(Option<TaskBacktrace>);
+
+    impl AwaitSite {
+        /// Record where `task` is waiting, just before it parks after its future returned `Pending`:
+        /// the await site this poll captured if it cloned the waker, and otherwise the one recorded
+        /// for the task's previous park, marked as coming from an earlier poll.
+        pub fn park(&mut self, task: &mut Task) {
+            match take_captured() {
+                Some(backtrace) => {
+                    task.backtrace = Some(backtrace);
+                    task.await_site_from_earlier_poll = false;
+                }
+                None => {
+                    task.await_site_from_earlier_poll = self.0.is_some();
+                    task.backtrace = self.0.take();
+                }
+            }
+        }
+
+        /// Take the await site back off `task` once it is switched back in, to keep for its next
+        /// park.
+        pub fn unpark(&mut self, task: &mut Task) {
+            self.0 = task.backtrace.take();
+            task.await_site_from_earlier_poll = false;
+        }
     }
 }
 

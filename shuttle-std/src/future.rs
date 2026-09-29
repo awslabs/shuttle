@@ -5,9 +5,10 @@
 //!
 //! [`futures::executor`]: https://docs.rs/futures/0.3.13/futures/executor/index.html
 
+use shuttle_engine::await_backtrace::{AwaitSite, PollGuard};
 use shuttle_engine::backtrace_enabled;
 use shuttle_engine::runtime::execution::ExecutionState;
-use shuttle_engine::runtime::task::{TaskBacktrace, TaskId};
+use shuttle_engine::runtime::task::TaskId;
 use shuttle_engine::runtime::thread;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -225,18 +226,9 @@ impl<T> Future for JoinHandle<T> {
         if let Some(result) = lock.result.take() {
             Poll::Ready(result)
         } else {
+            // Cloning the waker is also what records this await site for the deadlock report, through
+            // Shuttle's waker vtable (see `shuttle_engine::await_backtrace`).
             lock.waker = Some(cx.waker().clone());
-
-            // As in `BatchSemaphore::poll`: returning `Pending` discards this poll stack, so the
-            // await site has to be captured now. There is no internal-`block_on` case to exclude
-            // here — nothing in the engine awaits a `JoinHandle` on a task's behalf.
-            if backtrace_enabled() {
-                let backtrace = TaskBacktrace::capture();
-                ExecutionState::with(|state| {
-                    state.current_mut().backtrace = Some(backtrace);
-                });
-            }
-
             Poll::Pending
         }
     }
@@ -349,29 +341,33 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     // For example, an uncontested acquire makes other threads block or fail try-acquires, so there must be
     // a scheduling point for scheduling completeness. For *external* futures, this is a non-issue because they
     // should use other Shuttle primitives inside of `poll` if polling can affect other threads.
+
     // Read once, outside the loop: this is a process-wide constant, and the whole await-site
     // machinery is dead weight when backtraces are off.
     let capture_await_sites = backtrace_enabled();
+    let mut await_site = AwaitSite::default();
 
     loop {
         let polled = {
-            let _guard = capture_await_sites.then(shuttle_engine::await_backtrace::PollGuard::new);
+            let _guard = capture_await_sites.then(PollGuard::new);
             future.as_mut().poll(cx)
         };
         match polled {
             Poll::Ready(result) => break result,
             Poll::Pending => {
-                // The poll stack (and with it the await chain) is gone now; keep whatever the waker
-                // clone recorded while it was still live.
-                let await_site = capture_await_sites
-                    .then(shuttle_engine::await_backtrace::take_captured)
-                    .flatten();
                 ExecutionState::with(|state| {
                     let task = state.current_mut();
-                    task.backtrace = await_site;
+                    if capture_await_sites {
+                        // The poll stack (and with it the await chain) is gone now; keep whatever
+                        // the waker clone recorded while it was still live.
+                        await_site.park(task);
+                    }
                     task.sleep_unless_woken();
                 });
                 thread::switch();
+                if capture_await_sites {
+                    ExecutionState::with(|state| await_site.unpark(state.current_mut()));
+                }
             }
         }
     }
