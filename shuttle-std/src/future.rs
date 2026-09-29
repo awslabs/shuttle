@@ -348,9 +348,10 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     let mut await_site = AwaitSite::default();
 
     loop {
-        let polled = {
-            let _guard = capture_await_sites.then(PollGuard::new);
-            future.as_mut().poll(cx)
+        let (polled, captured) = {
+            let guard = capture_await_sites.then(PollGuard::new);
+            let polled = future.as_mut().poll(cx);
+            (polled, guard.and_then(PollGuard::finish))
         };
         match polled {
             Poll::Ready(result) => break result,
@@ -360,7 +361,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
                     if capture_await_sites {
                         // The poll stack (and with it the await chain) is gone now; keep whatever
                         // the waker clone recorded while it was still live.
-                        await_site.park(task);
+                        await_site.park(task, captured);
                     }
                     task.sleep_unless_woken();
                 });
