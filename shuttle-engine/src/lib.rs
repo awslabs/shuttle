@@ -69,8 +69,9 @@ pub mod await_backtrace {
     //! the clone too, and the report says it may be stale.
     //!
     //! Three guards keep it honest:
-    //! - [`PollGuard`] marks the dynamic extent of a driver-loop `poll`, so clones made by the
-    //!   executor itself (e.g. `Task::waker()`) are not mistaken for await sites.
+    //! - [`PollGuard`] marks the dynamic extent of a driver-loop `poll` and gives it its own capture,
+    //!   so a clone outside any poll is not mistaken for an await site, and a poll nested in another
+    //!   (a `block_on` inside an async fn) neither reports nor overwrites the enclosing poll's.
     //! - [`InternalBlockOnGuard`] marks the `block_on` that the *synchronous* primitives use
     //!   internally. A task parked there keeps its whole call chain on its coroutine stack, so it is
     //!   captured lazily on deadlock instead. This is the hot path: capturing it eagerly is what
@@ -91,28 +92,36 @@ pub mod await_backtrace {
         static CAPTURED: RefCell<Option<TaskBacktrace>> = const { RefCell::new(None) };
     }
 
-    /// Marks the dynamic extent of a `Future::poll` call made by one of Shuttle's driver loops.
+    /// Marks the dynamic extent of a `Future::poll` call made by one of Shuttle's driver loops, and
+    /// collects the await site it captures. End it with [`finish`](Self::finish).
     #[derive(Debug)]
-    pub struct PollGuard;
+    pub struct PollGuard {
+        /// What the poll enclosing this one had captured so far, if this one is nested in it. Set
+        /// aside so this poll starts with nothing, and put back when it ends.
+        enclosing: Option<TaskBacktrace>,
+    }
 
     impl PollGuard {
         #[allow(clippy::new_without_default)]
         pub fn new() -> Self {
-            let depth = IN_POLL_DEPTH.get();
-            if depth == 0 {
-                // A capture belongs to the poll it was taken in. Drop any that an earlier poll left
-                // behind by returning `Ready`, possibly in a task that has finished since, so that
-                // this poll cannot report it if it returns `Pending` without cloning the waker.
-                CAPTURED.with(|slot| slot.borrow_mut().take());
+            IN_POLL_DEPTH.set(IN_POLL_DEPTH.get() + 1);
+            Self {
+                enclosing: CAPTURED.with(|slot| slot.borrow_mut().take()),
             }
-            IN_POLL_DEPTH.set(depth + 1);
-            Self
+        }
+
+        /// End the poll, and return the await site it captured, if it cloned the waker.
+        pub fn finish(self) -> Option<TaskBacktrace> {
+            CAPTURED.with(|slot| slot.borrow_mut().take())
         }
     }
 
     impl Drop for PollGuard {
         fn drop(&mut self) {
             IN_POLL_DEPTH.set(IN_POLL_DEPTH.get() - 1);
+            // Also discards anything this poll captured that `finish` did not take, e.g. if it panicked.
+            let enclosing = self.enclosing.take();
+            CAPTURED.with(|slot| *slot.borrow_mut() = enclosing);
         }
     }
 
@@ -191,12 +200,6 @@ pub mod await_backtrace {
         }
     }
 
-    /// Take whatever the in-progress poll captured. `None` if it returned `Pending` without cloning
-    /// the waker.
-    fn take_captured() -> Option<TaskBacktrace> {
-        CAPTURED.with(|slot| slot.borrow_mut().take())
-    }
-
     /// Where a future driver loop's task is waiting, kept from one park to the next.
     ///
     /// Each of Shuttle's driver loops keeps one, and calls [`park`](Self::park) once `poll` has
@@ -209,10 +212,11 @@ pub mod await_backtrace {
 
     impl AwaitSite {
         /// Record where `task` is waiting, just before it parks after its future returned `Pending`:
-        /// the await site this poll captured if it cloned the waker, and otherwise the one recorded
-        /// for the task's previous park, marked as coming from an earlier poll.
-        pub fn park(&mut self, task: &mut Task) {
-            match take_captured() {
+        /// `captured`, the await site that poll captured (see [`PollGuard::finish`]), if it cloned
+        /// the waker, and otherwise the one recorded for the task's previous park, marked as coming
+        /// from an earlier poll.
+        pub fn park(&mut self, task: &mut Task, captured: Option<TaskBacktrace>) {
+            match captured {
                 Some(backtrace) => {
                     task.backtrace = Some(backtrace);
                     task.await_site_from_earlier_poll = false;
