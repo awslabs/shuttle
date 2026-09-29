@@ -64,14 +64,14 @@ pub mod await_backtrace {
     //!   captured lazily on deadlock instead. This is the hot path: capturing it eagerly is what
     //!   made `SHUTTLE_CAPTURE_BACKTRACE` cost ~79x.
 
-    use std::backtrace::Backtrace;
+    use crate::runtime::task::TaskBacktrace;
     use std::cell::{Cell, RefCell};
 
     thread_local! {
         static IN_POLL_DEPTH: Cell<usize> = const { Cell::new(0) };
         static INTERNAL_BLOCK_ON_DEPTH: Cell<usize> = const { Cell::new(0) };
         /// Await-site backtrace for the poll currently in progress, if one was captured.
-        static CAPTURED: RefCell<Option<Backtrace>> = const { RefCell::new(None) };
+        static CAPTURED: RefCell<Option<TaskBacktrace>> = const { RefCell::new(None) };
     }
 
     macro_rules! depth_guard {
@@ -121,7 +121,7 @@ pub mod await_backtrace {
     #[inline]
     pub fn note_waker_clone() {
         if should_capture() {
-            let backtrace = Backtrace::force_capture();
+            let backtrace = TaskBacktrace::capture();
             CAPTURED.with(|slot| *slot.borrow_mut() = Some(backtrace));
         }
     }
@@ -134,7 +134,7 @@ pub mod await_backtrace {
     /// equivalent one). Returning `None` rather than a stale value is deliberate: it lets the
     /// deadlock handler fall back to its lazy capture instead of printing a backtrace from an
     /// earlier, unrelated park.
-    pub fn take_captured() -> Option<Backtrace> {
+    pub fn take_captured() -> Option<TaskBacktrace> {
         CAPTURED.with(|slot| slot.borrow_mut().take())
     }
 }

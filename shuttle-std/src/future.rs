@@ -7,7 +7,7 @@
 
 use shuttle_engine::backtrace_enabled;
 use shuttle_engine::runtime::execution::ExecutionState;
-use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::task::{TaskBacktrace, TaskId};
 use shuttle_engine::runtime::thread;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -231,8 +231,9 @@ impl<T> Future for JoinHandle<T> {
             // await site has to be captured now. There is no internal-`block_on` case to exclude
             // here — nothing in the engine awaits a `JoinHandle` on a task's behalf.
             if backtrace_enabled() {
+                let backtrace = TaskBacktrace::capture();
                 ExecutionState::with(|state| {
-                    state.current_mut().backtrace = Some(std::backtrace::Backtrace::force_capture());
+                    state.current_mut().backtrace = Some(backtrace);
                 });
             }
 
