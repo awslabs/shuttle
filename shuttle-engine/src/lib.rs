@@ -56,56 +56,109 @@ pub mod await_backtrace {
     //! (see [`crate::runtime::task::waker`]). That works for arbitrary user futures, not just
     //! Shuttle's own leaves.
     //!
-    //! Two guards keep it honest:
+    //! Three guards keep it honest:
     //! - [`PollGuard`] marks the dynamic extent of a driver-loop `poll`, so clones made by the
     //!   executor itself (e.g. `Task::waker()`) are not mistaken for await sites.
     //! - [`InternalBlockOnGuard`] marks the `block_on` that the *synchronous* primitives use
     //!   internally. A task parked there keeps its whole call chain on its coroutine stack, so it is
     //!   captured lazily on deadlock instead. This is the hot path: capturing it eagerly is what
     //!   made `SHUTTLE_CAPTURE_BACKTRACE` cost ~79x.
+    //! - [`SwitchGuard`] keeps the state the other two track per task. It lives in thread-locals,
+    //!   but a task can be switched out part-way through a poll or an internal `block_on`, and other
+    //!   tasks then run on the same thread, so the guard sets the task's state aside until it is
+    //!   switched back in.
 
     use std::backtrace::Backtrace;
     use std::cell::{Cell, RefCell};
 
     thread_local! {
+        // These describe the task running on this thread. See `SwitchGuard`.
         static IN_POLL_DEPTH: Cell<usize> = const { Cell::new(0) };
         static INTERNAL_BLOCK_ON_DEPTH: Cell<usize> = const { Cell::new(0) };
         /// Await-site backtrace for the poll currently in progress, if one was captured.
         static CAPTURED: RefCell<Option<Backtrace>> = const { RefCell::new(None) };
     }
 
-    macro_rules! depth_guard {
-        ($name:ident, $slot:ident, $doc:literal) => {
-            #[doc = $doc]
-            #[derive(Debug)]
-            pub struct $name;
+    /// Marks the dynamic extent of a `Future::poll` call made by one of Shuttle's driver loops.
+    #[derive(Debug)]
+    pub struct PollGuard;
 
-            impl $name {
-                #[allow(clippy::new_without_default)]
-                pub fn new() -> Self {
-                    $slot.set($slot.get() + 1);
-                    Self
-                }
+    impl PollGuard {
+        #[allow(clippy::new_without_default)]
+        pub fn new() -> Self {
+            let depth = IN_POLL_DEPTH.get();
+            if depth == 0 {
+                // A capture belongs to the poll it was taken in. Drop any that an earlier poll left
+                // behind by returning `Ready`, possibly in a task that has finished since, so that
+                // this poll cannot report it if it returns `Pending` without cloning the waker.
+                CAPTURED.with(|slot| slot.borrow_mut().take());
             }
-
-            impl Drop for $name {
-                fn drop(&mut self) {
-                    $slot.set($slot.get() - 1);
-                }
-            }
-        };
+            IN_POLL_DEPTH.set(depth + 1);
+            Self
+        }
     }
 
-    depth_guard!(
-        PollGuard,
-        IN_POLL_DEPTH,
-        "Marks the dynamic extent of a `Future::poll` call made by one of Shuttle's driver loops."
-    );
-    depth_guard!(
-        InternalBlockOnGuard,
-        INTERNAL_BLOCK_ON_DEPTH,
-        "Marks a `block_on` that Shuttle itself performs on the task's behalf, rather than one the user wrote."
-    );
+    impl Drop for PollGuard {
+        fn drop(&mut self) {
+            IN_POLL_DEPTH.set(IN_POLL_DEPTH.get() - 1);
+        }
+    }
+
+    /// Marks a `block_on` that Shuttle itself performs on the task's behalf, rather than one the user wrote.
+    #[derive(Debug)]
+    pub struct InternalBlockOnGuard;
+
+    impl InternalBlockOnGuard {
+        #[allow(clippy::new_without_default)]
+        pub fn new() -> Self {
+            INTERNAL_BLOCK_ON_DEPTH.set(INTERNAL_BLOCK_ON_DEPTH.get() + 1);
+            Self
+        }
+    }
+
+    impl Drop for InternalBlockOnGuard {
+        fn drop(&mut self) {
+            INTERNAL_BLOCK_ON_DEPTH.set(INTERNAL_BLOCK_ON_DEPTH.get() - 1);
+        }
+    }
+
+    /// Sets the running task's await-site state aside while it is switched out, and puts it back
+    /// when it is switched back in.
+    ///
+    /// Held across the suspend in [`crate::runtime::thread::switch`]. Without it, the tasks that
+    /// run in the meantime see the switched-out task's state. A task blocked on a `Mutex` holds an
+    /// [`InternalBlockOnGuard`] for as long as it stays blocked, which would stop every other task's
+    /// await site from being captured, and a capture taken part-way through one task's poll could
+    /// be reported by another task's driver loop.
+    #[derive(Debug)]
+    pub struct SwitchGuard {
+        in_poll_depth: usize,
+        internal_block_on_depth: usize,
+        captured: Option<Backtrace>,
+    }
+
+    impl SwitchGuard {
+        #[allow(clippy::new_without_default)]
+        pub fn new() -> Self {
+            Self {
+                in_poll_depth: IN_POLL_DEPTH.replace(0),
+                internal_block_on_depth: INTERNAL_BLOCK_ON_DEPTH.replace(0),
+                captured: CAPTURED.with(|slot| slot.borrow_mut().take()),
+            }
+        }
+    }
+
+    impl Drop for SwitchGuard {
+        fn drop(&mut self) {
+            // This also runs if the task is unwound instead of switched back in (see `Continuation`'s
+            // `Drop`). Putting its state back is still right then: its own guards are dropped next,
+            // and undo it.
+            IN_POLL_DEPTH.set(self.in_poll_depth);
+            INTERNAL_BLOCK_ON_DEPTH.set(self.internal_block_on_depth);
+            let captured = self.captured.take();
+            CAPTURED.with(|slot| *slot.borrow_mut() = captured);
+        }
+    }
 
     /// Whether an await-site capture is worth taking right now.
     fn should_capture() -> bool {
