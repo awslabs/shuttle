@@ -545,6 +545,11 @@ impl Task {
         // if the execution deadlocks we can resume it then and have it capture its own backtrace
         // (see `ContinuationInput::CaptureBacktrace`). Capturing here instead would mean ~70k stack
         // walks to print a handful, since this field is overwritten on every block.
+        //
+        // But do drop whatever an earlier `Poll::Pending` captured: the task is not parked there any
+        // more, and the deadlock handler only captures for a task that has no backtrace, so leaving
+        // it would print where the task used to wait instead of where it blocks now.
+        self.backtrace = None;
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
