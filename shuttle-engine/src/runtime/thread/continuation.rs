@@ -2,8 +2,9 @@ use crate::config::{ContinuationFunctionBehavior, UNGRACEFUL_SHUTDOWN_CONFIG};
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::backtrace::{OnStack, StackBounds};
 use crate::runtime::task::TaskBacktrace;
+use corosensei::stack::{DefaultStack, Stack};
 use corosensei::Yielder;
-use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
+use corosensei::{Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -96,7 +97,7 @@ impl Continuation {
     pub fn new(stack_size: usize) -> Self {
         let function = ContinuationFunction(Rc::new(Cell::new(None)));
         let stack = DefaultStack::new(stack_size).unwrap();
-        let stack_bounds = StackBounds::of(&stack);
+        let (stack_limit, stack_base) = (stack.limit().get(), stack.base().get());
 
         let mut coroutine = {
             let function = function.clone();
@@ -149,7 +150,8 @@ impl Continuation {
             yielder,
             function,
             state: ContinuationState::NotReady,
-            stack: stack_bounds,
+            // corosensei keeps the `Yielder` in the parent link, the root frame record of the stack.
+            stack: StackBounds::new(stack_limit, stack_base, yielder as usize),
         }
     }
 
