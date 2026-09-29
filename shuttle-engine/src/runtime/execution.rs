@@ -2,7 +2,7 @@ use crate::runtime::failure::{init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
-use crate::runtime::task::{ChildLabelFn, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{ChildLabelFn, ParkedDefault, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
@@ -19,6 +19,7 @@ use std::future::Future;
 use std::panic::{self, Location};
 use std::rc::Rc;
 use std::sync::Arc;
+use tracing::subscriber::NoSubscriber;
 use tracing::{trace, Span};
 
 #[allow(deprecated)]
@@ -209,42 +210,77 @@ impl Execution {
         // 2) storing the entirety of the `span_stack` when creating the `Task`, and
         // 3) storing `top_level_span` as a stack
         // should be tried.)
+        let parked = ExecutionState::with(|state| {
+            // Go through `Span::with_subscriber` rather than calling `Span::current()` inside
+            // `tracing::dispatcher::get_default`; see `exit_task_span` for why.
+            tracing::Span::current().with_subscriber(|(id, subscriber)| subscriber.exit(id));
+
+            // The `span_stack` stores `Span`s such that the top of the stack is the outermost `Span`,
+            // meaning that parents (left-most when printed) are entered first.
+            while let Some(span) = state.current_mut().span_stack.pop() {
+                span.with_subscriber(|(id, subscriber)| subscriber.enter(id));
+            }
+
+            if state.config.record_steps_in_span {
+                state.current().step_span.record("i", CurrentSchedule::len());
+            }
+
+            state.current_mut().parked_default.take()
+        });
+
+        // Reinstate the default dispatcher the task had when it last switched out. Outside
+        // `ExecutionState::with`, as that drops the dispatcher it displaces.
+        if let Some(parked) = parked {
+            parked.reinstate();
+        }
+    }
+
+    fn exit_task_span(yielded: bool) {
+        // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
         ExecutionState::with(|state| {
-            tracing::dispatcher::get_default(|subscriber| {
-                if let Some(span_id) = tracing::Span::current().id().as_ref() {
-                    subscriber.exit(span_id);
-                }
+            // Before the task's spans are exited, so they are looked up in the dispatcher they were entered in.
+            if yielded {
+                Execution::park_task_default(state);
+            }
 
-                // The `span_stack` stores `Span`s such that the top of the stack is the outermost `Span`,
-                // meaning that parents (left-most when printed) are entered first.
-                while let Some(span) = state.current_mut().span_stack.pop() {
-                    if let Some(span_id) = span.id().as_ref() {
-                        subscriber.enter(span_id)
-                    }
-                }
+            debug_assert!(state.current().span_stack.is_empty());
+            // Note that `Span::current()` must not be called from inside a
+            // `tracing::dispatcher::get_default` callback: `get_default` marks the thread's
+            // dispatcher state as in use for the duration of the callback, and while any thread in
+            // the process holds a scoped default subscriber, a nested `Span::current()` then
+            // returns `Span::none()`. This loop would then exit nothing while we still enter
+            // `top_level_span` below, leaking one entry per scheduling step until a later
+            // `Span::current()` resolved to a closed span and panicked. So each exit goes through
+            // `Span::with_subscriber`, which hands us the span's own dispatcher directly.
+            // `Span::current()` returns a disabled span once no span is entered, and a disabled span
+            // is exactly one `with_subscriber` does nothing for, so every iteration exits a span.
+            while let Some(current) = Some(tracing::Span::current()).filter(|span| !span.is_disabled()) {
+                current.with_subscriber(|(id, subscriber)| subscriber.exit(id));
+                state.current_mut().span_stack.push(current);
+            }
 
-                if state.config.record_steps_in_span {
-                    state.current().step_span.record("i", CurrentSchedule::len());
-                }
-            });
+            state
+                .top_level_span
+                .with_subscriber(|(id, subscriber)| subscriber.enter(id));
         });
     }
 
-    fn exit_task_span() {
-        // Leave the Task's span and store the exited `Span` stack in order to restore it the next time the Task is run
-        ExecutionState::with(|state| {
-            tracing::dispatcher::get_default(|subscriber| {
-                debug_assert!(state.current().span_stack.is_empty());
-                while let Some(span_id) = tracing::Span::current().id().as_ref() {
-                    state.current_mut().span_stack.push(tracing::Span::current().clone());
-                    subscriber.exit(span_id);
-                }
-
-                if let Some(span_id) = state.top_level_span.id().as_ref() {
-                    subscriber.enter(span_id)
-                }
-            });
-        });
+    /// Saves the running task's default `tracing` dispatcher and reinstates the execution's.
+    ///
+    /// `tracing`'s default dispatcher is per OS thread, and every task runs on this one. Without
+    /// this, a task that yields inside `tracing::subscriber::with_default` would leave its dispatcher
+    /// installed for the scheduler and every other task, and `exit_task_span` would look for the
+    /// task's spans in that dispatcher instead of the one they were entered in.
+    fn park_task_default(state: &mut ExecutionState) {
+        // Installing a guard when there is nothing to park would put `tracing` on its slower scoped
+        // path for the whole process.
+        if !task_may_have_own_default(state) {
+            return;
+        }
+        // The guard remembers the task's current default, and `enter_task_span` drops it to
+        // reinstate exactly that.
+        let guard = tracing::dispatcher::set_default(&state.top_level_dispatch);
+        state.current_mut().parked_default = Some(ParkedDefault::new(guard));
     }
 
     /// Run the execution to completion.
@@ -282,7 +318,7 @@ impl Execution {
 
                     let result = panic::catch_unwind(panic::AssertUnwindSafe(|| continuation.borrow_mut().resume()));
 
-                    Execution::exit_task_span();
+                    Execution::exit_task_span(matches!(result, Ok(false)));
 
                     result
                 }
@@ -343,6 +379,14 @@ pub struct ExecutionState {
     // The `Span` which the `ExecutionState` was created under. Will be the parent of all `Task` `Span`s
     pub top_level_span: Span,
 
+    // The default `tracing` dispatcher the `ExecutionState` was created under. Tasks start out with it,
+    // and it is reinstated whenever a task with a different default switches out.
+    top_level_dispatch: tracing::Dispatch,
+
+    // If `top_level_dispatch` is the global default, where `get_default` hands it out from (see
+    // `task_may_have_own_default`).
+    top_level_dispatch_global_ptr: Option<*const tracing::Dispatch>,
+
     // Persistent Vec used as a bump allocator for references to runnable tasks to avoid slow allocation
     // on each scheduling decision. Should not be used outside of the `schedule` function
     runnable_tasks: Vec<*const Task>,
@@ -399,6 +443,12 @@ pub enum ExecutionStateBorrowError {
 
 impl ExecutionState {
     fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>) -> Self {
+        let (top_level_dispatch, top_level_dispatch_global_ptr) = tracing::dispatcher::get_default(|dispatch| {
+            // While no thread has a scoped default, `get_default` hands out the global default, and
+            // nested calls get it too rather than `Dispatch::none()`.
+            let is_global = tracing::dispatcher::get_default(|nested| !nested.is::<NoSubscriber>());
+            (dispatch.clone(), is_global.then_some(dispatch as *const _))
+        });
         Self {
             config,
             tasks: SmallVec::new(),
@@ -413,6 +463,8 @@ impl ExecutionState {
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
+            top_level_dispatch,
+            top_level_dispatch_global_ptr,
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
             live_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
         }
@@ -683,6 +735,8 @@ impl ExecutionState {
                 final_state == ScheduledTask::Stopped || task.finished() || task.detached,
                 "execution finished but task is not"
             );
+            // The parked default has to go before the task's stack does (see `ParkedDefault`).
+            drop(task.parked_default);
             Rc::try_unwrap(task.continuation)
                 .map_err(|_| ())
                 .expect("couldn't cleanup a future");
@@ -1052,4 +1106,33 @@ impl Drop for ExecutionState {
     fn drop(&mut self) {
         assert!(self.has_cleaned_up || std::thread::panicking());
     }
+}
+
+/// Whether the running task's default dispatcher might not be the execution's.
+fn task_may_have_own_default(state: &ExecutionState) -> bool {
+    use tracing::level_filters::LevelFilter;
+
+    // No dispatcher enables anything, so whichever one is the default makes no difference. (If that
+    // changes while the task is switched out, other tasks see its default, as before defaults were
+    // parked.)
+    if LevelFilter::current() == LevelFilter::OFF {
+        return false;
+    }
+    tracing::dispatcher::get_default(|current| {
+        if let Some(global) = state.top_level_dispatch_global_ptr {
+            // `get_default` hands out the global default from where it lives, and anything else from
+            // this thread's scoped default. So if it hands out the global default, the task has no
+            // default of its own. Parking otherwise is sometimes unnecessary but always safe,
+            // including if `tracing` ever handed out the global default from elsewhere.
+            !std::ptr::eq(current, global)
+        } else if current.is::<NoSubscriber>() {
+            // Nothing is recorded either way if the execution's default is `Dispatch::none()` too.
+            !state.top_level_dispatch.is::<NoSubscriber>()
+        } else {
+            // A task can only have a default of its own through a scoped default. `get_default` hands
+            // nested calls `Dispatch::none()` only while some thread has one; otherwise they get the
+            // global default, which is then `current` and everyone's default.
+            tracing::dispatcher::get_default(|nested| nested.is::<NoSubscriber>())
+        }
+    })
 }
