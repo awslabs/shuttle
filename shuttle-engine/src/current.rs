@@ -33,12 +33,20 @@ pub fn context_switches() -> usize {
     ExecutionState::context_switches()
 }
 
-/// Get the current thread's vector clock
+/// Get the current thread's vector clock, or an empty clock if there is no current task.
+///
+/// Every `BatchSemaphore` operation calls this, so a `Drop` handler that touches a modelled
+/// primitive during execution teardown reaches it with `ExecutionState` unavailable or no task
+/// scheduled. Panicking there happens inside a destructor, which aborts the process instead of
+/// reporting the failure under investigation.
 pub fn clock() -> VectorClock {
-    ExecutionState::with(|state| {
-        let me = state.current();
-        state.get_clock(me.id()).clone()
+    ExecutionState::try_with(|state| {
+        let id = state.try_current().map(|me| me.id());
+        id.map(|id| state.get_clock(id).clone())
     })
+    .ok()
+    .flatten()
+    .unwrap_or_else(VectorClock::new)
 }
 
 /// Gets the clock for the thread with the given task ID
