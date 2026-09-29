@@ -43,6 +43,12 @@ impl StorageMap {
         self.order.push_back(key);
     }
 
+    /// Whether no storage slot is still initialized, i.e. every value has been handed out by `pop`
+    /// (or none was ever initialized).
+    pub fn is_drained(&self) -> bool {
+        self.order.is_empty()
+    }
+
     /// Return ownership of the next still-initialized storage slot.
     pub fn pop(&mut self) -> Option<Box<dyn Any>> {
         let key = self.order.pop_front()?;

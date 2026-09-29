@@ -300,7 +300,10 @@ pub struct Task {
     // `continuation`, so that it is dropped before the task's stack is (see `ParkedDefault`).
     pub(super) parked_default: Option<ParkedDefault>,
 
-    pub(super) continuation: Rc<RefCell<PooledContinuation>>,
+    // `None` once the task has finished: its continuation, and with it the task's stack, goes back
+    // to the pool then, so that tasks spawned later in the execution can reuse it.
+    pub(super) continuation: Option<Rc<RefCell<PooledContinuation>>>,
+    // Points into `continuation`, so it is null once the task has finished.
     pub(super) yielder: *const Yielder<ContinuationInput, ContinuationOutput>,
 
     pub clock: VectorClock,
@@ -381,7 +384,7 @@ impl Task {
             parent_task_id,
             state: TaskState::Runnable,
             parked_default: None,
-            continuation,
+            continuation: Some(continuation),
             yielder,
             clock,
             waiter: None,
@@ -566,6 +569,35 @@ impl Task {
         self.state = TaskState::Finished;
     }
 
+    /// Take the resources this task only needs while it can still run, so that they can be
+    /// released as soon as it finishes instead of at the end of the execution. The most important
+    /// one is the continuation: dropping it returns it, and with it the task's stack, to the pool,
+    /// where tasks spawned later in the execution can reuse it.
+    ///
+    /// The task keeps what can still be asked of it once it has finished: its state, clock, name,
+    /// and so on.
+    pub(super) fn release_resources(&mut self) -> ReleasedTaskResources {
+        assert!(self.finished());
+        // A parked default has to be dropped before the task's stack (see `ParkedDefault`). There is
+        // none here: it was reinstated when the task was last resumed, and finishing parks none.
+        debug_assert!(self.parked_default.is_none());
+        // The yielder is on the continuation's stack, which another task may reuse from now on.
+        self.yielder = std::ptr::null();
+        ReleasedTaskResources {
+            continuation: self.continuation.take(),
+            span_stack: std::mem::take(&mut self.span_stack),
+            step_span: std::mem::replace(&mut self.step_span, Span::none()),
+            backtrace: self.backtrace.take(),
+            // Thread-local destructors have run by the time a thread or future finishes. If a value
+            // is still alive anyway, leave it to be dropped at the end of the execution as before:
+            // its destructor might use Shuttle primitives, which this task can no longer run.
+            local_storage: self
+                .local_storage
+                .is_drained()
+                .then(|| std::mem::replace(&mut self.local_storage, StorageMap::new())),
+        }
+    }
+
     /// Potentially put this task to sleep after it was polled by the executor, unless someone has
     /// called its waker first.
     ///
@@ -714,6 +746,21 @@ impl Task {
             }
         )
     }
+}
+
+/// The resources a task gives up when it finishes; see [`Task::release_resources`].
+///
+/// Dropping this returns the task's continuation to the pool. Drop it outside of any
+/// `ExecutionState` borrow: dropping the task's spans calls into the tracing subscriber, which
+/// could call back into Shuttle.
+#[must_use = "dropping the resources returns the task's continuation to the pool"]
+#[derive(Debug)]
+pub(crate) struct ReleasedTaskResources {
+    continuation: Option<Rc<RefCell<PooledContinuation>>>,
+    span_stack: Vec<Span>,
+    step_span: Span,
+    backtrace: Option<Backtrace>,
+    local_storage: Option<StorageMap>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
