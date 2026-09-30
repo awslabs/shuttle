@@ -8,6 +8,7 @@
 //! frame of its own.
 
 use futures::channel::oneshot;
+use shuttle::future::batch_semaphore::{Acquire, BatchSemaphore, Fairness};
 use shuttle::sync::{Barrier, Condvar, Mutex};
 use shuttle::{check_dfs, check_random, future, thread};
 use std::future::Future;
@@ -74,6 +75,33 @@ fn destructor_blocked_in_teardown_is_shown_where_it_blocks() {
                 });
                 // So that the future runs, and holds the value when the execution ends.
                 thread::yield_now();
+            },
+            None,
+        )
+    });
+
+    assert!(report.starts_with("deadlock while dropping"), "{report}");
+    assert!(
+        has_frame(&report, "wait_in_destructor"),
+        "the destructor is not shown where it blocks:\n{report}"
+    );
+}
+
+/// The same for a future that waits at an await site, which it records when it clones its waker.
+/// The destructor must still be shown where it blocks, not at that await site.
+#[test]
+fn destructor_blocked_in_teardown_after_an_await_is_shown_where_it_blocks() {
+    let report = deadlock_report(|| {
+        check_dfs(
+            || {
+                let (tx, rx) = oneshot::channel::<()>();
+                future::spawn(async move {
+                    let _waits = WaitsOnDrop(Barrier::new(2));
+                    let _ = rx.await;
+                });
+                thread::yield_now();
+                // So that the message never comes, and the channel never closes.
+                std::mem::forget(tx);
             },
             None,
         )
@@ -525,5 +553,57 @@ fn cloning_another_tasks_waker_is_not_an_await_site() {
     assert!(
         !has_frame(entry, "clone_foreign_waker"),
         "shown at a clone of another task's waker:\n{entry}"
+    );
+}
+
+/// Polls a semaphore's `Acquire` from a function of its own, so that its await site has a frame to
+/// look for.
+struct NamedAcquire<'a>(Pin<Box<Acquire<'a>>>);
+
+impl Future for NamedAcquire<'_> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        poll_acquire(self.0.as_mut(), cx)
+    }
+}
+
+#[inline(never)]
+fn poll_acquire(acquire: Pin<&mut Acquire<'_>>, cx: &mut Context<'_>) -> Poll<()> {
+    // `black_box` keeps the call out of tail position, or release builds drop this frame.
+    std::hint::black_box(acquire.poll(cx).map(|acquired| acquired.unwrap()))
+}
+
+/// When a task takes permits from an unfair semaphore, the semaphore blocks every waiter that can
+/// no longer succeed. That must not cost a future waiting there its await site.
+#[test]
+fn reblocked_future_keeps_its_await_site() {
+    let report = deadlock_report(|| {
+        check_random(
+            || {
+                let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::Unfair));
+                let queued = Arc::new(AtomicBool::new(false));
+                let (semaphore2, queued2) = (Arc::clone(&semaphore), Arc::clone(&queued));
+                let task = future::spawn(async move {
+                    // An acquire that cannot succeed has no scheduling point before it queues, so
+                    // once main sees this the task is queued on `semaphore`.
+                    queued2.store(true, Ordering::SeqCst);
+                    NamedAcquire(Box::pin(semaphore2.acquire(2))).await;
+                });
+                while !queued.load(Ordering::SeqCst) {
+                    thread::yield_now();
+                }
+                // Taking the last permit blocks the task, which wants two.
+                semaphore.try_acquire(1).unwrap();
+                future::block_on(task).unwrap();
+            },
+            1,
+        )
+    });
+
+    let entry = entry(&report, "<unknown>");
+    assert!(
+        has_frame(entry, "poll_acquire"),
+        "not shown at its await site:\n{entry}"
     );
 }
