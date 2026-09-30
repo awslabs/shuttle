@@ -11,9 +11,10 @@
 //! These implementations are built on top of the [`lock_api`] crate, exactly like the real
 //! `parking_lot` crate, and the module layout mirrors `parking_lot`'s:
 //!
-//! * `raw_mutex` / `raw_rwlock` contain the Shuttle-backed *raw* locks (`RawMutex` / `RawRwLock`,
-//!   built on Shuttle's `BatchSemaphore`) that route their blocking through Shuttle's scheduler by
-//!   implementing the relevant `lock_api` raw traits.
+//! * `raw_mutex` / `raw_rwlock` contain the Shuttle-backed *raw* locks that route their blocking
+//!   through Shuttle's scheduler by implementing the relevant `lock_api` raw traits. `RawMutex` is
+//!   built on Shuttle's `BatchSemaphore`. `RawRwLock` keeps the parts of `parking_lot`'s lock word
+//!   that decide who can take the lock, and applies the same checks (see its module docs).
 //! * `mutex` / `rwlock` contain the user-facing `Mutex` / `RwLock` types, which are the generic
 //!   `lock_api` containers and guards specialised to those raw locks.
 //!

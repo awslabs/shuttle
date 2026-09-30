@@ -21,13 +21,20 @@ deadlock_detection = []
 hardware-lock-elision = []
 
 [dependencies]
-# `RawRwLock` needs `BatchSemaphore::{upgrade, try_upgrade}`'s 0.9.4 semantics, and `try_upgrade`
-# does not exist before 0.9.4 at all.
 shuttle = { path = "../../../shuttle", version = ">=0.9.4, <0.10"}
+# `RawRwLock` uses parts of the engine that `shuttle` does not re-export: a scheduling point that
+# does not also yield (`runtime::thread::switch`), `ExecutionState` (`should_stop` and the current
+# task's clock), vector clocks, and annotations. This must resolve to the same `shuttle-engine` as
+# `shuttle` does. With a second copy, every `RwLock` operation panics, because that copy has no
+# execution. `shuttle` 0.9.4 requires `^0.1.2`. A `shuttle` release that requires a new engine
+# minor version (for example 0.2) must come with an impl release that requires the same version.
+shuttle-engine = { path = "../../../shuttle-engine", version = "0.1.2" }
 lock_api = "0.4"
 tracing = { version = "0.1.36", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+# `tests/rwlock_clocks.rs` reads vector clocks, which are empty without this feature.
+shuttle = { path = "../../../shuttle", features = ["vector-clocks"] }
 # `tests/rwlock_reference_model.rs` checks the parity tests' reference model against the real
 # `parking_lot`. The model copies 0.12.5. `Cargo.lock` is not tracked, so each CI run uses the newest
 # 0.12.x release, and a release that changes the behavior that the model copies fails the test, also
