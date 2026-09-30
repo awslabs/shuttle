@@ -541,3 +541,64 @@ fn reblocked_future_keeps_its_await_site() {
         "not shown at its await site:\n{entry}"
     );
 }
+
+#[inline(never)]
+fn register_unless_same(slot: &mut Option<Waker>, cx: &Context<'_>) {
+    if !slot.as_ref().is_some_and(|waker| waker.will_wake(cx.waker())) {
+        *slot = Some(cx.waker().clone());
+    }
+}
+
+/// Registers its waker the way `AtomicWaker` does: only if the one it already holds would not wake
+/// the same task. So it clones the waker on its first poll, and on a later poll only if the waker
+/// looks different.
+struct RegisterUnlessSame(Option<Waker>);
+
+impl Future for RegisterUnlessSame {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        register_unless_same(&mut self.0, cx);
+        Poll::Pending
+    }
+}
+
+/// A future that is polled again after something else woke its task, and that keeps the waker it
+/// registered the first time, is still shown at its await site, as the poll it is parked after
+/// recorded it.
+#[test]
+fn repolled_future_is_shown_at_its_await_site() {
+    let report = deadlock_report(|| {
+        check_random(
+            || {
+                let (tx, rx) = oneshot::channel::<()>();
+                let polled = Arc::new(AtomicBool::new(false));
+                let polled2 = Arc::clone(&polled);
+                let task = future::spawn(async move {
+                    // No scheduling point between this and the first poll of both branches, so
+                    // once main sees it, both have registered and the task has parked.
+                    polled2.store(true, Ordering::SeqCst);
+                    // The oneshot then fires, so the join is polled again with only the first
+                    // branch still waiting.
+                    futures::join!(RegisterUnlessSame(None), async { rx.await.unwrap() });
+                });
+                while !polled.load(Ordering::SeqCst) {
+                    thread::yield_now();
+                }
+                tx.send(()).unwrap();
+                future::block_on(task).unwrap();
+            },
+            1,
+        )
+    });
+
+    let entry = entry(&report, "<unknown>");
+    assert!(
+        has_frame(entry, "register_unless_same"),
+        "not shown at its await site:\n{entry}"
+    );
+    assert!(
+        !entry.contains("from an earlier poll"),
+        "shown with an await site from before the task was woken:\n{entry}"
+    );
+}

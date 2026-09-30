@@ -27,7 +27,7 @@ use tracing::{error_span, event, field, Level, Span};
 pub mod clock;
 pub mod labels;
 pub mod waker;
-use waker::make_waker;
+use waker::{make_poll_waker, make_waker};
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
@@ -467,8 +467,6 @@ impl Task {
 
         Self::new(
             Box::new(move || {
-                let waker = ExecutionState::with(|state| state.current_mut().waker());
-                let cx = &mut Context::from_waker(&waker);
                 // Read once, outside the loop: this is a process-wide constant, and the whole
                 // await-site machinery is dead weight when backtraces are off.
                 let capture_await_sites = crate::backtrace_enabled();
@@ -476,6 +474,9 @@ impl Task {
 
                 loop {
                     let (pending, captured) = {
+                        // A waker of its own for every poll; see `make_poll_waker`.
+                        let waker = make_poll_waker(id);
+                        let cx = &mut Context::from_waker(&waker);
                         let guard = capture_await_sites.then(crate::await_backtrace::PollGuard::new);
                         let pending = future.as_mut().poll(cx).is_pending();
                         (pending, guard.and_then(crate::await_backtrace::PollGuard::finish))

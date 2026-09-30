@@ -8,6 +8,7 @@
 use shuttle_engine::await_backtrace::{AwaitSite, PollGuard};
 use shuttle_engine::backtrace_enabled;
 use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::task::waker::make_poll_waker;
 use shuttle_engine::runtime::task::TaskId;
 use shuttle_engine::runtime::thread;
 use std::error::Error;
@@ -332,8 +333,7 @@ where
 /// Run a future to completion on the current thread.
 pub fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = Box::pin(future);
-    let waker = ExecutionState::with(|state| state.current_mut().waker());
-    let cx = &mut Context::from_waker(&waker);
+    let me = ExecutionState::me();
 
     // Note: we only switch on poll pending, since this blocks the current task. This means that *internal*
     // Shuttle futures which do not use other Shuttle primitives such as `batch_semaphore::Acquire` must
@@ -349,6 +349,9 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
 
     loop {
         let (polled, captured) = {
+            // A waker of its own for every poll; see `make_poll_waker`.
+            let waker = make_poll_waker(me);
+            let cx = &mut Context::from_waker(&waker);
             let guard = capture_await_sites.then(PollGuard::new);
             let polled = future.as_mut().poll(cx);
             (polled, guard.and_then(PollGuard::finish))
