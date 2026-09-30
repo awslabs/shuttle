@@ -15,8 +15,8 @@ use std::panic::{self, UnwindSafe};
 use std::pin::Pin;
 // std atomics on purpose: Shuttle cannot see them, so they add no scheduling points.
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Once};
-use std::task::{Context, Poll};
+use std::sync::{Arc, Mutex as StdMutex, Once};
+use std::task::{Context, Poll, Waker};
 
 /// Run `f`, which must deadlock, with backtrace capture on, and return the deadlock report.
 fn deadlock_report(f: impl FnOnce() + UnwindSafe) -> String {
@@ -427,5 +427,64 @@ fn lock_wait_elsewhere_does_not_hide_an_await_site() {
     assert!(
         has_frame(entry, "register_waker"),
         "not shown at its await site:\n{entry}"
+    );
+}
+
+/// Leaves its waker in the slot for another task to use, and never completes.
+struct LeaveWakerAndWait(Arc<StdMutex<Option<Waker>>>);
+
+impl Future for LeaveWakerAndWait {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        *self.0.lock().unwrap() = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+#[inline(never)]
+fn clone_foreign_waker(slot: &StdMutex<Option<Waker>>) {
+    drop(std::hint::black_box(slot.lock().unwrap().clone()));
+}
+
+/// Clones the waker in the slot, as a task about to wake its owner would, then waits without
+/// registering a waker of its own.
+struct CloneForeignWakerAndWait(Arc<StdMutex<Option<Waker>>>);
+
+impl Future for CloneForeignWakerAndWait {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+        clone_foreign_waker(&self.0);
+        Poll::Pending
+    }
+}
+
+/// Cloning another task's waker, to wake it later, is not a task registering for a wakeup of its
+/// own, so it is not that task's await site.
+#[test]
+fn cloning_another_tasks_waker_is_not_an_await_site() {
+    let report = deadlock_report(|| {
+        check_random(
+            || {
+                let slot = Arc::new(StdMutex::new(None));
+                let slot2 = Arc::clone(&slot);
+                thread::Builder::new()
+                    .name("waiter".into())
+                    .spawn(move || future::block_on(LeaveWakerAndWait(slot2)))
+                    .unwrap();
+                while slot.lock().unwrap().is_none() {
+                    thread::yield_now();
+                }
+                future::block_on(future::spawn(CloneForeignWakerAndWait(slot))).unwrap();
+            },
+            1,
+        )
+    });
+
+    let entry = entry(&report, "<unknown>");
+    assert!(
+        !has_frame(entry, "clone_foreign_waker"),
+        "shown at a clone of another task's waker:\n{entry}"
     );
 }
