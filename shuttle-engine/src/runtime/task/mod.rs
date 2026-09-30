@@ -238,6 +238,14 @@ impl TaskSignature {
     pub fn parent_signature_hash(&self) -> u64 {
         self.parent_signature_hash
     }
+
+    /// The place in the source where this task was spawned.
+    pub fn spawn_call_site(&self) -> &'static Location<'static> {
+        self.task_creation_stack
+            .last()
+            .expect("a task signature always records where the task was spawned")
+            .0
+    }
 }
 
 impl Hash for TaskSignature {
@@ -755,13 +763,19 @@ impl Task {
             if self.detached { ", detached" } else { "" },
             if self.sleeping() { ", pending future" } else { "" },
             if backtrace_enabled() {
+                // Where a task was spawned identifies it even when its backtrace cannot say where
+                // it waits. The main thread's creation site is inside the runner, so it has none.
+                let spawned_at = match self.parent_task_id {
+                    Some(_) => format!("\nSpawned at: {}", self.signature.spawn_call_site()),
+                    None => String::new(),
+                };
                 let note = if self.await_site_from_earlier_poll {
                     " (from an earlier poll: later polls returned `Pending` without cloning the waker, so the task may \
                      be waiting at a later await)"
                 } else {
                     ""
                 };
-                format_backtraces(&self.backtraces, note)
+                format!("{spawned_at}{}", format_backtraces(&self.backtraces, note))
             } else {
                 "".into()
             }

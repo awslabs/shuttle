@@ -15,7 +15,7 @@ use std::future::Future;
 use std::panic::{self, UnwindSafe};
 use std::pin::Pin;
 // std atomics on purpose: Shuttle cannot see them, so they add no scheduling points.
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Once};
 use std::task::{Context, Poll, Waker};
 
@@ -642,4 +642,28 @@ fn every_branch_of_a_join_is_shown() {
         has_frame(entry, "register_waker_too"),
         "second branch missing:\n{entry}"
     );
+}
+
+/// A deadlocked task says where it was spawned, which identifies it even when its backtrace does
+/// not. The main thread was not spawned by the test, so it does not.
+#[test]
+fn spawn_site_is_shown() {
+    static SPAWN_LINE: AtomicU32 = AtomicU32::new(0);
+    let report = deadlock_report(|| {
+        check_random(
+            || {
+                let (task, line) = (future::spawn(WaitForever), line!());
+                SPAWN_LINE.store(line, Ordering::SeqCst);
+                future::block_on(task).unwrap();
+            },
+            1,
+        )
+    });
+
+    let line = SPAWN_LINE.load(Ordering::SeqCst);
+    let spawned = entry(&report, "<unknown>");
+    let expected = format!("Spawned at: {}:{line}:", file!());
+    assert!(spawned.contains(&expected), "no `{expected}` in:\n{spawned}");
+    let main = entry(&report, "main-thread");
+    assert!(!main.contains("Spawned at"), "main thread has a spawn site:\n{main}");
 }
