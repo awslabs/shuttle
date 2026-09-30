@@ -577,11 +577,11 @@ impl Task {
         // (see `ContinuationInput::CaptureBacktrace`). Capturing here instead would mean ~70k stack
         // walks to print a handful, since this field is overwritten on every block.
         //
-        // But do drop whatever an earlier `Poll::Pending` captured: the task is not parked there any
-        // more, and the deadlock handler only captures for a task that has no backtrace, so leaving
-        // it would print where the task used to wait instead of where it blocks now.
-        self.backtrace = None;
-        self.await_site_from_earlier_poll = false;
+        // Nor is an await site dropped here. A task carries one only while it is parked in the
+        // driver loop that recorded it, which takes it back as soon as the task is switched back in
+        // (see `crate::await_backtrace::AwaitSite`), so a task that blocks itself has none. A task
+        // blocked by another one, as an unfair semaphore blocks the waiters that can no longer
+        // succeed, may still be parked on its future, and then its await site is where it waits.
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
