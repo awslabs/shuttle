@@ -26,6 +26,10 @@ regex = { version = "1.10.6", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 
+# Checks and symbolizes the frame-pointer backtraces that `runtime::task::backtrace` captures.
+[target.'cfg(all(any(target_vendor = "apple", target_os = "linux"), any(target_arch = "aarch64", target_arch = "x86_64"), target_pointer_width = "64"))'.dependencies]
+backtrace = "0.3.76"
+
 [dev-dependencies]
 proptest = "1.0.0"
 

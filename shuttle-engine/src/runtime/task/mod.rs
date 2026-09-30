@@ -12,7 +12,6 @@ use crate::thread_support::LocalKey;
 use bitvec::prelude::*;
 use corosensei::Yielder;
 use std::any::Any;
-use std::backtrace::Backtrace;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -24,9 +23,11 @@ use std::sync::Arc;
 use std::task::{Context, Waker};
 use tracing::{error_span, event, field, Level, Span};
 
+pub(crate) mod backtrace;
 pub mod clock;
 pub mod labels;
 pub mod waker;
+pub use self::backtrace::TaskBacktrace;
 use waker::make_waker;
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
@@ -308,7 +309,7 @@ pub struct Task {
     /// - A task parked on a pending future has already unwound its `poll` stack by the time it
     ///   suspends, so its await site is captured while that stack is still live, from the waker
     ///   (see [`crate::await_backtrace`]).
-    pub backtrace: Option<Backtrace>,
+    pub backtrace: Option<TaskBacktrace>,
 
     /// Whether `backtrace` is an await site recorded by an earlier poll than the one the task is
     /// parked after, because that one returned `Pending` without cloning the waker (see
