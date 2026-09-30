@@ -56,12 +56,16 @@ pub mod await_backtrace {
     //! (see [`crate::runtime::task::waker`]). That works for arbitrary user futures, not just
     //! Shuttle's own leaves.
     //!
-    //! Not every `Pending` comes with a clone, though. A future that already holds a waker that
-    //! [`will_wake`](std::task::Waker::will_wake) the task may skip it, as `AtomicWaker::register`
-    //! does, so polling it again records nothing. [`AwaitSite`] then keeps the site recorded for the
-    //! task's previous park and marks it as coming from an earlier poll. Usually the task is still
-    //! waiting on that same future, but it may have moved on to a later await whose future skipped
-    //! the clone too, and the report says it may be stale.
+    //! A future that already holds a waker that [`will_wake`](std::task::Waker::will_wake) the task
+    //! may skip the clone, as `AtomicWaker::register` does. So every poll gets a waker of its own
+    //! (see [`make_poll_waker`](crate::runtime::task::waker::make_poll_waker)), which such a future
+    //! clones again, from where it waits now.
+    //!
+    //! Not every `Pending` comes with a clone, though: a future may register once and never again,
+    //! or not at all. [`AwaitSite`] then keeps the site recorded for the task's previous park and
+    //! marks it as coming from an earlier poll. Usually the task is still waiting on that same
+    //! future, but it may have moved on to a later await whose future skipped the clone too, and the
+    //! report says it may be stale.
     //!
     //! Three guards keep it honest:
     //! - [`PollGuard`] marks the dynamic extent of a driver-loop `poll` and gives it its own capture,
