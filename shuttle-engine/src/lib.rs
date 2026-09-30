@@ -76,7 +76,8 @@ pub mod await_backtrace {
     //!   tasks then run on the same thread, so the guard sets the task's state aside until it is
     //!   switched back in.
 
-    use crate::runtime::task::Task;
+    use crate::runtime::execution::ExecutionState;
+    use crate::runtime::task::{Task, TaskId};
     use std::backtrace::Backtrace;
     use std::cell::{Cell, RefCell};
 
@@ -182,15 +183,24 @@ pub mod await_backtrace {
         crate::backtrace_enabled() && IN_POLL_DEPTH.get() > 0 && INTERNAL_BLOCK_ON_DEPTH.get() == 0
     }
 
-    /// Called from the waker vtable's `clone`. If we are inside a user future's `poll`, this stack
-    /// contains the await chain, so record it.
+    /// Whether `owner`, whose waker is being cloned, is the task that is running. A task that
+    /// clones another task's waker, to wake it later, is not registering for a wakeup of its own.
+    ///
+    /// If the execution state is already borrowed, the clone is Shuttle's own bookkeeping rather
+    /// than a user future's, so it is not an await site either.
+    fn is_running(owner: TaskId) -> bool {
+        ExecutionState::try_with(|state| state.try_current().is_some_and(|task| task.id() == owner)).unwrap_or(false)
+    }
+
+    /// Called from the waker vtable's `clone` with the task the waker belongs to. If we are inside
+    /// that task's own `poll`, this stack contains its await chain, so record it.
     ///
     /// Inlined because it sits on the waker-clone path, which every future that returns `Pending`
     /// exercises whether or not backtraces are enabled; inlining lets the `should_capture` check
     /// collapse to a load and a branch.
     #[inline]
-    pub fn note_waker_clone() {
-        if should_capture() {
+    pub fn note_waker_clone(owner: TaskId) {
+        if should_capture() && is_running(owner) {
             let backtrace = Backtrace::force_capture();
             CAPTURED.with(|slot| *slot.borrow_mut() = Some(backtrace));
         }
