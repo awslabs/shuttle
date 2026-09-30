@@ -602,3 +602,44 @@ fn repolled_future_is_shown_at_its_await_site() {
         "shown with an await site from before the task was woken:\n{entry}"
     );
 }
+
+#[inline(never)]
+fn register_waker_too(cx: &Context<'_>) {
+    // Not the same body as `register_waker`, so that a release build cannot fold the two into one.
+    drop(std::hint::black_box((cx.waker().clone(), "too")));
+}
+
+/// Like `WaitForever`, but registers from a function of its own.
+struct AlsoWaitForever;
+
+impl Future for AlsoWaitForever {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        register_waker_too(cx);
+        Poll::Pending
+    }
+}
+
+/// A future waiting on both branches of a `join!` is shown at both.
+#[test]
+fn every_branch_of_a_join_is_shown() {
+    let report = deadlock_report(|| {
+        check_random(
+            || {
+                future::block_on(future::spawn(async {
+                    futures::join!(WaitForever, AlsoWaitForever);
+                }))
+                .unwrap();
+            },
+            1,
+        )
+    });
+
+    let entry = entry(&report, "<unknown>");
+    assert!(has_frame(entry, "register_waker"), "first branch missing:\n{entry}");
+    assert!(
+        has_frame(entry, "register_waker_too"),
+        "second branch missing:\n{entry}"
+    );
+}

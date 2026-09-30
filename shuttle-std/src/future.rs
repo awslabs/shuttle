@@ -354,7 +354,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
             let cx = &mut Context::from_waker(&waker);
             let guard = capture_await_sites.then(PollGuard::new);
             let polled = future.as_mut().poll(cx);
-            (polled, guard.and_then(PollGuard::finish))
+            (polled, guard.map(PollGuard::finish).unwrap_or_default())
         };
         match polled {
             Poll::Ready(result) => break result,

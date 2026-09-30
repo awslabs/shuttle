@@ -333,19 +333,21 @@ pub struct Task {
     #[allow(deprecated)]
     tag: Option<Arc<dyn Tag>>,
 
-    /// If [`crate::CAPTURE_BACKTRACE`] is set then this holds the backtrace to print if the test
-    /// fails. It is filled in by whichever of two paths applies:
+    /// If [`crate::CAPTURE_BACKTRACE`] is set then this holds the backtraces to print if the test
+    /// fails. They are filled in by whichever of two paths applies:
     ///
     /// - A task blocked in a synchronous primitive stays suspended inside `continuation::switch`
     ///   with its whole call chain intact on its coroutine stack, so nothing is captured while it
     ///   runs; the deadlock handler resumes it to walk its own stack (see
-    ///   [`crate::runtime::thread::continuation::ContinuationInput::CaptureBacktrace`]).
+    ///   [`crate::runtime::thread::continuation::ContinuationInput::CaptureBacktrace`]), which
+    ///   gives one backtrace.
     /// - A task parked on a pending future has already unwound its `poll` stack by the time it
-    ///   suspends, so its await site is captured while that stack is still live, from the waker
-    ///   (see [`crate::await_backtrace`]).
-    pub backtrace: Option<Backtrace>,
+    ///   suspends, so its await sites are captured while that stack is still live, from the waker
+    ///   (see [`crate::await_backtrace`]): one for each clone of its waker, so one for each branch
+    ///   of a `join!` or `select!` that registered.
+    pub backtraces: Vec<Backtrace>,
 
-    /// Whether `backtrace` is an await site recorded by an earlier poll than the one the task is
+    /// Whether `backtraces` are await sites recorded by an earlier poll than the one the task is
     /// parked after, because that one returned `Pending` without cloning the waker (see
     /// [`crate::await_backtrace::AwaitSite`]).
     pub(crate) await_site_from_earlier_poll: bool,
@@ -403,7 +405,7 @@ impl Task {
             span_stack,
             local_storage: StorageMap::new(),
             tag: None,
-            backtrace: None,
+            backtraces: Vec::new(),
             await_site_from_earlier_poll: false,
             signature,
         };
@@ -479,7 +481,10 @@ impl Task {
                         let cx = &mut Context::from_waker(&waker);
                         let guard = capture_await_sites.then(crate::await_backtrace::PollGuard::new);
                         let pending = future.as_mut().poll(cx).is_pending();
-                        (pending, guard.and_then(crate::await_backtrace::PollGuard::finish))
+                        (
+                            pending,
+                            guard.map(crate::await_backtrace::PollGuard::finish).unwrap_or_default(),
+                        )
                     };
                     if !pending {
                         break;
@@ -756,16 +761,35 @@ impl Task {
                 } else {
                     ""
                 };
-                match &self.backtrace {
-                    // `Display` prints the numbered `N: function` / `at file:line:col` layout that panics
-                    // use under `RUST_BACKTRACE=1`, and ends each frame with a newline.
-                    Some(backtrace) => format!("\nBacktrace{note}:\n{backtrace}"),
-                    None => "\nBacktrace: <not captured>\n".into(),
-                }
+                format_backtraces(&self.backtraces, note)
             } else {
                 "".into()
             }
         )
+    }
+}
+
+/// Format the backtraces of a deadlocked task, each headed with `note`: one for a task blocked in a
+/// synchronous primitive, and one per await site for a task parked on a future. Identical ones are
+/// printed once, since a future may clone its waker more than once from the same place.
+fn format_backtraces(backtraces: &[Backtrace], note: &str) -> String {
+    // `Display` prints the numbered `N: function` / `at file:line:col` layout that panics use under
+    // `RUST_BACKTRACE=1`, and ends each frame with a newline.
+    let mut distinct: Vec<String> = Vec::new();
+    for backtrace in backtraces {
+        let formatted = backtrace.to_string();
+        if !distinct.contains(&formatted) {
+            distinct.push(formatted);
+        }
+    }
+    match distinct.as_slice() {
+        [] => format!("\nBacktrace{note}: <not captured>\n"),
+        [backtrace] => format!("\nBacktrace{note}:\n{backtrace}"),
+        backtraces => backtraces
+            .iter()
+            .enumerate()
+            .map(|(i, backtrace)| format!("\nBacktrace {} of {}{note}:\n{backtrace}", i + 1, backtraces.len()))
+            .collect(),
     }
 }
 
