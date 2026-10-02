@@ -5,7 +5,7 @@
 //!
 //! [`futures::executor`]: https://docs.rs/futures/0.3.13/futures/executor/index.html
 
-use shuttle_engine::await_backtrace::{AwaitSite, PollGuard};
+use shuttle_engine::await_backtrace::{AwaitSite, PollGuard, WaitRecord};
 use shuttle_engine::backtrace_enabled;
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::waker::make_poll_waker;
@@ -42,6 +42,7 @@ where
         task_id,
         inner,
         aborted,
+        wait_record: WaitRecord::default(),
     }
 }
 
@@ -121,6 +122,9 @@ pub struct JoinHandle<T> {
     task_id: TaskId,
     inner: Arc<std::sync::Mutex<JoinHandleInner<T>>>,
     aborted: Arc<AtomicBool>,
+    /// Where this handle is awaited, if it is polled under a waker that is not Shuttle's, as
+    /// inside `FuturesUnordered` or tokio's `JoinSet`. See [`WaitRecord`].
+    wait_record: WaitRecord,
 }
 
 #[derive(Debug)]
@@ -223,13 +227,18 @@ impl<T> Future for JoinHandle<T> {
     type Output = Result<T, JoinError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut lock = self.inner.lock().unwrap();
+        let this = self.get_mut();
+        let mut lock = this.inner.lock().unwrap();
         if let Some(result) = lock.result.take() {
+            this.wait_record.complete();
             Poll::Ready(result)
         } else {
-            // Cloning the waker is also what records this await site for the deadlock report, through
-            // Shuttle's waker vtable (see `shuttle_engine::await_backtrace`).
+            // Cloning a Shuttle waker is also what records this await site for the deadlock report
+            // (see `shuttle_engine::await_backtrace`). Another waker, as inside `FuturesUnordered`,
+            // records nothing, so keep a wait record for that case.
             lock.waker = Some(cx.waker().clone());
+            drop(lock);
+            this.wait_record.note_pending_join(cx.waker(), this.task_id);
             Poll::Pending
         }
     }

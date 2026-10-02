@@ -146,6 +146,7 @@ impl Execution {
         F: FnOnce() + Send + 'static,
     {
         let state = RefCell::new(ExecutionState::new(config.clone(), Rc::clone(&self.scheduler)));
+        crate::await_backtrace::reset_wait_records();
 
         init_panic_hook(config.clone());
         CurrentSchedule::init(self.initial_schedule.clone());
