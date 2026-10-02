@@ -242,7 +242,7 @@ macro_rules! assert_ok {
 #[macro_export]
 macro_rules! assert_err {
     ($e:expr) => {
-        assert_err!($e,);
+        assert_err!($e,)
     };
     ($e:expr,) => {{
         use std::result::Result::*;
