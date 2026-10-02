@@ -8,6 +8,8 @@
 //! frame of its own.
 
 use futures::channel::oneshot;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use shuttle::future::batch_semaphore::{Acquire, BatchSemaphore, Fairness};
 use shuttle::sync::{Condvar, Mutex};
 use shuttle::{check_dfs, check_random, future, thread};
@@ -666,4 +668,145 @@ fn spawn_site_is_shown() {
     assert!(spawned.contains(&expected), "no `{expected}` in:\n{spawned}");
     let main = entry(&report, "main-thread");
     assert!(!main.contains("Spawned at"), "main thread has a spawn site:\n{main}");
+}
+
+/// One of two children of a `FuturesUnordered` that wait on a semaphore, each from a function of its
+/// own.
+struct Child<'a>(Pin<Box<Acquire<'a>>>, bool);
+
+impl Future for Child<'_> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.1 {
+            child_a_waits(self.0.as_mut(), cx)
+        } else {
+            child_b_waits(self.0.as_mut(), cx)
+        }
+    }
+}
+
+#[inline(never)]
+fn child_a_waits(acquire: Pin<&mut Acquire<'_>>, cx: &mut Context<'_>) -> Poll<()> {
+    std::hint::black_box(acquire.poll(cx).map(|acquired| acquired.unwrap()))
+}
+
+#[inline(never)]
+fn child_b_waits(acquire: Pin<&mut Acquire<'_>>, cx: &mut Context<'_>) -> Poll<()> {
+    // Not the same body as `child_a_waits`, so that a release build cannot fold the two into one.
+    std::hint::black_box(acquire.poll(cx).map(|acquired| {
+        acquired.unwrap();
+        std::hint::black_box(1u8);
+    }))
+}
+
+/// `FuturesUnordered` polls its children with wakers of its own, so a child's wait is recorded by
+/// the Shuttle future it waits on rather than by a waker clone.
+#[test]
+fn futures_unordered_children_are_shown_where_they_wait() {
+    let report = deadlock_report(|| {
+        check_random(
+            || {
+                future::block_on(future::spawn(async {
+                    let semaphore = BatchSemaphore::new(0, Fairness::StrictlyFair);
+                    let mut children = FuturesUnordered::new();
+                    children.push(Child(Box::pin(semaphore.acquire(1)), true));
+                    children.push(Child(Box::pin(semaphore.acquire(1)), false));
+                    while children.next().await.is_some() {}
+                }))
+                .unwrap();
+            },
+            1,
+        )
+    });
+
+    let entry = entry(&report, "<unknown>");
+    assert!(has_frame(entry, "child_a_waits"), "first child missing:\n{entry}");
+    assert!(has_frame(entry, "child_b_waits"), "second child missing:\n{entry}");
+}
+
+/// A task joining tasks through a `FuturesUnordered`, as tokio's `JoinSet` does, says which tasks.
+#[test]
+fn futures_unordered_join_handles_name_the_tasks_they_join() {
+    let report = deadlock_report(|| {
+        check_random(
+            || {
+                let (_tx, rx) = oneshot::channel::<()>();
+                future::block_on(future::spawn(async move {
+                    let mut set = FuturesUnordered::new();
+                    set.push(future::spawn(async move {
+                        let _ = rx.await;
+                    }));
+                    while set.next().await.is_some() {}
+                }))
+                .unwrap();
+            },
+            1,
+        )
+    });
+
+    let joiner = report
+        .split("\n, ")
+        .find(|entry| entry.contains("Waiting inside a combinator"))
+        .unwrap_or_else(|| panic!("no task waits inside a combinator:\n{report}"));
+    assert!(joiner.contains(", joining task "), "joined task not named:\n{joiner}");
+}
+
+/// A future polled under another waker and then dropped while pending leaves nothing behind.
+#[test]
+fn a_dropped_pending_future_leaves_no_wait_record() {
+    let report = deadlock_report(|| {
+        check_random(
+            || {
+                future::block_on(future::spawn(async {
+                    let semaphore = BatchSemaphore::new(0, Fairness::StrictlyFair);
+                    let mut acquire = Box::pin(semaphore.acquire(1));
+                    let waker = futures::task::noop_waker();
+                    assert!(acquire.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+                    drop(acquire);
+                    std::future::pending::<()>().await;
+                }))
+                .unwrap();
+            },
+            1,
+        )
+    });
+
+    let entry = entry(&report, "<unknown>");
+    assert!(
+        !entry.contains("Waiting inside a combinator"),
+        "record outlived its future:\n{entry}"
+    );
+}
+
+/// A deadlocked execution never drops its futures, so their records must not reach the next one.
+#[test]
+fn wait_records_do_not_outlive_their_execution() {
+    let first = deadlock_report(|| {
+        check_random(
+            || {
+                future::block_on(future::spawn(async {
+                    let semaphore = BatchSemaphore::new(0, Fairness::StrictlyFair);
+                    let mut children = FuturesUnordered::new();
+                    children.push(Child(Box::pin(semaphore.acquire(1)), true));
+                    while children.next().await.is_some() {}
+                }))
+                .unwrap();
+            },
+            1,
+        )
+    });
+    assert!(has_frame(entry(&first, "<unknown>"), "child_a_waits"));
+
+    let second = deadlock_report(|| {
+        check_random(
+            || future::block_on(future::spawn(std::future::pending::<()>())).unwrap(),
+            1,
+        )
+    });
+    let entry = entry(&second, "<unknown>");
+    assert!(
+        !entry.contains("Waiting inside a combinator"),
+        "record from an earlier execution:\n{entry}"
+    );
 }

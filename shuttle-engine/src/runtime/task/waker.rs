@@ -29,6 +29,12 @@ fn waker_from_data(data: usize) -> Waker {
     unsafe { Waker::from_raw(RawWaker::new(data as *const (), &RAW_WAKER_VTABLE)) }
 }
 
+/// Whether `waker` is one of Shuttle's, rather than one a combinator such as `FuturesUnordered`
+/// made for a child it polls.
+pub(crate) fn is_shuttle_waker(waker: &Waker) -> bool {
+    std::ptr::eq(waker.vtable(), &RAW_WAKER_VTABLE)
+}
+
 /// Create a `Waker` that will make the given `task_id` runnable when invoked.
 pub fn make_waker(task_id: TaskId) -> Waker {
     // We stash the task ID into the bits of the `data` pointer that all the vtable method below
