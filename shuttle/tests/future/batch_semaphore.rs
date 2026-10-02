@@ -703,6 +703,298 @@ fn bugged_cleanup_would_cause_deadlock() {
     )
 }
 
+/// Tests of `BatchSemaphore::acquire_reserving`, and of `upgrade` on an unfair semaphore, which
+/// reserves the semaphore too.
+mod reservation_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    /// Whether an event of `task` happens before the current point of the current task.
+    fn after(task: usize) -> bool {
+        let clock = current::clock();
+        let times: &[u32] = &clock;
+        times.get(task).is_some_and(|&time| time > 0)
+    }
+
+    /// Until `min_permits` permits are available, a reserving acquire holds nothing and stops no
+    /// other request. Here the main task holds 3 of 4 permits, so the reserver, which reserves at
+    /// 2, waits, and the main task still gets the last permit.
+    #[test_log::test]
+    fn waits_without_reserving_below_min_permits() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(4, Fairness::Unfair));
+                sem.acquire_blocking(3).unwrap();
+                let reserver = {
+                    let sem = sem.clone();
+                    thread::spawn(move || {
+                        future::block_on(sem.acquire_reserving(2, 4)).unwrap();
+                        sem.release(4);
+                    })
+                };
+                sem.acquire_blocking(1).unwrap();
+                sem.release(4);
+                reserver.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// Once `min_permits` permits are available, the request reserves the semaphore: no other
+    /// request can take a permit until the reservation is granted, although permits are free.
+    #[test_log::test]
+    fn reservation_keeps_permits_from_other_requests() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = Arc::new(BatchSemaphore::new(4, Fairness::Unfair));
+                    // The main task holds one permit, like a reader of an `RwLock`.
+                    sem.acquire(1).await.unwrap();
+                    let mut reserve = Box::pin(sem.acquire_reserving(2, 4));
+                    // 3 permits are available, which is at least 2, so this reserves the semaphore.
+                    assert!(futures::poll!(reserve.as_mut()).is_pending());
+                    assert_eq!(sem.available_permits(), 0);
+
+                    let granted = Arc::new(AtomicBool::new(false));
+                    let other = future::spawn({
+                        let (sem, granted) = (sem.clone(), granted.clone());
+                        async move {
+                            if sem.try_acquire(1).is_ok() {
+                                assert!(granted.load(Ordering::SeqCst), "try_acquire took a reserved permit");
+                                sem.release(1);
+                            }
+                            sem.acquire(1).await.unwrap();
+                            assert!(granted.load(Ordering::SeqCst), "acquire took a reserved permit");
+                            sem.release(1);
+                        }
+                    });
+
+                    sem.release(1);
+                    reserve.await.unwrap();
+                    granted.store(true, Ordering::SeqCst);
+                    sem.release(4);
+                    other.await.unwrap();
+                });
+            },
+            None,
+        );
+    }
+
+    /// The reserver takes the permits that the holders release, so it is after each holder that
+    /// released, and not after a task that was not let in before it.
+    #[test_log::test]
+    fn reserver_is_after_the_releases_it_waits_for() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(4, Fairness::Unfair));
+                let held = Arc::new(Mutex::new(Vec::new()));
+                let holders = (0..2)
+                    .map(|_| {
+                        let (sem, held) = (sem.clone(), held.clone());
+                        thread::spawn(move || {
+                            sem.acquire_blocking(1).unwrap();
+                            held.lock().unwrap().push(me());
+                            sem.release(1);
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let holder_ids = holders
+                    .iter()
+                    .map(|holder| usize::from(holder.thread().id()))
+                    .collect::<Vec<_>>();
+
+                future::block_on(sem.acquire_reserving(1, 4)).unwrap();
+                {
+                    let held = held.lock().unwrap();
+                    for id in holder_ids {
+                        assert_eq!(after(id), held.contains(&id), "holder {id}, holders {held:?}");
+                    }
+                }
+                sem.release(4);
+                for holder in holders {
+                    holder.join().unwrap();
+                }
+            },
+            None,
+        );
+    }
+
+    /// Only one request can hold the reservation. A second reserving request waits until the
+    /// first is granted, although on its own (with `min_permits` 0) it would reserve at once.
+    #[test_log::test]
+    fn one_reservation_at_a_time() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = Arc::new(BatchSemaphore::new(4, Fairness::Unfair));
+                    sem.acquire(1).await.unwrap();
+                    let mut first = Box::pin(sem.acquire_reserving(1, 4));
+                    assert!(futures::poll!(first.as_mut()).is_pending());
+
+                    let granted = Arc::new(AtomicBool::new(false));
+                    let second = future::spawn({
+                        let (sem, granted) = (sem.clone(), granted.clone());
+                        async move {
+                            sem.acquire_reserving(0, 1).await.unwrap();
+                            assert!(
+                                granted.load(Ordering::SeqCst),
+                                "a second reservation overtook the first"
+                            );
+                            sem.release(1);
+                        }
+                    });
+
+                    sem.release(1);
+                    first.await.unwrap();
+                    granted.store(true, Ordering::SeqCst);
+                    sem.release(4);
+                    second.await.unwrap();
+                    assert_eq!(sem.available_permits(), 4);
+                });
+            },
+            None,
+        );
+    }
+
+    /// Dropping a reserving acquire that holds the reservation ends the reservation, and the
+    /// permits it kept are available again, also to a task that already waits for them.
+    #[test_log::test]
+    fn dropped_reservation_frees_the_permits() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = Arc::new(BatchSemaphore::new(2, Fairness::Unfair));
+                    sem.acquire(1).await.unwrap();
+                    let mut reserve = Box::pin(sem.acquire_reserving(1, 2));
+                    assert!(futures::poll!(reserve.as_mut()).is_pending());
+                    let other = future::spawn({
+                        let sem = sem.clone();
+                        async move {
+                            sem.acquire(1).await.unwrap();
+                            sem.release(1);
+                        }
+                    });
+                    drop(reserve);
+                    other.await.unwrap();
+                    sem.release(1);
+                    assert_eq!(sem.available_permits(), 2);
+                });
+            },
+            None,
+        );
+    }
+
+    /// Closing the semaphore wakes the holder of the reservation, which then fails.
+    #[test_log::test]
+    fn close_wakes_the_reserver() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = Arc::new(BatchSemaphore::new(2, Fairness::Unfair));
+                    sem.acquire(1).await.unwrap();
+                    let reserver = future::spawn({
+                        let sem = sem.clone();
+                        async move { sem.acquire_reserving(1, 2).await }
+                    });
+                    sem.close();
+                    assert!(reserver.await.unwrap().is_err());
+                });
+            },
+            None,
+        );
+    }
+
+    /// A reservation whose task finished without dropping its `Acquire` must not keep the permits
+    /// from everyone else. A release drops it, and the abandoned `Acquire` still works when a live
+    /// task polls it (see `release_to_waiter_of_finished_task`).
+    #[test_log::test]
+    fn reservation_of_finished_task_is_dropped() {
+        shuttle::lazy_static! {
+            static ref SEM: BatchSemaphore = BatchSemaphore::new(2, Fairness::Unfair);
+        }
+
+        check_dfs(
+            || {
+                future::block_on(async {
+                    SEM.acquire(1).await.unwrap();
+                    let acquire = Arc::new(Mutex::new(None));
+                    let registrant = future::spawn({
+                        let acquire = acquire.clone();
+                        async move {
+                            let mut acq = Box::pin(SEM.acquire_reserving(1, 2));
+                            assert!(futures::poll!(acq.as_mut()).is_pending());
+                            *acquire.lock().unwrap() = Some(acq);
+                        }
+                    });
+                    registrant.await.unwrap();
+
+                    SEM.release(1);
+                    assert_eq!(
+                        SEM.available_permits(),
+                        2,
+                        "the reservation of a finished task kept the permits"
+                    );
+
+                    let acq = acquire.lock().unwrap().take().unwrap();
+                    acq.await.unwrap();
+                    assert_eq!(SEM.available_permits(), 0);
+                    SEM.release(2);
+                });
+            },
+            None,
+        );
+    }
+
+    /// On an unfair semaphore, an upgrade reserves the semaphore at once: new requests wait until
+    /// the upgrade is granted, and the upgrade waits only for the permits that are held.
+    #[test_log::test]
+    fn unfair_upgrade_reserves_the_semaphore() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = Arc::new(BatchSemaphore::new(4, Fairness::Unfair));
+                    // The upgrading task's permits, and one permit of a reader.
+                    sem.acquire(2).await.unwrap();
+                    sem.acquire(1).await.unwrap();
+                    let mut upgrade = Box::pin(sem.upgrade(2, 4));
+                    assert!(futures::poll!(upgrade.as_mut()).is_pending());
+                    assert_eq!(sem.available_permits(), 0);
+
+                    let granted = Arc::new(AtomicBool::new(false));
+                    let other = future::spawn({
+                        let (sem, granted) = (sem.clone(), granted.clone());
+                        async move {
+                            sem.acquire(1).await.unwrap();
+                            assert!(granted.load(Ordering::SeqCst), "a request overtook the upgrade");
+                            sem.release(1);
+                        }
+                    });
+
+                    // The reader leaves.
+                    sem.release(1);
+                    upgrade.await.unwrap();
+                    granted.store(true, Ordering::SeqCst);
+                    sem.release(4);
+                    other.await.unwrap();
+                });
+            },
+            None,
+        );
+    }
+
+    #[test_log::test]
+    #[should_panic(expected = "only an unfair semaphore supports reservations")]
+    fn reserving_on_a_fair_semaphore_panics() {
+        check_dfs(
+            || {
+                let sem = BatchSemaphore::new(1, Fairness::StrictlyFair);
+                drop(sem.acquire_reserving(1, 1));
+            },
+            None,
+        );
+    }
+}
+
 // This test exercises scenarios to ensure that the BatchSemaphore behaves correctly in the presence
 // of tasks that drop an `Acquire` guard without waiting for the semaphore to become available.
 //
