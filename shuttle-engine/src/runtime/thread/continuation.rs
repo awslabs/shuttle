@@ -26,6 +26,8 @@ pub struct Continuation {
     function: ContinuationFunction,
     state: ContinuationState,
     pub yielder: *const Yielder<ContinuationInput, ContinuationOutput>,
+    // The stack size this continuation was created with. Its stack is at least this large.
+    stack_size: usize,
 }
 
 impl std::fmt::Debug for Continuation {
@@ -119,6 +121,7 @@ impl Continuation {
             yielder,
             function,
             state: ContinuationState::NotReady,
+            stack_size,
         }
     }
 
@@ -235,19 +238,28 @@ impl ContinuationPool {
         }
     }
 
+    /// The number of continuations currently waiting in the pool to be reused.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.continuations.borrow().len()
+    }
+
     /// Acquire a new continuation from the global pool. Panics if that pool was not yet initialized.
     pub fn acquire(stack_size: usize) -> PooledContinuation {
         CONTINUATION_POOL.with(|p| p.acquire_inner(stack_size))
     }
 
     fn acquire_inner(&self, stack_size: usize) -> PooledContinuation {
-        // TODO add a check to ensure that if we recycled a continuation, its
-        // TODO allocated stack size is at least the requested `stack_size`
-        let continuation = self
-            .continuations
-            .borrow_mut()
-            .pop_front()
-            .unwrap_or_else(move || Continuation::new(stack_size));
+        // The pool holds continuations of every task that has finished, whatever stack size it
+        // asked for, so only reuse one whose stack is large enough for this request.
+        let recycled = {
+            let mut continuations = self.continuations.borrow_mut();
+            continuations
+                .iter()
+                .position(|c| c.stack_size >= stack_size)
+                .and_then(|i| continuations.remove(i))
+        };
+        let continuation = recycled.unwrap_or_else(move || Continuation::new(stack_size));
 
         PooledContinuation {
             continuation: Some(continuation),
@@ -351,10 +363,12 @@ pub fn switch() {
     trace!("switch from {}", Location::caller());
     if ExecutionState::maybe_yield() {
         let yielder = ExecutionState::with(|state| state.current().yielder);
+        assert!(!yielder.is_null(), "a task cannot switch after it has finished");
 
         // SAFETY: A yielder reference will be valid for the lifetime of the continuation (see `corosensei::Coroutine::with_stack`)
-        // The yielder field is stored on the Task, whose lifetime is necessarily subsumed by the lifetime of the continuation which contains it.
-        // As a result, the task struct cannot contain an invalidated pointer to it's yielder. There are no mutable references to the yielder.
+        // A task holds its continuation until it finishes, and nulls its yielder when it gives the continuation up, so a
+        // non-null yielder always points into the continuation of the task that is running it. There are no mutable
+        // references to the yielder.
         match unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded) {
             ContinuationInput::Exit => panic!("unexpected exit continuation"),
             ContinuationInput::Resume => {}
@@ -413,5 +427,31 @@ mod tests {
         // Check that it's safe for a continuation to outlive the pool
         drop(pool);
         drop(c);
+    }
+
+    #[test]
+    fn recycled_continuation_has_a_large_enough_stack() {
+        const SMALL: usize = 0x8000;
+        const LARGE: usize = 0x80000;
+
+        let pool = ContinuationPool::new();
+
+        let mut c = pool.acquire_inner(SMALL);
+        c.initialize(Box::new(|| {}));
+        assert!(c.resume());
+        drop(c);
+        assert_eq!(pool.len(), 1);
+
+        // The pooled continuation's stack is too small for this request, so it must not be reused.
+        let c = pool.acquire_inner(LARGE);
+        assert!(c.stack_size >= LARGE);
+        assert_eq!(pool.len(), 1, "the small continuation should stay in the pool");
+        drop(c);
+        assert_eq!(pool.len(), 2);
+
+        // Any pooled continuation is large enough for a small request.
+        let c = pool.acquire_inner(SMALL);
+        assert!(c.stack_size >= SMALL);
+        assert_eq!(pool.len(), 1);
     }
 }

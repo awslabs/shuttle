@@ -163,6 +163,36 @@ fn thread_builder_name() {
     );
 }
 
+/// Use about `depth` KiB of stack, in frames smaller than a page, so that running out of stack
+/// faults on the guard page instead of writing past it.
+fn use_stack(depth: usize) -> u8 {
+    let frame = std::hint::black_box([depth as u8; 1024]);
+    if depth == 0 {
+        frame[0]
+    } else {
+        frame[1023].wrapping_add(use_stack(depth - 1))
+    }
+}
+
+/// A thread built with a larger stack than the default gets one, even when the smaller stack of a
+/// thread that already finished in the same execution is free to be reused.
+#[test]
+fn thread_builder_stack_size() {
+    check_dfs(
+        || {
+            thread::spawn(|| {}).join().unwrap();
+
+            // `use_stack(256)` would overflow a stack of the default size.
+            let handle = thread::Builder::new()
+                .stack_size(1 << 20)
+                .spawn(|| use_stack(256))
+                .unwrap();
+            handle.join().unwrap();
+        },
+        None,
+    );
+}
+
 #[test]
 fn thread_identity() {
     check_dfs(

@@ -2,7 +2,9 @@ use crate::runtime::failure::{init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
-use crate::runtime::task::{ChildLabelFn, ParkedDefault, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{
+    ChildLabelFn, ParkedDefault, ReleasedTaskResources, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS,
+};
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
@@ -293,8 +295,8 @@ impl Execution {
 
                 match state.current_task {
                     ScheduledTask::Some(tid) => {
-                        let task = state.get(tid);
-                        Ok(Some(task.continuation.clone()))
+                        let continuation = state.get(tid).continuation.clone();
+                        Ok(Some(continuation.expect("only unfinished tasks can be scheduled")))
                     }
                     ScheduledTask::Finished => {
                         // The scheduler decided we're finished, so there are either no runnable tasks,
@@ -329,7 +331,11 @@ impl Execution {
                 // Task finished
                 Ok(true) => {
                     crate::annotations::record_task_terminated();
-                    ExecutionState::with(|state| state.finish_current_task());
+                    let released = ExecutionState::with(|state| state.finish_current_task());
+                    // Return the task's continuation to the pool now, so that tasks spawned later
+                    // in this execution can reuse it. This is outside the borrow because dropping
+                    // the task's spans calls into the tracing subscriber.
+                    drop(released);
                 }
                 // Task yielded
                 Ok(false) => {
@@ -395,7 +401,8 @@ pub struct ExecutionState {
     //
     // `tasks` never shrinks, so it accumulates every task ever created by the execution. Scanning it
     // on every scheduling decision therefore costs O(tasks ever created), even though only the
-    // unfinished ones can ever be scheduled. This set lets `schedule` iterate just the live tasks.
+    // unfinished ones can ever be scheduled. This set lets `schedule` (and
+    // `exit_current_truncates_execution`) iterate just the live tasks.
     //
     // invariant: contains exactly the ids of the tasks in `tasks` that are not `Finished`, in
     // ascending order. Maintained by pushing on task creation (ids are handed out sequentially, so
@@ -539,17 +546,21 @@ impl ExecutionState {
             return false;
         }
 
+        // Only unfinished tasks matter here, so look at `live_tasks` rather than every task the
+        // execution has ever created: this runs every time a thread exits.
         let mut single_unfinished_attached = false;
         let mut has_unfinished_detached = false;
-        for t in self.tasks.iter() {
-            let unfinished_attached = !t.finished() && !t.detached;
+        for &task_id in &self.live_tasks {
+            let t = &self.tasks[task_id.0];
+            debug_assert!(!t.finished());
+            let unfinished_attached = !t.detached;
             if single_unfinished_attached && unfinished_attached {
                 // there are more than one unfinished attached tasks, so one exiting won't truncate
                 return false;
             }
 
             single_unfinished_attached |= unfinished_attached;
-            has_unfinished_detached |= !t.finished() && t.detached;
+            has_unfinished_detached |= t.detached;
         }
         has_unfinished_detached && single_unfinished_attached
     }
@@ -737,9 +748,12 @@ impl ExecutionState {
             );
             // The parked default has to go before the task's stack does (see `ParkedDefault`).
             drop(task.parked_default);
-            Rc::try_unwrap(task.continuation)
-                .map_err(|_| ())
-                .expect("couldn't cleanup a future");
+            // Finished tasks already returned their continuation to the pool when they finished.
+            if let Some(continuation) = task.continuation {
+                Rc::try_unwrap(continuation)
+                    .map_err(|_| ())
+                    .expect("couldn't cleanup a future");
+            }
         }
 
         while Self::with(|state| state.storage.pop()).is_some() {}
@@ -864,19 +878,23 @@ impl ExecutionState {
         self.tasks.push(task);
     }
 
-    /// Mark the task as finished and drop it from the set of live tasks.
-    fn finish_task(&mut self, task_id: TaskId) {
-        self.get_mut(task_id).finish();
+    /// Mark the task as finished, drop it from the set of live tasks, and take the resources it no
+    /// longer needs. The caller should drop those outside of the `ExecutionState` borrow.
+    fn finish_task(&mut self, task_id: TaskId) -> ReleasedTaskResources {
+        let task = self.get_mut(task_id);
+        task.finish();
+        let released = task.release_resources();
         let idx = self
             .live_tasks
             .binary_search(&task_id)
             .expect("finished task must be live");
         self.live_tasks.remove(idx);
+        released
     }
 
-    /// Mark the current task as finished and drop it from the set of live tasks.
-    fn finish_current_task(&mut self) {
-        self.finish_task(self.current_task.id().unwrap());
+    /// Mark the current task as finished; see `finish_task`.
+    fn finish_current_task(&mut self) -> ReleasedTaskResources {
+        self.finish_task(self.current_task.id().unwrap())
     }
 
     pub fn get_mut(&mut self, id: TaskId) -> &mut Task {
@@ -1135,4 +1153,65 @@ fn task_may_have_own_default(state: &ExecutionState) -> bool {
             tracing::dispatcher::get_default(|nested| nested.is::<NoSubscriber>())
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::runner::Runner;
+    use crate::runtime::thread::continuation::CONTINUATION_POOL;
+
+    /// Runs a single execution, always choosing the newest runnable task. A child spawned by the
+    /// main thread therefore runs to completion as soon as the main thread reaches a scheduling
+    /// point, and the main thread only resumes once the child has finished.
+    #[derive(Debug, Default)]
+    struct NewestFirstScheduler {
+        started: bool,
+    }
+
+    impl Scheduler for NewestFirstScheduler {
+        fn new_execution(&mut self) -> Option<Schedule> {
+            (!std::mem::replace(&mut self.started, true)).then(|| Schedule::new(0))
+        }
+
+        fn next_task(&mut self, runnable_tasks: &[&Task], _current: Option<TaskId>, _yielding: bool) -> Option<TaskId> {
+            runnable_tasks.iter().map(|task| task.id()).max()
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            0
+        }
+    }
+
+    fn pooled_continuations() -> usize {
+        CONTINUATION_POOL.with(|pool| pool.len())
+    }
+
+    /// A task's continuation, and so its stack, goes back to the pool as soon as the task finishes
+    /// rather than at the end of the execution, so tasks spawned later in the execution reuse it.
+    #[test]
+    fn finished_task_returns_its_continuation_to_the_pool() {
+        let stack_size = Config::new().stack_size;
+        Runner::new(NewestFirstScheduler::default(), Config::new()).run(move || {
+            for i in 0..10 {
+                // Threads and futures finish through the same path.
+                let child = if i % 2 == 0 {
+                    ExecutionState::spawn_thread(Box::new(|| {}), stack_size, None, None, Location::caller())
+                } else {
+                    ExecutionState::spawn_future(async {}, stack_size, None, Location::caller())
+                };
+                // The child took the continuation that the previous child returned.
+                assert_eq!(pooled_continuations(), 0);
+
+                thread::switch();
+
+                assert!(ExecutionState::with(|state| state.get(child).finished()));
+                assert_eq!(
+                    pooled_continuations(),
+                    1,
+                    "a finished task's continuation should be back in the pool"
+                );
+            }
+        });
+    }
 }
