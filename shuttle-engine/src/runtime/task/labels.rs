@@ -5,12 +5,12 @@
 //! in the `http` crate.
 
 /*
-** The code below is directly copied from https://github.com/hyperium/http/blob/master/src/extensions.rs
-** but renaming 'Extensions' to 'Labels'
-**
-** The key idea is to keep a HashMap (named `AnyMap`) that maps the `TypeId` for a type
-** to its associated value, so a `get::<T>()` is translated to `get(TypeId::of::<T>())`.
-*/
+ ** The code below is directly copied from https://github.com/hyperium/http/blob/master/src/extensions.rs
+ ** but renaming 'Extensions' to 'Labels'
+ **
+ ** The key idea is to keep a HashMap (named `AnyMap`) that maps the `TypeId` for a type
+ ** to its associated value, so a `get::<T>()` is translated to `get(TypeId::of::<T>())`.
+ */
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
