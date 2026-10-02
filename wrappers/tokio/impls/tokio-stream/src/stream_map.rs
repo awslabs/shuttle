@@ -2,6 +2,7 @@
 //! This file is derived from [tokio-stream/src/stream_map.rs](https://github.com/tokio-rs/tokio/blob/9e94fa7e15cfe6ebbd06e9ebad4642896620d924/tokio-stream/src/stream_map.rs), and has had the following changes applied to it:
 //! 1. Examples removed.
 //! 2. Custom rand implementation removed. See CHANGED below.
+//! 3. `contains_key` uses `Iterator::any`, as later upstream versions do.
 use crate::Stream;
 
 use shuttle::rand::Rng;
@@ -187,13 +188,7 @@ impl<K, V> StreamMap<K, V> {
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        for i in 0..self.entries.len() {
-            if self.entries[i].0.borrow() == k {
-                return true;
-            }
-        }
-
-        false
+        self.entries.iter().any(|e| e.0.borrow() == k)
     }
 }
 

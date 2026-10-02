@@ -251,9 +251,9 @@ impl Inner {
             return Err(err);
         }
 
-        for i in 0..self.actions.len() {
-            match self.actions[i] {
-                Action::Write(ref mut expect) => {
+        for action in self.actions.iter_mut() {
+            match action {
+                Action::Write(expect) => {
                     let n = cmp::min(src.len(), expect.len());
 
                     assert_eq!(&src[..n], &expect[..n]);
