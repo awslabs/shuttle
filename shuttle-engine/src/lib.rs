@@ -85,6 +85,8 @@ pub mod await_backtrace {
     use crate::runtime::task::{Task, TaskId};
     use std::backtrace::Backtrace;
     use std::cell::{Cell, RefCell};
+    use std::collections::BTreeMap;
+    use std::task::Waker;
 
     thread_local! {
         // These describe the task running on this thread. See `SwitchGuard`.
@@ -93,6 +95,110 @@ pub mod await_backtrace {
         /// Await-site backtraces captured by the poll currently in progress, in the order they were
         /// taken.
         static CAPTURED: RefCell<Vec<Backtrace>> = const { RefCell::new(Vec::new()) };
+        /// The live wait records of the execution on this thread (see [`WaitRecord`]), oldest first.
+        static WAIT_RECORDS: RefCell<BTreeMap<u64, LiveWait>> = const { RefCell::new(BTreeMap::new()) };
+        static NEXT_WAIT_RECORD: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// What a [`WaitRecord`] holds while its future is pending.
+    #[derive(Debug)]
+    struct LiveWait {
+        /// The task that last polled the future.
+        owner: TaskId,
+        /// For a join handle, the task it joins.
+        joins: Option<TaskId>,
+        backtrace: Backtrace,
+    }
+
+    /// Where a Shuttle future last returned `Pending` under a waker that is not Shuttle's.
+    ///
+    /// Combinators such as `FuturesUnordered` poll their children with wakers of their own, so a
+    /// child waiting on a Shuttle primitive never clones a Shuttle waker, and [`note_waker_clone`]
+    /// records nothing for it. Shuttle's leaf futures hold one of these instead, and note each
+    /// `Pending` they return: under a foreign waker, that poll's stack runs through the combinator
+    /// into the child, so it is captured then. The record lives until the future completes or is
+    /// dropped, since the combinator may never poll the child again, and the deadlock report prints
+    /// the live records of each blocked task.
+    #[derive(Debug, Default)]
+    pub struct WaitRecord(Option<u64>);
+
+    impl WaitRecord {
+        /// Note that the future returned `Pending` after registering `waker`.
+        #[inline]
+        pub fn note_pending(&mut self, waker: &Waker) {
+            if crate::backtrace_enabled() {
+                self.note_pending_slow(waker, None);
+            }
+        }
+
+        /// Like [`note_pending`](Self::note_pending), for a future that waits for `task` to finish.
+        #[inline]
+        pub fn note_pending_join(&mut self, waker: &Waker, task: TaskId) {
+            if crate::backtrace_enabled() {
+                self.note_pending_slow(waker, Some(task));
+            }
+        }
+
+        #[cold]
+        fn note_pending_slow(&mut self, waker: &Waker, joins: Option<TaskId>) {
+            // Under a Shuttle waker its clone already recorded an await site. Outside a driver-loop
+            // poll no task is parked on this future, and inside Shuttle's own `block_on` the lazy
+            // capture sees the whole stack.
+            if crate::runtime::task::waker::is_shuttle_waker(waker) || !should_capture() {
+                self.complete();
+                return;
+            }
+            let Ok(Some(owner)) = ExecutionState::try_with(|state| state.try_current().map(|task| task.id())) else {
+                return;
+            };
+            let backtrace = Backtrace::force_capture();
+            let id = *self.0.get_or_insert_with(|| {
+                NEXT_WAIT_RECORD.with(|next| {
+                    let id = next.get();
+                    next.set(id + 1);
+                    id
+                })
+            });
+            let wait = LiveWait {
+                owner,
+                joins,
+                backtrace,
+            };
+            WAIT_RECORDS.with(|records| records.borrow_mut().insert(id, wait));
+        }
+
+        /// Forget the record, for a future that completed.
+        pub fn complete(&mut self) {
+            if let Some(id) = self.0.take() {
+                // While the thread exits the records may already be gone, and then so is this one.
+                let _ = WAIT_RECORDS.try_with(|records| records.borrow_mut().remove(&id));
+            }
+        }
+    }
+
+    impl Drop for WaitRecord {
+        fn drop(&mut self) {
+            self.complete();
+        }
+    }
+
+    /// The live wait records of `task`, oldest first, formatted for the deadlock report: for each,
+    /// the task it joins, if any, and its backtrace.
+    pub(crate) fn formatted_wait_records(task: TaskId) -> Vec<(Option<TaskId>, String)> {
+        WAIT_RECORDS.with(|records| {
+            records
+                .borrow()
+                .values()
+                .filter(|wait| wait.owner == task)
+                .map(|wait| (wait.joins, wait.backtrace.to_string()))
+                .collect()
+        })
+    }
+
+    /// Forget every wait record. Called when an execution starts: one that deadlocks never cleans
+    /// up, and the next reuses its task IDs.
+    pub(crate) fn reset_wait_records() {
+        WAIT_RECORDS.with(|records| records.borrow_mut().clear());
     }
 
     /// The most await sites one poll records. A task waits at more than one only under combinators
