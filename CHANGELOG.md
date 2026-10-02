@@ -1,3 +1,7 @@
+# Unreleased
+
+* Fix `shuttle-parking_lot`'s `RwLock` refusing a plain read that `parking_lot` grants. While a task held an upgradable read, a queued `write` or `upgradable_read` blocked every new plain read, so a test could report a deadlock that `parking_lot` cannot have (for example, a `read` behind a queued writer while an upgradable read is held), and `try_read` could fail where `parking_lot`'s succeeds. `parking_lot` refuses a plain read only while `WRITER_BIT` is set, and a task that waits behind an upgradable read has not set it. The lock is now an unfair `BatchSemaphore`, on which a writer reserves the lock (see `BatchSemaphore::acquire_reserving` below) once no writer or upgradable reader holds it, as `parking_lot` sets `WRITER_BIT` only then, and an upgrade reserves it at once. The `RwLock` parity tables now match `parking_lot` in all 600 scenarios. Known differences are documented in the crate README: `try_write` can succeed on a free lock while `parking_lot`'s `PARKED_BIT` is set, and a fair unlock does not hand the lock to a waiting task. (#376)
+
 # tokio wrappers, `shuttle-tokio-impl-inner` 0.1.4 (October 12, 2026)
 
 Published `shuttle-tokio-impl-inner` 0.1.4. Like 0.1.3, it requires `shuttle` 0.9.2 or later and `shuttle-engine` `^0.1.4`, and the already-published `shuttle-tokio-impl` 0.1.1 and `shuttle-tokio` 1.0.0 pick it up without being republished. The `shuttle` crate is unchanged at 0.9.6.
