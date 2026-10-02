@@ -44,6 +44,12 @@ jobs:
   # Exists to not get "caught off guard" by new Rust versions bringing new clippies.
   beta:
     runs-on: ubuntu-latest
+    # Deny warnings, as tests.yml does. Without this, a new warn-by-default rustc
+    # lint only warns here, and then fails every PR once that beta becomes
+    # stable, as Rust 1.99's `semicolon_in_expressions_from_non_local_macros`
+    # did (#370).
+    env:
+      RUSTFLAGS: -Dwarnings
     # `issues: write` is required by the "Notify failed build" step below, which
     # opens an issue when this job fails. Job-level permissions replace the
     # top-level block outright, so `contents: read` has to be restated here.
