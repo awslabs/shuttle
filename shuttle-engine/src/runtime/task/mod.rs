@@ -27,7 +27,7 @@ use tracing::{error_span, event, field, Level, Span};
 pub mod clock;
 pub mod labels;
 pub mod waker;
-use waker::make_waker;
+use waker::{make_poll_waker, make_waker};
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
 // convention for disambiguating them:
@@ -238,6 +238,14 @@ impl TaskSignature {
     pub fn parent_signature_hash(&self) -> u64 {
         self.parent_signature_hash
     }
+
+    /// The place in the source where this task was spawned.
+    pub fn spawn_call_site(&self) -> &'static Location<'static> {
+        self.task_creation_stack
+            .last()
+            .expect("a task signature always records where the task was spawned")
+            .0
+    }
 }
 
 impl Hash for TaskSignature {
@@ -333,19 +341,21 @@ pub struct Task {
     #[allow(deprecated)]
     tag: Option<Arc<dyn Tag>>,
 
-    /// If [`crate::CAPTURE_BACKTRACE`] is set then this holds the backtrace to print if the test
-    /// fails. It is filled in by whichever of two paths applies:
+    /// If [`crate::CAPTURE_BACKTRACE`] is set then this holds the backtraces to print if the test
+    /// fails. They are filled in by whichever of two paths applies:
     ///
     /// - A task blocked in a synchronous primitive stays suspended inside `continuation::switch`
     ///   with its whole call chain intact on its coroutine stack, so nothing is captured while it
     ///   runs; the deadlock handler resumes it to walk its own stack (see
-    ///   [`crate::runtime::thread::continuation::ContinuationInput::CaptureBacktrace`]).
+    ///   [`crate::runtime::thread::continuation::ContinuationInput::CaptureBacktrace`]), which
+    ///   gives one backtrace.
     /// - A task parked on a pending future has already unwound its `poll` stack by the time it
-    ///   suspends, so its await site is captured while that stack is still live, from the waker
-    ///   (see [`crate::await_backtrace`]).
-    pub backtrace: Option<Backtrace>,
+    ///   suspends, so its await sites are captured while that stack is still live, from the waker
+    ///   (see [`crate::await_backtrace`]): one for each clone of its waker, so one for each branch
+    ///   of a `join!` or `select!` that registered.
+    pub backtraces: Vec<Backtrace>,
 
-    /// Whether `backtrace` is an await site recorded by an earlier poll than the one the task is
+    /// Whether `backtraces` are await sites recorded by an earlier poll than the one the task is
     /// parked after, because that one returned `Pending` without cloning the waker (see
     /// [`crate::await_backtrace::AwaitSite`]).
     pub(crate) await_site_from_earlier_poll: bool,
@@ -403,7 +413,7 @@ impl Task {
             span_stack,
             local_storage: StorageMap::new(),
             tag: None,
-            backtrace: None,
+            backtraces: Vec::new(),
             await_site_from_earlier_poll: false,
             signature,
         };
@@ -467,8 +477,6 @@ impl Task {
 
         Self::new(
             Box::new(move || {
-                let waker = ExecutionState::with(|state| state.current_mut().waker());
-                let cx = &mut Context::from_waker(&waker);
                 // Read once, outside the loop: this is a process-wide constant, and the whole
                 // await-site machinery is dead weight when backtraces are off.
                 let capture_await_sites = crate::backtrace_enabled();
@@ -476,9 +484,15 @@ impl Task {
 
                 loop {
                     let (pending, captured) = {
+                        // A waker of its own for every poll; see `make_poll_waker`.
+                        let waker = make_poll_waker(id);
+                        let cx = &mut Context::from_waker(&waker);
                         let guard = capture_await_sites.then(crate::await_backtrace::PollGuard::new);
                         let pending = future.as_mut().poll(cx).is_pending();
-                        (pending, guard.and_then(crate::await_backtrace::PollGuard::finish))
+                        (
+                            pending,
+                            guard.map(crate::await_backtrace::PollGuard::finish).unwrap_or_default(),
+                        )
                     };
                     if !pending {
                         break;
@@ -577,11 +591,11 @@ impl Task {
         // (see `ContinuationInput::CaptureBacktrace`). Capturing here instead would mean ~70k stack
         // walks to print a handful, since this field is overwritten on every block.
         //
-        // But do drop whatever an earlier `Poll::Pending` captured: the task is not parked there any
-        // more, and the deadlock handler only captures for a task that has no backtrace, so leaving
-        // it would print where the task used to wait instead of where it blocks now.
-        self.backtrace = None;
-        self.await_site_from_earlier_poll = false;
+        // Nor is an await site dropped here. A task carries one only while it is parked in the
+        // driver loop that recorded it, which takes it back as soon as the task is switched back in
+        // (see `crate::await_backtrace::AwaitSite`), so a task that blocks itself has none. A task
+        // blocked by another one, as an unfair semaphore blocks the waiters that can no longer
+        // succeed, may still be parked on its future, and then its await site is where it waits.
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
@@ -749,22 +763,47 @@ impl Task {
             if self.detached { ", detached" } else { "" },
             if self.sleeping() { ", pending future" } else { "" },
             if backtrace_enabled() {
+                // Where a task was spawned identifies it even when its backtrace cannot say where
+                // it waits. The main thread's creation site is inside the runner, so it has none.
+                let spawned_at = match self.parent_task_id {
+                    Some(_) => format!("\nSpawned at: {}", self.signature.spawn_call_site()),
+                    None => String::new(),
+                };
                 let note = if self.await_site_from_earlier_poll {
                     " (from an earlier poll: later polls returned `Pending` without cloning the waker, so the task may \
                      be waiting at a later await)"
                 } else {
                     ""
                 };
-                match &self.backtrace {
-                    // `Display` prints the numbered `N: function` / `at file:line:col` layout that panics
-                    // use under `RUST_BACKTRACE=1`, and ends each frame with a newline.
-                    Some(backtrace) => format!("\nBacktrace{note}:\n{backtrace}"),
-                    None => "\nBacktrace: <not captured>\n".into(),
-                }
+                format!("{spawned_at}{}", format_backtraces(&self.backtraces, note))
             } else {
                 "".into()
             }
         )
+    }
+}
+
+/// Format the backtraces of a deadlocked task, each headed with `note`: one for a task blocked in a
+/// synchronous primitive, and one per await site for a task parked on a future. Identical ones are
+/// printed once, since a future may clone its waker more than once from the same place.
+fn format_backtraces(backtraces: &[Backtrace], note: &str) -> String {
+    // `Display` prints the numbered `N: function` / `at file:line:col` layout that panics use under
+    // `RUST_BACKTRACE=1`, and ends each frame with a newline.
+    let mut distinct: Vec<String> = Vec::new();
+    for backtrace in backtraces {
+        let formatted = backtrace.to_string();
+        if !distinct.contains(&formatted) {
+            distinct.push(formatted);
+        }
+    }
+    match distinct.as_slice() {
+        [] => format!("\nBacktrace{note}: <not captured>\n"),
+        [backtrace] => format!("\nBacktrace{note}:\n{backtrace}"),
+        backtraces => backtraces
+            .iter()
+            .enumerate()
+            .map(|(i, backtrace)| format!("\nBacktrace {} of {}{note}:\n{backtrace}", i + 1, backtraces.len()))
+            .collect(),
     }
 }
 
