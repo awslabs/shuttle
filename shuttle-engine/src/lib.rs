@@ -43,6 +43,196 @@ pub fn silence_warnings() -> bool {
     std::env::var(SILENCE_WARNINGS).is_ok()
 }
 
+pub mod await_backtrace {
+    //! Recovering the *await site* of a task parked on a pending future.
+    //!
+    //! A stack backtrace cannot find it after the fact: when a future returns [`std::task::Poll::Pending`]
+    //! its `poll` stack unwinds, and the await chain lives on in the compiler-generated state
+    //! machine, which no unwinder can walk. So it has to be captured while that stack is still live.
+    //!
+    //! The hook with the right timing is the waker. A future that returns `Pending` is contractually
+    //! obliged to arrange for a wakeup, and the ordinary way to do that is `cx.waker().clone()` —
+    //! which runs *inside* the future's own `poll`, on the live stack, through a vtable Shuttle owns
+    //! (see [`crate::runtime::task::waker`]). That works for arbitrary user futures, not just
+    //! Shuttle's own leaves.
+    //!
+    //! Not every `Pending` comes with a clone, though. A future that already holds a waker that
+    //! [`will_wake`](std::task::Waker::will_wake) the task may skip it, as `AtomicWaker::register`
+    //! does, so polling it again records nothing. [`AwaitSite`] then keeps the site recorded for the
+    //! task's previous park and marks it as coming from an earlier poll. Usually the task is still
+    //! waiting on that same future, but it may have moved on to a later await whose future skipped
+    //! the clone too, and the report says it may be stale.
+    //!
+    //! Three guards keep it honest:
+    //! - [`PollGuard`] marks the dynamic extent of a driver-loop `poll` and gives it its own capture,
+    //!   so a clone outside any poll is not mistaken for an await site, and a poll nested in another
+    //!   (a `block_on` inside an async fn) neither reports nor overwrites the enclosing poll's.
+    //! - [`InternalBlockOnGuard`] marks the `block_on` that the *synchronous* primitives use
+    //!   internally. A task parked there keeps its whole call chain on its coroutine stack, so it is
+    //!   captured lazily on deadlock instead. This is the hot path: capturing it eagerly is what
+    //!   made `SHUTTLE_CAPTURE_BACKTRACE` cost ~79x.
+    //! - [`SwitchGuard`] keeps the state the other two track per task. It lives in thread-locals,
+    //!   but a task can be switched out part-way through a poll or an internal `block_on`, and other
+    //!   tasks then run on the same thread, so the guard sets the task's state aside until it is
+    //!   switched back in.
+
+    use crate::runtime::task::Task;
+    use std::backtrace::Backtrace;
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        // These describe the task running on this thread. See `SwitchGuard`.
+        static IN_POLL_DEPTH: Cell<usize> = const { Cell::new(0) };
+        static INTERNAL_BLOCK_ON_DEPTH: Cell<usize> = const { Cell::new(0) };
+        /// Await-site backtrace for the poll currently in progress, if one was captured.
+        static CAPTURED: RefCell<Option<Backtrace>> = const { RefCell::new(None) };
+    }
+
+    /// Marks the dynamic extent of a `Future::poll` call made by one of Shuttle's driver loops, and
+    /// collects the await site it captures. End it with [`finish`](Self::finish).
+    #[derive(Debug)]
+    pub struct PollGuard {
+        /// What the poll enclosing this one had captured so far, if this one is nested in it. Set
+        /// aside so this poll starts with nothing, and put back when it ends.
+        enclosing: Option<Backtrace>,
+    }
+
+    impl PollGuard {
+        #[allow(clippy::new_without_default)]
+        pub fn new() -> Self {
+            IN_POLL_DEPTH.set(IN_POLL_DEPTH.get() + 1);
+            Self {
+                enclosing: CAPTURED.with(|slot| slot.borrow_mut().take()),
+            }
+        }
+
+        /// End the poll, and return the await site it captured, if it cloned the waker.
+        pub fn finish(self) -> Option<Backtrace> {
+            CAPTURED.with(|slot| slot.borrow_mut().take())
+        }
+    }
+
+    impl Drop for PollGuard {
+        fn drop(&mut self) {
+            IN_POLL_DEPTH.set(IN_POLL_DEPTH.get() - 1);
+            // Also discards anything this poll captured that `finish` did not take, e.g. if it panicked.
+            let enclosing = self.enclosing.take();
+            CAPTURED.with(|slot| *slot.borrow_mut() = enclosing);
+        }
+    }
+
+    /// Marks a `block_on` that Shuttle itself performs on the task's behalf, rather than one the user wrote.
+    #[derive(Debug)]
+    pub struct InternalBlockOnGuard;
+
+    impl InternalBlockOnGuard {
+        #[allow(clippy::new_without_default)]
+        pub fn new() -> Self {
+            INTERNAL_BLOCK_ON_DEPTH.set(INTERNAL_BLOCK_ON_DEPTH.get() + 1);
+            Self
+        }
+    }
+
+    impl Drop for InternalBlockOnGuard {
+        fn drop(&mut self) {
+            INTERNAL_BLOCK_ON_DEPTH.set(INTERNAL_BLOCK_ON_DEPTH.get() - 1);
+        }
+    }
+
+    /// Sets the running task's await-site state aside while it is switched out, and puts it back
+    /// when it is switched back in.
+    ///
+    /// Held across the suspend in [`crate::runtime::thread::switch`]. Without it, the tasks that
+    /// run in the meantime see the switched-out task's state. A task blocked on a `Mutex` holds an
+    /// [`InternalBlockOnGuard`] for as long as it stays blocked, which would stop every other task's
+    /// await site from being captured, and a capture taken part-way through one task's poll could
+    /// be reported by another task's driver loop.
+    #[derive(Debug)]
+    pub struct SwitchGuard {
+        in_poll_depth: usize,
+        internal_block_on_depth: usize,
+        captured: Option<Backtrace>,
+    }
+
+    impl SwitchGuard {
+        #[allow(clippy::new_without_default)]
+        pub fn new() -> Self {
+            Self {
+                in_poll_depth: IN_POLL_DEPTH.replace(0),
+                internal_block_on_depth: INTERNAL_BLOCK_ON_DEPTH.replace(0),
+                captured: CAPTURED.with(|slot| slot.borrow_mut().take()),
+            }
+        }
+    }
+
+    impl Drop for SwitchGuard {
+        fn drop(&mut self) {
+            // This also runs if the task is unwound instead of switched back in (see `Continuation`'s
+            // `Drop`). Putting its state back is still right then: its own guards are dropped next,
+            // and undo it.
+            IN_POLL_DEPTH.set(self.in_poll_depth);
+            INTERNAL_BLOCK_ON_DEPTH.set(self.internal_block_on_depth);
+            let captured = self.captured.take();
+            CAPTURED.with(|slot| *slot.borrow_mut() = captured);
+        }
+    }
+
+    /// Whether an await-site capture is worth taking right now.
+    fn should_capture() -> bool {
+        crate::backtrace_enabled() && IN_POLL_DEPTH.get() > 0 && INTERNAL_BLOCK_ON_DEPTH.get() == 0
+    }
+
+    /// Called from the waker vtable's `clone`. If we are inside a user future's `poll`, this stack
+    /// contains the await chain, so record it.
+    ///
+    /// Inlined because it sits on the waker-clone path, which every future that returns `Pending`
+    /// exercises whether or not backtraces are enabled; inlining lets the `should_capture` check
+    /// collapse to a load and a branch.
+    #[inline]
+    pub fn note_waker_clone() {
+        if should_capture() {
+            let backtrace = Backtrace::force_capture();
+            CAPTURED.with(|slot| *slot.borrow_mut() = Some(backtrace));
+        }
+    }
+
+    /// Where a future driver loop's task is waiting, kept from one park to the next.
+    ///
+    /// Each of Shuttle's driver loops keeps one, and calls [`park`](Self::park) once `poll` has
+    /// returned `Pending` and [`unpark`](Self::unpark) once the task is switched back in. So the
+    /// task carries an await site only while it is parked in that loop. While it runs it may block
+    /// somewhere else, in a `Mutex::lock` inside its next poll or anywhere after `block_on`
+    /// returns, and the deadlock handler only captures a backtrace for a task that has none.
+    #[derive(Debug, Default)]
+    pub struct AwaitSite(Option<Backtrace>);
+
+    impl AwaitSite {
+        /// Record where `task` is waiting, just before it parks after its future returned `Pending`:
+        /// `captured`, the await site that poll captured (see [`PollGuard::finish`]), if it cloned
+        /// the waker, and otherwise the one recorded for the task's previous park, marked as coming
+        /// from an earlier poll.
+        pub fn park(&mut self, task: &mut Task, captured: Option<Backtrace>) {
+            match captured {
+                Some(backtrace) => {
+                    task.backtrace = Some(backtrace);
+                    task.await_site_from_earlier_poll = false;
+                }
+                None => {
+                    task.await_site_from_earlier_poll = self.0.is_some();
+                    task.backtrace = self.0.take();
+                }
+            }
+        }
+
+        /// Take the await site back off `task` once it is switched back in, to keep for its next
+        /// park.
+        pub fn unpark(&mut self, task: &mut Task) {
+            self.0 = task.backtrace.take();
+            task.await_site_from_earlier_poll = false;
+        }
+    }
+}
+
 pub fn backtrace_enabled() -> bool {
     // Read once. This is called from `Task::block` and `Task::sleep`, so on every block and every
     // `Poll::Pending`, and `std::env::var` takes a lock on the environment and allocates a `String`.
