@@ -38,6 +38,17 @@
 //! `rwlock_reference_model` checks the rules above, and this argument, against the real
 //! `parking_lot`.
 //!
+//! For the same reason, [`Op::UnlockFair`] (`parking_lot`'s `unlock_fair`) has the same rule as
+//! [`Op::Unlock`], although it hands the lock to the parked tasks while a plain unlock lets every
+//! request race. The hand-off grants only requests that pass the rules, so it adds no outcome. And
+//! it removes none: it binds the lock only when some task is parked, no program can observe that a
+//! task is parked, and the OS can delay a thread for any time just before it parks. So any outcome
+//! that a plain unlock reaches, `parking_lot` reaches with the same schedule except that the tasks
+//! the hand-off would favour park only after the requests that overtook them. The stress test of
+//! `rwlock_reference_model` checks this on the real `parking_lot`, and
+//! `rwlock_fair_unlock_parity` checks the other direction: Shuttle's hand-off (see
+//! `BatchSemaphore::release_fair`) must still reach every outcome of the model.
+//!
 //! One limit: `try_write` also fails when `PARKED_BIT` is set on a free lock. That needs two or more
 //! parked tasks, one of which the last unlock did not wake. The model ignores `PARKED_BIT`, and it
 //! does not record which tasks a schedule refused before. So [`explore`] panics if a `try_write`
@@ -93,6 +104,10 @@ pub enum Op {
     DowngradeUpgradable,
     /// Drops the guard that the task holds, if any.
     Unlock,
+    /// `unlock_fair` on the guard that the task holds; nothing if the task holds none. In
+    /// `parking_lot` this hands the lock to the parked tasks. The model gives it the rule of
+    /// [`Op::Unlock`]; see the module docs for why that loses nothing.
+    UnlockFair,
     /// Sends one message on the scenario's channel.
     Signal,
     /// Receives one message from the scenario's channel. Blocks until a `Signal`.
@@ -114,6 +129,7 @@ impl Op {
             Op::DowngradeToUpgradable => "downgrade_to_upgradable",
             Op::DowngradeUpgradable => "downgrade_upgradable",
             Op::Unlock => "unlock",
+            Op::UnlockFair => "unlock_fair",
             Op::Signal => "signal",
             Op::AwaitSignal => "await_signal",
         }
@@ -122,7 +138,7 @@ impl Op {
     /// True for the ops that request or change the lock. After one of these, a task that holds the
     /// lock records the value.
     pub fn is_lock_op(self) -> bool {
-        !matches!(self, Op::Unlock | Op::Signal | Op::AwaitSignal)
+        !matches!(self, Op::Unlock | Op::UnlockFair | Op::Signal | Op::AwaitSignal)
     }
 }
 
@@ -310,7 +326,7 @@ pub fn step(word: Word, holding: Holding, signals: u8, op: Op) -> Option<Step> {
             Holding::Shared,
         )),
 
-        (Op::Unlock, holding) => Some(done(
+        (Op::Unlock | Op::UnlockFair, holding) => Some(done(
             match holding {
                 Holding::Nothing => word,
                 Holding::Shared => Word {

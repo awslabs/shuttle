@@ -40,8 +40,24 @@
 //!   `WRITER_BIT` in one step. It keeps the `UPGRADABLE` permits it holds (see
 //!   [`BatchSemaphore::upgrade`]), so no writer can get in during the upgrade.
 //!
-//! Each operation is one semaphore operation, so it has one scheduling point, and no other task
-//! can see a state between two parts of it.
+//! An operation that does not block is one semaphore operation with one scheduling point. A `write`
+//! or an `upgrade` that waits is scheduled again when it takes its permits, and other tasks run
+//! while it waits — but every state they can see is a `parking_lot` lock word (the reservation is
+//! `WRITER_BIT`), never an artifact between two separate semaphore operations.
+//!
+//! A fair unlock (`unlock_*_fair`, and the `bump_*` methods, which `lock_api` builds on them) hands
+//! the lock to the waiting tasks, as `parking_lot` hands a fairly unlocked lock directly to the
+//! parked threads: the released permits go to the longest-waiting requests they satisfy inside the
+//! release itself (see [`BatchSemaphore::release_fair`]), so no other request can take the lock in
+//! between. A waiting writer that has already reserved the lock needs no hand-off: the reservation
+//! keeps every other request out either way.
+//!
+//! `is_locked` and `is_locked_exclusive` are reads of the lock state with one scheduling point and
+//! no effect (see [`BatchSemaphore::load_permits`]), like `parking_lot`'s loads of the state word.
+//! The `lock_api` defaults would probe with `try_lock_*` and unlock again, which transiently holds
+//! the lock: another task's `try_*` could fail against the probe, a state `parking_lot` cannot
+//! show. `WRITER_BIT` is exactly "no permits are free": a writer that holds the lock has every
+//! permit, and a writer or an upgrade that waits for the readers holds the reservation.
 //!
 //! # Causality and Shuttle Explorer
 //!
@@ -63,9 +79,11 @@
 //!   after an unlock that wakes some, but not all, of the parked tasks, so it needs at least two
 //!   parked tasks besides the task that calls `try_write`. This model does not track parked tasks,
 //!   so there its `try_write` can succeed.
-//! * A fair unlock hands the lock to the parked tasks in `parking_lot`. Here it is a normal unlock,
-//!   after which any request can take the lock. This allows more schedules than `parking_lot`, so
-//!   it hides no bug, but a test that relies on the hand-off can fail.
+//! * The `bump_*` methods always unlock fairly and lock again (the `lock_api` defaults), while
+//!   `parking_lot`'s do nothing when no task waits. A task that arrives during the `bump` can then
+//!   take the lock in the middle of it, where `parking_lot` would have kept the lock held. The
+//!   outcomes are the ones of `parking_lot`, where that task takes the lock just before or just
+//!   after the `bump` instead.
 
 use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness};
 use std::thread;
@@ -156,17 +174,42 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
         trace!("releasing parking_lot rwlock {:p} (exclusive)", self);
         self.sem.release(EXCLUSIVE);
     }
+
+    /// `parking_lot`: `state & (READERS_MASK | WRITER_BIT) != 0`. Any permit held means some task
+    /// holds the lock, and no free permit means a writer holds the lock or waits for the readers to
+    /// leave. One scheduling point and no effect (see the module docs), unlike the `lock_api`
+    /// default, which transiently takes the lock.
+    fn is_locked(&self) -> bool {
+        match self.sem.load_permits() {
+            // While Shuttle stops an execution, the closed lock refuses every request, so it never
+            // looks free (see "Stopped executions" in the module docs).
+            None => true,
+            Some(available) => available < EXCLUSIVE,
+        }
+    }
+
+    /// `parking_lot`: `state & WRITER_BIT != 0`, which is set while a writer holds the lock, and
+    /// while a `write` or an `upgrade` waits for the readers to leave (the reservation).
+    fn is_locked_exclusive(&self) -> bool {
+        match self.sem.load_permits() {
+            None => true,
+            Some(available) => available == 0,
+        }
+    }
 }
 
-// Safety: a fair unlock releases the lock exactly as a normal unlock does. It does not hand the lock
-// to a waiting task, as `parking_lot`'s does (see the module docs).
+// Safety: a fair unlock releases the same permits as a normal unlock. It additionally hands them to
+// waiting requests inside the release, as `parking_lot`'s fair unlock hands the lock to the parked
+// threads (see the module docs), which only restricts who gets the lock next.
 unsafe impl lock_api::RawRwLockFair for RawRwLock {
     unsafe fn unlock_shared_fair(&self) {
-        unsafe { lock_api::RawRwLock::unlock_shared(self) }
+        trace!("fair-releasing parking_lot rwlock {:p} (shared)", self);
+        self.sem.release_fair(SHARED);
     }
 
     unsafe fn unlock_exclusive_fair(&self) {
-        unsafe { lock_api::RawRwLock::unlock_exclusive(self) }
+        trace!("fair-releasing parking_lot rwlock {:p} (exclusive)", self);
+        self.sem.release_fair(EXCLUSIVE);
     }
 }
 
@@ -237,6 +280,7 @@ unsafe impl lock_api::RawRwLockUpgradeDowngrade for RawRwLock {
 // Safety: as for `RawRwLockFair`.
 unsafe impl lock_api::RawRwLockUpgradeFair for RawRwLock {
     unsafe fn unlock_upgradable_fair(&self) {
-        unsafe { lock_api::RawRwLockUpgrade::unlock_upgradable(self) }
+        trace!("fair-releasing parking_lot rwlock {:p} (upgradable)", self);
+        self.sem.release_fair(UPGRADABLE);
     }
 }
