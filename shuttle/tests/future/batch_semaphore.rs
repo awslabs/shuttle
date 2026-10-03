@@ -982,6 +982,50 @@ mod reservation_tests {
         );
     }
 
+    /// A request that will reserve the semaphore changes its state, so it gets a scheduling point
+    /// before it reserves, like a request that will be granted. Without one, the reservation would
+    /// happen in the same step as whatever the task did before it asked, and no other task could run
+    /// in between. Here the reserver sets a flag, then asks while the main task holds a permit, so it
+    /// reserves and waits. Some schedule must let another task see the flag and still take a permit,
+    /// as a `parking_lot` reader can between a writer's earlier action and its `WRITER_BIT`.
+    #[test_log::test]
+    fn scheduling_point_before_reserving() {
+        static TOOK_PERMIT_AFTER_FLAG: AtomicBool = AtomicBool::new(false);
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(4, Fairness::Unfair));
+                sem.acquire_blocking(1).unwrap();
+                let flag = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+                let reserver = {
+                    let (sem, flag) = (sem.clone(), flag.clone());
+                    thread::spawn(move || {
+                        flag.store(true, Ordering::SeqCst);
+                        // 3 permits are available, which is at least 2, so this reserves.
+                        future::block_on(sem.acquire_reserving(2, 4)).unwrap();
+                        sem.release(4);
+                    })
+                };
+                let other = {
+                    let (sem, flag) = (sem.clone(), flag.clone());
+                    thread::spawn(move || {
+                        if flag.load(Ordering::SeqCst) && sem.try_acquire(1).is_ok() {
+                            TOOK_PERMIT_AFTER_FLAG.store(true, Ordering::SeqCst);
+                            sem.release(1);
+                        }
+                    })
+                };
+                other.join().unwrap();
+                sem.release(1);
+                reserver.join().unwrap();
+            },
+            None,
+        );
+        assert!(
+            TOOK_PERMIT_AFTER_FLAG.load(Ordering::SeqCst),
+            "no schedule let a task take a permit between the reserver's flag and its reservation"
+        );
+    }
+
     #[test_log::test]
     #[should_panic(expected = "only an unfair semaphore supports reservations")]
     fn reserving_on_a_fair_semaphore_panics() {
