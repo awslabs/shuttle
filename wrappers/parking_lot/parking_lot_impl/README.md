@@ -11,8 +11,10 @@ Like the real `parking_lot` crate, these implementations are layered on top of t
 locks (`RawMutex` and `RawRwLock`, built on Shuttle's `BatchSemaphore`) that implement the relevant
 `lock_api` raw traits. `RawRwLock` uses an unfair semaphore, on which a writer and an upgrade
 reserve the lock, as `parking_lot`'s `WRITER_BIT` does, so it grants and refuses the same requests
-as `parking_lot` (with the exceptions in Limitations). Both locks record vector clocks and Shuttle
-Explorer events. The user-facing `Mutex`/`RwLock`, their guards, the mapped guards, and the
+as `parking_lot` (with the exceptions in Limitations). A fair unlock hands the lock to the waiting
+requests inside the release, as `parking_lot`'s does to the parked threads, and
+`is_locked`/`is_locked_exclusive` read the lock state with no effect, like `parking_lot`'s loads of
+the lock word. Both locks record vector clocks and Shuttle Explorer events. The user-facing `Mutex`/`RwLock`, their guards, the mapped guards, and the
 `Arc`-based guards are the generic `lock_api` types specialised to those raw locks. As a result the
 `Mutex`/`RwLock` surface — including `lock_arc`/`read_arc`/`write_arc`, upgradable reads, and
 downgrading — matches `parking_lot`, and the `lock_api` raw types are re-exported so code that names
@@ -32,10 +34,11 @@ and become `Send` (when the data allows) under the `send_guard` feature.
 the parked tasks, so it needs at least two parked tasks besides the task that calls `try_write`.
 Shuttle does not track parked tasks.
 
-In `parking_lot`, a fair unlock (`unlock_fair`, and the `bump` methods, which use it) hands the
-lock to the waiting tasks. In Shuttle it is a normal unlock, after which any task can take the lock.
-The `bump` methods also always unlock and lock again, while `parking_lot`'s do nothing when no task
-waits, so in Shuttle a task that never waits can take the lock in the middle of a `bump`.
+The `bump` methods always unlock fairly and lock again (the `lock_api` defaults), while
+`parking_lot`'s do nothing when no task waits. A task that arrives during a `bump` can then take
+the lock in the middle of it, where `parking_lot` would have kept the lock held; the outcomes are
+ones `parking_lot` can give, with that task's turn falling just before or just after the `bump`
+instead.
 
 If your project needs functionality which is not currently supported, please file an issue or,
 better yet, open a PR to contribute the functionality.
