@@ -95,7 +95,7 @@ fn watch_changed() {
 ///
 ///
 ///
-*/
+ */
 
 #[test]
 fn wait_for_test() {

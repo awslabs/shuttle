@@ -9,7 +9,14 @@ mod future;
 #[test]
 fn ui() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/ui/*.rs");
+    // rustc 1.100 no longer prints the "required by a bound in this function" label, so older
+    // compilers have their own expected output. Remove `tests/ui/before_1_100` once CI's stable
+    // toolchain is 1.100 or later.
+    if rustversion::cfg!(since(1.100)) {
+        t.compile_fail("tests/ui/*.rs");
+    } else {
+        t.compile_fail("tests/ui/before_1_100/*.rs");
+    }
 }
 
 use shuttle::scheduler::{ReplayScheduler, Scheduler};
