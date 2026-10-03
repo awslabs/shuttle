@@ -32,6 +32,10 @@ struct Waiter {
     /// `Acquire`) `Sync`.
     task_id: AtomicUsize,
     num_permits: usize,
+    /// How many permits must be available for this waiter to make progress: `num_permits` for a
+    /// plain acquire, and the threshold at which it reserves the semaphore for a reserving acquire
+    /// (see [`BatchSemaphore::acquire_reserving`]). Only unfair semaphores look at this.
+    min_permits: usize,
     is_queued: AtomicBool,
     has_permits: AtomicBool,
     /// Clock of the task that created this waiter. Note this is *not* refreshed
@@ -48,6 +52,7 @@ impl fmt::Debug for Waiter {
         f.debug_struct("Waiter")
             .field("task_id", &self.task_id())
             .field("num_permits", &self.num_permits)
+            .field("min_permits", &self.min_permits)
             .field("is_queued", &self.is_queued)
             .field("has_permits", &self.has_permits)
             .field("waker", &self.waker)
@@ -65,10 +70,11 @@ impl Waiter {
     /// `unblock_waiters_from_front`, and a scheduling point sits between those two
     /// moments. `task_id`, in contrast, tracks the current poller (see
     /// [`Waiter::task_id`]), so it is read here and refreshed on later polls.
-    fn new(num_permits: usize, clock: VectorClock) -> Self {
+    fn new(num_permits: usize, min_permits: usize, clock: VectorClock) -> Self {
         Self {
             task_id: AtomicUsize::new(ExecutionState::me().into()),
             num_permits,
+            min_permits,
             is_queued: AtomicBool::new(false),
             has_permits: AtomicBool::new(false),
             clock,
@@ -265,13 +271,38 @@ struct BatchSemaphoreState {
     // when the Acquire is created but not yet polled.
     //
     // (4) closed ==> waiters.is_empty()
+    //
+    // (5) if `reservation` is `Some(R)`, then the semaphore is unfair, and
+    // !R.is_queued && !R.has_permits
+    //
+    // (6) closed ==> reservation.is_none()
     waiters: VecDeque<Arc<Waiter>>,
+    /// The waiter that holds the semaphore's reservation, if any (see
+    /// [`BatchSemaphore::acquire_reserving`]). While it is set, the available
+    /// permits are kept for this waiter: no other request can take one, and the
+    /// waiter takes its `num_permits` as soon as that many are available.
+    reservation: Option<Arc<Waiter>>,
     permits_available: PermitsAvailable,
     // TODO: should there be a clock for the close event?
     closed: bool,
 }
 
 impl BatchSemaphoreState {
+    /// The permits that a request can take now. While a reservation holds the
+    /// semaphore, that is none, except for the holder itself.
+    fn available(&self) -> usize {
+        if self.reservation.is_some() {
+            0
+        } else {
+            self.permits_available.available()
+        }
+    }
+
+    /// Is `waiter` the holder of the semaphore's reservation?
+    fn is_reserved_by(&self, waiter: &Arc<Waiter>) -> bool {
+        self.reservation.as_ref().is_some_and(|r| Arc::ptr_eq(r, waiter))
+    }
+
     fn acquire_permits(
         &mut self,
         num_permits: usize,
@@ -281,6 +312,10 @@ impl BatchSemaphoreState {
         assert!(num_permits > 0);
         if self.closed {
             Err(TryAcquireError::Closed)
+        } else if self.reservation.is_some() {
+            // The available permits are kept for the holder of the reservation,
+            // which takes them with `take_permits`.
+            Err(TryAcquireError::NoPermits)
         } else if self.waiters.is_empty() || matches!(fairness, Fairness::Unfair) || priority == Priority::Front {
             // Permits here can be acquired in one of three scenarios:
             // - The waiter queue is empty; nobody else is waiting for permits,
@@ -292,18 +327,79 @@ impl BatchSemaphoreState {
             // - The request has `Priority::Front`, so it deliberately overtakes
             //   the queue (see `BatchSemaphore::upgrade`). Queued waiters hold
             //   no permits, so they cannot prevent this request from succeeding.
-
-            let clock = self.permits_available.acquire(num_permits, current::clock())?;
-
-            // If successful, the acquiry is causally dependent on the event
-            // which released the acquired permits.
-            ExecutionState::with(|s| {
-                s.update_clock(&clock);
-            });
-
-            Ok(())
+            self.take_permits(num_permits)
         } else {
             Err(TryAcquireError::NoPermits)
+        }
+    }
+
+    /// Take `num_permits` of the available permits for the current task, if
+    /// there are that many, regardless of the waiters and the reservation.
+    fn take_permits(&mut self, num_permits: usize) -> Result<(), TryAcquireError> {
+        let clock = self.permits_available.acquire(num_permits, current::clock())?;
+
+        // If successful, the acquiry is causally dependent on the event
+        // which released the acquired permits.
+        ExecutionState::with(|s| {
+            s.update_clock(&clock);
+        });
+
+        Ok(())
+    }
+
+    /// Unblock the waiters of an unfair semaphore that can now make progress,
+    /// and let them race. While a reservation holds the semaphore, only its
+    /// holder can, once enough permits are available for it.
+    fn wake_unfair_waiters(&mut self) {
+        if let Some(holder) = &self.reservation {
+            // Like a waiter in the queue, a holder whose task has already
+            // finished is stale (see `unblock_waiters_from_front`). Drop the
+            // reservation, so that it does not keep the permits from the
+            // waiters below. If the `Acquire` is still alive and another task
+            // polls it, it will reserve or acquire again.
+            let stale = ExecutionState::with(|s| s.get_mut(holder.task_id()).finished());
+            if stale {
+                trace!("dropping stale reservation {:?} for finished task", holder);
+                self.reservation = None;
+            } else {
+                if holder.num_permits <= self.permits_available.available() {
+                    ExecutionState::with(|s| s.get_mut(holder.task_id()).unblock());
+                    if let Some(waker) = holder.waker.lock().unwrap().as_ref() {
+                        waker.wake_by_ref();
+                    }
+                }
+                return;
+            }
+        }
+
+        // Unblock all the waiters for which there are enough permits available,
+        // then let them race.
+        let num_available = self.permits_available.available();
+        for waiter in &mut self.waiters {
+            if waiter.min_permits <= num_available {
+                // A waiter whose task has already finished is stale: its
+                // `Acquire` was cancelled (and possibly cached in a
+                // longer-lived object) and the task then exited. Unlike
+                // the strictly fair case there is nothing to clean up —
+                // an unfair waiter holds no permits, so it blocks
+                // nobody — but there is also nobody to unblock.
+                let stale = ExecutionState::with(|s| {
+                    let task = s.get_mut(waiter.task_id());
+                    if task.finished() {
+                        true
+                    } else {
+                        task.unblock();
+                        false
+                    }
+                });
+                if stale {
+                    continue;
+                }
+                let maybe_waker = waiter.waker.lock().unwrap();
+                if let Some(waker) = maybe_waker.as_ref() {
+                    waker.wake_by_ref();
+                }
+            }
         }
     }
 
@@ -430,6 +526,7 @@ impl BatchSemaphore {
         let state = RefCell::new(BatchSemaphoreState {
             id: Some(crate::annotations::record_semaphore_created()),
             waiters: VecDeque::new(),
+            reservation: None,
             permits_available: PermitsAvailable::new(num_permits),
             closed: false,
         });
@@ -458,6 +555,7 @@ impl BatchSemaphore {
         let state = RefCell::new(BatchSemaphoreState {
             id: None,
             waiters: VecDeque::new(),
+            reservation: None,
             permits_available: PermitsAvailable::const_new(num_permits),
             closed: false,
         });
@@ -468,10 +566,12 @@ impl BatchSemaphore {
         }
     }
 
-    /// Returns the current number of available permits.
+    /// Returns the current number of available permits. While a reservation
+    /// holds the semaphore (see [`BatchSemaphore::acquire_reserving`]), this is
+    /// zero: the available permits are kept for the holder.
     pub fn available_permits(&self) -> usize {
         let state = self.state.borrow();
-        state.permits_available.available()
+        state.available()
     }
 
     fn init_object_id(&self) {
@@ -498,16 +598,21 @@ impl BatchSemaphore {
         crate::annotations::record_semaphore_closed(state.id.unwrap());
         state.closed = true;
 
-        // Wake up all the waiters.  Since we've marked the state as closed, they
-        // will all return `AcquireError::closed` from their acquire calls.
+        // Wake up all the waiters, and the holder of the reservation, which waits
+        // too.  Since we've marked the state as closed, they will all return
+        // `AcquireError::closed` from their acquire calls.
         let ptr = &*state as *const BatchSemaphoreState;
-        for waiter in state.waiters.drain(..) {
+        let holder = state.reservation.take();
+        let queued = state
+            .waiters
+            .drain(..)
+            .inspect(|waiter| assert!(waiter.is_queued.swap(false, Ordering::SeqCst)));
+        for waiter in queued.chain(holder) {
             trace!(
                 "semaphore {:p} removing and waking up waiter {:?} on close",
                 ptr,
                 waiter,
             );
-            assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
             assert!(!waiter.has_permits.load(Ordering::SeqCst)); // sanity check
             ExecutionState::with(|exec_state| {
                 // A waiter whose task has finished is stale (its `Acquire` was
@@ -582,9 +687,12 @@ impl BatchSemaphore {
             ExecutionState::with(|s| {
                 for waiter in &state.waiters {
                     let available = state.permits_available.available();
+                    // A queued waiter cannot make progress while a reservation
+                    // keeps the available permits.
+                    let can_progress = state.reservation.is_none() && waiter.min_permits <= available;
                     // Skip stale waiters: the task that registered the waiter
                     // has finished, so there is nothing to block.
-                    if available < waiter.num_permits && s.try_get(waiter.task_id()).is_some_and(|t| !t.finished()) {
+                    if !can_progress && s.try_get(waiter.task_id()).is_some_and(|t| !t.finished()) {
                         // Block this waiter: it cannot succeed (there are not
                         // enough permits available); its `poll` would return
                         // without resolving.
@@ -649,6 +757,28 @@ impl BatchSemaphore {
         }
     }
 
+    /// End the reservation that `waiter` holds, because its `Acquire` was
+    /// dropped before it was granted. The permits that the reservation kept
+    /// were never taken, so they are available again at once.
+    fn cancel_reservation(&self, waiter: &Arc<Waiter>) {
+        let mut state = self.state.borrow_mut();
+
+        trace!("cancelling reservation {:?} of semaphore {:p}", waiter, &self.state);
+
+        assert!(state.is_reserved_by(waiter));
+        state.reservation = None;
+
+        // Wake the waiters that can now take the permits. Not while the
+        // execution stops or is cleaned up: then `release` does not wake waiters
+        // either, and there may be no task list to look at.
+        let can_wake = !std::thread::panicking()
+            && !ExecutionState::execution_stopped()
+            && ExecutionState::try_with(|s| !s.in_cleanup()).unwrap_or(false);
+        if can_wake {
+            state.wake_unfair_waiters();
+        }
+    }
+
     /// Acquire the specified number of permits (async API)
     pub fn acquire(&self, num_permits: usize) -> Acquire<'_> {
         // No switch here; switch should be triggered on polling future
@@ -659,6 +789,46 @@ impl BatchSemaphore {
     /// Acquire the specified number of permits (blocking API)
     pub fn acquire_blocking(&self, num_permits: usize) -> Result<(), AcquireError> {
         crate::future::block_on(self.acquire(num_permits))
+    }
+
+    /// Acquire `num_permits` permits, and reserve the semaphore for this request
+    /// as soon as at least `min_permits` permits are available (async API). Only
+    /// an unfair semaphore supports this.
+    ///
+    /// Until `min_permits` permits are available, the request waits like one
+    /// from [`BatchSemaphore::acquire`]: it holds nothing and stops no other
+    /// request. As soon as they are, it reserves the semaphore in the same step.
+    /// From then on, no other request can take a permit, and this request takes
+    /// its `num_permits` as soon as that many are available. The reservation
+    /// ends when the request is granted, or when the returned future is dropped.
+    /// While it lasts, [`BatchSemaphore::available_permits`] is zero.
+    ///
+    /// The motivating use case is a `parking_lot` `RwLock` writer. `parking_lot`
+    /// sets `WRITER_BIT` only when no writer or upgradable reader holds the lock,
+    /// and from then on, the bit stops new readers while the writer waits for
+    /// the current ones to leave. With `min_permits` above the permits that are
+    /// left while an upgradable reader holds the lock, the reservation is that
+    /// bit.
+    ///
+    /// At most one request can hold the reservation. Another reserving request
+    /// waits like any other until the reservation ends.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the semaphore is strictly fair (its queue already keeps the
+    /// permits for its first waiter), if `num_permits` is zero, or if
+    /// `min_permits > num_permits`.
+    pub fn acquire_reserving(&self, min_permits: usize, num_permits: usize) -> Acquire<'_> {
+        assert_eq!(
+            self.fairness,
+            Fairness::Unfair,
+            "only an unfair semaphore supports reservations"
+        );
+        assert!(num_permits > 0);
+        assert!(min_permits <= num_permits);
+
+        self.init_object_id();
+        Acquire::new_reserving(self, num_permits, min_permits)
     }
 
     /// Release `num_permits` back to the Semaphore
@@ -686,6 +856,7 @@ impl BatchSemaphore {
                 waiter.is_queued.swap(false, Ordering::SeqCst);
             }
             state.waiters.clear();
+            state.reservation = None;
             state.closed = true;
             return;
         }
@@ -712,33 +883,7 @@ impl BatchSemaphore {
             Fairness::Unfair => {
                 // in an unfair mode, we will unblock all the waiters for which
                 // there are enough permits available, then let them race
-                let num_available = state.permits_available.available();
-                for waiter in &mut state.waiters {
-                    if waiter.num_permits <= num_available {
-                        // A waiter whose task has already finished is stale: its
-                        // `Acquire` was cancelled (and possibly cached in a
-                        // longer-lived object) and the task then exited. Unlike
-                        // the strictly fair case there is nothing to clean up —
-                        // an unfair waiter holds no permits, so it blocks
-                        // nobody — but there is also nobody to unblock.
-                        let stale = ExecutionState::with(|s| {
-                            let task = s.get_mut(waiter.task_id());
-                            if task.finished() {
-                                true
-                            } else {
-                                task.unblock();
-                                false
-                            }
-                        });
-                        if stale {
-                            continue;
-                        }
-                        let maybe_waker = waiter.waker.lock().unwrap();
-                        if let Some(waker) = maybe_waker.as_ref() {
-                            waker.wake_by_ref();
-                        }
-                    }
-                }
+                state.wake_unfair_waiters();
             }
         }
         drop(state);
@@ -766,6 +911,11 @@ impl BatchSemaphore {
     /// soon as they release. The returned future must be driven to completion; if it is dropped
     /// first, the caller still holds `permits_currently_held`.
     ///
+    /// An unfair semaphore has no queue to overtake, so there the upgrade reserves the semaphore
+    /// instead (see [`BatchSemaphore::acquire_reserving`]), at once unless another request holds
+    /// the reservation. From then on, no other request can take a permit, so the upgrade again
+    /// waits only for the tasks that hold permits, and nothing can overtake it.
+    ///
     /// At most one `upgrade` may be in flight on a semaphore at a time. Two concurrent upgraders
     /// could each be waiting for permits the other holds, which no queue discipline can resolve.
     /// Callers are expected to enforce this (an `RwLock` does: there is only ever one upgradable
@@ -775,7 +925,11 @@ impl BatchSemaphore {
         assert!(permits_to_be_held > permits_currently_held);
 
         self.init_object_id();
-        Acquire::new(self, permits_to_be_held - permits_currently_held, Priority::Front)
+        let num_permits = permits_to_be_held - permits_currently_held;
+        match self.fairness {
+            Fairness::StrictlyFair => Acquire::new(self, num_permits, Priority::Front),
+            Fairness::Unfair => Acquire::new_reserving(self, num_permits, 0),
+        }
     }
 
     /// The non-blocking analogue of [`BatchSemaphore::upgrade`]: succeeds only if the missing
@@ -842,6 +996,11 @@ pub struct Acquire<'a> {
     /// there for why an upgrade must overtake the queue.
     priority: Priority,
 
+    /// For a reserving acquire, the number of available permits at which it
+    /// reserves the semaphore (see [`BatchSemaphore::acquire_reserving`]).
+    /// `None` for every other acquire.
+    reserve_at: Option<usize>,
+
     /// Snapshotted when this `Acquire` is created, and moved into the `Waiter` if
     /// this acquire ends up blocking. See `Waiter::new` for why the snapshot must
     /// happen here rather than at enqueue time.
@@ -868,6 +1027,7 @@ impl fmt::Debug for Acquire<'_> {
         f.debug_struct("Acquire")
             .field("num_permits", &self.num_permits)
             .field("priority", &self.priority)
+            .field("reserve_at", &self.reserve_at)
             .field("waiter", &self.waiter)
             .field("has_permits", &self.has_permits())
             .field("completed", &self.completed)
@@ -881,12 +1041,32 @@ impl<'a> Acquire<'a> {
             semaphore,
             num_permits,
             priority,
+            reserve_at: None,
             clock: current::clock(),
             waiter: None,
             has_permits: false,
             completed: false,
             never_polled: true,
         }
+    }
+
+    fn new_reserving(semaphore: &'a BatchSemaphore, num_permits: usize, min_permits: usize) -> Self {
+        let mut acquire = Self::new(semaphore, num_permits, Priority::Back);
+        acquire.reserve_at = Some(min_permits);
+        acquire
+    }
+
+    /// How many permits must be available for this acquire to make progress
+    /// (see `Waiter::min_permits`).
+    fn min_permits(&self) -> usize {
+        self.reserve_at.unwrap_or(self.num_permits)
+    }
+
+    /// Does this acquire hold the semaphore's reservation?
+    fn is_reserving(&self) -> bool {
+        self.waiter
+            .as_ref()
+            .is_some_and(|waiter| self.semaphore.state.borrow().is_reserved_by(waiter))
     }
 
     /// Have permits been granted to this acquire? Once a `Waiter` exists the
@@ -921,9 +1101,108 @@ impl<'a> Acquire<'a> {
         if let Some(waiter) = &self.waiter {
             return Arc::clone(waiter);
         }
-        let waiter = Arc::new(Waiter::new(self.num_permits, self.clock.clone()));
+        let waiter = Arc::new(Waiter::new(self.num_permits, self.min_permits(), self.clock.clone()));
         self.waiter = Some(Arc::clone(&waiter));
         waiter
+    }
+
+    /// The part of `poll` for a reserving acquire (see
+    /// [`BatchSemaphore::acquire_reserving`]), once `poll` knows that it has no
+    /// permits yet and that the semaphore is open. Only an unfair semaphore has
+    /// reserving acquires.
+    fn poll_reserving(&mut self, min_permits: usize, cx: &mut Context<'_>) -> Poll<Result<(), AcquireError>> {
+        let semaphore = self.semaphore;
+        let is_queued = self.is_queued();
+        let is_reserving = self.is_reserving();
+        trace!(
+            "Acquire::poll for reserving {:?}; is queued: {is_queued:?}, is reserving: {is_reserving:?}",
+            self
+        );
+
+        let mut state = semaphore.state.borrow_mut();
+        let id = state.id.unwrap();
+        let available = state.permits_available.available();
+
+        if is_reserving {
+            if available < self.num_permits {
+                // Still waiting for the tasks that hold the rest. Like a queued
+                // waiter, follow the current poller.
+                drop(state);
+                let waiter = self.waiter_for_blocking();
+                *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+                waiter.set_task_id(ExecutionState::me());
+                return Poll::Pending;
+            }
+
+            // The reservation kept the permits for us, so take them.
+            state.reservation = None;
+            state.take_permits(self.num_permits).unwrap();
+            // Let the waiters race for any permits that are left.
+            state.wake_unfair_waiters();
+            drop(state);
+
+            let waiter = self
+                .waiter
+                .clone()
+                .expect("a reserving acquire must have an allocated waiter");
+            crate::annotations::record_semaphore_acquire_unblocked(id, waiter.task_id(), self.num_permits);
+            self.grant_permits();
+            self.completed = true;
+            trace!("Acquire::poll for {:?} that got permits", self);
+            return Poll::Ready(Ok(()));
+        }
+
+        if state.reservation.is_some() || available < min_permits {
+            // Wait, holding nothing, like any other waiter of an unfair
+            // semaphore.
+            drop(state);
+            let waiter = self.waiter_for_blocking();
+            *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+            waiter.set_task_id(ExecutionState::me());
+            if !is_queued {
+                crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
+                semaphore.enqueue_waiter(&waiter, Priority::Back);
+            }
+            trace!("Acquire::poll for {:?} that is enqueued", self);
+            return Poll::Pending;
+        }
+
+        if available >= self.num_permits {
+            // There are enough permits, so there is nothing to reserve.
+            state.take_permits(self.num_permits).unwrap();
+            drop(state);
+            if is_queued {
+                let waiter = self
+                    .waiter
+                    .clone()
+                    .expect("a queued acquire must have an allocated waiter");
+                crate::annotations::record_semaphore_acquire_unblocked(id, waiter.task_id(), self.num_permits);
+                semaphore.remove_waiter(&waiter);
+            } else {
+                crate::annotations::record_semaphore_acquire_fast(id, self.num_permits);
+            }
+            self.grant_permits();
+            self.completed = true;
+            trace!("Acquire::poll for {:?} that got permits", self);
+            semaphore.reblock_if_unfair();
+            return Poll::Ready(Ok(()));
+        }
+
+        // Reserve the semaphore, and wait for the rest of the permits.
+        drop(state);
+        let waiter = self.waiter_for_blocking();
+        *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+        waiter.set_task_id(ExecutionState::me());
+        if is_queued {
+            semaphore.remove_waiter(&waiter);
+        } else {
+            crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
+        }
+        semaphore.state.borrow_mut().reservation = Some(waiter);
+        trace!("Acquire::poll for {:?} that reserved the semaphore", self);
+        // No waiter can take a permit now.
+        semaphore.reblock_if_unfair();
+        Poll::Pending
     }
 }
 
@@ -937,10 +1216,12 @@ impl Future for Acquire<'_> {
         // `available_permits` each took their own). Both reads describe the same
         // instant, before the scheduling point below, so merging them is sound.
         // Reads *after* the switch must stay separate and fresh, because other
-        // tasks may have run in between.
+        // tasks may have run in between. A reserving acquire that will reserve
+        // the semaphore changes its state as much as one that will succeed, so
+        // it compares against the permits at which it reserves.
         let will_succeed = self.has_permits() || {
             let state = self.semaphore.state.borrow();
-            state.closed || state.permits_available.available() >= self.num_permits
+            state.closed || state.available() >= self.min_permits()
         };
 
         // If the acquire will succeed on the first try, we need to context switch once to allow the previous
@@ -980,6 +1261,8 @@ impl Future for Acquire<'_> {
             self.completed = true;
             trace!("Acquire::poll for {:?} with closed", self);
             Poll::Ready(Err(AcquireError::closed()))
+        } else if let Some(min_permits) = self.reserve_at {
+            self.poll_reserving(min_permits, cx)
         } else {
             let is_queued = self.is_queued();
             trace!("Acquire::poll for {:?}; is queued: {is_queued:?}", self);
@@ -1125,6 +1408,14 @@ impl Drop for Acquire<'_> {
                 .clone()
                 .expect("a queued acquire must have an allocated waiter");
             self.semaphore.remove_waiter(&waiter);
+        } else if self.is_reserving() {
+            // If the acquire holds the reservation, end it, so that it does not
+            // keep the permits from other requests.
+            let waiter = self
+                .waiter
+                .clone()
+                .expect("a reserving acquire must have an allocated waiter");
+            self.semaphore.cancel_reservation(&waiter);
         } else if self.has_permits() && !self.completed {
             // If the waiter was granted permits, release them. Note this must also
             // fire for an acquire that got its permits without ever allocating a
