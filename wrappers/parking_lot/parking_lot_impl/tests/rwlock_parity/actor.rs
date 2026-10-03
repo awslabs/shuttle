@@ -4,17 +4,25 @@
 
 use super::reference::Op::{self, *};
 use super::reference::{Holding, add_one};
-use lock_api::{RawRwLockUpgradeDowngrade, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
+use lock_api::{
+    RawRwLockFair, RawRwLockUpgradeDowngrade, RawRwLockUpgradeFair, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard,
+    RwLockWriteGuard,
+};
+
+/// The raw-lock abilities that the programs use: upgrades, downgrades, and fair unlocks. Both
+/// Shuttle's `RawRwLock` and `parking_lot`'s have them all.
+pub trait RawLock: RawRwLockUpgradeDowngrade + RawRwLockFair + RawRwLockUpgradeFair {}
+impl<R: RawRwLockUpgradeDowngrade + RawRwLockFair + RawRwLockUpgradeFair> RawLock for R {}
 
 /// The guard that a task holds.
-pub enum Guard<'a, R: RawRwLockUpgradeDowngrade> {
+pub enum Guard<'a, R: RawLock> {
     Nothing,
     Read(RwLockReadGuard<'a, R, u8>),
     Upgradable(RwLockUpgradableReadGuard<'a, R, u8>),
     Write(RwLockWriteGuard<'a, R, u8>),
 }
 
-impl<'a, R: RawRwLockUpgradeDowngrade> Guard<'a, R> {
+impl<'a, R: RawLock> Guard<'a, R> {
     /// The result of a `try_*` op: the new guard, and whether the op succeeded.
     pub fn tried<G>(g: Option<G>, wrap: fn(G) -> Self) -> (Self, Option<bool>) {
         match g {
@@ -46,6 +54,19 @@ impl<'a, R: RawRwLockUpgradeDowngrade> Guard<'a, R> {
             }
             (DowngradeUpgradable, Guard::Upgradable(g)) => (Guard::Read(RwLockUpgradableReadGuard::downgrade(g)), None),
             (Unlock, _) => (Guard::Nothing, None),
+            (UnlockFair, Guard::Read(g)) => {
+                RwLockReadGuard::unlock_fair(g);
+                (Guard::Nothing, None)
+            }
+            (UnlockFair, Guard::Upgradable(g)) => {
+                RwLockUpgradableReadGuard::unlock_fair(g);
+                (Guard::Nothing, None)
+            }
+            (UnlockFair, Guard::Write(g)) => {
+                RwLockWriteGuard::unlock_fair(g);
+                (Guard::Nothing, None)
+            }
+            (UnlockFair, Guard::Nothing) => (Guard::Nothing, None),
             (Signal | AwaitSignal, guard) => (guard, None),
             (op, _) => panic!("invalid program: {} with the wrong guard", op.name()),
         }
@@ -64,7 +85,7 @@ impl<'a, R: RawRwLockUpgradeDowngrade> Guard<'a, R> {
 
 /// Runs one task's program on a real lock, and records values and `try_*` results with the same
 /// rules as the reference model.
-pub struct Actor<'a, R: RawRwLockUpgradeDowngrade> {
+pub struct Actor<'a, R: RawLock> {
     lock: &'a RwLock<R, u8>,
     guard: Guard<'a, R>,
     /// The index of the next op in the task's program.
@@ -75,7 +96,7 @@ pub struct Actor<'a, R: RawRwLockUpgradeDowngrade> {
     pub tries: Vec<(usize, bool)>,
 }
 
-impl<'a, R: RawRwLockUpgradeDowngrade> Actor<'a, R> {
+impl<'a, R: RawLock> Actor<'a, R> {
     pub fn new(lock: &'a RwLock<R, u8>) -> Self {
         Self {
             lock,

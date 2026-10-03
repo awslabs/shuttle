@@ -42,7 +42,7 @@ pub const fn const_rwlock<T>(val: T) -> RwLock<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
+    use super::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
     use shuttle::{
         check_dfs,
         thread::{self, spawn},
@@ -432,6 +432,245 @@ mod tests {
                 assert_eq!(*rwlock.read(), 1);
             },
             None,
+        );
+    }
+
+    /// Run a test in which the main task panics with "the original panic" while another task holds
+    /// a read lock. While the main task unwinds, it first releases its own read lock, and then it
+    /// drops the value that `on_drop` made. The release closes the lock (see "Stopped executions" in
+    /// the `raw_rwlock` module docs).
+    fn panic_while_another_task_reads<D: 'static>(on_drop: fn(Arc<RwLock<()>>) -> D) {
+        check_dfs(
+            move || {
+                let lock = Arc::new(RwLock::new(()));
+                let gate = Arc::new(shuttle::sync::Mutex::new(()));
+                let reading = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+                let held_gate = gate.lock().unwrap();
+                let other = {
+                    let (lock, gate, reading) = (lock.clone(), gate.clone(), reading.clone());
+                    spawn(move || {
+                        let _read = lock.read();
+                        reading.store(true, Ordering::SeqCst);
+                        // Keep the read lock until the main task releases `gate`.
+                        let _gate = gate.lock();
+                    })
+                };
+                let _on_drop = on_drop(lock.clone());
+                let own_read = lock.read();
+                if reading.load(Ordering::SeqCst) {
+                    panic!("the original panic");
+                }
+                drop(own_read);
+                drop(held_gate);
+                other.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// While the main task unwinds, a `Drop` asks for a write lock that the other task's read lock
+    /// blocks. The lock is closed, so the request returns at once, and Shuttle reports the panic and
+    /// not a deadlock.
+    #[test]
+    #[should_panic = "the original panic"]
+    fn unwinding_task_takes_a_held_lock() {
+        struct WriteOnDrop(Arc<RwLock<()>>);
+
+        impl Drop for WriteOnDrop {
+            fn drop(&mut self) {
+                let _guard = self.0.write();
+            }
+        }
+
+        panic_while_another_task_reads(WriteOnDrop);
+    }
+
+    /// On a closed lock, a `try_*` fails, and an unlock does not make the lock look free. A failed
+    /// check in a `Drop` during the unwind would abort the process, so the `Drop` records the
+    /// results, and the test checks them after the panic.
+    #[test]
+    fn closed_lock_refuses_try_and_ignores_unlock() {
+        use std::sync::atomic::AtomicBool;
+        static TRY_READ_REFUSED: AtomicBool = AtomicBool::new(true);
+        static STILL_LOCKED: AtomicBool = AtomicBool::new(true);
+
+        struct CheckOnDrop(Arc<RwLock<()>>);
+
+        impl Drop for CheckOnDrop {
+            fn drop(&mut self) {
+                // In a schedule that does not panic, the lock is not closed.
+                if !std::thread::panicking() {
+                    return;
+                }
+                // The lock has no writer, so only the closed lock refuses this request.
+                if self.0.try_read().is_some() {
+                    TRY_READ_REFUSED.store(false, Ordering::SeqCst);
+                }
+                // This request returns without the lock, and its unlock must not make the lock look
+                // free: the other task still holds a read lock. Unlocking fairly covers the fair
+                // release on a stopped execution.
+                RwLockUpgradableReadGuard::unlock_fair(self.0.upgradable_read());
+                if !self.0.is_locked() {
+                    STILL_LOCKED.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+
+        let panic = std::panic::catch_unwind(|| panic_while_another_task_reads(CheckOnDrop))
+            .expect_err("the test did not panic");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(message.contains("the original panic"), "unexpected panic: {message}");
+        assert!(
+            TRY_READ_REFUSED.load(Ordering::SeqCst),
+            "try_read was granted on a closed lock"
+        );
+        assert!(
+            STILL_LOCKED.load(Ordering::SeqCst),
+            "an unlock made a closed lock look free"
+        );
+    }
+
+    #[test]
+    fn is_locked_in_each_mode() {
+        check_dfs(
+            || {
+                let lock = RwLock::new(());
+                assert!(!lock.is_locked() && !lock.is_locked_exclusive());
+                {
+                    let _guard = lock.read();
+                    assert!(lock.is_locked() && !lock.is_locked_exclusive());
+                }
+                {
+                    let _guard = lock.upgradable_read();
+                    assert!(lock.is_locked() && !lock.is_locked_exclusive());
+                }
+                {
+                    let _guard = lock.write();
+                    assert!(lock.is_locked() && lock.is_locked_exclusive());
+                }
+                assert!(!lock.is_locked() && !lock.is_locked_exclusive());
+            },
+            None,
+        );
+    }
+
+    /// A writer that waits for a reader to leave holds `WRITER_BIT`, so `is_locked_exclusive` is
+    /// true before the writer has the lock, as in `parking_lot`.
+    #[test]
+    fn is_locked_exclusive_while_a_writer_waits() {
+        static SAW_WAITING_WRITER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        check_dfs(
+            || {
+                let lock = Arc::new(RwLock::new(()));
+                let requested = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+                let read = lock.read();
+                let writer = {
+                    let (lock, requested) = (lock.clone(), requested.clone());
+                    spawn(move || {
+                        requested.store(true, Ordering::SeqCst);
+                        drop(lock.write());
+                    })
+                };
+                // `is_locked_exclusive` is one scheduling point, so the writer can reserve right
+                // before its read. The yield offers one more preemption point, in the file's usual
+                // place. The main task holds a read lock, so the writer cannot have the lock yet.
+                thread::yield_now();
+                if lock.is_locked_exclusive() {
+                    assert!(
+                        requested.load(Ordering::SeqCst),
+                        "WRITER_BIT is set, but no task asked to write"
+                    );
+                    SAW_WAITING_WRITER.store(true, Ordering::Relaxed);
+                }
+                drop(read);
+                writer.join().unwrap();
+            },
+            None,
+        );
+        assert!(
+            SAW_WAITING_WRITER.load(Ordering::Relaxed),
+            "no schedule had a waiting writer"
+        );
+    }
+
+    /// `is_locked` and `is_locked_exclusive` read the lock state and change nothing. The `lock_api`
+    /// defaults instead probe with `try_lock_exclusive`/`try_lock_shared` and unlock again, which
+    /// transiently holds the lock: the other task's `try_*` here would fail against the probe, a
+    /// state `parking_lot` can never show, because its `is_locked*` are plain loads.
+    #[test]
+    fn is_locked_does_not_disturb_try() {
+        check_dfs(
+            || {
+                let lock = Arc::new(RwLock::new(()));
+                let prober = {
+                    let lock = Arc::clone(&lock);
+                    spawn(move || {
+                        lock.is_locked();
+                        lock.is_locked_exclusive();
+                    })
+                };
+                // Nothing ever holds the lock, so no state of a probing read can refuse these.
+                assert!(lock.try_write().is_some(), "try_write failed with no lock holder");
+                assert!(lock.try_read().is_some(), "try_read failed with no lock holder");
+                prober.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// A fair unlock hands the lock to a waiting task inside the release (see
+    /// `BatchSemaphore::release_fair`), and a `bump` is a fair unlock plus a relock, so it yields
+    /// the lock to the tasks that wait. The hand-off itself is pinned down by the engine's
+    /// `fair_release_tests`; this exercises every fair unlock and the `bump` of the lock across all
+    /// schedules: a reader must be admitted before, inside, and after the `bump` (and nowhere
+    /// else), and nothing may deadlock.
+    #[test]
+    fn fair_unlock_and_bump_admit_the_readers() {
+        let reader_observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let reader_observed_clone = Arc::clone(&reader_observed);
+
+        check_dfs(
+            move || {
+                let lock = Arc::new(RwLock::new(0));
+                let reader_observed = Arc::clone(&reader_observed_clone);
+                let writer = {
+                    let lock = Arc::clone(&lock);
+                    spawn(move || {
+                        let mut w = lock.write();
+                        *w += 1;
+                        // Yields the lock to a reader that waits; the relock waits for it to leave.
+                        RwLockWriteGuard::bump(&mut w);
+                        *w += 1;
+                        RwLockWriteGuard::unlock_fair(w);
+                    })
+                };
+                let reader = {
+                    let lock = Arc::clone(&lock);
+                    spawn(move || {
+                        let r = lock.read();
+                        reader_observed.lock().unwrap().insert(*r);
+                        RwLockReadGuard::unlock_fair(r);
+                    })
+                };
+                // An upgradable read can also be admitted before, inside, or after the bump.
+                let u = lock.upgradable_read();
+                assert!(*u <= 2, "the writer tore a value");
+                RwLockUpgradableReadGuard::unlock_fair(u);
+                writer.join().unwrap();
+                reader.join().unwrap();
+                assert_eq!(*lock.read(), 2);
+            },
+            None,
+        );
+
+        assert_eq!(
+            *reader_observed.lock().unwrap(),
+            HashSet::from([0, 1, 2]),
+            "the reader should get the lock before, inside, and after the bump",
         );
     }
 }
