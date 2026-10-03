@@ -21,12 +21,14 @@
 //!
 //! * [`reference_model_covers_parking_lot_under_stress`] runs each `release` scenario of the
 //!   transition table many times, in the same way as the Shuttle harness, with random delays between
-//!   ops. Each result of `parking_lot` (the `try_*` results and the recorded values) must also be a
-//!   result of the model. This tests that the model does not leave out a behavior of `parking_lot`,
-//!   and in particular that it does not need the order in which `parking_lot` wakes tasks (see the
-//!   reference module docs). Set `RWLOCK_PARITY_STRESS_ITERATIONS` to change the number of runs of
-//!   each scenario (default 100). Run with `--nocapture` to see how many of the model's results
-//!   `parking_lot` gave.
+//!   ops. Each scenario runs in two variants: every task's final unlock is plain, or every task's
+//!   final unlock is `unlock_fair`, whose hand-off the model also gives the plain unlock rule (see
+//!   the reference module docs). Each result of `parking_lot` (the `try_*` results and the recorded
+//!   values) must also be a result of the model. This tests that the model does not leave out a
+//!   behavior of `parking_lot`, and in particular that it needs neither the order in which
+//!   `parking_lot` wakes tasks nor the fair hand-off. Set `RWLOCK_PARITY_STRESS_ITERATIONS` to
+//!   change the number of runs of each scenario (default 100, half per variant). Run with
+//!   `--nocapture` to see how many of the model's results `parking_lot` gave.
 //!
 //! # Timing
 //!
@@ -563,52 +565,56 @@ fn stress(iterations: u64, progress: &AtomicU64, current: &Mutex<String>) -> Vec
     for &main in TRANSITIONS {
         for &queued in QUEUED {
             for &requested in REQUESTED {
-                let name = format!(
-                    "{} | release | {} | {}",
-                    describe(main),
-                    describe(queued),
-                    describe(requested)
-                );
-                let mut programs = vec![[main, &[Unlock]].concat()];
-                if !queued.is_empty() {
-                    programs.push([queued, &[Unlock]].concat());
-                }
-                programs.push([requested, &[Unlock]].concat());
-                let expected = explore(&programs);
-                if expected.deadlock {
-                    skipped += 1;
-                    continue;
-                }
-                *current.lock().unwrap() = name.clone();
+                for unlock in [Unlock, UnlockFair] {
+                    let name = format!(
+                        "{} | release ({}) | {} | {}",
+                        describe(main),
+                        unlock.name(),
+                        describe(queued),
+                        describe(requested)
+                    );
+                    let mut programs = vec![[main, &[unlock]].concat()];
+                    if !queued.is_empty() {
+                        programs.push([queued, &[unlock]].concat());
+                    }
+                    programs.push([requested, &[unlock]].concat());
+                    let expected = explore(&programs);
+                    if expected.deadlock {
+                        skipped += 1;
+                        continue;
+                    }
+                    *current.lock().unwrap() = name.clone();
 
-                let programs = Arc::new(programs);
-                let mut values = BTreeSet::new();
-                let mut tries = BTreeSet::new();
-                for i in 0..iterations {
-                    let (v, t) = real_once(&programs, i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ checked);
-                    values.insert(v);
-                    tries.extend(t);
-                    progress.fetch_add(1, Ordering::Relaxed);
-                }
+                    let programs = Arc::new(programs);
+                    let mut values = BTreeSet::new();
+                    let mut tries = BTreeSet::new();
+                    for i in 0..iterations.div_ceil(2) {
+                        let (v, t) = real_once(&programs, i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ checked);
+                        values.insert(v);
+                        tries.extend(t);
+                        progress.fetch_add(1, Ordering::Relaxed);
+                    }
 
-                checked += 1;
-                model_total += expected.values.len();
-                model_seen += values.intersection(&expected.values).count();
-                let extra_values: Vec<_> = values.difference(&expected.values).collect();
-                let extra_tries: Vec<_> = tries.difference(&expected.try_results).collect();
-                if !extra_values.is_empty() || !extra_tries.is_empty() {
-                    mismatches.push(format!(
-                        "{name}: parking_lot gave values {extra_values:?} and try results \
+                    checked += 1;
+                    model_total += expected.values.len();
+                    model_seen += values.intersection(&expected.values).count();
+                    let extra_values: Vec<_> = values.difference(&expected.values).collect();
+                    let extra_tries: Vec<_> = tries.difference(&expected.try_results).collect();
+                    if !extra_values.is_empty() || !extra_tries.is_empty() {
+                        mismatches.push(format!(
+                            "{name}: parking_lot gave values {extra_values:?} and try results \
                          {extra_tries:?} that the model does not"
-                    ));
+                        ));
+                    }
                 }
             }
         }
     }
     println!(
-        "stress: {checked} scenarios x {iterations} runs in {:.1?}, {skipped} skipped (the model \
+        "stress: {checked} scenarios x {} runs in {:.1?}, {skipped} skipped (the model \
          deadlocks), {} mismatches; parking_lot gave {model_seen} of the model's {model_total} value \
          sets",
+        iterations.div_ceil(2),
         started.elapsed(),
         mismatches.len()
     );

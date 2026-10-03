@@ -42,7 +42,7 @@ pub const fn const_rwlock<T>(val: T) -> RwLock<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
+    use super::{RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
     use shuttle::{
         check_dfs,
         thread::{self, spawn},
@@ -507,8 +507,9 @@ mod tests {
                     TRY_READ_REFUSED.store(false, Ordering::SeqCst);
                 }
                 // This request returns without the lock, and its unlock must not make the lock look
-                // free: the other task still holds a read lock.
-                drop(self.0.upgradable_read());
+                // free: the other task still holds a read lock. Unlocking fairly covers the fair
+                // release on a stopped execution.
+                RwLockUpgradableReadGuard::unlock_fair(self.0.upgradable_read());
                 if !self.0.is_locked() {
                     STILL_LOCKED.store(false, Ordering::SeqCst);
                 }
@@ -574,8 +575,9 @@ mod tests {
                         drop(lock.write());
                     })
                 };
-                // `is_locked_exclusive` is not a scheduling point, so yield to let the writer run. The
-                // main task holds a read lock, so the writer cannot have the lock yet.
+                // `is_locked_exclusive` is one scheduling point, so the writer can reserve right
+                // before its read. The yield offers one more preemption point, in the file's usual
+                // place. The main task holds a read lock, so the writer cannot have the lock yet.
                 thread::yield_now();
                 if lock.is_locked_exclusive() {
                     assert!(
@@ -592,6 +594,83 @@ mod tests {
         assert!(
             SAW_WAITING_WRITER.load(Ordering::Relaxed),
             "no schedule had a waiting writer"
+        );
+    }
+
+    /// `is_locked` and `is_locked_exclusive` read the lock state and change nothing. The `lock_api`
+    /// defaults instead probe with `try_lock_exclusive`/`try_lock_shared` and unlock again, which
+    /// transiently holds the lock: the other task's `try_*` here would fail against the probe, a
+    /// state `parking_lot` can never show, because its `is_locked*` are plain loads.
+    #[test]
+    fn is_locked_does_not_disturb_try() {
+        check_dfs(
+            || {
+                let lock = Arc::new(RwLock::new(()));
+                let prober = {
+                    let lock = Arc::clone(&lock);
+                    spawn(move || {
+                        lock.is_locked();
+                        lock.is_locked_exclusive();
+                    })
+                };
+                // Nothing ever holds the lock, so no state of a probing read can refuse these.
+                assert!(lock.try_write().is_some(), "try_write failed with no lock holder");
+                assert!(lock.try_read().is_some(), "try_read failed with no lock holder");
+                prober.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// A fair unlock hands the lock to a waiting task inside the release (see
+    /// `BatchSemaphore::release_fair`), and a `bump` is a fair unlock plus a relock, so it yields
+    /// the lock to the tasks that wait. The hand-off itself is pinned down by the engine's
+    /// `fair_release_tests`; this exercises every fair unlock and the `bump` of the lock across all
+    /// schedules: a reader must be admitted before, inside, and after the `bump` (and nowhere
+    /// else), and nothing may deadlock.
+    #[test]
+    fn fair_unlock_and_bump_admit_the_readers() {
+        let reader_observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let reader_observed_clone = Arc::clone(&reader_observed);
+
+        check_dfs(
+            move || {
+                let lock = Arc::new(RwLock::new(0));
+                let reader_observed = Arc::clone(&reader_observed_clone);
+                let writer = {
+                    let lock = Arc::clone(&lock);
+                    spawn(move || {
+                        let mut w = lock.write();
+                        *w += 1;
+                        // Yields the lock to a reader that waits; the relock waits for it to leave.
+                        RwLockWriteGuard::bump(&mut w);
+                        *w += 1;
+                        RwLockWriteGuard::unlock_fair(w);
+                    })
+                };
+                let reader = {
+                    let lock = Arc::clone(&lock);
+                    spawn(move || {
+                        let r = lock.read();
+                        reader_observed.lock().unwrap().insert(*r);
+                        RwLockReadGuard::unlock_fair(r);
+                    })
+                };
+                // An upgradable read can also be admitted before, inside, or after the bump.
+                let u = lock.upgradable_read();
+                assert!(*u <= 2, "the writer tore a value");
+                RwLockUpgradableReadGuard::unlock_fair(u);
+                writer.join().unwrap();
+                reader.join().unwrap();
+                assert_eq!(*lock.read(), 2);
+            },
+            None,
+        );
+
+        assert_eq!(
+            *reader_observed.lock().unwrap(),
+            HashSet::from([0, 1, 2]),
+            "the reader should get the lock before, inside, and after the bump",
         );
     }
 }

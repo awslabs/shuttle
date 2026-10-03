@@ -346,7 +346,7 @@ impl Task<'_> {
         for &op in ops {
             // The mode that an op keeps, if it gives up some of the lock.
             let kept = match op {
-                Unlock => Some(Holding::Nothing),
+                Unlock | UnlockFair => Some(Holding::Nothing),
                 Downgrade | DowngradeUpgradable => Some(Holding::Shared),
                 DowngradeToUpgradable => Some(Holding::Upgradable),
                 _ => None,

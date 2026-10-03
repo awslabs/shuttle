@@ -575,6 +575,31 @@ impl BatchSemaphore {
         state.available()
     }
 
+    /// Reads the semaphore's state in one scheduling point: `None` if the
+    /// semaphore is closed, otherwise `Some` of the permits a request could
+    /// take now (zero while a reservation lasts, as for
+    /// [`BatchSemaphore::available_permits`]).
+    ///
+    /// This models a load of the atomic word that a real lock keeps, like
+    /// `parking_lot`'s `is_locked`: other tasks can run before the read (at the
+    /// scheduling point), but the read itself changes nothing. Probing with
+    /// `try_acquire` and releasing instead would transiently hold the permits
+    /// across one or two more scheduling points, where another task could
+    /// observe a state that the real lock never shows.
+    ///
+    /// Both parts of the result describe the same instant: no scheduling point
+    /// separates the closed check from the permit count.
+    pub fn load_permits(&self) -> Option<usize> {
+        thread::switch();
+
+        let state = self.state.borrow();
+        if state.closed {
+            None
+        } else {
+            Some(state.available())
+        }
+    }
+
     fn init_object_id(&self) {
         let mut state = self.state.borrow_mut();
         if state.id.is_none() {
@@ -830,25 +855,62 @@ impl BatchSemaphore {
 
     /// Release `num_permits` back to the Semaphore
     pub fn release(&self, num_permits: usize) {
+        self.release_inner(num_permits, false)
+    }
+
+    /// Release `num_permits` back to the semaphore, granting them to already
+    /// waiting requests before any other request can take them.
+    ///
+    /// On an unfair semaphore, a plain [`BatchSemaphore::release`] wakes the
+    /// waiters that the permits could satisfy and lets every request race for
+    /// them, so a request that was not even waiting can take the permits first.
+    /// A fair release instead grants waiting requests their permits inside the
+    /// release itself, from the front of the queue (the longest-waiting
+    /// request first) for as long as the permits last. No scheduling point
+    /// separates the release from those grants, so nothing can overtake them.
+    /// Waiters that the remaining permits could satisfy are then woken to race
+    /// for them as usual.
+    ///
+    /// The motivating use case is `parking_lot`'s fair unlock (`unlock_fair`
+    /// and `bump`), which hands the lock directly to the parked threads: the
+    /// lock is never observably free in between, so the unlocking thread
+    /// cannot barge back in ahead of them. The front of the queue stops the
+    /// grants exactly as `parking_lot`'s wake policy does: a `parking_lot`
+    /// unlock wakes the parked threads up to (and including) the first one
+    /// that needs the lock exclusively, and here a waiter whose request does
+    /// not fit the remaining permits stops the scan.
+    ///
+    /// While a reservation holds the semaphore (see
+    /// [`BatchSemaphore::acquire_reserving`]), the permits are already kept
+    /// for the reservation's holder — no request can overtake it — so a fair
+    /// release behaves like a plain one.
+    ///
+    /// On a strictly fair semaphore every release already grants from the
+    /// front of the queue, so this is the same as [`BatchSemaphore::release`].
+    pub fn release_fair(&self, num_permits: usize) {
+        self.release_inner(num_permits, true)
+    }
+
+    fn release_inner(&self, num_permits: usize, fair: bool) {
         // Execution teardown can unwind a task's stack from this scheduling point, which is often in
         // a destructor that releases a lock (see `ExecutionState::tear_down`). The permits must not
         // be lost then, as destructors that run later can need them.
-        struct ReleaseOnUnwind<'a>(&'a BatchSemaphore, usize);
+        struct ReleaseOnUnwind<'a>(&'a BatchSemaphore, usize, bool);
         impl Drop for ReleaseOnUnwind<'_> {
             fn drop(&mut self) {
-                self.0.release_no_scheduling_point(self.1);
+                self.0.release_no_scheduling_point(self.1, self.2);
             }
         }
-        let release_on_unwind = ReleaseOnUnwind(self, num_permits);
+        let release_on_unwind = ReleaseOnUnwind(self, num_permits, fair);
         thread::switch();
         std::mem::forget(release_on_unwind);
 
-        self.release_no_scheduling_point(num_permits);
+        self.release_no_scheduling_point(num_permits, fair);
     }
 
-    /// `release` without its scheduling point.
+    /// `release_inner` without its scheduling point.
     #[inline]
-    fn release_no_scheduling_point(&self, num_permits: usize) {
+    fn release_no_scheduling_point(&self, num_permits: usize, fair: bool) {
         self.init_object_id();
         if num_permits == 0 {
             return;
@@ -895,6 +957,13 @@ impl BatchSemaphore {
                 state.unblock_waiters_from_front();
             }
             Fairness::Unfair => {
+                // A fair release grants waiting requests their permits here, inside the
+                // release, so that no other request can overtake them (see `release_fair`).
+                // Not while a reservation holds the semaphore: the permits are already kept
+                // for its holder, which `wake_unfair_waiters` takes care of below.
+                if fair && state.reservation.is_none() {
+                    state.unblock_waiters_from_front();
+                }
                 // in an unfair mode, we will unblock all the waiters for which
                 // there are enough permits available, then let them race
                 state.wake_unfair_waiters();
