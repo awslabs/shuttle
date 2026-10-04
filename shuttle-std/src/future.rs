@@ -5,6 +5,7 @@
 //!
 //! [`futures::executor`]: https://docs.rs/futures/0.3.13/futures/executor/index.html
 
+use shuttle_engine::await_backtrace::{AwaitSite, PollGuard};
 use shuttle_engine::backtrace_enabled;
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::TaskId;
@@ -225,16 +226,9 @@ impl<T> Future for JoinHandle<T> {
         if let Some(result) = lock.result.take() {
             Poll::Ready(result)
         } else {
+            // Cloning the waker is also what records this await site for the deadlock report, through
+            // Shuttle's waker vtable (see `shuttle_engine::await_backtrace`).
             lock.waker = Some(cx.waker().clone());
-
-            ExecutionState::with(|state| {
-                state.current_mut().backtrace = if backtrace_enabled() {
-                    Some(std::backtrace::Backtrace::force_capture())
-                } else {
-                    None
-                }
-            });
-
             Poll::Pending
         }
     }
@@ -347,12 +341,34 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
     // For example, an uncontested acquire makes other threads block or fail try-acquires, so there must be
     // a scheduling point for scheduling completeness. For *external* futures, this is a non-issue because they
     // should use other Shuttle primitives inside of `poll` if polling can affect other threads.
+
+    // Read once, outside the loop: this is a process-wide constant, and the whole await-site
+    // machinery is dead weight when backtraces are off.
+    let capture_await_sites = backtrace_enabled();
+    let mut await_site = AwaitSite::default();
+
     loop {
-        match future.as_mut().poll(cx) {
+        let (polled, captured) = {
+            let guard = capture_await_sites.then(PollGuard::new);
+            let polled = future.as_mut().poll(cx);
+            (polled, guard.and_then(PollGuard::finish))
+        };
+        match polled {
             Poll::Ready(result) => break result,
             Poll::Pending => {
-                ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
+                ExecutionState::with(|state| {
+                    let task = state.current_mut();
+                    if capture_await_sites {
+                        // The poll stack (and with it the await chain) is gone now; keep whatever
+                        // the waker clone recorded while it was still live.
+                        await_site.park(task, captured);
+                    }
+                    task.sleep_unless_woken();
+                });
                 thread::switch();
+                if capture_await_sites {
+                    ExecutionState::with(|state| await_site.unpark(state.current_mut()));
+                }
             }
         }
     }

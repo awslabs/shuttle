@@ -306,7 +306,6 @@ pub struct Task {
 
     waiter: Option<TaskId>,
 
-    waker: Waker,
     // Remember whether the waker was invoked while we were running
     woken: bool,
 
@@ -342,9 +341,14 @@ pub struct Task {
     ///   runs; the deadlock handler resumes it to walk its own stack (see
     ///   [`crate::runtime::thread::continuation::ContinuationInput::CaptureBacktrace`]).
     /// - A task parked on a pending future has already unwound its `poll` stack by the time it
-    ///   suspends, so there is nothing left to walk. Those sites capture eagerly, at the point
-    ///   `Poll::Pending` is produced.
+    ///   suspends, so its await site is captured while that stack is still live, from the waker
+    ///   (see [`crate::await_backtrace`]).
     pub backtrace: Option<Backtrace>,
+
+    /// Whether `backtrace` is an await site recorded by an earlier poll than the one the task is
+    /// parked after, because that one returned `Pending` without cloning the waker (see
+    /// [`crate::await_backtrace::AwaitSite`]).
+    pub(crate) await_site_from_earlier_poll: bool,
 
     /// The signature of a Task; this is an identifier that is *not* guaranteed to be unique but should be *mostly*
     /// stable across iterations in a single Shuttle test. Tasks with the same signature are very likely to exhibit
@@ -373,7 +377,6 @@ impl Task {
         let mut continuation = ContinuationPool::acquire(stack_size);
         continuation.initialize(f);
         let yielder = continuation.yielder;
-        let waker = make_waker(id);
         let continuation = Rc::new(RefCell::new(continuation));
 
         let step_span =
@@ -392,7 +395,6 @@ impl Task {
             yielder,
             clock,
             waiter: None,
-            waker,
             woken: false,
             detached: false,
             park_state: ParkState::default(),
@@ -402,6 +404,7 @@ impl Task {
             local_storage: StorageMap::new(),
             tag: None,
             backtrace: None,
+            await_site_from_earlier_poll: false,
             signature,
         };
 
@@ -466,9 +469,33 @@ impl Task {
             Box::new(move || {
                 let waker = ExecutionState::with(|state| state.current_mut().waker());
                 let cx = &mut Context::from_waker(&waker);
-                while future.as_mut().poll(cx).is_pending() {
-                    ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
+                // Read once, outside the loop: this is a process-wide constant, and the whole
+                // await-site machinery is dead weight when backtraces are off.
+                let capture_await_sites = crate::backtrace_enabled();
+                let mut await_site = crate::await_backtrace::AwaitSite::default();
+
+                loop {
+                    let (pending, captured) = {
+                        let guard = capture_await_sites.then(crate::await_backtrace::PollGuard::new);
+                        let pending = future.as_mut().poll(cx).is_pending();
+                        (pending, guard.and_then(crate::await_backtrace::PollGuard::finish))
+                    };
+                    if !pending {
+                        break;
+                    }
+                    ExecutionState::with(|state| {
+                        let task = state.current_mut();
+                        if capture_await_sites {
+                            // The poll stack (and with it the await chain) is gone now; keep
+                            // whatever the waker clone recorded while it was still live.
+                            await_site.park(task, captured);
+                        }
+                        task.sleep_unless_woken();
+                    });
                     thread::switch();
+                    if capture_await_sites {
+                        ExecutionState::with(|state| await_site.unpark(state.current_mut()));
+                    }
                 }
             }),
             stack_size,
@@ -533,7 +560,11 @@ impl Task {
     }
 
     pub fn waker(&self) -> Waker {
-        self.waker.clone()
+        // Made afresh rather than cloned from a stored one: the vtable's `clone` records an await
+        // site when it runs inside a poll (see `crate::await_backtrace`), and the executor's own
+        // calls, like a `block_on` or `yield_now` in an async fn, are not one. Our wakers hold no
+        // resources, so the result is the same waker.
+        make_waker(self.id)
     }
 
     /// Block the current thread. If `allow_spurious_wakeups` is true, then the scheduler is
@@ -550,6 +581,7 @@ impl Task {
         // more, and the deadlock handler only captures for a task that has no backtrace, so leaving
         // it would print where the task used to wait instead of where it blocks now.
         self.backtrace = None;
+        self.await_site_from_earlier_poll = false;
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked { allow_spurious_wakeups };
     }
@@ -716,12 +748,21 @@ impl Task {
             self.id(),
             if self.detached { ", detached" } else { "" },
             if self.sleeping() { ", pending future" } else { "" },
-            match (backtrace_enabled(), &self.backtrace) {
-                // `Display` prints the numbered `N: function` / `at file:line:col` layout that panics
-                // use under `RUST_BACKTRACE=1`, and ends each frame with a newline.
-                (true, Some(backtrace)) => format!("\nBacktrace:\n{backtrace}"),
-                (true, None) => "\nBacktrace: <not captured>\n".into(),
-                (false, _) => "".into(),
+            if backtrace_enabled() {
+                let note = if self.await_site_from_earlier_poll {
+                    " (from an earlier poll: later polls returned `Pending` without cloning the waker, so the task may \
+                     be waiting at a later await)"
+                } else {
+                    ""
+                };
+                match &self.backtrace {
+                    // `Display` prints the numbered `N: function` / `at file:line:col` layout that panics
+                    // use under `RUST_BACKTRACE=1`, and ends each frame with a newline.
+                    Some(backtrace) => format!("\nBacktrace{note}:\n{backtrace}"),
+                    None => "\nBacktrace: <not captured>\n".into(),
+                }
+            } else {
+                "".into()
             }
         )
     }

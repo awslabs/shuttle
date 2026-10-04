@@ -410,6 +410,10 @@ pub fn switch() {
     if ExecutionState::maybe_yield() {
         let yielder = ExecutionState::with(|state| state.current().yielder);
 
+        // Other tasks run on this thread until this one is switched back in, and must not see its
+        // await-site state in the meantime. Nothing reads that state unless backtraces are enabled.
+        let _await_site_state = crate::backtrace_enabled().then(crate::await_backtrace::SwitchGuard::new);
+
         // SAFETY: A yielder reference will be valid for the lifetime of the continuation (see `corosensei::Coroutine::with_stack`)
         // The yielder field is stored on the Task, whose lifetime is necessarily subsumed by the lifetime of the continuation which contains it.
         // As a result, the task struct cannot contain an invalidated pointer to it's yielder. There are no mutable references to the yielder.
