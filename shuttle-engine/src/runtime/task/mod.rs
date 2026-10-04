@@ -775,12 +775,33 @@ impl Task {
                 } else {
                     ""
                 };
-                format!("{spawned_at}{}", format_backtraces(&self.backtraces, note))
+                let waits = format_wait_records(&crate::await_backtrace::formatted_wait_records(self.id));
+                format!("{spawned_at}{}{waits}", format_backtraces(&self.backtraces, note))
             } else {
                 "".into()
             }
         )
     }
+}
+
+/// Format the wait records of a deadlocked task (see [`crate::await_backtrace::WaitRecord`]): one
+/// for each Shuttle future it last polled through a combinator such as `FuturesUnordered`, which is
+/// still pending.
+fn format_wait_records(records: &[(Option<TaskId>, String)]) -> String {
+    records
+        .iter()
+        .enumerate()
+        .map(|(i, (joins, record))| {
+            let joins = joins.map(|task| format!(", joining task {task:?}")).unwrap_or_default();
+            // `record` is a backtrace's `Display` output, which already ends with a newline (see
+            // `format_backtraces`).
+            format!(
+                "\nWaiting inside a combinator, {} of {}{joins}:\n{record}",
+                i + 1,
+                records.len()
+            )
+        })
+        .collect()
 }
 
 /// Format the backtraces of a deadlocked task, each headed with `note`: one for a task blocked in a
