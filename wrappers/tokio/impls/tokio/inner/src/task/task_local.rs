@@ -110,7 +110,10 @@ macro_rules! __task_local_inner {
                     const { ::std::cell::RefCell::new(::std::option::Option::None) };
             }
 
-            $crate::task::LocalKey::__new(&__TASK_SLOT, __FALLBACK_SLOT)
+            $crate::task::LocalKey {
+                task_slot: &__TASK_SLOT,
+                fallback_slot: __FALLBACK_SLOT,
+            }
         };
     };
 }
@@ -153,12 +156,14 @@ pub struct LocalKey<T: 'static> {
     //
     // The slot that a scope's value is moved into while the running Shuttle task polls the scope.
     // Every Shuttle task has its own.
-    task_slot: &'static shuttle::thread::LocalKey<RefCell<Option<T>>>,
+    #[doc(hidden)]
+    pub task_slot: &'static shuttle::thread::LocalKey<RefCell<Option<T>>>,
     // The slot used instead whenever no Shuttle task is running: outside of a Shuttle test, while
     // Shuttle tears an execution down, and while Shuttle updates its own state (see the module
     // docs). It is what tokio uses all the time, and is as sound here as it is there, since only
     // one thing runs at a time in each of those cases.
-    fallback_slot: thread::LocalKey<RefCell<Option<T>>>,
+    #[doc(hidden)]
+    pub fallback_slot: thread::LocalKey<RefCell<Option<T>>>,
 }
 
 // SHUTTLE_CHANGES: tokio's `LocalKey` is unwind safe because its only field, a
@@ -171,18 +176,6 @@ impl<T: 'static> UnwindSafe for LocalKey<T> {}
 impl<T: 'static> RefUnwindSafe for LocalKey<T> {}
 
 impl<T: 'static> LocalKey<T> {
-    // SHUTTLE_CHANGES: tokio's macro initializes its (public, hidden) field directly.
-    #[doc(hidden)]
-    pub const fn __new(
-        task_slot: &'static shuttle::thread::LocalKey<RefCell<Option<T>>>,
-        fallback_slot: thread::LocalKey<RefCell<Option<T>>>,
-    ) -> Self {
-        Self {
-            task_slot,
-            fallback_slot,
-        }
-    }
-
     /// Sets a value `T` as the task-local value for the future `F`.
     ///
     /// On completion of `scope`, the task-local will be dropped.
