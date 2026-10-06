@@ -4,6 +4,8 @@
 
 * Add `current::try_get_current_task`, a non-panicking `get_current_task` for `Drop` handlers and `tracing` subscribers. It returns `None` outside of an execution and while Shuttle updates its own state.
 
+* `shuttle::thread::LocalKey<T>` is now `UnwindSafe` and `RefUnwindSafe` for every `T`, like `std::thread::LocalKey`. It used to take both from `T`, so a type that held a reference to a key, such as `shuttle-tokio`'s `task::LocalKey`, was not `UnwindSafe` if the key's value was a `RefCell`.
+
 # tokio wrappers, `shuttle-tokio-impl-inner` 0.1.4 (October 12, 2026)
 
 Published `shuttle-tokio-impl-inner` 0.1.4. Like 0.1.3, it requires `shuttle` 0.9.2 or later and `shuttle-engine` `^0.1.4`, and the already-published `shuttle-tokio-impl` 0.1.1 and `shuttle-tokio` 1.0.0 pick it up without being republished. The `shuttle` crate is unchanged at 0.9.6.

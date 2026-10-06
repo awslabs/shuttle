@@ -448,6 +448,20 @@ mod thread_local {
         );
     }
 
+    /// A `LocalKey` has the same auto traits as `std::thread::LocalKey`, whatever it holds.
+    #[test]
+    fn auto_traits() {
+        use std::cell::Cell;
+        use std::panic::{RefUnwindSafe, UnwindSafe};
+
+        fn send_sync_unwind_safe<T: Send + Sync + UnwindSafe + RefUnwindSafe>() {}
+
+        send_sync_unwind_safe::<LocalKey<RefCell<usize>>>();
+        send_sync_unwind_safe::<std::thread::LocalKey<RefCell<usize>>>();
+        send_sync_unwind_safe::<LocalKey<Rc<Cell<usize>>>>();
+        send_sync_unwind_safe::<std::thread::LocalKey<Rc<Cell<usize>>>>();
+    }
+
     // Like `nested_with` but just testing the const variant of the `thread_local` macro
     #[test]
     fn const_nested_with() {
