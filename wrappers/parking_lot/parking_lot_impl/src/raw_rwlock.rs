@@ -140,7 +140,7 @@ impl RawRwLock {
     }
 }
 
-// Safety: exclusivity is guaranteed because a writer acquires all `EXCLUSIVE` permits of `sem`,
+// SAFETY: exclusivity is guaranteed because a writer acquires all `EXCLUSIVE` permits of `sem`,
 // which cannot succeed while any reader holds a permit, and a reader cannot acquire a permit while a
 // writer holds them all.
 unsafe impl lock_api::RawRwLock for RawRwLock {
@@ -212,7 +212,7 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
     }
 }
 
-// Safety: a fair unlock releases the same permits as a normal unlock. It additionally hands them to
+// SAFETY: a fair unlock releases the same permits as a normal unlock. It additionally hands them to
 // waiting requests inside the release, as `parking_lot`'s fair unlock hands the lock to the parked
 // threads (see the module docs), which only restricts who gets the lock next.
 unsafe impl lock_api::RawRwLockFair for RawRwLock {
@@ -227,7 +227,7 @@ unsafe impl lock_api::RawRwLockFair for RawRwLock {
     }
 }
 
-// Safety: downgrading only ever releases permits, so it cannot violate exclusivity; the caller
+// SAFETY: downgrading only ever releases permits, so it cannot violate exclusivity; the caller
 // still holds a shared permit afterwards.
 unsafe impl lock_api::RawRwLockDowngrade for RawRwLock {
     unsafe fn downgrade(&self) {
@@ -237,7 +237,7 @@ unsafe impl lock_api::RawRwLockDowngrade for RawRwLock {
     }
 }
 
-// Safety: an upgradable lock holds a strict majority of the permits, so it excludes writers (which
+// SAFETY: an upgradable lock holds a strict majority of the permits, so it excludes writers (which
 // need all of them) and other upgradable readers (which would need another majority), while still
 // permitting plain shared readers.
 unsafe impl lock_api::RawRwLockUpgrade for RawRwLock {
@@ -272,7 +272,7 @@ unsafe impl lock_api::RawRwLockUpgrade for RawRwLock {
     }
 }
 
-// Safety: both conversions only *release* permits, keeping at least one, so the lock is never left
+// SAFETY: both conversions only *release* permits, keeping at least one, so the lock is never left
 // unheld mid-transition and no illegal overlap is possible.
 unsafe impl lock_api::RawRwLockUpgradeDowngrade for RawRwLock {
     unsafe fn downgrade_upgradable(&self) {
@@ -291,7 +291,7 @@ unsafe impl lock_api::RawRwLockUpgradeDowngrade for RawRwLock {
     }
 }
 
-// Safety: as for `RawRwLockFair`.
+// SAFETY: as for `RawRwLockFair`.
 unsafe impl lock_api::RawRwLockUpgradeFair for RawRwLock {
     unsafe fn unlock_upgradable_fair(&self) {
         trace!("fair-releasing parking_lot rwlock {:p} (upgradable)", self);

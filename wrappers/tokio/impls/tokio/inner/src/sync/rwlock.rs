@@ -318,7 +318,7 @@ impl<T: ?Sized> RwLock<T> {
     /// take place -- the mutable borrow statically guarantees no locks exist.
     pub fn get_mut(&mut self) -> &mut T {
         unsafe {
-            // Safety: This is https://github.com/rust-lang/rust/pull/76936
+            // SAFETY: This is https://github.com/rust-lang/rust/pull/76936
             &mut *self.inner.get()
         }
     }
@@ -353,7 +353,7 @@ where
 unsafe impl<T> Send for RwLock<T> where T: ?Sized + Send {}
 unsafe impl<T> Sync for RwLock<T> where T: ?Sized + Send + Sync {}
 // NB: These impls need to be explicit since we're storing a raw pointer.
-// Safety: Stores a raw pointer to `T`, so if `T` is `Sync`, the lock guard over
+// SAFETY: Stores a raw pointer to `T`, so if `T` is `Sync`, the lock guard over
 // `T` is `Send`.
 unsafe impl<T> Send for RwLockReadGuard<'_, T> where T: ?Sized + Sync {}
 unsafe impl<T> Sync for RwLockReadGuard<'_, T> where T: ?Sized + Send + Sync {}
@@ -374,7 +374,7 @@ where
 unsafe impl<T> Sync for RwLockWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
 unsafe impl<T> Sync for OwnedRwLockWriteGuard<T> where T: ?Sized + Send + Sync {}
 
-// Safety: Stores a raw pointer to `T`, so if `T` is `Sync`, the lock guard over
+// SAFETY: Stores a raw pointer to `T`, so if `T` is `Sync`, the lock guard over
 // `T` is `Send` - but since this is also provides mutable access, we need to
 // make sure that `T` is `Send` since its value can be sent across thread
 // boundaries.

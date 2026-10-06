@@ -41,7 +41,7 @@ impl std::fmt::Debug for Continuation {
 #[derive(Clone)]
 struct ContinuationFunction(Rc<Cell<Option<Box<dyn FnOnce()>>>>);
 
-// Safety: we arrange for the `function` field of `Continuation` to only be accessed by one thread
+// SAFETY: we arrange for the `function` field of `Continuation` to only be accessed by one thread
 // at a time: Shuttle tests are single threaded, and continuations are never shared across threads
 // by the ContinuationPool, which is thread-local.
 unsafe impl Send for ContinuationFunction {}
@@ -380,7 +380,7 @@ impl std::fmt::Debug for PooledContinuation {
     }
 }
 
-// Safety: these aren't sent across real threads
+// SAFETY: these aren't sent across real threads
 unsafe impl Send for PooledContinuation {}
 
 /// Possibly yield back to the executor to perform a context switch.  This function should be

@@ -29,7 +29,7 @@ pub(crate) struct MaybeDangling<T>(MaybeUninit<T>);
 
 impl<T> Drop for MaybeDangling<T> {
     fn drop(&mut self) {
-        // Safety: `0` is always initialized.
+        // SAFETY: `0` is always initialized.
         unsafe { core::ptr::drop_in_place(self.0.as_mut_ptr()) };
     }
 }
@@ -44,7 +44,7 @@ impl<F: Future> Future for MaybeDangling<F> {
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Safety: `0` is always initialized.
+        // SAFETY: `0` is always initialized.
         let fut = unsafe { self.map_unchecked_mut(|this| this.0.assume_init_mut()) };
         fut.poll(cx)
     }
