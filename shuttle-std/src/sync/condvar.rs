@@ -309,7 +309,7 @@ impl Condvar {
     }
 }
 
-// Safety: Condvar is never actually passed across true threads, only across continuations. The
+// SAFETY: Condvar is never actually passed across true threads, only across continuations. The
 // Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
 // TODO we shouldn't need to do this, but RefCell is not Send
 unsafe impl Send for Condvar {}

@@ -193,7 +193,7 @@ impl Barrier {
     }
 }
 
-// Safety: Barrier is never actually passed across threads, only across continuations. The
+// SAFETY: Barrier is never actually passed across threads, only across continuations. The
 // Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
 // TODO we shouldn't need to do this, but RefCell is not Send, and Barrier needs to be Send.
 unsafe impl Send for Barrier {}

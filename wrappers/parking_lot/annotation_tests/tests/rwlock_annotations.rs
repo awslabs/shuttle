@@ -49,7 +49,7 @@ where
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("annotated.json");
-    // Safety: this binary has only the tests in this file, and they run one at a time behind the
+    // SAFETY: this binary has only the tests in this file, and they run one at a time behind the
     // mutex above, so no other thread reads or sets the environment at the same time.
     unsafe { std::env::set_var(shuttle::ANNOTATION_FILE, &path) };
     {

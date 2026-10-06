@@ -44,7 +44,7 @@ pub struct LocalKey<T: 'static> {
     pub _p: PhantomData<T>,
 }
 
-// Safety: `LocalKey` implements thread-local storage; each thread sees its own value of the type T.
+// SAFETY: `LocalKey` implements thread-local storage; each thread sees its own value of the type T.
 unsafe impl<T> Send for LocalKey<T> {}
 unsafe impl<T> Sync for LocalKey<T> {}
 
@@ -91,14 +91,14 @@ impl<T: 'static> LocalKey<T> {
     }
 
     fn get(&'static self) -> Option<std::result::Result<&'static T, AccessError>> {
-        // Safety: see the usage below
+        // SAFETY: see the usage below
         unsafe fn extend_lt<'b, T>(t: &'_ T) -> &'b T {
             std::mem::transmute(t)
         }
 
         ExecutionState::with(|state| {
             if let Ok(value) = state.current().local(self)? {
-                // Safety: the `ExecutionState` outlives any thread, including the caller, and so
+                // SAFETY: the `ExecutionState` outlives any thread, including the caller, and so
                 // it's safe to give the caller the lifetime it's asking for here.
                 Some(Ok(unsafe { extend_lt(value) }))
             } else {

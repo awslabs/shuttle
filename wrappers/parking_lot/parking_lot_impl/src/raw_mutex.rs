@@ -19,7 +19,7 @@ pub struct RawMutex {
     semaphore: BatchSemaphore,
 }
 
-// Safety: `RawMutex` guarantees exclusivity because the underlying semaphore has exactly one permit,
+// SAFETY: `RawMutex` guarantees exclusivity because the underlying semaphore has exactly one permit,
 // so at most one context can hold the lock at a time.
 unsafe impl lock_api::RawMutex for RawMutex {
     // A "non-constant" const item is the legacy `lock_api` mechanism for supplying an initial value
@@ -56,7 +56,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
     }
 }
 
-// Safety: Shuttle's semaphore is strictly fair, so a plain `release` already hands the permit to the
+// SAFETY: Shuttle's semaphore is strictly fair, so a plain `release` already hands the permit to the
 // next waiter in FIFO order. Fair unlocking is therefore identical to a normal unlock.
 unsafe impl lock_api::RawMutexFair for RawMutex {
     unsafe fn unlock_fair(&self) {

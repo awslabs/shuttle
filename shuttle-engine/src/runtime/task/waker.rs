@@ -2,7 +2,7 @@ use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::TaskId;
 use std::task::{RawWaker, RawWakerVTable, Waker};
 
-// Safety: the `RawWaker` interface is unsafe because it requires manually enforcing resource
+// SAFETY: the `RawWaker` interface is unsafe because it requires manually enforcing resource
 // management contracts on each method in the vtable:
 // * `clone` should create an additional RawWaker, including creating all the resources required
 // * `wake` should consume the waker it was invoked on and release its resources
@@ -16,7 +16,7 @@ pub fn make_waker(task_id: TaskId) -> Waker {
     // We stash the task ID into the bits of the `data` pointer that all the vtable method below
     // receive as an argument.
     let data = task_id.0 as *const ();
-    // Safety: see above
+    // SAFETY: see above
     unsafe { Waker::from_raw(RawWaker::new(data, &RAW_WAKER_VTABLE)) }
 }
 

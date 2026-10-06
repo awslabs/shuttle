@@ -52,7 +52,7 @@ impl<T: Sync> Lazy<T> {
 
     /// Get a reference to the lazy value, initializing it first if necessary.
     pub fn get(&'static self) -> &'static T {
-        // Safety: see the usage below
+        // SAFETY: see the usage below
         unsafe fn extend_lt<T>(t: &T) -> &'static T {
             std::mem::transmute(t)
         }
@@ -78,7 +78,7 @@ impl<T: Sync> Lazy<T> {
         // At this point we're guaranteed that a value exists for this static, so read it
         ExecutionState::with(|state| {
             let drop_guard: &DropGuard<T> = state.get_storage(self).expect("should be initialized");
-            // Safety: this *isn't* safe. We are promoting to a `'static` lifetime here, but this
+            // SAFETY: this *isn't* safe. We are promoting to a `'static` lifetime here, but this
             // object does not actually live that long. It would be possible for this reference to
             // escape the client code and be used after it becomes invalid when the execution ends.
             // But there's not really any way around this -- the semantics of static values and
