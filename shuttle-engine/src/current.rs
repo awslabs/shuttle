@@ -109,8 +109,23 @@ pub fn set_name_for_task(task_id: TaskId, task_name: impl Into<TaskName>) -> Opt
 }
 
 /// Gets the `TaskId` of the current task, or `None` if there is no current task.
+///
+/// Panics if called outside of a Shuttle execution, or while Shuttle is updating its own state
+/// (which is when it calls `tracing` subscribers for some of its own events). Use
+/// [`try_get_current_task`] in code that can run in those places.
 pub fn get_current_task() -> Option<TaskId> {
     ExecutionState::with(|s| Some(s.try_current()?.id()))
+}
+
+/// Gets the `TaskId` of the current task, or `None` if there is no current task.
+///
+/// Unlike [`get_current_task`], this never panics. Besides when no task is running (for instance,
+/// while an execution is torn down and drops the tasks that did not finish), it also returns `None`
+/// outside of a Shuttle execution, and while Shuttle is updating its own state, which is when it
+/// calls `tracing` subscribers for some of its own events. It is meant for code that can run in
+/// any of those places, such as `Drop` handlers and `tracing` subscribers.
+pub fn try_get_current_task() -> Option<TaskId> {
+    ExecutionState::try_with(|s| Some(s.try_current()?.id())).ok().flatten()
 }
 
 /// Get the `TaskId` of the current task.  Panics if there is no current task.

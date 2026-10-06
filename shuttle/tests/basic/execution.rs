@@ -169,6 +169,58 @@ fn context_switches_outside_execution() {
 }
 
 #[test]
+#[should_panic(expected = "`ExecutionState` is not set")]
+fn get_current_task_outside_execution() {
+    current::get_current_task();
+}
+
+/// `try_get_current_task` tells the current task from everywhere a `Drop` handler or a `tracing`
+/// subscriber can run: inside tasks, outside an execution, and while Shuttle drops the tasks that
+/// did not finish, where there is none.
+#[test]
+fn try_get_current_task_everywhere() {
+    assert_eq!(current::try_get_current_task(), None);
+
+    struct RecordTaskOnDrop(Arc<std::sync::Mutex<Vec<Option<current::TaskId>>>>);
+
+    impl Drop for RecordTaskOnDrop {
+        fn drop(&mut self) {
+            self.0.lock().unwrap().push(current::try_get_current_task());
+        }
+    }
+
+    let dropped_in_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dropped_in_cleanup_clone = dropped_in_cleanup.clone();
+    check_dfs(
+        move || {
+            assert_eq!(current::try_get_current_task(), Some(current::me()));
+
+            let thread = thread::spawn(current::try_get_current_task);
+            let task = shuttle::future::spawn(async { current::try_get_current_task() });
+            let thread_id: usize = thread.thread().id().into();
+            assert_eq!(thread.join().unwrap().map(usize::from), Some(thread_id));
+            assert_eq!(shuttle::future::block_on(task).unwrap(), Some(current::TaskId::from(2)));
+
+            // Detached and never finishes, so Shuttle drops it with no task running, when the
+            // execution is over.
+            let record = RecordTaskOnDrop(dropped_in_cleanup_clone.clone());
+            drop(shuttle::future::spawn(async move {
+                let _record = record;
+                std::future::pending::<()>().await
+            }));
+        },
+        None,
+    );
+
+    let dropped_in_cleanup = dropped_in_cleanup.lock().unwrap();
+    assert!(!dropped_in_cleanup.is_empty());
+    assert!(
+        dropped_in_cleanup.iter().all(|id| id.is_none()),
+        "{dropped_in_cleanup:?}"
+    );
+}
+
+#[test]
 fn context_switches_atomic() {
     // The current implementation makes the following context switches:
     // 2 spawns
