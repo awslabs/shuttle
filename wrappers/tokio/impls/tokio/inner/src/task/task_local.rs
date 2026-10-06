@@ -261,12 +261,15 @@ impl<T: 'static> LocalKey<T> {
                 // However, we never give user-code access to the guards, so
                 // there's no way for user-code to forget to destroy a guard.
                 //
-                // SHUTTLE_CHANGES: The value is moved back out of the slot it was moved into, rather
-                // than out of whichever slot a fresh lookup returns, because a lookup can return a
-                // different slot by now. When an execution ends while this task is switched out
-                // inside `f`, Shuttle unwinds the task's stack with no task running: a lookup would
-                // return the fallback slot, and leave the value behind in the task's slot, where the
-                // `TaskLocalFuture` that is dropped next could no longer find it.
+                // SHUTTLE_CHANGES: The value goes back out of the slot it was moved into, not out
+                // of a fresh lookup's. `with_slot` picks the slot by whether a task is running, and
+                // that can change while `f` runs: if the execution ends while this task is switched
+                // out inside `f` (blocked in the middle of a poll), `ExecutionState::cleanup`
+                // unwinds the task's stack with no task running. A lookup would return the fallback
+                // slot, leaving the value in the task's slot, and the `TaskLocalFuture` would drop
+                // its future without it. The task's slot is still there then, as Shuttle drops a
+                // task's stack before its storage. Covered by
+                // `teardown::task_blocked_in_the_middle_of_a_poll_of_a_scope`.
                 let mut ref_mut = self.cell.borrow_mut();
                 mem::swap(self.slot, &mut *ref_mut);
             }
