@@ -1,6 +1,6 @@
 //! Shuttle Explorer events. Explorer shows only semaphore events, so `RawRwLock` reports itself as
-//! a semaphore of `EXCLUSIVE` permits (see the `raw_rwlock` module docs). These tests check each
-//! event and its permit count.
+//! a semaphore of `PERMITS_ON_INITIALIZATION` permits (see the `raw_rwlock` module docs). These
+//! tests check each event and its permit count.
 //!
 //! The tests need the `annotation` feature of this crate, which turns on `shuttle/annotation`.
 
@@ -13,8 +13,9 @@ use shuttle_parking_lot_impl::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGua
 use std::sync::Arc;
 
 /// The permit counts from the `raw_rwlock` module docs.
-const EXCLUSIVE: u64 = 1 << 30;
-const UPGRADABLE: u64 = EXCLUSIVE / 2 + 1;
+const PERMITS_ON_INITIALIZATION: u64 = 1 << 30;
+const EXCLUSIVE: u64 = PERMITS_ON_INITIALIZATION;
+const UPGRADABLE: u64 = PERMITS_ON_INITIALIZATION / 2 + 1;
 const SHARED: u64 = 1;
 
 /// A semaphore event: the task that recorded it, its kind without the `Semaphore` prefix, and its
@@ -80,8 +81,8 @@ where
     events
 }
 
-/// The permits that the events say each task holds never go below zero or above `EXCLUSIVE`, and
-/// all of them are released at the end.
+/// The permits that the events say each task holds never go below zero or above
+/// `PERMITS_ON_INITIALIZATION`, and all of them are released at the end.
 fn assert_balanced(events: &[Event]) {
     let mut held = 0i64;
     for e in events {
@@ -93,7 +94,7 @@ fn assert_balanced(events: &[Event]) {
             _ => {}
         }
         assert!(
-            (0..=EXCLUSIVE as i64).contains(&held),
+            (0..=PERMITS_ON_INITIALIZATION as i64).contains(&held),
             "{held} permits after {e:?} in {events:#?}"
         );
     }

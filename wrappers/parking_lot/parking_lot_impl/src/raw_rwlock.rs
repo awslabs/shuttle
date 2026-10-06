@@ -8,8 +8,8 @@
 //!
 //! # Modelling
 //!
-//! The lock is a single unfair [`BatchSemaphore`] holding `EXCLUSIVE` permits, where each way of
-//! holding the lock is a permit count:
+//! The lock is a single unfair [`BatchSemaphore`] with `PERMITS_ON_INITIALIZATION` permits, where
+//! each way of holding the lock is a permit count:
 //!
 //! | Lock state     | Permits held |
 //! |----------------|--------------|
@@ -26,6 +26,14 @@
 //! `WRITER_BIT` is set. An unfair semaphore behaves the same way: a request that waits holds
 //! nothing, and after a release, the scheduler can grant any request that the free permits let
 //! in, in any order.
+//!
+//! The semaphore is unfair because `parking_lot`'s plain unlock is: it wakes the parked threads,
+//! and any thread, including the one that unlocked, can take the lock before they run. The
+//! fairness that `parking_lot` documents comes from elsewhere, and each part of it has its own
+//! model: a writer that waits stops new readers (`WRITER_BIT`, the reservation below), and a fair
+//! unlock hands the lock over (see below). Eventual fairness makes some plain unlocks fair, on a
+//! timer. That needs no model of its own: after a plain release, the scheduler can let the woken
+//! tasks take the lock first.
 //!
 //! A permit count alone cannot express `WRITER_BIT` while a writer waits for the readers to
 //! leave. A writer and an upgrade therefore *reserve* the semaphore (see
@@ -63,8 +71,8 @@
 //!
 //! The semaphore records vector clocks and Explorer events. A task that is granted permits is
 //! after the releases of those permits. A `try_*` that fails is after the last successful
-//! acquire, as for Shuttle's other semaphore-based locks. `EXCLUSIVE` is small enough for Explorer
-//! (JavaScript) to show the permit counts exactly.
+//! acquire, as for Shuttle's other semaphore-based locks. `PERMITS_ON_INITIALIZATION` is small
+//! enough for Explorer (JavaScript) to show the permit counts exactly.
 //!
 //! # Stopped executions
 //!
@@ -89,29 +97,32 @@ use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness};
 use std::thread;
 use tracing::trace;
 
-/// The permits of the semaphore, all of which an exclusive lock holds. No execution has this many
-/// readers, and Explorer (JavaScript) shows the number exactly.
-const EXCLUSIVE: usize = 1 << 30;
+/// The permits of the semaphore, all of which are free on a lock that no task holds. No execution
+/// has this many readers, and Explorer (JavaScript) shows the number exactly.
+const PERMITS_ON_INITIALIZATION: usize = 1 << 30;
 
-/// The permits that an upgradable lock holds: a strict majority of `EXCLUSIVE`, so that two
-/// upgradable readers can never hold the lock at once.
-const UPGRADABLE: usize = EXCLUSIVE / 2 + 1;
+/// The permits that an exclusive lock holds: all of them.
+const EXCLUSIVE: usize = PERMITS_ON_INITIALIZATION;
+
+/// The permits that an upgradable lock holds: a strict majority, so that two upgradable readers can
+/// never hold the lock at once.
+const UPGRADABLE: usize = PERMITS_ON_INITIALIZATION / 2 + 1;
 
 /// The permit that a shared lock holds.
 const SHARED: usize = 1;
 
 /// A writer reserves the lock (sets `WRITER_BIT`) once this many permits are available. That is
 /// the case exactly when no writer or upgradable reader holds the lock: an upgradable reader leaves
-/// at most `EXCLUSIVE - UPGRADABLE` permits, and a writer none, while plain readers alone would
-/// have to number `UPGRADABLE` to leave fewer.
-const WRITER_RESERVES_AT: usize = EXCLUSIVE - UPGRADABLE + 1;
+/// at most `PERMITS_ON_INITIALIZATION - UPGRADABLE` permits, and a writer none, while plain readers
+/// alone would have to number `UPGRADABLE` to leave fewer.
+const WRITER_RESERVES_AT: usize = PERMITS_ON_INITIALIZATION - UPGRADABLE + 1;
 
 /// A Shuttle-backed raw reader-writer lock implementing [`lock_api::RawRwLock`] and its upgrade,
 /// downgrade, and fair extensions.
 #[derive(Debug)]
 pub struct RawRwLock {
-    /// Coordinates all access. `EXCLUSIVE` permits in total; see the module docs for the permits
-    /// each lock state holds.
+    /// Coordinates all access. `PERMITS_ON_INITIALIZATION` permits in total; see the module docs
+    /// for the permits each lock state holds.
     sem: BatchSemaphore,
 }
 
@@ -135,7 +146,7 @@ impl RawRwLock {
 unsafe impl lock_api::RawRwLock for RawRwLock {
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: RawRwLock = RawRwLock {
-        sem: BatchSemaphore::const_new(EXCLUSIVE, Fairness::Unfair),
+        sem: BatchSemaphore::const_new(PERMITS_ON_INITIALIZATION, Fairness::Unfair),
     };
 
     // Gated by `send_guard`; defined once as `crate::GuardMarker` (see `lib.rs`).
@@ -184,7 +195,7 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
             // While Shuttle stops an execution, the closed lock refuses every request, so it never
             // looks free (see "Stopped executions" in the module docs).
             None => true,
-            Some(available) => available < EXCLUSIVE,
+            Some(available) => available < PERMITS_ON_INITIALIZATION,
         }
     }
 
@@ -193,6 +204,9 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
     fn is_locked_exclusive(&self) -> bool {
         match self.sem.load_permits() {
             None => true,
+            // `load_permits` counts the permits that a request could take, which is none in two
+            // cases: a writer holds every permit, or a reservation keeps the free permits for the
+            // `write` or `upgrade` that waits for the readers to leave.
             Some(available) => available == 0,
         }
     }
