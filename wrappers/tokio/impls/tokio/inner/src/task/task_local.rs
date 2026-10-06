@@ -45,7 +45,7 @@
 //!
 //! A `tracing` subscriber may read task-locals while it handles an event, as it can in tokio.
 
-use pin_project::{pin_project, pinned_drop};
+use pin_project_lite::pin_project;
 use std::cell::{BorrowMutError, RefCell};
 use std::error::Error;
 use std::future::Future;
@@ -383,52 +383,51 @@ impl<T: 'static> fmt::Debug for LocalKey<T> {
     }
 }
 
-/// A future that sets a value `T` of a task local for the future `F` during
-/// its execution.
-///
-/// The value of the task-local must be `'static` and will be dropped on the
-/// completion of the future.
-///
-/// Created by the function [`LocalKey::scope`](self::LocalKey::scope).
-///
-/// ### Examples
-///
-/// ```
-/// # async fn dox() {
-/// shuttle_tokio_impl_inner::task_local! {
-///     static NUMBER: u32;
-/// }
-///
-/// NUMBER.scope(1, async move {
-///     println!("task local value: {}", NUMBER.get());
-/// }).await;
-/// # }
-/// ```
-// SHUTTLE_CHANGES: `pin_project` rather than tokio's `pin_project_lite`, which this crate does not use.
-#[pin_project(PinnedDrop)]
-pub struct TaskLocalFuture<T, F>
-where
-    T: 'static,
-{
-    local: &'static LocalKey<T>,
-    slot: Option<T>,
-    #[pin]
-    future: Option<F>,
-    #[pin]
-    _pinned: PhantomPinned,
-}
+pin_project! {
+    /// A future that sets a value `T` of a task local for the future `F` during
+    /// its execution.
+    ///
+    /// The value of the task-local must be `'static` and will be dropped on the
+    /// completion of the future.
+    ///
+    /// Created by the function [`LocalKey::scope`](self::LocalKey::scope).
+    ///
+    /// ### Examples
+    ///
+    /// ```
+    /// # async fn dox() {
+    /// shuttle_tokio_impl_inner::task_local! {
+    ///     static NUMBER: u32;
+    /// }
+    ///
+    /// NUMBER.scope(1, async move {
+    ///     println!("task local value: {}", NUMBER.get());
+    /// }).await;
+    /// # }
+    /// ```
+    pub struct TaskLocalFuture<T, F>
+    where
+        T: 'static,
+    {
+        local: &'static LocalKey<T>,
+        slot: Option<T>,
+        #[pin]
+        future: Option<F>,
+        #[pin]
+        _pinned: PhantomPinned,
+    }
 
-#[pinned_drop]
-impl<T: 'static, F> PinnedDrop for TaskLocalFuture<T, F> {
-    fn drop(self: Pin<&mut Self>) {
-        let this = self.project();
-        if mem::needs_drop::<F>() && this.future.is_some() {
-            // Drop the future while the task-local is set, if possible. Otherwise
-            // the future is dropped normally when the `Option<F>` field drops.
-            let mut future = this.future;
-            let _ = this.local.scope_inner(this.slot, || {
-                future.set(None);
-            });
+    impl<T: 'static, F> PinnedDrop for TaskLocalFuture<T, F> {
+        fn drop(this: Pin<&mut Self>) {
+            let this = this.project();
+            if mem::needs_drop::<F>() && this.future.is_some() {
+                // Drop the future while the task-local is set, if possible. Otherwise
+                // the future is dropped normally when the `Option<F>` field drops.
+                let mut future = this.future;
+                let _ = this.local.scope_inner(this.slot, || {
+                    future.set(None);
+                });
+            }
         }
     }
 }

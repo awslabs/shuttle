@@ -54,6 +54,7 @@ criterion = { version = "0.8", features = [
 ] }
 futures = "0.3.24"
 pin-project = "1.0.12"
+pin-project-lite = "0.2.11"
 regex = "1.10.1"
 shuttle = { version = "0.9", path = "../../../../../shuttle" }
 smallvec = "1.6.1"
