@@ -413,6 +413,10 @@ pin_project! {
         slot: Option<T>,
         #[pin]
         future: Option<F>,
+        // Not needed for soundness, as nothing here depends on the future's address. It keeps
+        // the future `!Unpin` whatever `F` is, as tokio's is (since tokio-rs/tokio#3943, which
+        // kept `scope` from becoming `Unpin` when it stopped being an `async fn`), so that code
+        // that builds against this crate also builds against tokio.
         #[pin]
         _pinned: PhantomPinned,
     }

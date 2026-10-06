@@ -656,6 +656,16 @@ mod api {
         send_sync::<tokio::task::futures::TaskLocalFuture<u32, std::future::Ready<()>>>();
         unwind_safe::<TaskLocalFuture<u32, std::future::Ready<()>>>();
         unwind_safe::<tokio::task::futures::TaskLocalFuture<u32, std::future::Ready<()>>>();
+
+        // A `TaskLocalFuture` is `!Unpin` even if the future it scopes is `Unpin`. For a type that
+        // is `Unpin`, both impls below apply, and the call does not compile.
+        trait AmbiguousIfUnpin<A> {
+            fn some_item() {}
+        }
+        impl<T: ?Sized> AmbiguousIfUnpin<()> for T {}
+        impl<T: ?Sized + Unpin> AmbiguousIfUnpin<u8> for T {}
+        <TaskLocalFuture<u32, std::future::Ready<()>> as AmbiguousIfUnpin<_>>::some_item();
+        <tokio::task::futures::TaskLocalFuture<u32, std::future::Ready<()>> as AmbiguousIfUnpin<_>>::some_item();
     }
 
     /// Outside of a Shuttle test, a `LocalKey` behaves like tokio's: there is no Shuttle task, so
