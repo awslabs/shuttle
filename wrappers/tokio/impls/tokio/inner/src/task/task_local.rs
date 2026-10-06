@@ -101,7 +101,7 @@ macro_rules! __task_local_inner {
         $vis static $name: $crate::task::LocalKey<$t> = {
             // SHUTTLE_CHANGES: tokio declares a single `std::thread_local!` here. See `LocalKey`
             // for what each of these two slots is for.
-            $crate::macros::support::shuttle_thread_local! {
+            $crate::macros::support::__shuttle_thread_local! {
                 static __TASK_SLOT: ::std::cell::RefCell<::std::option::Option<$t>> =
                     ::std::cell::RefCell::new(::std::option::Option::None);
             }
