@@ -855,7 +855,7 @@ impl BatchSemaphore {
 
     /// Release `num_permits` back to the Semaphore
     pub fn release(&self, num_permits: usize) {
-        self.release_inner(num_permits, false)
+        self.release_inner(num_permits, Fairness::Unfair)
     }
 
     /// Release `num_permits` back to the semaphore, granting them to already
@@ -888,29 +888,32 @@ impl BatchSemaphore {
     /// On a strictly fair semaphore every release already grants from the
     /// front of the queue, so this is the same as [`BatchSemaphore::release`].
     pub fn release_fair(&self, num_permits: usize) {
-        self.release_inner(num_permits, true)
+        self.release_inner(num_permits, Fairness::StrictlyFair)
     }
 
-    fn release_inner(&self, num_permits: usize, fair: bool) {
+    /// `release_fairness` is the fairness of this release alone: a `StrictlyFair` release grants
+    /// the released permits from the front of the queue, as every release of a strictly fair
+    /// semaphore does, even when the semaphore is unfair (see [`BatchSemaphore::release_fair`]).
+    fn release_inner(&self, num_permits: usize, release_fairness: Fairness) {
         // Execution teardown can unwind a task's stack from this scheduling point, which is often in
         // a destructor that releases a lock (see `ExecutionState::tear_down`). The permits must not
         // be lost then, as destructors that run later can need them.
-        struct ReleaseOnUnwind<'a>(&'a BatchSemaphore, usize, bool);
+        struct ReleaseOnUnwind<'a>(&'a BatchSemaphore, usize, Fairness);
         impl Drop for ReleaseOnUnwind<'_> {
             fn drop(&mut self) {
                 self.0.release_no_scheduling_point(self.1, self.2);
             }
         }
-        let release_on_unwind = ReleaseOnUnwind(self, num_permits, fair);
+        let release_on_unwind = ReleaseOnUnwind(self, num_permits, release_fairness);
         thread::switch();
         std::mem::forget(release_on_unwind);
 
-        self.release_no_scheduling_point(num_permits, fair);
+        self.release_no_scheduling_point(num_permits, release_fairness);
     }
 
     /// `release_inner` without its scheduling point.
     #[inline]
-    fn release_no_scheduling_point(&self, num_permits: usize, fair: bool) {
+    fn release_no_scheduling_point(&self, num_permits: usize, release_fairness: Fairness) {
         self.init_object_id();
         if num_permits == 0 {
             return;
@@ -961,7 +964,7 @@ impl BatchSemaphore {
                 // release, so that no other request can overtake them (see `release_fair`).
                 // Not while a reservation holds the semaphore: the permits are already kept
                 // for its holder, which `wake_unfair_waiters` takes care of below.
-                if fair && state.reservation.is_none() {
+                if release_fairness == Fairness::StrictlyFair && state.reservation.is_none() {
                     state.unblock_waiters_from_front();
                 }
                 // in an unfair mode, we will unblock all the waiters for which
