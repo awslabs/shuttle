@@ -564,7 +564,11 @@ impl Task {
         self.park_state.blocked_in_park = false;
     }
 
-    pub fn finish(&mut self) {
+    /// Not public: `ExecutionState::live_tasks` must stay in step with which tasks have finished,
+    /// and `finish_task` is the only place that maintains both. `exit_current_truncates_execution`
+    /// and `schedule` now read `live_tasks` instead of scanning every task, so a task marked
+    /// finished without being removed from it would silently drop a scheduling point.
+    pub(super) fn finish(&mut self) {
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Finished;
     }
@@ -580,21 +584,30 @@ impl Task {
         assert!(self.finished());
         // A parked default has to be dropped before the task's stack (see `ParkedDefault`). There is
         // none here: it was reinstated when the task was last resumed, and finishing parks none.
-        debug_assert!(self.parked_default.is_none());
+        // Asserted rather than debug-asserted because dropping one after the stack it must precede
+        // is a use-after-free, and the test suite only runs in release (see `.github/workflows`).
+        assert!(
+            self.parked_default.is_none(),
+            "a finishing task cannot have parked a default"
+        );
         // The yielder is on the continuation's stack, which another task may reuse from now on.
         self.yielder = std::ptr::null();
+        // Nothing else may still hold the continuation: the run loop's clone goes out of scope when
+        // the step that finished the task ends. If one did, dropping this would only decrement the
+        // refcount, the continuation would never reach the pool, and its stack would leak silently.
+        let continuation = self
+            .continuation
+            .take()
+            .map(|continuation| Rc::into_inner(continuation).expect("a finished task's continuation must be unique"));
+        // `local_storage` is deliberately left in place. Its values are already gone (a thread or
+        // future drains them before it finishes), but the drained map still holds the `None`
+        // tombstones that make `Task::local` report `AlreadyDestructedError` and that stop
+        // `StorageMap::init` from resurrecting a slot whose destructor has already run.
         ReleasedTaskResources {
-            continuation: self.continuation.take(),
+            continuation,
             span_stack: std::mem::take(&mut self.span_stack),
             step_span: std::mem::replace(&mut self.step_span, Span::none()),
             backtrace: self.backtrace.take(),
-            // Thread-local destructors have run by the time a thread or future finishes. If a value
-            // is still alive anyway, leave it to be dropped at the end of the execution as before:
-            // its destructor might use Shuttle primitives, which this task can no longer run.
-            local_storage: self
-                .local_storage
-                .is_drained()
-                .then(|| std::mem::replace(&mut self.local_storage, StorageMap::new())),
         }
     }
 
@@ -756,11 +769,10 @@ impl Task {
 #[must_use = "dropping the resources returns the task's continuation to the pool"]
 #[derive(Debug)]
 pub(crate) struct ReleasedTaskResources {
-    continuation: Option<Rc<RefCell<PooledContinuation>>>,
+    continuation: Option<RefCell<PooledContinuation>>,
     span_stack: Vec<Span>,
     step_span: Span,
     backtrace: Option<Backtrace>,
-    local_storage: Option<StorageMap>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]

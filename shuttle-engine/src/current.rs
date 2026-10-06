@@ -96,10 +96,17 @@ pub fn set_name_for_task(task_id: TaskId, task_name: impl Into<TaskName>) -> Opt
     // This either has to be lived with, or the task name should be set via the `ChildLabelFn` mechanism, or a different subscriber should be used
     // (if this is done, then `record_steps_in_span` should be set to true as well), or Shuttle will have to be chanegd to recreate the Span
     let res = ExecutionState::try_with(|state| {
-        state
-            .get_mut(task_id)
-            .step_span
-            .record("task", format!("{task_name:?}"));
+        let task = state.get_mut(task_id);
+        // A finished task has already released its step span, so there is nothing left to record
+        // the name on. Say so rather than silently dropping it; the label below is still set.
+        if task.finished() {
+            tracing::warn!(
+                "`set_name_for_task` cannot record {task_name:?} on the step span of {task_id:?}, \
+                 which has already finished; the task's label is still set"
+            );
+        } else {
+            task.step_span.record("task", format!("{task_name:?}"));
+        }
     });
     if let Err(e) = res {
         tracing::error!("`set_name_for_task` failed with error: {e:?}");

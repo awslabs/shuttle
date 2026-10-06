@@ -163,8 +163,9 @@ fn thread_builder_name() {
     );
 }
 
-/// Use about `depth` KiB of stack, in frames smaller than a page, so that running out of stack
-/// faults on the guard page instead of writing past it.
+/// Use at least `depth` KiB of stack, in frames smaller than a page, so that running out of stack
+/// faults on the guard page instead of writing past it. A frame is about 1 KiB at `-O` and about
+/// 2 KiB unoptimized, so pick a `depth` that clears the stack being tested in both profiles.
 fn use_stack(depth: usize) -> u8 {
     let frame = std::hint::black_box([depth as u8; 1024]);
     if depth == 0 {
@@ -176,18 +177,55 @@ fn use_stack(depth: usize) -> u8 {
 
 /// A thread built with a larger stack than the default gets one, even when the smaller stack of a
 /// thread that already finished in the same execution is free to be reused.
+///
+/// A regression here overflows the builder thread's stack, which faults on corosensei's guard page
+/// rather than panicking, so it takes the whole test binary down with it. The non-destructive
+/// version of this check is `recycled_continuation_has_a_large_enough_stack` in the engine; this
+/// test is what catches the same mistake end to end.
 #[test]
 fn thread_builder_stack_size() {
     check_dfs(
         || {
             thread::spawn(|| {}).join().unwrap();
 
-            // `use_stack(256)` would overflow a stack of the default size.
+            // 128 frames is ~132 KiB at `-O` and ~269 KiB unoptimized: over the 60 KiB default
+            // stack in both profiles, and well under the 1 MiB this thread asks for.
             let handle = thread::Builder::new()
                 .stack_size(1 << 20)
-                .spawn(|| use_stack(256))
+                .spawn(|| use_stack(128))
                 .unwrap();
             handle.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// The continuation pool is shared across executions, so a stack freed by a thread in one execution
+/// must not be handed to a larger-stacked thread in the next. Two parents each spawn a child with a
+/// different stack size, so DFS varies which child is created first and therefore which pooled stack
+/// each one is offered.
+#[test]
+fn thread_builder_stack_size_across_executions() {
+    check_dfs(
+        || {
+            let small = thread::spawn(|| {
+                thread::Builder::new()
+                    .stack_size(1 << 16)
+                    .spawn(|| use_stack(8))
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            });
+            let large = thread::spawn(|| {
+                thread::Builder::new()
+                    .stack_size(1 << 20)
+                    .spawn(|| use_stack(128))
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            });
+            small.join().unwrap();
+            large.join().unwrap();
         },
         None,
     );

@@ -251,12 +251,18 @@ impl ContinuationPool {
 
     fn acquire_inner(&self, stack_size: usize) -> PooledContinuation {
         // The pool holds continuations of every task that has finished, whatever stack size it
-        // asked for, so only reuse one whose stack is large enough for this request.
+        // asked for, so only reuse one whose stack is large enough for this request. Of those, take
+        // the smallest: handing a large stack to a task that asked for a small one would leave the
+        // next large request with nothing to reuse, so the pool would hold more large stacks than
+        // the execution ever needs at once.
         let recycled = {
             let mut continuations = self.continuations.borrow_mut();
             continuations
                 .iter()
-                .position(|c| c.stack_size >= stack_size)
+                .enumerate()
+                .filter(|(_, c)| c.stack_size >= stack_size)
+                .min_by_key(|(_, c)| c.stack_size)
+                .map(|(i, _)| i)
                 .and_then(|i| continuations.remove(i))
         };
         let continuation = recycled.unwrap_or_else(move || Continuation::new(stack_size));
@@ -453,5 +459,48 @@ mod tests {
         let c = pool.acquire_inner(SMALL);
         assert!(c.stack_size >= SMALL);
         assert_eq!(pool.len(), 1);
+    }
+
+    /// A small request must not consume a large pooled stack while a small one is also available:
+    /// the next large request would then find nothing to reuse and allocate another large stack, so
+    /// the pool would grow past what the execution needs at once.
+    #[test]
+    fn recycled_continuation_is_the_smallest_that_fits() {
+        const SMALL: usize = 0x8000;
+        const LARGE: usize = 0x80000;
+
+        let pool = ContinuationPool::new();
+
+        // Build a pool holding the large continuation ahead of the small one, which is the order a
+        // large-stacked task finishing first leaves behind.
+        let mut large = pool.acquire_inner(LARGE);
+        large.initialize(Box::new(|| {}));
+        assert!(large.resume());
+        let mut small = pool.acquire_inner(SMALL);
+        small.initialize(Box::new(|| {}));
+        assert!(small.resume());
+        drop(large);
+        drop(small);
+        assert_eq!(pool.len(), 2);
+
+        // A small request takes the small stack even though the large one comes first.
+        let c = pool.acquire_inner(SMALL);
+        assert!(
+            c.stack_size < LARGE,
+            "a small request should not consume the large pooled stack"
+        );
+
+        // So the large stack is still there for a large request, and no new stack is allocated.
+        let c2 = pool.acquire_inner(LARGE);
+        assert!(c2.stack_size >= LARGE);
+        assert_eq!(pool.len(), 0, "both requests should have been served from the pool");
+
+        drop(c);
+        drop(c2);
+        assert_eq!(
+            pool.len(),
+            2,
+            "the pool should hold no more stacks than it started with"
+        );
     }
 }
