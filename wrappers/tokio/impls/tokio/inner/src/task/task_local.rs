@@ -50,7 +50,6 @@ use std::cell::{BorrowMutError, RefCell};
 use std::error::Error;
 use std::future::Future;
 use std::marker::PhantomPinned;
-use std::panic::{RefUnwindSafe, UnwindSafe};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::{fmt, mem, thread};
@@ -165,15 +164,6 @@ pub struct LocalKey<T: 'static> {
     #[doc(hidden)]
     pub fallback_slot: thread::LocalKey<RefCell<Option<T>>>,
 }
-
-// SHUTTLE_CHANGES: tokio's `LocalKey` is unwind safe because its only field, a
-// `std::thread::LocalKey`, is. Ours holds a reference to a `shuttle::thread::LocalKey`, which is not
-// (it carries a `PhantomData<RefCell<_>>`), but it is still just a handle to a slot: a `LocalKey`
-// has no state of its own that a panic could leave broken, and a scope puts the value back into
-// its future when it unwinds. Implementing these keeps `TaskLocalFuture` usable with
-// `catch_unwind`, as it is in tokio.
-impl<T: 'static> UnwindSafe for LocalKey<T> {}
-impl<T: 'static> RefUnwindSafe for LocalKey<T> {}
 
 impl<T: 'static> LocalKey<T> {
     /// Sets a value `T` as the task-local value for the future `F`.
