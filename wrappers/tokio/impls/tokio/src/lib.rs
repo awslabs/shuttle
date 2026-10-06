@@ -15,10 +15,6 @@
 pub use shuttle_tokio_impl_inner::*;
 pub use tokio_orig::{io, net};
 
-// TODO / WARN: `task_local` needs to be implemented in Shuttle. Currently not correct, and gives shared storage for all `Task`s
-#[cfg(feature = "rt")]
-pub use tokio_orig::task_local;
-
 #[cfg(feature = "macros")]
 pub use tokio_orig::{join, main, try_join};
 

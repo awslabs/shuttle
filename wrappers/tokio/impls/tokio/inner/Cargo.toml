@@ -67,6 +67,8 @@ tokio-macros = { package = "shuttle-tokio-macros-impl", path = "../../tokio-macr
 
 [dev-dependencies]
 assert_matches = "1.5"
+# The task-local tests run tokio's own `task_local!` under Shuttle, to show that it does not work there.
+tokio = { version = "1.42", features = ["rt"] }
 
 # docs.rs builds with no features by default, which hides most of the crate.
 [package.metadata.docs.rs]

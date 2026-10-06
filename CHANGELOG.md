@@ -1,3 +1,9 @@
+# Unreleased
+
+* Implement `task_local!` in `shuttle-tokio`, with `task::LocalKey` and `task::futures::TaskLocalFuture`. Requires the `shuttle` release that has `current::try_get_current_task`.
+
+* Add `current::try_get_current_task`, a non-panicking `get_current_task` for `Drop` handlers and `tracing` subscribers. It returns `None` outside of an execution and while Shuttle updates its own state.
+
 # 0.9.6 (October 9, 2026)
 
 * Fix a stack overflow when a global `tracing` subscriber at TRACE level calls into Shuttle while it handles an event, for example to call `current::clock()`. Every access to the execution state emits a TRACE event, so the subscriber's own access emitted another event, which called the subscriber again, and so on until the stack overflowed, and the failure report and persisted schedule were lost with the process. Accesses made while that event is being handled no longer emit it. (#382)
