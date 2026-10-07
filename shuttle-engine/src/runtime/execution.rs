@@ -1,3 +1,4 @@
+use crate::config::ContinuationFunctionBehavior;
 use crate::runtime::failure::{init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
@@ -134,6 +135,14 @@ enum StepError {
     TaskPanicEarlyReturn,
 }
 
+/// How a failed execution fails the test, once it has been torn down.
+enum Failure {
+    /// Resume unwinding with the panic payload.
+    Unwind(Box<dyn Any + Send>),
+    /// Panic with the message.
+    Panic(String),
+}
+
 impl StepError {
     fn persist_failure(&self, config: &Config) {
         if let StepError::StepBoundExceeded = self {
@@ -168,8 +177,8 @@ impl Execution {
             );
 
                 // Run the test to completion
-                match self.run_to_completion(UNGRACEFUL_SHUTDOWN_CONFIG.get().immediately_return_on_panic) {
-                    Ok(()) => {},
+                let failure = match self.run_to_completion(UNGRACEFUL_SHUTDOWN_CONFIG.get().immediately_return_on_panic) {
+                    Ok(()) => None,
                     Err(e) => {
                         e.persist_failure(config);
 
@@ -177,7 +186,7 @@ impl Execution {
                             StepError::TaskFailure(payload) => {
                                 eprintln!("test panicked in task '{}'", ExecutionState::failing_task());
 
-                                panic::resume_unwind(payload);
+                                Some(Failure::Unwind(payload))
                             }
                             StepError::Deadlock => {
                                 let blocked_tasks = ExecutionState::with(|state|
@@ -193,21 +202,33 @@ impl Execution {
                                     eprintln!("Test deadlocked, and {} is not set. If either of those are set then the backtrace of each task will be collected and printed as part of the panic message.", crate::CAPTURE_BACKTRACE)
                                 }
 
-                                panic!("deadlock! blocked tasks: [{}]", blocked_tasks.join(", "));
+                                Some(Failure::Panic(format!("deadlock! blocked tasks: [{}]", blocked_tasks.join(", "))))
                             }
-                            StepError::SchedulingError => panic!("no task was scheduled\nThis indicates an issue with the scheduler."),
-                            StepError::StepBoundExceeded => {
-                                if let MaxSteps::FailAfter(max_steps) = config.max_steps {
-                                    panic!("exceeded max_steps bound {max_steps}. this might be caused by an unfair schedule (e.g., a spin loop)?");
-                                }
-                            }
-                            StepError::TaskPanicEarlyReturn => panic::resume_unwind(Box::new("Task panicked, and early return is enabled.")),
+                            StepError::SchedulingError => Some(Failure::Panic("no task was scheduled\nThis indicates an issue with the scheduler.".into())),
+                            StepError::StepBoundExceeded => match config.max_steps {
+                                MaxSteps::FailAfter(max_steps) => Some(Failure::Panic(format!("exceeded max_steps bound {max_steps}. this might be caused by an unfair schedule (e.g., a spin loop)?"))),
+                                _ => None,
+                            },
+                            StepError::TaskPanicEarlyReturn => Some(Failure::Unwind(Box::new("Task panicked, and early return is enabled."))),
                         }
-                    }}
+                    }
+                };
 
-
-                // Cleanup the state before it goes out of `EXECUTION_STATE` scope
-                ExecutionState::cleanup();
+                // Cleanup the state before it goes out of `EXECUTION_STATE` scope. A failed execution
+                // is torn down before its failure is raised, so that nothing that the failure leaves
+                // to unwind can call into Shuttle once `EXECUTION_STATE` is gone.
+                let teardown = ExecutionState::cleanup(failure.is_some());
+                match failure {
+                    Some(Failure::Unwind(payload)) => panic::resume_unwind(payload),
+                    Some(Failure::Panic(message)) => panic!("{message}"),
+                    None => {
+                        if let Err(payload) = teardown {
+                            persist_failure(config);
+                            eprintln!("test panicked while dropping the tasks that were unfinished at the end of the execution");
+                            panic::resume_unwind(payload);
+                        }
+                    }
+                }
             });
     }
 
@@ -302,7 +323,11 @@ impl Execution {
                 match state.current_task {
                     ScheduledTask::Some(tid) => {
                         let task = state.get(tid);
-                        Ok(Some(task.continuation.clone()))
+                        Ok(Some(
+                            task.continuation
+                                .clone()
+                                .expect("only execution teardown takes a task's continuation"),
+                        ))
                     }
                     ScheduledTask::Finished => {
                         // The scheduler decided we're finished, so there are either no runnable tasks,
@@ -379,7 +404,17 @@ pub struct ExecutionState {
 
     scheduler: Rc<RefCell<dyn Scheduler>>,
 
+    // whether the execution is being torn down (see `cleanup`)
     in_cleanup: bool,
+
+    // the unfinished task that teardown is dropping; it stands in for the current task meanwhile
+    torn_down_task: Option<TaskId>,
+
+    // whether teardown is unwinding a task's stack to drop it, which is not a panic
+    unwinding_for_teardown: bool,
+
+    // whether the execution being torn down failed (see `cleanup`)
+    teardown_after_failure: bool,
 
     #[cfg(debug_assertions)]
     has_cleaned_up: bool,
@@ -468,6 +503,9 @@ impl ExecutionState {
             storage: StorageMap::new(),
             scheduler,
             in_cleanup: false,
+            torn_down_task: None,
+            unwinding_for_teardown: false,
+            teardown_after_failure: false,
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
             top_level_span: tracing::Span::current(),
@@ -735,32 +773,110 @@ impl ExecutionState {
 
     /// Prepare this ExecutionState to be dropped. Call this before dropping so that the tasks have
     /// a chance to run their drop handlers while `EXECUTION_STATE` is still in scope.
-    fn cleanup() {
-        // A slightly delicate dance here: we need to drop the tasks from outside of `Self::with`,
-        // because a task's Drop impl might want to call back into `ExecutionState` (to check
-        // `should_stop()`). So we pull the tasks out of the `ExecutionState`, leaving it in an
-        // invalid state, but no one should still be accessing the tasks anyway.
-        let (mut tasks, final_state) = Self::with(|state| {
+    ///
+    /// This is execution teardown. The tasks that have not finished are dropped one at a time, in
+    /// the order they were created. While a task is dropped, it is the current task: what its
+    /// destructors do through Shuttle is attributed to it, and they can use Shuttle primitives as
+    /// a running task can. But nothing is scheduled, because the execution is over. So scheduling
+    /// points do nothing, and a destructor that blocks fails the test, since nothing can wake it
+    /// (see `maybe_yield`). The execution's statics go last, as if the main thread dropped them.
+    ///
+    /// A future task that is parked between polls, the usual state of an unfinished future task,
+    /// has its future dropped directly, like an async runtime drops the futures of its tasks when
+    /// it shuts down. A panic in a destructor is then an ordinary panic, which is reported once
+    /// teardown is done. Any other unfinished task still has user code on its stack (a thread, or
+    /// a future task that stopped in the middle of `poll`), which only unwinding its stack can
+    /// drop; a panic in a destructor then aborts the process, as any panic during unwinding does.
+    ///
+    /// The stacks of a stopped execution's tasks are leaked instead (see `Continuation::drop`). So
+    /// are those of a failed execution (`failed`), whose failure the caller raises afterwards. Its
+    /// other leftovers (the functions of tasks that never ran, task-local values, and statics) are
+    /// leaked or dropped as `UngracefulShutdownConfig::continuation_function_behavior` says, and
+    /// panics while dropping them are ignored, so that the failure is what gets reported.
+    ///
+    /// Returns the payload of the first panic from tearing down a passing or stopped execution,
+    /// after tearing down everything else.
+    fn cleanup(failed: bool) -> Result<(), Box<dyn Any + Send>> {
+        let (final_state, num_tasks) = Self::with(|state| {
             state.in_cleanup = true;
+            if failed {
+                // Nothing runs after a failure, and its tasks' stacks are leaked, like a stopped
+                // execution's.
+                state.current_task = ScheduledTask::Stopped;
+                state.teardown_after_failure = true;
+            }
             assert!(state.current_task == ScheduledTask::Stopped || state.current_task == ScheduledTask::Finished);
-            // Keep the `live_tasks` invariant intact as the tasks are pulled out of the state.
+            // Keep the `live_tasks` invariant intact: no task is scheduled any more.
             state.live_tasks.clear();
-            (std::mem::take(&mut state.tasks), state.current_task)
+            (state.current_task, state.tasks.len())
         });
 
-        for task in tasks.drain(..) {
-            assert!(
-                final_state == ScheduledTask::Stopped || task.finished() || task.detached,
-                "execution finished but task is not"
-            );
-            // The parked default has to go before the task's stack does (see `ParkedDefault`).
-            drop(task.parked_default);
-            Rc::try_unwrap(task.continuation)
-                .map_err(|_| ())
-                .expect("couldn't cleanup a future");
-        }
+        let mut first_panic = None;
+        let mut next = 0;
+        // Destructors can spawn tasks, which are torn down too: so after each static, go back to
+        // the tasks.
+        loop {
+            while let Some(mut remains) = Self::with(|state| {
+                let task = state.tasks.get_mut(next)?;
+                assert!(
+                    next >= num_tasks || final_state == ScheduledTask::Stopped || task.finished() || task.detached,
+                    "execution finished but task is not"
+                );
+                state.torn_down_task = if task.finished() {
+                    None
+                } else {
+                    // The task is running its destructors now, which can block it like any task.
+                    task.unblock();
+                    Some(task.id())
+                };
+                Some(task.take_remains())
+            }) {
+                // Each task's remains are dropped outside of `Self::with`, because destructors call
+                // back into `ExecutionState`. The tasks themselves stay put, so that destructors can
+                // look them up.
 
-        while Self::with(|state| state.storage.pop()).is_some() {}
+                // The parked default has to go before the task's stack does (see `ParkedDefault`).
+                drop(remains.parked_default.take());
+                if final_state == ScheduledTask::Finished {
+                    if let Some(future) = remains.take_parked_future() {
+                        catch_panic(&mut first_panic, || drop(future));
+                    }
+                }
+                if let Some(continuation) = remains.continuation.take() {
+                    // Dropping the continuation unwinds the task's stack if the task is still in it;
+                    // a panic in a destructor then aborts. Otherwise this drops a task that never ran.
+                    Self::with(|state| state.unwinding_for_teardown = true);
+                    catch_panic(&mut first_panic, || {
+                        Rc::try_unwrap(continuation)
+                            .map_err(|_| ())
+                            .expect("couldn't cleanup a future");
+                    });
+                    Self::with(|state| state.unwinding_for_teardown = false);
+                }
+                // See `pop_local` for why this loop looks slightly funky.
+                while let Some(local) = Self::with(|state| state.tasks[next].pop_local()) {
+                    dispose(local, failed, &mut first_panic);
+                }
+                next += 1;
+            }
+
+            // The main thread stands in for the current task while a static is dropped.
+            let Some((value, main_thread_finished)) = Self::with(|state| {
+                let value = state.storage.pop()?;
+                let main_thread = state.tasks.first_mut().expect("an execution has a main thread");
+                let finished = main_thread.stand_in_for_teardown();
+                state.torn_down_task = Some(main_thread.id());
+                Some((value, finished))
+            }) else {
+                break;
+            };
+            dispose(value, failed, &mut first_panic);
+            Self::with(|state| {
+                state.tasks[0].stop_standing_in_for_teardown(main_thread_finished);
+                state.torn_down_task = None;
+            });
+        }
+        Self::with(|state| state.torn_down_task = None);
 
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().clear());
         LABELS.with(|cell| cell.borrow_mut().clear());
@@ -768,7 +884,33 @@ impl ExecutionState {
         #[cfg(debug_assertions)]
         Self::with(|state| state.has_cleaned_up = true);
 
-        Self::with(|state| state.in_cleanup = false);
+        Self::with(|state| {
+            state.in_cleanup = false;
+            state.teardown_after_failure = false;
+        });
+
+        match first_panic {
+            Some(payload) if !failed => Err(payload),
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether a failed execution is being torn down (see `cleanup`).
+    pub(crate) fn in_teardown_after_failure() -> bool {
+        Self::try_with(|state| state.teardown_after_failure).unwrap_or(false)
+    }
+
+    /// Report that the task that teardown is dropping blocked (see `cleanup`).
+    #[cold]
+    #[track_caller]
+    fn blocked_in_teardown(task_id: TaskId) -> ! {
+        let name = Self::with(|state| state.get(task_id).name()).unwrap_or_else(|| format!("task-{}", task_id.0));
+        panic!(
+            "{name} blocked while it was being dropped at the end of the execution, and nothing can wake it, because \
+             no task runs once an execution has finished. A destructor made a blocking call, such as locking a mutex \
+             that another unfinished task holds, receiving from an empty channel, joining a task, or `block_on` on a \
+             future that cannot complete."
+        )
     }
 
     /// Determine whether the execution has finished.
@@ -780,9 +922,18 @@ impl ExecutionState {
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
     pub fn maybe_yield() -> bool {
-        Self::with(|state| {
-            if std::thread::panicking() && !state.in_cleanup {
-                return true;
+        let decision = Self::with(|state| {
+            if state.in_cleanup {
+                // Nothing is scheduled during teardown (see `cleanup`). If the task being torn down
+                // is not runnable, a destructor blocked it, and nothing can wake it.
+                return match state.try_current() {
+                    Some(task) if !task.runnable() => Err(task.id()),
+                    _ => Ok(false),
+                };
+            }
+
+            if std::thread::panicking() {
+                return Ok(true);
             }
 
             debug_assert!(
@@ -794,18 +945,20 @@ impl ExecutionState {
             let result = state.schedule();
             // If scheduling failed, yield so that the outer scheduling loop can handle it.
             if result.is_err() {
-                return true;
+                return Ok(true);
             }
 
             // If the next task is the same as the current one, we can skip the context switch
             // and just advance to the next task immediately.
             if state.current_task == state.next_task {
                 state.advance_to_next_task();
-                false
+                Ok(false)
             } else {
-                true
+                Ok(true)
             }
-        })
+        });
+        // Panic outside of `Self::with`, so the panic hook can name the task.
+        decision.unwrap_or_else(|task_id| Self::blocked_in_teardown(task_id))
     }
 
     /// Tell the scheduler that the next context switch is an explicit yield requested by the
@@ -823,12 +976,21 @@ impl ExecutionState {
     /// panic triggered while someone held a Mutex, and so are executing the Drop handler for
     /// MutexGuard). This avoids calling back into the scheduler during a panic, because the state
     /// may be poisoned or otherwise invalid.
+    ///
+    /// During teardown, the tasks being torn down run their destructors like running tasks (see
+    /// `cleanup`), so this is false, unless a destructor panicked. Unwinding a task's stack to drop
+    /// it is not a panic.
     pub fn should_stop() -> bool {
-        std::thread::panicking()
-            || Self::with(|s| {
-                assert_ne!(s.current_task, ScheduledTask::Finished);
-                s.current_task == ScheduledTask::Stopped
-            })
+        if std::thread::panicking() {
+            return !Self::try_with(|s| s.unwinding_for_teardown).unwrap_or(false);
+        }
+        Self::with(|s| {
+            if s.in_cleanup {
+                return false;
+            }
+            assert_ne!(s.current_task, ScheduledTask::Finished);
+            s.current_task == ScheduledTask::Stopped
+        })
     }
 
     pub(crate) fn execution_stopped() -> bool {
@@ -841,7 +1003,12 @@ impl ExecutionState {
     pub fn failing_task() -> String {
         Self::try_with(|state| {
             if let Some(task) = state.try_current() {
-                task.name().unwrap_or_else(|| format!("task-{:?}", task.id().0))
+                let name = task.name().unwrap_or_else(|| format!("task-{:?}", task.id().0));
+                if state.in_cleanup {
+                    format!("{name} (being dropped at the end of the execution)")
+                } else {
+                    name
+                }
             } else {
                 "<unknown>".into()
             }
@@ -858,16 +1025,21 @@ impl ExecutionState {
         })
     }
 
+    /// The running task, or during teardown, the task being torn down (see `cleanup`).
+    fn current_id(&self) -> Option<TaskId> {
+        self.current_task.id().or(self.torn_down_task)
+    }
+
     pub fn current(&self) -> &Task {
-        self.get(self.current_task.id().unwrap())
+        self.get(self.current_id().expect("there is no current task"))
     }
 
     pub fn current_mut(&mut self) -> &mut Task {
-        self.get_mut(self.current_task.id().unwrap())
+        self.get_mut(self.current_id().expect("there is no current task"))
     }
 
     pub fn try_current(&self) -> Option<&Task> {
-        self.try_get(self.current_task.id()?)
+        self.try_get(self.current_id()?)
     }
 
     pub fn get(&self, id: TaskId) -> &Task {
@@ -1153,4 +1325,26 @@ fn task_may_have_own_default(state: &ExecutionState) -> bool {
             tracing::dispatcher::get_default(|nested| nested.is::<NoSubscriber>())
         }
     })
+}
+
+/// Drop or leak `value`, something a failed execution left behind, as
+/// `UngracefulShutdownConfig::continuation_function_behavior` says; otherwise drop it.
+fn dispose(value: Box<dyn Any>, failed: bool, first_panic: &mut Option<Box<dyn Any + Send>>) {
+    if failed
+        && matches!(
+            UNGRACEFUL_SHUTDOWN_CONFIG.get().continuation_function_behavior,
+            ContinuationFunctionBehavior::Leak
+        )
+    {
+        std::mem::forget(value);
+    } else {
+        catch_panic(first_panic, || drop(value));
+    }
+}
+
+/// Run `f`, and if it panics, keep the payload in `first_panic` unless that already holds one.
+fn catch_panic(first_panic: &mut Option<Box<dyn Any + Send>>, f: impl FnOnce()) {
+    if let Err(payload) = panic::catch_unwind(panic::AssertUnwindSafe(f)) {
+        first_panic.get_or_insert(payload);
+    }
 }

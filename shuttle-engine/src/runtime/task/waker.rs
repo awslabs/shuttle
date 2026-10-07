@@ -28,7 +28,9 @@ unsafe fn raw_waker_clone(data: *const ()) -> RawWaker {
 unsafe fn raw_waker_wake(data: *const ()) {
     let task_id = TaskId::from(data as usize);
     ExecutionState::with(|state| {
-        if state.is_finished() {
+        // During teardown, a task that is being torn down can still wait for a future that wakes it
+        // (see `ExecutionState::cleanup`).
+        if state.is_finished() && !state.in_cleanup() {
             return;
         }
 

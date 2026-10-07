@@ -413,13 +413,10 @@ impl BatchSemaphoreState {
             // `Acquire` is still alive and some other task polls it, it will
             // re-acquire from the (still available) permits.
             //
-            // `remove_waiter` can reach this during execution cleanup, when the
-            // task list is gone, so probe defensively and treat "can't tell" as
-            // not stale (i.e. preserve the old behaviour).
-            let front_is_stale = ExecutionState::try_with(|s| {
-                !s.in_cleanup() && s.try_get(front.task_id()).is_some_and(|t| t.finished())
-            })
-            .unwrap_or(false);
+            // Probe defensively and treat "can't tell" as not stale (i.e.
+            // preserve the old behaviour).
+            let front_is_stale =
+                ExecutionState::try_with(|s| s.try_get(front.task_id()).is_some_and(|t| t.finished())).unwrap_or(false);
             if front_is_stale {
                 let waiter = self.waiters.pop_front().unwrap();
                 waiter.is_queued.store(false, Ordering::SeqCst);
@@ -617,7 +614,7 @@ impl BatchSemaphore {
             ExecutionState::with(|exec_state| {
                 // A waiter whose task has finished is stale (its `Acquire` was
                 // cancelled and the task exited); there is nothing to unblock.
-                if !exec_state.in_cleanup() && !exec_state.get(waiter.task_id()).finished() {
+                if !exec_state.get(waiter.task_id()).finished() {
                     exec_state.get_mut(waiter.task_id()).unblock();
                 }
             });
@@ -769,11 +766,10 @@ impl BatchSemaphore {
         state.reservation = None;
 
         // Wake the waiters that can now take the permits. Not while the
-        // execution stops or is cleaned up: then `release` does not wake waiters
-        // either, and there may be no task list to look at.
+        // execution stops: then `release` does not wake waiters either.
         let can_wake = !std::thread::panicking()
             && !ExecutionState::execution_stopped()
-            && ExecutionState::try_with(|s| !s.in_cleanup()).unwrap_or(false);
+            && ExecutionState::try_with(|_| ()).is_ok();
         if can_wake {
             state.wake_unfair_waiters();
         }

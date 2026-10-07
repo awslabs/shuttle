@@ -22,6 +22,7 @@ mod rwlock;
 mod shrink;
 mod tag;
 mod task;
+mod teardown;
 mod thread;
 mod timeout;
 mod tracing;

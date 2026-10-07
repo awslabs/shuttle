@@ -275,7 +275,7 @@ impl Drop for PooledContinuation {
             // dropped. Thus we must drop the inner function before reusing it.
             let old = c.function.0.replace(None);
             c.state = ContinuationState::NotReady;
-            if std::thread::panicking() {
+            if std::thread::panicking() || ExecutionState::in_teardown_after_failure() {
                 match UNGRACEFUL_SHUTDOWN_CONFIG.get().continuation_function_behavior {
                     ContinuationFunctionBehavior::Drop => drop(old),
                     ContinuationFunctionBehavior::Leak => std::mem::forget(old),
