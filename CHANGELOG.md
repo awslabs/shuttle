@@ -10,6 +10,8 @@
 
 * A future task that finishes now drops its future before its thread-locals, as an aborted one already did, so that the destructors of futures it still owns, such as the one inside a `timeout` that fired, can use them. A `shuttle-tokio` `task_local!` scope held that way is now dropped with its value set, as in tokio.
 
+* Publish `shuttle-tokio-impl-inner` 0.1.3, which has the new `task_local!`, and `shuttle-tokio-impl` 0.1.2, which requires it. `shuttle-tokio-impl` 0.1.1 re-exports tokio's `task_local!` over the glob re-export of inner, so it would keep the old macro even with inner 0.1.3.
+
 # 0.9.6 (October 9, 2026)
 
 * Fix a stack overflow when a global `tracing` subscriber at TRACE level calls into Shuttle while it handles an event, for example to call `current::clock()`. Every access to the execution state emits a TRACE event, so the subscriber's own access emitted another event, which called the subscriber again, and so on until the stack overflowed, and the failure report and persisted schedule were lost with the process. Accesses made while that event is being handled no longer emit it. (#382)
