@@ -49,7 +49,7 @@ impl TimeModel for ConstantSteppedTimeModel {
     }
 
     fn step(&mut self) {
-        self.current_time_elapsed += self.step_size;
+        self.current_time_elapsed = self.current_time_elapsed.saturating_add(self.step_size);
         trace!("time step to {:?}", self.current_time_elapsed);
     }
 
@@ -78,7 +78,7 @@ impl TimeModel for ConstantSteppedTimeModel {
         // handles the former; that is also why it is only a no-op in one of the two configurations.
         #[allow(clippy::useless_conversion)]
         let dur = std::time::Duration::from(dur);
-        self.current_time_elapsed += dur;
+        self.current_time_elapsed = self.current_time_elapsed.saturating_add(dur);
     }
 
     fn register_sleep(&mut self, deadline: Instant, sleep_id: u64, waker: Waker) -> WakerRegistered {

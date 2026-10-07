@@ -527,6 +527,22 @@ impl Instant {
             .unwrap_or(Duration::from_secs(0))
     }
 
+    /// An instant about 30 years from now, which stands in for deadlines too far away to represent. As in tokio, it is
+    /// far enough away to never be reached by accident, and close enough that the clock can move there and on.
+    pub(crate) fn far_future() -> Instant {
+        const THIRTY_YEARS: std::time::Duration = std::time::Duration::from_secs(86400 * 365 * 30);
+        Instant::Simulated(Instant::now().unwrap_simulated().saturating_add(THIRTY_YEARS))
+    }
+
+    /// The deadline `duration` after `self`, or `Instant::far_future()` if that is earlier or `self + duration` can't
+    /// be represented. A timer that far out is never meant to fire, and capping it keeps the clock, which jumps to the
+    /// next deadline when nothing else can run, away from the end of its range.
+    pub(crate) fn deadline_after(self, duration: Duration) -> Instant {
+        let far_future = Instant::far_future();
+        self.checked_add(duration)
+            .map_or(far_future, |deadline| deadline.min(far_future))
+    }
+
     /// Returns t where t is the time self + duration if t can be represented as Instant otherwise it saturates to the maximum time value
     pub fn saturating_add(&self, duration: Duration) -> Self {
         match self {
@@ -616,7 +632,7 @@ pub fn advance(dur: Duration) {
 /// Returns a future which sleeps until the duration has elapsed
 /// Behavior of this function depends on the TimeModel provided to Shuttle
 pub fn async_sleep(dur: Duration) -> Sleep {
-    async_sleep_until(Instant::now().saturating_add(dur))
+    async_sleep_until(Instant::now().deadline_after(dur))
 }
 
 /// Returns a future which sleeps until the deadline is reached
@@ -777,7 +793,7 @@ impl Interval {
         let deadline = self.sleep.deadline();
         match self.sleep.as_mut().poll(cx) {
             Poll::Ready(()) => {
-                self.sleep.as_mut().reset(deadline + self.period);
+                self.sleep.as_mut().reset(deadline.deadline_after(self.period));
                 Poll::Ready(deadline)
             }
             Poll::Pending => Poll::Pending,
@@ -786,7 +802,7 @@ impl Interval {
 
     /// Resets the interval to tick one period after the current time.
     pub fn reset(&mut self) {
-        self.sleep.as_mut().reset(Instant::now() + self.period);
+        self.sleep.as_mut().reset(Instant::now().deadline_after(self.period));
     }
 
     /// Unimplemented

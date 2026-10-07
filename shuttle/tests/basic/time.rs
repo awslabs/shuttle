@@ -879,3 +879,87 @@ mod teardown {
         );
     }
 }
+
+/// Durations too long to represent, as in "sleep forever" or "no timeout".
+mod overflow {
+    use super::*;
+    use shuttle::sync::Mutex;
+    use shuttle::MaxSteps;
+
+    fn thirty_years() -> Duration {
+        Duration::from_secs(86400 * 365 * 30)
+    }
+
+    fn run_stepped(iterations: usize, f: impl Fn() + Send + Sync + 'static) {
+        let time_model = ConstantSteppedTimeModel::new(std::time::Duration::from_micros(10));
+        Runner::new_with_time_model(RandomScheduler::new(iterations), time_model, Config::new()).run(f);
+    }
+
+    #[test]
+    fn sleep_for_duration_max() {
+        run_stepped(10, || {
+            let start = Instant::now();
+            thread::sleep(Duration::MAX);
+            assert!(start.elapsed() >= thirty_years());
+            let _ = Instant::now() + Duration::from_millis(1);
+        });
+    }
+
+    #[test]
+    fn timeout_of_duration_max_elapses_when_nothing_else_can_run() {
+        run_stepped(10, || {
+            let result = future::block_on(async_timeout(Duration::MAX, std::future::pending::<()>()));
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn the_clock_keeps_room_after_a_sleeper_wakes_at_duration_max() {
+        shuttle::check_random(
+            || {
+                thread::spawn(|| thread::sleep(Duration::MAX)).join().unwrap();
+                let _ = Instant::now() + Duration::from_secs(3600);
+            },
+            10,
+        );
+    }
+
+    // A finished timeout leaves nothing behind, so a real deadlock is reported as one.
+    #[test]
+    #[should_panic(expected = "deadlock")]
+    fn deadlock_after_a_finished_timeout_of_duration_max() {
+        run_stepped(1, || {
+            future::block_on(async_timeout(Duration::MAX, async {})).unwrap();
+            let lock = Mutex::new(());
+            let _first = lock.lock().unwrap();
+            let _second = lock.lock().unwrap();
+        });
+    }
+
+    // Each sleep moves the clock 30 years, but still has a scheduling point.
+    #[test]
+    #[should_panic(expected = "exceeded max_steps bound")]
+    fn sleeping_forever_in_a_loop_hits_max_steps() {
+        let mut config = Config::new();
+        config.max_steps = MaxSteps::FailAfter(1000);
+        Runner::new(RandomScheduler::new(1), config).run(|| loop {
+            thread::sleep(Duration::MAX);
+        });
+    }
+
+    #[test]
+    fn interval_with_a_period_of_duration_max() {
+        shuttle::check_random(
+            || {
+                future::block_on(async {
+                    let mut interval = async_interval(Duration::MAX);
+                    let first = interval.tick().await;
+                    let second = interval.tick().await;
+                    let third = interval.tick().await;
+                    assert!(first < second && second < third);
+                });
+            },
+            1,
+        );
+    }
+}
