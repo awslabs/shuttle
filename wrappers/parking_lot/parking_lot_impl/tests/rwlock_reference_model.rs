@@ -30,6 +30,10 @@
 //!   change the number of runs of each scenario (default 100, half per variant). Run with
 //!   `--nocapture` to see how many of the model's results `parking_lot` gave.
 //!
+//! * [`parking_lot_lets_a_later_writer_overtake_a_parked_one`] shows that `parking_lot` does not
+//!   grant the lock in the order in which writers park: after a plain unlock, a writer that parked
+//!   later can get the lock first.
+//!
 //! # Timing
 //!
 //! The fixed-order test goes on to the next step only when it observes the state that the model
@@ -55,6 +59,10 @@
 //!
 //! The stress test does not depend on timing, because each order that `parking_lot` gives must be an
 //! order of the model. Only its watchdog uses a time limit (see [`STUCK`]).
+//!
+//! The overtaking test waits until each writer asks for the lock, and then pauses so that it parks.
+//! A stall there, or a run in which eventual fairness hands the lock to W2, only makes a run show no
+//! overtaking, and the test then runs again.
 
 // Each test crate uses only part of the shared module.
 #[allow(dead_code)]
@@ -665,4 +673,59 @@ fn reference_model_covers_parking_lot_under_stress() {
 fn reference_model_refuses_try_write_behind_two_parked_writers() {
     let writer = vec![Write, Unlock];
     explore(&[writer.clone(), writer.clone(), writer, vec![TryWrite, Unlock]]);
+}
+
+/// `parking_lot` does not grant the lock in the order in which writers ask for it, which is why the
+/// model and the Shuttle lock let any waiting request win after a plain unlock. A plain unlock
+/// wakes the first parked writer but leaves the lock free, so a thread that is not parked can take
+/// it first (`lock_exclusive_slow` grabs `WRITER_BIT` "even if there are parked threads"). The
+/// woken writer then finds the lock taken and parks again, behind the writers that parked after it.
+///
+/// W1, W2 and W3 ask for the lock in that order while the main thread holds it, 20 ms apart, so
+/// they park in that order. The main thread held the lock for more than a millisecond, so eventual
+/// fairness makes its unlock a hand-off to W1, and starts a new timer of 0 to 1 ms. W1 unlocks at
+/// once, so unless that timer has already run out, this is a plain unlock: it wakes W2, and W1
+/// locks again before W2 runs. W2 parks again, behind W3, and W1's next unlock hands the lock to
+/// W3. In a run where the timer has run out, W1's first unlock hands the lock to W2 instead, so the
+/// test runs until W3 overtakes W2.
+#[test]
+fn parking_lot_lets_a_later_writer_overtake_a_parked_one() {
+    /// Long enough for a writer that asks for the lock to park.
+    const PARK: Duration = Duration::from_millis(20);
+    const RUNS: usize = 50;
+
+    let mut orders = Vec::new();
+    for _ in 0..RUNS {
+        let lock = Arc::new(RwLock::new(Vec::new()));
+        let held = lock.write();
+        let writer = |name: &'static str, relock: bool| {
+            let lock = Arc::clone(&lock);
+            let (asking, asked) = mpsc::channel();
+            let handle = thread::spawn(move || {
+                asking.send(()).unwrap();
+                lock.write().push(name);
+                if relock {
+                    let mut guard = lock.write();
+                    guard.push(name);
+                    // Gives the woken W2 the time to find the lock taken and park again.
+                    thread::sleep(PARK);
+                }
+            });
+            asked.recv().unwrap();
+            thread::sleep(PARK);
+            handle
+        };
+        let writers = [writer("W1", true), writer("W2", false), writer("W3", false)];
+        drop(held);
+        for handle in writers {
+            handle.join().unwrap();
+        }
+        let order = Arc::into_inner(lock).unwrap().into_inner();
+        let turn = |name| order.iter().position(|&n| n == name).unwrap();
+        if turn("W3") < turn("W2") {
+            return;
+        }
+        orders.push(order);
+    }
+    panic!("W2 got the lock before W3 in all {RUNS} runs: {orders:?}");
 }
