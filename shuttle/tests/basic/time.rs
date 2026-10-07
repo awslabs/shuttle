@@ -257,7 +257,16 @@ mod regressions {
                     sleep.as_mut().await;
                     assert_eq!(Instant::now(), sleep.deadline());
                     assert!(sleep.is_elapsed());
-                    assert!(async_sleep(Duration::ZERO).is_elapsed());
+                    // As in tokio, a sleep is elapsed only once it has been polled or reset.
+                    let mut zero = Box::pin(async_sleep(Duration::ZERO));
+                    assert!(!zero.is_elapsed());
+                    zero.as_mut().await;
+                    assert!(zero.is_elapsed());
+                    let mut reset = Box::pin(async_sleep(Duration::from_secs(1)));
+                    reset.as_mut().reset(Instant::now());
+                    assert!(reset.is_elapsed());
+                    reset.as_mut().reset(Instant::now() + Duration::from_secs(1));
+                    assert!(!reset.is_elapsed());
                 });
             },
             1,

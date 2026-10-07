@@ -650,6 +650,7 @@ pub fn async_sleep_until(deadline: Instant) -> Sleep {
         id,
         execution,
         deadline,
+        armed: false,
         registered: false,
         waker: None,
     }
@@ -688,6 +689,8 @@ pub struct Sleep {
     id: u64,
     execution: Arc<()>,
     deadline: Instant,
+    // Whether the sleep has been polled or reset. tokio creates a sleep's timer only then, which `is_elapsed` reflects.
+    armed: bool,
     registered: bool,
     // Keep the latest waker so reset can rearm the timer without another poll, even after it elapsed.
     waker: Option<Waker>,
@@ -698,6 +701,7 @@ impl Future for Sleep {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
+        this.armed = true;
         let result = this.register(cx.waker().clone());
         // Replace the saved waker after releasing the time-model borrow. In particular, dropping
         // the old waker's last reference may run user-defined destructors.
@@ -721,15 +725,17 @@ impl Sleep {
 
     /// Returns `true` if `Sleep` has elapsed.
     ///
-    /// A `Sleep` instance is elapsed when the requested duration has elapsed.
+    /// A `Sleep` instance is elapsed when the requested duration has elapsed, and it has been polled or reset. As with
+    /// tokio's `Sleep`, a sleep that was never polled is not elapsed, even after its deadline.
     pub fn is_elapsed(&self) -> bool {
-        Instant::now() >= self.deadline
+        self.armed && Instant::now() >= self.deadline
     }
 
     /// Resets the `Sleep` instance to a new deadline.
     pub fn reset(self: Pin<&mut Self>, deadline: Instant) {
         let this = self.get_mut();
         this.deadline = deadline;
+        this.armed = true;
         if let Some(waker) = this.waker.clone() {
             if matches!(this.register(waker), WakerRegistered::NotRegistered) {
                 // A reset to an elapsed deadline must wake a previously pending waiter. Do this
