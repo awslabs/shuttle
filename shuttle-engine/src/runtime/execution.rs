@@ -150,7 +150,31 @@ impl StepError {
 /// time model.
 fn wake_sleepers_until_runnable() {
     let time_model = get_time_model();
-    while ExecutionState::num_runnable() == 0 && time_model.borrow_mut().wake_next() {}
+    while !ExecutionState::with(|state| state.any_runnable()) && time_model.borrow_mut().wake_next() {}
+}
+
+/// Runs the scheduler, unless `maybe_yield` already has. If it found no runnable task, the time model gets to wake
+/// sleeping tasks, and the scheduler runs again if that made any of them runnable. Waking a task borrows the
+/// `ExecutionState`, so this can't happen inside `ExecutionState::schedule`.
+fn schedule_waking_sleepers() -> Result<(), StepError> {
+    let nothing_runnable = ExecutionState::with(|state| {
+        state.schedule()?;
+        Ok(state.next_task == ScheduledTask::Finished && !state.any_runnable())
+    })?;
+    if !nothing_runnable {
+        return Ok(());
+    }
+
+    wake_sleepers_until_runnable();
+    ExecutionState::with(|state| {
+        if !state.any_runnable() {
+            return Ok(());
+        }
+        // Take back the decision to finish the execution, which counted as a context switch.
+        state.next_task = ScheduledTask::None;
+        state.context_switches -= 1;
+        state.schedule()
+    })
 }
 
 impl Execution {
@@ -307,7 +331,7 @@ impl Execution {
     #[inline]
     fn run_to_completion(&mut self, immediately_return_on_panic: bool) -> Result<(), StepError> {
         loop {
-            wake_sleepers_until_runnable();
+            schedule_waking_sleepers()?;
             let next_step: Option<Rc<RefCell<PooledContinuation>>> = ExecutionState::with(|state| {
                 state.schedule()?;
                 state.advance_to_next_task();
@@ -791,8 +815,6 @@ impl ExecutionState {
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
     pub fn maybe_yield() -> bool {
-        wake_sleepers_until_runnable();
-
         Self::with(|state| {
             if std::thread::panicking() && !state.in_cleanup {
                 return true;
@@ -931,8 +953,9 @@ impl ExecutionState {
         ExecutionState::with(|s| s.current_mut().signature.new_resource(resource_type))
     }
 
-    pub(crate) fn num_runnable() -> usize {
-        Self::with(|state| state.tasks.iter().filter(|t| t.runnable()).count())
+    /// Whether any task is runnable. Only live tasks are checked, as a finished task never runs again.
+    fn any_runnable(&self) -> bool {
+        self.live_tasks.iter().any(|id| self.tasks[id.0].runnable())
     }
 
     pub fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
