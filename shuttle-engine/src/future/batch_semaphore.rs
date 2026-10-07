@@ -441,6 +441,20 @@ impl BatchSemaphoreState {
                 if let Some(waker) = maybe_waker.take() {
                     waker.wake();
                 }
+            } else if front.min_permits < front.num_permits
+                && front.min_permits <= self.permits_available.available()
+                && self.reservation.is_none()
+            {
+                // A reserving waiter that can reserve but not yet take all of its permits (only on
+                // an unfair semaphore, see `BatchSemaphore::acquire_reserving`). Hand it the
+                // reservation, so that no later request can overtake it either, and stop: the
+                // reservation keeps the rest of the permits for it. Its task stays blocked until
+                // the permits are there, as for a reservation it takes itself.
+                let waiter = self.waiters.pop_front().unwrap();
+                assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
+                trace!("handed the reservation to waiter {:?}", waiter);
+                self.reservation = Some(waiter);
+                return;
             } else {
                 return;
             }
@@ -477,6 +491,9 @@ fn unblock_unless_stale(waiter: &Waiter) -> bool {
 pub struct BatchSemaphore {
     state: RefCell<BatchSemaphoreState>,
     fairness: Fairness,
+    /// The fairness of [`BatchSemaphore::release`]: `fairness`, unless an unfair semaphore is built
+    /// [`BatchSemaphore::with_fair_releases`].
+    release_fairness: Fairness,
     #[allow(unused)]
     signature: ResourceSignature,
 }
@@ -534,6 +551,7 @@ impl BatchSemaphore {
         Self {
             state,
             fairness,
+            release_fairness: fairness,
             signature,
         }
     }
@@ -563,8 +581,29 @@ impl BatchSemaphore {
         Self {
             state,
             fairness,
+            release_fairness: fairness,
             signature,
         }
+    }
+
+    /// Makes every [`BatchSemaphore::release`] of this semaphore a fair release (see
+    /// [`BatchSemaphore::release_fair`]). Requests are still matched against the free permits as on
+    /// an unfair semaphore, and reservations still work (see
+    /// [`BatchSemaphore::acquire_reserving`]), but a release grants the permits to the
+    /// longest-waiting requests, so that no other request can overtake them.
+    ///
+    /// The order of the waiters then decides who is granted permits, so a blocking acquire has a
+    /// scheduling point before it joins the queue, as on a strictly fair semaphore. Shuttle then
+    /// explores every order in which tasks can join it.
+    ///
+    /// The motivating use case is a `parking_lot` `RwLock` that is as fair as Shuttle's other
+    /// locks: a request that `parking_lot` lets in at once never waits behind another one, but a
+    /// task that waits gets the lock before any later request.
+    ///
+    /// On a strictly fair semaphore, every release is already fair, so this changes nothing.
+    pub const fn with_fair_releases(mut self) -> Self {
+        self.release_fairness = Fairness::StrictlyFair;
+        self
     }
 
     /// Returns the current number of available permits. While a reservation
@@ -853,9 +892,11 @@ impl BatchSemaphore {
         Acquire::new_reserving(self, num_permits, min_permits)
     }
 
-    /// Release `num_permits` back to the Semaphore
+    /// Release `num_permits` back to the Semaphore. This is a fair release (see
+    /// [`BatchSemaphore::release_fair`]) on a strictly fair semaphore, and on one built
+    /// [`BatchSemaphore::with_fair_releases`].
     pub fn release(&self, num_permits: usize) {
-        self.release_inner(num_permits, Fairness::Unfair)
+        self.release_inner(num_permits, self.release_fairness)
     }
 
     /// Release `num_permits` back to the semaphore, granting them to already
@@ -878,15 +919,23 @@ impl BatchSemaphore {
     /// grants exactly as `parking_lot`'s wake policy does: a `parking_lot`
     /// unlock wakes the parked threads up to (and including) the first one
     /// that needs the lock exclusively, and here a waiter whose request does
-    /// not fit the remaining permits stops the scan.
+    /// not fit the remaining permits stops the scan. A reserving waiter (see
+    /// [`BatchSemaphore::acquire_reserving`]) whose request does not fit yet,
+    /// but which can reserve the semaphore, is handed the reservation and also
+    /// stops the scan, as `parking_lot` hands a writer `WRITER_BIT` while it
+    /// waits for the readers to leave.
     ///
-    /// While a reservation holds the semaphore (see
-    /// [`BatchSemaphore::acquire_reserving`]), the permits are already kept
+    /// While a reservation holds the semaphore, the permits are already kept
     /// for the reservation's holder — no request can overtake it — so a fair
     /// release behaves like a plain one.
     ///
     /// On a strictly fair semaphore every release already grants from the
-    /// front of the queue, so this is the same as [`BatchSemaphore::release`].
+    /// front of the queue, and on one built
+    /// [`BatchSemaphore::with_fair_releases`] every release is fair, so there
+    /// this is the same as [`BatchSemaphore::release`]. On other unfair
+    /// semaphores, a blocking acquire joins the queue without a scheduling
+    /// point of its own, so Shuttle does not explore every order of the queue
+    /// that a fair release grants from.
     pub fn release_fair(&self, num_permits: usize) {
         self.release_inner(num_permits, Fairness::StrictlyFair)
     }
@@ -953,26 +1002,35 @@ impl BatchSemaphore {
         // `ExecutionState::with` on every release even with tracing disabled.
         trace!(task = ?ExecutionState::me(), avail = ?state.permits_available, waiters = ?state.waiters, "released {} permits for semaphore {:p}", num_permits, &self.state);
 
-        match self.fairness {
+        let granted_unfair_waiters = match self.fairness {
             Fairness::StrictlyFair => {
                 // in a strictly fair mode we will grant permits to waiters from the front
                 // of the queue, as long as there are enough permits available
                 state.unblock_waiters_from_front();
+                false
             }
             Fairness::Unfair => {
                 // A fair release grants waiting requests their permits here, inside the
                 // release, so that no other request can overtake them (see `release_fair`).
                 // Not while a reservation holds the semaphore: the permits are already kept
                 // for its holder, which `wake_unfair_waiters` takes care of below.
-                if release_fairness == Fairness::StrictlyFair && state.reservation.is_none() {
+                let grant = release_fairness == Fairness::StrictlyFair && state.reservation.is_none();
+                if grant {
                     state.unblock_waiters_from_front();
                 }
                 // in an unfair mode, we will unblock all the waiters for which
                 // there are enough permits available, then let them race
                 state.wake_unfair_waiters();
+                grant
             }
-        }
+        };
         drop(state);
+
+        // The grants, or the reservation that they handed over, can leave a waiter that an earlier
+        // release woke unable to make progress.
+        if granted_unfair_waiters {
+            self.reblock_if_unfair();
+        }
     }
 
     /// Atomically `upgrade` from holding `permits_currently_held` permits to holding
@@ -1329,8 +1387,11 @@ impl Future for Acquire<'_> {
         //       unblock another task in the waiter set. As waiter-set insertion and removal for disjoint elements
         //       commutes, release operations also commute in this case.
         //
-        // Thus we apply the double-yield optimization for *unfair* semaphores only
-        let blocking_is_not_commutative = self.semaphore.fairness == Fairness::StrictlyFair;
+        // Thus we apply the double-yield optimization for *unfair* semaphores only, and not for an
+        // unfair semaphore built `with_fair_releases`: its releases grant from the front of the
+        // queue, so there too, two blocking acquires do not commute.
+        let blocking_is_not_commutative = self.semaphore.fairness == Fairness::StrictlyFair
+            || self.semaphore.release_fairness == Fairness::StrictlyFair;
 
         if self.never_polled && (will_succeed || blocking_is_not_commutative) {
             thread::switch();
