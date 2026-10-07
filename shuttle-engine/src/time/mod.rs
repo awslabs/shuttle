@@ -14,7 +14,6 @@ use std::pin::Pin;
 
 use pin_project::pin_project;
 use std::task::{Context, Poll, Waker};
-use tracing::warn;
 
 use crate::runtime::execution::ExecutionState;
 
@@ -656,19 +655,29 @@ pub fn async_sleep_until(deadline: Instant) -> Sleep {
     }
 }
 
-/// Returns a struct which sleeps repeatedly at a fixed time intervals (a tokio::time::Interval)
+/// Returns an [`Interval`] that ticks every `period`, starting now, so that its first tick completes immediately. Like
+/// tokio's `interval`.
 /// Behavior of this function depends on the TimeModel provided to Shuttle
-pub fn async_interval(dur: Duration) -> Interval {
-    async_interval_at(Instant::now(), dur)
+///
+/// # Panics
+///
+/// Panics if `period` is zero.
+pub fn async_interval(period: Duration) -> Interval {
+    async_interval_at(Instant::now(), period)
 }
 
-/// Returns a struct which sleeps repeatedly at a fixed time intervals (a tokio::time::Interval)
-/// This Interval starts at a fixed start time.
+/// Returns an [`Interval`] that ticks every `period`, with its first tick at `start`. Like tokio's `interval_at`.
 /// Behavior of this function depends on the TimeModel provided to Shuttle
+///
+/// # Panics
+///
+/// Panics if `period` is zero.
 pub fn async_interval_at(start: Instant, period: Duration) -> Interval {
+    assert!(period > Duration::ZERO, "`period` must be non-zero.");
     Interval {
         period,
-        sleep: Box::pin(async_sleep_until(start)),
+        missed_tick_behavior: MissedTickBehavior::default(),
+        sleep: async_sleep_until(start),
     }
 }
 
@@ -764,17 +773,22 @@ impl Drop for Sleep {
     }
 }
 
-/// A timer that ticks repeatedly at a fixed period.
+/// A timer that ticks repeatedly at a fixed period, like tokio's `Interval`. Created by [`async_interval`] and
+/// [`async_interval_at`].
 #[derive(Debug)]
 pub struct Interval {
     period: Duration,
-    sleep: Pin<Box<Sleep>>,
+    missed_tick_behavior: MissedTickBehavior,
+    // Due at the next tick.
+    sleep: Sleep,
 }
 
-/// Missed tick behavior for Interval
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How an [`Interval`] schedules its next tick after it missed one, like tokio's `MissedTickBehavior`. A tick is missed
+/// when it completes more than 5ms after it was due, as in tokio.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum MissedTickBehavior {
-    /// Ticks as fast as possible until caught up.
+    /// Ticks as fast as possible until caught up: the next tick is due one period after the missed one.
+    #[default]
     Burst,
     /// Tick at multiples of period from when tick was called, rather than from start.
     Delay,
@@ -782,43 +796,61 @@ pub enum MissedTickBehavior {
     Skip,
 }
 
+impl MissedTickBehavior {
+    fn next_deadline(self, missed: Instant, now: Instant, period: Duration) -> Instant {
+        match self {
+            Self::Burst => missed.deadline_after(period),
+            Self::Delay => now.deadline_after(period),
+            Self::Skip => {
+                let behind = u64::try_from((now - missed).as_nanos() % period.as_nanos())
+                    .expect("too much time has elapsed since the interval was supposed to tick");
+                now.deadline_after(period) - Duration::from_nanos(behind)
+            }
+        }
+    }
+}
+
 impl Interval {
-    /// tick
+    /// Completes when the next tick is due, and returns the instant it was due at. The first tick completes
+    /// immediately, unless the interval was created with a later start.
     pub async fn tick(&mut self) -> Instant {
         std::future::poll_fn(|cx| self.poll_tick(cx)).await
     }
 
-    /// period for an Interval
+    /// Returns the period of the interval.
     pub fn period(&self) -> Duration {
         self.period
     }
 
-    /// poll tick
+    /// Polls for the next tick, returning the instant it was due at once it is.
     pub fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<Instant> {
         let deadline = self.sleep.deadline();
-        match self.sleep.as_mut().poll(cx) {
-            Poll::Ready(()) => {
-                self.sleep.as_mut().reset(deadline.deadline_after(self.period));
-                Poll::Ready(deadline)
-            }
-            Poll::Pending => Poll::Pending,
+        if Pin::new(&mut self.sleep).poll(cx).is_pending() {
+            return Poll::Pending;
         }
+        let now = Instant::now();
+        let next = if now > deadline.deadline_after(Duration::from_millis(5)) {
+            self.missed_tick_behavior.next_deadline(deadline, now, self.period)
+        } else {
+            deadline.deadline_after(self.period)
+        };
+        Pin::new(&mut self.sleep).reset(next);
+        Poll::Ready(deadline)
     }
 
-    /// Resets the interval to tick one period after the current time.
+    /// Resets the interval so that its next tick is due one period from now.
     pub fn reset(&mut self) {
-        self.sleep.as_mut().reset(Instant::now().deadline_after(self.period));
+        Pin::new(&mut self.sleep).reset(Instant::now().deadline_after(self.period));
     }
 
-    /// Unimplemented
-    pub fn set_missed_tick_behavior(&mut self, _behavior: MissedTickBehavior) {
-        warn!("set missed tick behavior unimplemented: no effect!");
+    /// Sets how the interval schedules its next tick after it missed one.
+    pub fn set_missed_tick_behavior(&mut self, behavior: MissedTickBehavior) {
+        self.missed_tick_behavior = behavior;
     }
 
-    /// Unimplemented
-    pub fn missed_tick_behavior(&mut self) -> MissedTickBehavior {
-        warn!("set missed tick behavior unimplemented: no effect!");
-        MissedTickBehavior::Burst
+    /// Returns how the interval schedules its next tick after it missed one.
+    pub fn missed_tick_behavior(&self) -> MissedTickBehavior {
+        self.missed_tick_behavior
     }
 }
 

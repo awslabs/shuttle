@@ -1043,3 +1043,70 @@ mod instant {
         );
     }
 }
+
+/// `Interval` behaves like tokio's.
+mod interval {
+    use super::*;
+    use shuttle::time::MissedTickBehavior;
+
+    /// The instants of the first `n` ticks after a tick due at 10ms is missed until 35ms, relative to the start.
+    fn ticks_after_missing_until_35ms(behavior: MissedTickBehavior, n: usize) -> Vec<Duration> {
+        future::block_on(async move {
+            let start = Instant::now();
+            let mut interval = async_interval(Duration::from_millis(10));
+            interval.set_missed_tick_behavior(behavior);
+            assert_eq!(interval.missed_tick_behavior(), behavior);
+            assert_eq!(interval.tick().await, start);
+            thread::sleep(Duration::from_millis(35));
+            let mut ticks = Vec::new();
+            for _ in 0..n {
+                ticks.push(interval.tick().await - start);
+            }
+            ticks
+        })
+    }
+
+    #[test]
+    fn missed_ticks() {
+        shuttle::check_random(
+            || {
+                let ms = Duration::from_millis;
+                assert_eq!(
+                    ticks_after_missing_until_35ms(MissedTickBehavior::Burst, 4),
+                    [ms(10), ms(20), ms(30), ms(40)]
+                );
+                assert_eq!(
+                    ticks_after_missing_until_35ms(MissedTickBehavior::Delay, 3),
+                    [ms(10), ms(45), ms(55)]
+                );
+                assert_eq!(
+                    ticks_after_missing_until_35ms(MissedTickBehavior::Skip, 3),
+                    [ms(10), ms(40), ms(50)]
+                );
+            },
+            1,
+        );
+    }
+
+    #[test]
+    fn bursts_by_default() {
+        shuttle::check_random(
+            || {
+                let interval = async_interval(Duration::from_millis(10));
+                assert_eq!(interval.missed_tick_behavior(), MissedTickBehavior::Burst);
+            },
+            1,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "`period` must be non-zero.")]
+    fn zero_period_panics() {
+        shuttle::check_random(
+            || {
+                let _ = async_interval(Duration::ZERO);
+            },
+            1,
+        );
+    }
+}
