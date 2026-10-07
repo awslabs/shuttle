@@ -703,6 +703,28 @@ fn bugged_cleanup_would_cause_deadlock() {
     )
 }
 
+/// A task that polls more than one `Acquire` can own a queued waiter that cannot make progress.
+/// When the task then takes permits of the unfair semaphore, the semaphore must not block it: the
+/// task is running, and blocks itself if it waits for that `Acquire`. Blocking it here made the
+/// next scheduling point a false deadlock.
+#[test]
+fn acquiring_does_not_block_the_running_task() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let sem = BatchSemaphore::new(1, Fairness::Unfair);
+                let mut waiting = Box::pin(sem.acquire(2));
+                assert!(futures::poll!(waiting.as_mut()).is_pending());
+                sem.try_acquire(1).unwrap();
+                thread::yield_now();
+                sem.release(1);
+                drop(waiting);
+            });
+        },
+        None,
+    )
+}
+
 /// Tests of `BatchSemaphore::acquire_reserving`, and of `upgrade` on an unfair semaphore, which
 /// reserves the semaphore too.
 /// A task that takes a permit of an unfair semaphore while an `Acquire` of its own is still queued
@@ -1268,6 +1290,113 @@ mod fair_release_tests {
             SAW_FREE.load(Ordering::SeqCst),
             "no schedule had the waiter still to ask"
         );
+    }
+
+    /// A fair release hands a queued reserving waiter the reservation when it can reserve but not
+    /// yet take all of its permits, as `parking_lot` hands a writer `WRITER_BIT` while readers are
+    /// left. A request that queued after it can then not overtake it.
+    #[test_log::test]
+    fn fair_release_hands_the_reservation_to_the_front_waiter() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = BatchSemaphore::new(3, Fairness::Unfair);
+                    // Like an upgradable reader (2 permits) and a plain reader (1).
+                    sem.acquire(2).await.unwrap();
+                    sem.acquire(1).await.unwrap();
+                    let mut writer = Box::pin(sem.acquire_reserving(2, 3));
+                    assert!(futures::poll!(writer.as_mut()).is_pending());
+                    let mut later = Box::pin(sem.acquire(1));
+                    assert!(futures::poll!(later.as_mut()).is_pending());
+
+                    sem.release_fair(2);
+                    assert_eq!(sem.available_permits(), 0, "the writer was not handed the reservation");
+                    assert!(
+                        futures::poll!(later.as_mut()).is_pending(),
+                        "a later request overtook the writer"
+                    );
+                    assert!(futures::poll!(writer.as_mut()).is_pending());
+
+                    // The last reader leaves, and the writer takes every permit.
+                    sem.release(1);
+                    assert!(futures::poll!(writer.as_mut()).is_ready());
+                    assert!(futures::poll!(later.as_mut()).is_pending());
+                    sem.release(3);
+                    later.as_mut().await.unwrap();
+                    sem.release(1);
+                });
+            },
+            None,
+        );
+    }
+
+    /// On a semaphore built `with_fair_releases`, every `release` is fair: it grants the queued
+    /// waiter its permits inside the release, like `release_fair`.
+    #[test_log::test]
+    fn with_fair_releases_makes_release_fair() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = BatchSemaphore::new(1, Fairness::Unfair).with_fair_releases();
+                    sem.acquire(1).await.unwrap();
+                    let mut waiting = Box::pin(sem.acquire(1));
+                    assert!(futures::poll!(waiting.as_mut()).is_pending());
+
+                    sem.release(1);
+                    assert_eq!(sem.available_permits(), 0, "the waiter was not granted the permit");
+                    waiting.as_mut().await.unwrap();
+                    sem.release(1);
+                });
+            },
+            None,
+        );
+    }
+
+    /// On a semaphore built `with_fair_releases`, the order of the queue decides who gets the
+    /// permits, so Shuttle must explore every order in which tasks can join it. T2 asks for the
+    /// permit only after T1's message, and the main task releases it only after T2's message, so
+    /// both ask while the main task holds it. Without a scheduling point between T1's message and T1
+    /// joining the queue, T1 would always be first in the queue, and get the permit first.
+    #[test_log::test]
+    fn with_fair_releases_explores_every_queue_order() {
+        let orders = Arc::new(Mutex::new(HashSet::new()));
+        let orders_clone = Arc::clone(&orders);
+        check_dfs(
+            move || {
+                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair).with_fair_releases());
+                sem.acquire_blocking(1).unwrap();
+                let order = Arc::new(Mutex::new(Vec::new()));
+                let (to_second, from_first) = shuttle::sync::mpsc::channel();
+                let (to_main, from_second) = shuttle::sync::mpsc::channel();
+                let first = {
+                    let (sem, order) = (Arc::clone(&sem), Arc::clone(&order));
+                    thread::spawn(move || {
+                        to_second.send(()).unwrap();
+                        sem.acquire_blocking(1).unwrap();
+                        order.lock().unwrap().push(1);
+                        sem.release(1);
+                    })
+                };
+                let second = {
+                    let (sem, order) = (Arc::clone(&sem), Arc::clone(&order));
+                    thread::spawn(move || {
+                        from_first.recv().unwrap();
+                        to_main.send(()).unwrap();
+                        sem.acquire_blocking(1).unwrap();
+                        order.lock().unwrap().push(2);
+                        sem.release(1);
+                    })
+                };
+                from_second.recv().unwrap();
+                sem.release(1);
+                first.join().unwrap();
+                second.join().unwrap();
+                orders_clone.lock().unwrap().insert(order.lock().unwrap().clone());
+            },
+            None,
+        );
+        let orders = orders.lock().unwrap();
+        assert_eq!(*orders, HashSet::from([vec![1, 2], vec![2, 1]]));
     }
 }
 
