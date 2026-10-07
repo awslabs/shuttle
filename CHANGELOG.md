@@ -8,6 +8,8 @@
 
 * `shuttle-tokio`'s `task::try_id` no longer panics outside of a Shuttle execution or while Shuttle updates its own state, where tokio's returns `None` too.
 
+* A future task that finishes now drops its future before its thread-locals, as an aborted one already did, so that the destructors of futures it still owns, such as the one inside a `timeout` that fired, can use them. A `shuttle-tokio` `task_local!` scope held that way is now dropped with its value set, as in tokio.
+
 # 0.9.6 (October 9, 2026)
 
 * Fix a stack overflow when a global `tracing` subscriber at TRACE level calls into Shuttle while it handles an event, for example to call `current::clock()`. Every access to the execution state emits a TRACE event, so the subscriber's own access emitted another event, which called the subscriber again, and so on until the stack overflowed, and the failure report and persisted schedule were lost with the process. Accesses made while that event is being handled no longer emit it. (#382)
