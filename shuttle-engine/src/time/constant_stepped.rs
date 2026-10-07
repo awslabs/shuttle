@@ -8,7 +8,7 @@ use tracing::{trace, warn};
 
 use crate::time::WakerRegistered;
 
-use super::{Duration, Instant, TimeModel};
+use super::{Duration, Instant, TimeModel, SIMULATED_EPOCH};
 
 // Timers are ordered by deadline, and then by id, which is creation order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -21,7 +21,7 @@ struct SleepKey {
 #[derive(Clone, Debug)]
 pub struct ConstantSteppedTimeModel {
     step_size: std::time::Duration,
-    current_time_elapsed: std::time::Duration,
+    current_time: std::time::Duration,
     waiters: BTreeMap<SleepKey, Waker>,
     // Index registrations by id so resetting or cancelling a timer also removes its old deadline.
     sleep_keys: HashMap<u64, SleepKey>,
@@ -32,7 +32,7 @@ impl ConstantSteppedTimeModel {
     pub fn new(step_size: std::time::Duration) -> Self {
         Self {
             step_size,
-            current_time_elapsed: std::time::Duration::from_secs(0),
+            current_time: SIMULATED_EPOCH,
             waiters: BTreeMap::new(),
             sleep_keys: HashMap::new(),
         }
@@ -49,23 +49,23 @@ impl TimeModel for ConstantSteppedTimeModel {
     }
 
     fn step(&mut self) {
-        self.current_time_elapsed = self.current_time_elapsed.saturating_add(self.step_size);
-        trace!("time step to {:?}", self.current_time_elapsed);
+        self.current_time = self.current_time.saturating_add(self.step_size);
+        trace!("time step to {:?}", self.current_time);
     }
 
     fn new_execution(&mut self) {
-        self.current_time_elapsed = std::time::Duration::from_secs(0);
+        self.current_time = SIMULATED_EPOCH;
         self.waiters.clear();
         self.sleep_keys.clear();
     }
 
     fn instant(&self) -> Instant {
-        Instant::Simulated(self.current_time_elapsed)
+        Instant::Simulated(self.current_time)
     }
 
     fn advance_to_next_deadline(&mut self) -> bool {
         if let Some((key, _)) = self.waiters.first_key_value() {
-            self.current_time_elapsed = max(self.current_time_elapsed, key.deadline);
+            self.current_time = max(self.current_time, key.deadline);
             true
         } else {
             false
@@ -78,12 +78,12 @@ impl TimeModel for ConstantSteppedTimeModel {
         // handles the former; that is also why it is only a no-op in one of the two configurations.
         #[allow(clippy::useless_conversion)]
         let dur = std::time::Duration::from(dur);
-        self.current_time_elapsed = self.current_time_elapsed.saturating_add(dur);
+        self.current_time = self.current_time.saturating_add(dur);
     }
 
     fn register_sleep(&mut self, deadline: Instant, sleep_id: u64, waker: Waker) -> WakerRegistered {
         let deadline = deadline.unwrap_simulated();
-        if deadline <= self.current_time_elapsed {
+        if deadline <= self.current_time {
             self.unregister_sleep(sleep_id);
             return WakerRegistered::NotRegistered;
         }
@@ -108,7 +108,7 @@ impl TimeModel for ConstantSteppedTimeModel {
     fn take_expired(&mut self) -> Vec<Waker> {
         let mut expired = Vec::new();
         while let Some(entry) = self.waiters.first_entry() {
-            if entry.key().deadline > self.current_time_elapsed {
+            if entry.key().deadline > self.current_time {
                 break;
             }
             let (key, waker) = entry.remove_entry();

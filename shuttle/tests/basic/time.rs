@@ -963,3 +963,83 @@ mod overflow {
         );
     }
 }
+
+/// `Instant` behaves like `std::time::Instant` and tokio's.
+mod instant {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn is_hashable() {
+        shuttle::check_random(
+            || {
+                let start = Instant::now();
+                thread::sleep(Duration::from_millis(1));
+                let instants: HashSet<Instant> = [start, Instant::now(), start].into_iter().collect();
+                assert_eq!(instants.len(), 2);
+            },
+            1,
+        );
+    }
+
+    #[test]
+    fn subtracting_a_later_instant_saturates_to_zero() {
+        shuttle::check_random(
+            || {
+                let deadline = Instant::now() + Duration::from_millis(1);
+                thread::sleep(Duration::from_millis(2));
+                let now = Instant::now();
+                assert_eq!(deadline - now, Duration::ZERO);
+                assert_eq!(deadline.duration_since(now), Duration::ZERO);
+                assert_eq!(deadline.saturating_duration_since(now), Duration::ZERO);
+                assert_eq!(deadline.checked_duration_since(now), None);
+                assert_eq!(now - deadline, Duration::from_millis(1));
+            },
+            1,
+        );
+    }
+
+    // The "start out expired" idiom: the clock doesn't start at zero, so there is room before the start.
+    #[test]
+    fn instants_before_the_start_of_the_execution() {
+        shuttle::check_random(
+            || {
+                let ttl = Duration::from_secs(3600);
+                let last_refresh = Instant::now() - ttl;
+                assert_eq!(last_refresh.elapsed(), ttl);
+                assert_eq!(Instant::now().checked_sub(ttl), Some(last_refresh));
+            },
+            1,
+        );
+    }
+
+    #[test]
+    fn elapsed_of_a_future_instant_is_zero() {
+        shuttle::check_random(
+            || assert_eq!((Instant::now() + Duration::from_secs(1)).elapsed(), Duration::ZERO),
+            1,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow when subtracting duration from instant")]
+    fn subtracting_too_long_a_duration_panics_as_in_std() {
+        shuttle::check_random(
+            || {
+                let _ = Instant::now() - Duration::MAX;
+            },
+            1,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "overflow when adding duration to instant")]
+    fn adding_too_long_a_duration_panics_as_in_std() {
+        shuttle::check_random(
+            || {
+                let _ = Instant::now() + Duration::MAX;
+            },
+            1,
+        );
+    }
+}

@@ -419,10 +419,15 @@ pub use advanced_duration::Duration;
 #[cfg(not(feature = "advanced-time-models"))]
 pub use std::time::Duration;
 
+/// Where the clocks of Shuttle's time models start in every execution. The value is arbitrary but not zero, so that
+/// code can compute instants in the past, such as `Instant::now() - ttl`, as it can with a real clock.
+pub(crate) const SIMULATED_EPOCH: std::time::Duration = std::time::Duration::from_secs(86400 * 365);
+
 /// A Shuttle Instant
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Instant {
-    /// Deterministically simulated clock time represented by a Duration from the start of the test
+    /// Deterministically simulated clock time, represented by a Duration since an arbitrary epoch. The clock starts
+    /// at the same instant in every execution, which is not the epoch itself.
     Simulated(std::time::Duration),
 }
 
@@ -445,8 +450,8 @@ impl Instant {
         }
     }
 
-    /// Returns the amount of time elapsed from another instant to this one, or panics if that instant is later than this one.
-    /// Due to monotonicity bugs, even under correct logical ordering of the passed Instants, this method can panic.
+    /// Returns the amount of time elapsed from another instant to this one, or zero duration if that instant is later than
+    /// this one.
     pub fn saturating_duration_since(&self, earlier: Instant) -> Duration {
         {
             self.checked_duration_since(earlier).unwrap_or(Duration::ZERO)
@@ -481,8 +486,8 @@ impl Instant {
         }
     }
 
-    /// Returns the amount of time elapsed from another instant to this one, or panics if that instant is later than this one.
-    /// Due to monotonicity bugs, even under correct logical ordering of the passed Instants, this method can panic.
+    /// Returns the amount of time elapsed from another instant to this one, or zero duration if that instant is later than
+    /// this one.
     pub fn saturating_duration_since(&self, earlier: Instant) -> Duration {
         {
             self.checked_duration_since(earlier)
@@ -512,19 +517,15 @@ impl Instant {
         }
     }
 
-    /// Returns the amount of time elapsed from another instant to this one, or panics if that instant is later than this one.
-    /// Due to monotonicity bugs, even under correct logical ordering of the passed Instants, this method can panic.
+    /// Returns the amount of time elapsed from another instant to this one, or zero duration if that instant is later than
+    /// this one, as `std::time::Instant::duration_since` does.
     pub fn duration_since(&self, earlier: Instant) -> Duration {
-        self.checked_duration_since(earlier).unwrap()
+        self.saturating_duration_since(earlier)
     }
 
-    /// Returns the amount of time elapsed since this instant.
-    /// Previous Rust versions panicked when the current time was earlier than self. Currently this method returns a Duration of
-    /// zero in that case. Future versions may reintroduce the panic.
+    /// Returns the amount of time elapsed since this instant, or zero duration if this instant is in the future.
     pub fn elapsed(&self) -> Duration {
-        Instant::now()
-            .checked_duration_since(*self)
-            .unwrap_or(Duration::from_secs(0))
+        Instant::now().saturating_duration_since(*self)
     }
 
     /// An instant about 30 years from now, which stands in for deadlines too far away to represent. As in tokio, it is
@@ -559,21 +560,24 @@ impl Add<Duration> for Instant {
     type Output = Instant;
 
     fn add(self, other: Duration) -> Instant {
-        self.checked_add(other).unwrap()
+        self.checked_add(other)
+            .expect("overflow when adding duration to instant")
     }
 }
 
 impl AddAssign<Duration> for Instant {
     fn add_assign(&mut self, other: Duration) {
-        *self = self.checked_add(other).unwrap()
+        *self = *self + other
     }
 }
 
 impl Sub<Instant> for Instant {
     type Output = Duration;
 
+    /// Returns the amount of time elapsed from another instant to this one, or zero duration if that instant is later
+    /// than this one, as for `std::time::Instant`.
     fn sub(self, earlier: Instant) -> Duration {
-        self.checked_duration_since(earlier).unwrap()
+        self.duration_since(earlier)
     }
 }
 
@@ -587,7 +591,8 @@ impl Sub<Duration> for Instant {
     type Output = Instant;
 
     fn sub(self, other: Duration) -> Instant {
-        self.checked_sub(other).unwrap()
+        self.checked_sub(other)
+            .expect("overflow when subtracting duration from instant")
     }
 }
 
