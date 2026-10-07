@@ -49,6 +49,10 @@ impl TimeModel for ConstantSteppedTimeModel {
     }
 
     fn step(&mut self) {
+        // A frozen clock doesn't need a trace event at every scheduling point.
+        if self.step_size.is_zero() {
+            return;
+        }
         self.current_time = self.current_time.saturating_add(self.step_size);
         trace!("time step to {:?}", self.current_time);
     }

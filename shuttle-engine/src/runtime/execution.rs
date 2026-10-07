@@ -583,7 +583,7 @@ pub struct ExecutionState {
     // stand in for a while: see `Task::stand_in`.)
     live_tasks: Vec<TaskId>,
 
-    // Counter for unique timing resource ids (Sleeps, Timeouts and Intervals)
+    // Counter for unique timer ids, one per Sleep (each Timeout and Interval has one Sleep)
     pub(crate) timer_id_counter: u64,
     // Timers can outlive an execution, but their ids must not refer to timers in a later one.
     pub(crate) timer_context: Arc<()>,

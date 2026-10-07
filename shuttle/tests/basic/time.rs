@@ -4,6 +4,7 @@ use shuttle::time::{async_interval, async_sleep, async_timeout, Duration, Instan
 use shuttle::{future, thread, Config, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use test_log::test;
 use tracing::trace;
 
 #[test]
@@ -170,16 +171,27 @@ fn test_stepped_sleep_woken_by_thread_steps() {
     let runner = Runner::new_with_time_model(scheduler, time_model, Config::new());
 
     runner.run(|| {
+        let start = Instant::now();
+        let woken_at = Arc::new(std::sync::Mutex::new(None));
         let sleep_completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let sleep_completed_clone = sleep_completed.clone();
+        let woken_at_clone = woken_at.clone();
 
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(100));
+            *woken_at_clone.lock().unwrap() = Some(Instant::now());
             sleep_completed_clone.store(true, Ordering::SeqCst);
         });
 
-        // Take many steps to advance time and wake the sleeping thread
-        assert!(spin_switch_and_get_any(|| sleep_completed.load(Ordering::SeqCst)));
+        // Take many steps to advance time and wake the sleeping thread. Only this thread takes steps while the other
+        // one sleeps, so it takes at least 10 of them, at 10ms each.
+        let yields = std::cell::Cell::new(0);
+        assert!(spin_switch_and_get_any(|| {
+            yields.set(yields.get() + 1);
+            sleep_completed.load(Ordering::SeqCst)
+        }));
+        assert!(yields.get() >= 10, "woke after {} yields", yields.get());
+        assert!(woken_at.lock().unwrap().unwrap() - start >= Duration::from_millis(100));
     });
 }
 
@@ -190,6 +202,7 @@ mod regressions {
     use std::cell::Cell;
     use std::future::Future;
     use std::task::{Context, Poll, Wake, Waker};
+    use test_log::test;
 
     /// Moves the clock to the next deadline and wakes the timers that expire there, as the scheduler does
     /// when no task is runnable. Returns false if no timer is registered.
@@ -553,6 +566,7 @@ mod wakers {
     use std::pin::{pin, Pin};
     use std::sync::Mutex as StdMutex;
     use std::task::{Context, Poll, Wake, Waker};
+    use test_log::test;
 
     /// The `Wake` example from the std docs, with Shuttle's threads. `Thread::unpark` is a scheduling point.
     struct ThreadWaker(thread::Thread);
@@ -718,6 +732,7 @@ mod advance {
     use std::future::Future;
     use std::sync::Mutex as StdMutex;
     use std::task::Waker;
+    use test_log::test;
 
     // Other tasks can run between the caller's previous operation and the clock jump, as `advance` has its
     // scheduling point first.
@@ -827,6 +842,7 @@ mod advance {
 mod teardown {
     use super::*;
     use futures::FutureExt;
+    use test_log::test;
 
     struct SleepOnDrop;
 
@@ -894,6 +910,7 @@ mod overflow {
     use super::*;
     use shuttle::sync::Mutex;
     use shuttle::MaxSteps;
+    use test_log::test;
 
     fn thirty_years() -> Duration {
         Duration::from_secs(86400 * 365 * 30)
@@ -977,6 +994,7 @@ mod overflow {
 mod instant {
     use super::*;
     use std::collections::HashSet;
+    use test_log::test;
 
     #[test]
     fn is_hashable() {
@@ -1057,6 +1075,7 @@ mod instant {
 mod interval {
     use super::*;
     use shuttle::time::MissedTickBehavior;
+    use test_log::test;
 
     /// The instants of the first `n` ticks after a tick due at 10ms is missed until 35ms, relative to the start.
     fn ticks_after_missing_until_35ms(behavior: MissedTickBehavior, n: usize) -> Vec<Duration> {
@@ -1123,6 +1142,7 @@ mod interval {
 /// `Runner<S>` has one type parameter, whatever the time model.
 mod runner {
     use super::*;
+    use test_log::test;
 
     struct Harness {
         runner: Runner<RandomScheduler>,
@@ -1154,6 +1174,7 @@ mod replay {
     use std::panic;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
+    use test_log::test;
 
     fn time_model() -> ConstantSteppedTimeModel {
         ConstantSteppedTimeModel::new(std::time::Duration::from_millis(10))
@@ -1221,6 +1242,68 @@ mod replay {
         assert_eq!(
             panic_message(replayed.expect_err("replay should fail")),
             "the sleeper woke up first"
+        );
+    }
+}
+
+/// The default time model, `FrozenTimeModel`: the clock only moves when no task can run, or on `advance`.
+mod frozen {
+    use super::*;
+    use test_log::test;
+
+    #[test]
+    fn sleep_moves_the_clock_by_exactly_its_duration() {
+        shuttle::check_random(
+            || {
+                let start = Instant::now();
+                thread::sleep(Duration::from_secs(1));
+                assert_eq!(start.elapsed(), Duration::from_secs(1));
+            },
+            10,
+        );
+    }
+
+    #[test]
+    fn the_clock_does_not_move_at_scheduling_points() {
+        shuttle::check_random(
+            || {
+                let start = Instant::now();
+                let child = thread::spawn(|| {
+                    for _ in 0..10 {
+                        thread::yield_now();
+                    }
+                });
+                for _ in 0..10 {
+                    thread::yield_now();
+                }
+                child.join().unwrap();
+                assert_eq!(Instant::now(), start);
+            },
+            10,
+        );
+    }
+
+    #[test]
+    fn sleepers_wake_in_deadline_order() {
+        shuttle::check_dfs(
+            || {
+                let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let sleepers: Vec<_> = [30, 10, 20]
+                    .into_iter()
+                    .map(|ms| {
+                        let order = order.clone();
+                        thread::spawn(move || {
+                            thread::sleep(Duration::from_millis(ms));
+                            order.lock().unwrap().push(ms);
+                        })
+                    })
+                    .collect();
+                for sleeper in sleepers {
+                    sleeper.join().unwrap();
+                }
+                assert_eq!(*order.lock().unwrap(), [10, 20, 30]);
+            },
+            None,
         );
     }
 }

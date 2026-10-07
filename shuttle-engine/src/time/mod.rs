@@ -874,6 +874,7 @@ where
 /// Timeout a future
 #[pin_project]
 #[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Timeout<F>
 where
     F: Future,
