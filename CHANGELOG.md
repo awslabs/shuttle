@@ -1,3 +1,7 @@
+# Unreleased
+
+* Fix a stack overflow when a global `tracing` subscriber at TRACE level calls into Shuttle while it handles an event, for example to call `current::clock()`. Every access to the execution state emits a TRACE event, so the subscriber's own access emitted another event, which called the subscriber again, and so on until the stack overflowed, and the failure report and persisted schedule were lost with the process. Accesses made while that event is being handled no longer emit it.
+
 # 0.9.5 (September 30, 2026)
 
 * Fix a process abort when a `Drop` handler touches a modelled `Mutex`, `RwLock` or semaphore outside a running task. Every `BatchSemaphore` operation looks up the running task's vector clock, and `current::clock()` panicked when there was no running task, when `ExecutionState` was already borrowed, or outside a Shuttle execution. The first case is reached whenever `ExecutionState::cleanup` force-unwinds a task that was still parked when the execution ended, for example after an ordinary test failure. The panic came from a destructor, so the process aborted, and the failure report and persisted schedule were lost with it. `current::clock()` now returns an empty clock in all three cases: an operation that belongs to no task has no causality to record. (#357)

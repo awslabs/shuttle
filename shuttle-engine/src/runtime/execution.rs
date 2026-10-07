@@ -12,7 +12,7 @@ use crate::{backtrace_enabled, Config, MaxSteps, UNGRACEFUL_SHUTDOWN_CONFIG};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
@@ -29,6 +29,14 @@ use super::task::Tag;
 // need access to it (to spawn new tasks, interrogate task status, etc).
 scoped_thread_local! {
     static EXECUTION_STATE: RefCell<ExecutionState>
+}
+
+thread_local! {
+    // Whether this thread is emitting the `ExecutionState::try_with` event. A `tracing` subscriber
+    // may access the state while it handles an event (to call `current::clock()`, say), and that
+    // access must not emit the event again: `tracing` only refuses re-entrant calls for scoped
+    // subscribers, and with a global one this would recurse until the stack overflows.
+    static TRACING_TRY_WITH: Cell<bool> = const { Cell::new(false) };
 }
 
 // The reason this is separated out from `ExecutionState` is to ensure that we're always able to persist the schedule.
@@ -500,10 +508,20 @@ impl ExecutionState {
     where
         F: FnOnce(&mut ExecutionState) -> T,
     {
-        trace!(
-            "ExecutionState::try_with called from {:?}",
-            std::panic::Location::caller()
-        );
+        // Check that the event is enabled first, so that accesses don't pay for the flag when it isn't.
+        if tracing::enabled!(tracing::Level::TRACE) && !TRACING_TRY_WITH.with(|emitting| emitting.replace(true)) {
+            struct Reset;
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    TRACING_TRY_WITH.with(|emitting| emitting.set(false));
+                }
+            }
+            let _reset = Reset;
+            trace!(
+                "ExecutionState::try_with called from {:?}",
+                std::panic::Location::caller()
+            );
+        }
         if EXECUTION_STATE.is_set() {
             EXECUTION_STATE.with(|cell| {
                 if let Ok(mut state) = cell.try_borrow_mut() {
