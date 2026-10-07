@@ -302,13 +302,11 @@ impl<T: 'static> LocalKey<T> {
         // `try_get_current_task` is `None` in exactly the cases the fallback slot is for, and does
         // not panic in any of them. Checking it first also keeps us from calling into
         // `shuttle::thread::LocalKey` then, which would panic.
-        let res = if shuttle::current::try_get_current_task().is_some() {
-            self.task_slot.try_with(f).ok()
+        if shuttle::current::try_get_current_task().is_some() {
+            self.task_slot.try_with(f).map_err(|_| AccessError { _private: () })
         } else {
-            self.fallback_slot.try_with(f).ok()
-        };
-
-        res.ok_or(AccessError { _private: () })
+            self.fallback_slot.try_with(f).map_err(|_| AccessError { _private: () })
+        }
     }
 
     /// Accesses the current task-local and runs the provided closure.
