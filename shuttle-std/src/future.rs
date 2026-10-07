@@ -346,6 +346,10 @@ where
                     return Poll::Ready(());
                 }
 
+                // As above, drop the inner future first so its destructors can still access TLS: a
+                // future that is ready can still own futures that are not, such as the one inside a
+                // `timeout` that fired.
+                this.future.take();
                 this.finish(Ok(result));
                 Poll::Ready(())
             }

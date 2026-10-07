@@ -607,6 +607,39 @@ mod api {
         );
     }
 
+    /// A task that finishes while its future still holds a scope that has not finished, as one
+    /// does when a `time::timeout` around the scope fires, drops that scope's future with the value
+    /// set, as tokio does.
+    #[test]
+    fn scope_held_by_a_finished_task_is_dropped_inside_the_scope() {
+        task_local! {
+            static KEY: u32;
+        }
+        static SEEN: std::sync::Mutex<Vec<Option<u32>>> = std::sync::Mutex::new(Vec::new());
+
+        check_dfs(
+            || {
+                SEEN.lock().unwrap().clear();
+                let mut scope = Box::pin(KEY.scope(
+                    42,
+                    RecordOnDrop {
+                        key: &KEY,
+                        seen: &SEEN,
+                        on_poll: OnPoll::Pending,
+                    },
+                ));
+                // Polls the scope once, and is then ready while it still holds the scope.
+                let holds_scope = std::future::poll_fn(move |cx| {
+                    assert!(scope.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                });
+                block_on(task::spawn(holds_scope)).unwrap();
+                assert_eq!(*SEEN.lock().unwrap(), [Some(42)]);
+            },
+            None,
+        );
+    }
+
     /// A scope that panics restores the value it shadowed, so that the panic can be caught.
     #[test]
     fn panicking_scope_restores_the_outer_value() {

@@ -8,6 +8,8 @@
 
 * `shuttle-tokio`'s `task::try_id` no longer panics outside of a Shuttle execution or while Shuttle updates its own state, where tokio's returns `None` too.
 
+* A future task that finishes now drops its future before its thread-locals, as an aborted one already did, so that the destructors of futures it still owns, such as the one inside a `timeout` that fired, can use them. A `shuttle-tokio` `task_local!` scope held that way is now dropped with its value set, as in tokio.
+
 # tokio wrappers, `shuttle-tokio-impl-inner` 0.1.4 (October 12, 2026)
 
 Published `shuttle-tokio-impl-inner` 0.1.4. Like 0.1.3, it requires `shuttle` 0.9.2 or later and `shuttle-engine` `^0.1.4`, and the already-published `shuttle-tokio-impl` 0.1.1 and `shuttle-tokio` 1.0.0 pick it up without being republished. The `shuttle` crate is unchanged at 0.9.6.
