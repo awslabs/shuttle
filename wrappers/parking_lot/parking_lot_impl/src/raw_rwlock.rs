@@ -27,13 +27,17 @@
 //! nothing, and after a release, the scheduler can grant any request that the free permits let
 //! in, in any order.
 //!
-//! The semaphore is unfair because `parking_lot`'s plain unlock is: it wakes the parked threads,
-//! and any thread, including the one that unlocked, can take the lock before they run. The
-//! fairness that `parking_lot` documents comes from elsewhere, and each part of it has its own
-//! model: a writer that waits stops new readers (`WRITER_BIT`, the reservation below), and a fair
-//! unlock hands the lock over (see below). Eventual fairness makes some plain unlocks fair, on a
-//! timer. That needs no model of its own: after a plain release, the scheduler can let the woken
-//! tasks take the lock first.
+//! The semaphore is unfair because `parking_lot`'s plain unlock is. It wakes the parked threads in
+//! the order in which they parked, but it leaves the lock free, so a thread that is not parked,
+//! including the one that unlocked, can take the lock before they run. A woken thread that finds
+//! the lock taken parks again, behind the threads that parked after it, so those can get the lock
+//! before it (`parking_lot_lets_a_later_writer_overtake_a_parked_one` in
+//! `tests/rwlock_reference_model.rs` shows this on the real `parking_lot`). The fairness that
+//! `parking_lot` documents comes from elsewhere, and each part of it has its own model: a writer
+//! that waits stops new readers (`WRITER_BIT`, the reservation below), and a fair unlock hands the
+//! lock over (see below). Eventual fairness makes some plain unlocks fair, on a timer. That needs
+//! no model of its own: after a plain release, the scheduler can let the woken tasks take the lock
+//! first.
 //!
 //! A permit count alone cannot express `WRITER_BIT` while a writer waits for the readers to
 //! leave. A writer and an upgrade therefore *reserve* the semaphore (see
@@ -203,6 +207,7 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
     /// while a `write` or an `upgrade` waits for the readers to leave (the reservation).
     fn is_locked_exclusive(&self) -> bool {
         match self.sem.load_permits() {
+            // A closed lock, as in `is_locked`.
             None => true,
             // `load_permits` counts the permits that a request could take, which is none in two
             // cases: a writer holds every permit, or a reservation keeps the free permits for the
