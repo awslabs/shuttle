@@ -10,6 +10,8 @@
 
 * A future task that finishes now drops its future before its thread-locals, as an aborted one already did, so that the destructors of futures it still owns, such as the one inside a `timeout` that fired, can use them. A `shuttle-tokio` `task_local!` scope held that way is now dropped with its value set, as in tokio.
 
+* Publish `shuttle-tokio-impl-inner` 0.1.3, which has the new `task_local!`, and `shuttle-tokio-impl` 0.1.2, which requires it. `shuttle-tokio-impl` 0.1.1 re-exports tokio's `task_local!` over the glob re-export of inner, so it would keep the old macro even with inner 0.1.3.
+
 # tokio wrappers, `shuttle-tokio-impl-inner` 0.1.4 (October 12, 2026)
 
 Published `shuttle-tokio-impl-inner` 0.1.4. Like 0.1.3, it requires `shuttle` 0.9.2 or later and `shuttle-engine` `^0.1.4`, and the already-published `shuttle-tokio-impl` 0.1.1 and `shuttle-tokio` 1.0.0 pick it up without being republished. The `shuttle` crate is unchanged at 0.9.6.
