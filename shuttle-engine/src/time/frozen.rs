@@ -57,4 +57,8 @@ impl TimeModel for FrozenTimeModel {
     fn register_sleep(&mut self, deadline: Instant, sleep_id: u64, waker: Waker) -> WakerRegistered {
         self.inner.register_sleep(deadline, sleep_id, waker)
     }
+
+    fn unregister_sleep(&mut self, sleep_id: u64) {
+        self.inner.unregister_sleep(sleep_id);
+    }
 }

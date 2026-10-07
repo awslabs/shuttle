@@ -1,6 +1,6 @@
 use std::{
-    cmp::{max, Reverse},
-    collections::{BinaryHeap, HashMap},
+    cmp::max,
+    collections::{BTreeMap, HashMap},
     task::Waker,
 };
 
@@ -10,16 +10,22 @@ use crate::{current::TaskId, runtime::execution::ExecutionState, time::WakerRegi
 
 use super::{Duration, Instant, TimeModel};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct SleepKey {
+    deadline: std::time::Duration,
+    task_id: TaskId,
+    sleep_id: u64,
+}
+
 /// A time model where time advances by a constant amount for each scheduling step
 #[derive(Clone, Debug)]
 pub struct ConstantSteppedTimeModel {
     step_size: std::time::Duration,
     current_time_elapsed: std::time::Duration,
-    waiters: BinaryHeap<Reverse<(std::time::Duration, TaskId, u64)>>,
-    wakers: HashMap<u64, Waker>,
+    waiters: BTreeMap<SleepKey, Waker>,
+    // Index registrations by id so resetting or cancelling a timer also removes its old deadline.
+    sleep_keys: HashMap<u64, SleepKey>,
 }
-
-unsafe impl Send for ConstantSteppedTimeModel {}
 
 impl ConstantSteppedTimeModel {
     /// Create a ConstantSteppedTimeModel
@@ -27,26 +33,22 @@ impl ConstantSteppedTimeModel {
         Self {
             step_size,
             current_time_elapsed: std::time::Duration::from_secs(0),
-            waiters: BinaryHeap::new(),
-            wakers: HashMap::new(),
+            waiters: BTreeMap::new(),
+            sleep_keys: HashMap::new(),
         }
     }
 
     // Unblocks expired. Returns `true` if any were woken.
     fn unblock_expired(&mut self) -> bool {
         let mut out = false;
-        while let Some(waker_key) = self.waiters.peek().and_then(|Reverse((t, _, sleep_id))| {
-            if *t <= self.current_time_elapsed {
-                Some(*sleep_id)
-            } else {
-                None
+        while let Some((&key, _)) = self.waiters.first_key_value() {
+            if key.deadline > self.current_time_elapsed {
+                break;
             }
-        }) {
-            _ = self.waiters.pop();
-            if let Some(waker) = self.wakers.remove(&waker_key) {
-                waker.wake();
-            }
-            out = true
+            let (_, waker) = self.waiters.pop_first().unwrap();
+            self.sleep_keys.remove(&key.sleep_id);
+            waker.wake();
+            out = true;
         }
         out
     }
@@ -70,7 +72,7 @@ impl TimeModel for ConstantSteppedTimeModel {
     fn new_execution(&mut self) {
         self.current_time_elapsed = std::time::Duration::from_secs(0);
         self.waiters.clear();
-        self.wakers.clear();
+        self.sleep_keys.clear();
     }
 
     fn instant(&self) -> Instant {
@@ -78,8 +80,8 @@ impl TimeModel for ConstantSteppedTimeModel {
     }
 
     fn wake_next(&mut self) -> bool {
-        if let Some(Reverse((time, _, _))) = self.waiters.peek() {
-            self.current_time_elapsed = max(self.current_time_elapsed, *time);
+        if let Some((key, _)) = self.waiters.first_key_value() {
+            self.current_time_elapsed = max(self.current_time_elapsed, key.deadline);
             self.unblock_expired();
             true
         } else {
@@ -99,14 +101,28 @@ impl TimeModel for ConstantSteppedTimeModel {
     fn register_sleep(&mut self, deadline: Instant, sleep_id: u64, waker: Waker) -> WakerRegistered {
         let deadline = deadline.unwrap_simulated();
         if deadline <= self.current_time_elapsed {
+            self.unregister_sleep(sleep_id);
             return WakerRegistered::NotRegistered;
         }
 
-        let task_id = ExecutionState::with(|s| s.current().id());
-        let item = (deadline, task_id, sleep_id);
-        self.waiters.push(Reverse(item));
-        self.wakers.insert(sleep_id, waker);
+        let key = SleepKey {
+            deadline,
+            task_id: ExecutionState::with(|s| s.current().id()),
+            sleep_id,
+        };
+        if let Some(previous) = self.sleep_keys.insert(sleep_id, key) {
+            if previous != key {
+                self.waiters.remove(&previous);
+            }
+        }
+        self.waiters.insert(key, waker);
 
         WakerRegistered::Registered
+    }
+
+    fn unregister_sleep(&mut self, sleep_id: u64) {
+        if let Some(key) = self.sleep_keys.remove(&sleep_id) {
+            self.waiters.remove(&key);
+        }
     }
 }

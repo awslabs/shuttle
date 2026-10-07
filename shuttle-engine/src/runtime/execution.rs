@@ -554,6 +554,8 @@ pub struct ExecutionState {
 
     // Counter for unique timing resource ids (Sleeps, Timeouts and Intervals)
     pub(crate) timer_id_counter: u64,
+    // Timers can outlive an execution, but their ids must not refer to timers in a later one.
+    pub(crate) timer_context: Arc<()>,
     pub(crate) time_model: Rc<RefCell<dyn TimeModel>>,
 }
 
@@ -852,6 +854,7 @@ impl ExecutionState {
             live_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
             time_model,
             timer_id_counter: 0,
+            timer_context: Arc::new(()),
         }
     }
 

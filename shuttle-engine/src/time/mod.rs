@@ -8,7 +8,7 @@ use std::future::Future;
 use std::ops::Mul;
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use std::pin::Pin;
 
@@ -28,13 +28,6 @@ pub mod frozen;
 /// Returns the current count of created timeout/sleep futures
 pub fn timer_count() -> u64 {
     ExecutionState::with(|state| state.timer_id_counter)
-}
-
-fn increment_timer_counter() -> u64 {
-    ExecutionState::with(|state| {
-        state.timer_id_counter += 1;
-        state.timer_id_counter
-    })
 }
 
 /// A distribution of times which can be sampled
@@ -78,7 +71,16 @@ pub trait TimeModel: std::fmt::Debug {
 
     /// Callback for registering a sleep/timeout on the current task. It is up to the TimeModel
     /// implementation to determine when to wake the sleeping task.
+    ///
+    /// Re-registering an id replaces its deadline and waker. If the deadline has elapsed, any
+    /// existing registration for that id must be removed before returning `NotRegistered`.
     fn register_sleep(&mut self, deadline: Instant, id: u64, waker: Waker) -> WakerRegistered;
+
+    /// Removes a timer and releases its waker, if it is registered.
+    ///
+    /// This is also called when timers are dropped during execution cleanup, so implementations
+    /// must not require a current task. Removing an id that is no longer registered is a no-op.
+    fn unregister_sleep(&mut self, id: u64);
 }
 
 /// Provides a reference to the current TimeModel for this execution.
@@ -575,19 +577,23 @@ pub fn async_sleep(dur: Duration) -> Sleep {
 /// Returns a future which sleeps until the deadline is reached
 /// Behavior of this function depends on the TimeModel provided to Shuttle
 pub fn async_sleep_until(deadline: Instant) -> Sleep {
-    let id = increment_timer_counter();
-    Sleep { id, deadline }
+    let (id, execution) = ExecutionState::with(|state| {
+        state.timer_id_counter += 1;
+        (state.timer_id_counter, Arc::clone(&state.timer_context))
+    });
+    Sleep {
+        id,
+        execution,
+        deadline,
+        registered: false,
+        waker: None,
+    }
 }
 
 /// Returns a struct which sleeps repeatedly at a fixed time intervals (a tokio::time::Interval)
 /// Behavior of this function depends on the TimeModel provided to Shuttle
 pub fn async_interval(dur: Duration) -> Interval {
-    Interval {
-        start: None,
-        ticks: 0,
-        current_interval: None,
-        period: dur,
-    }
+    async_interval_at(Instant::now(), dur)
 }
 
 /// Returns a struct which sleeps repeatedly at a fixed time intervals (a tokio::time::Interval)
@@ -595,30 +601,37 @@ pub fn async_interval(dur: Duration) -> Interval {
 /// Behavior of this function depends on the TimeModel provided to Shuttle
 pub fn async_interval_at(start: Instant, period: Duration) -> Interval {
     Interval {
-        start: Some(start),
-        ticks: 0,
-        current_interval: None,
         period,
+        sleep: Box::pin(async_sleep_until(start)),
     }
 }
 
 /// A future which returns Poll::Pending until its deadline
-#[pin_project]
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Sleep {
     id: u64,
+    execution: Arc<()>,
     deadline: Instant,
+    registered: bool,
+    // Keep the latest waker so reset can rearm the timer without another poll, even after it elapsed.
+    waker: Option<Waker>,
 }
 
 impl Future for Sleep {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match get_time_model()
-            .borrow_mut()
-            .register_sleep(self.deadline, self.id, cx.waker().clone())
-        {
+        let this = self.get_mut();
+        let result = this.register(cx.waker().clone());
+        // Replace the saved waker after releasing the time-model borrow. In particular, dropping
+        // the old waker's last reference may run user-defined destructors.
+        if let Some(waker) = this.waker.as_mut() {
+            waker.clone_from(cx.waker());
+        } else {
+            this.waker = Some(cx.waker().clone());
+        }
+        match result {
             WakerRegistered::Registered => Poll::Pending,
             WakerRegistered::NotRegistered => Poll::Ready(()),
         }
@@ -635,24 +648,61 @@ impl Sleep {
     ///
     /// A `Sleep` instance is elapsed when the requested duration has elapsed.
     pub fn is_elapsed(&self) -> bool {
-        self.deadline.checked_duration_since(Instant::now()).is_none()
+        Instant::now() >= self.deadline
     }
 
     /// Resets the `Sleep` instance to a new deadline.
     pub fn reset(self: Pin<&mut Self>, deadline: Instant) {
-        let me = self.project();
-        *me.deadline = deadline;
+        let this = self.get_mut();
+        this.deadline = deadline;
+        if let Some(waker) = this.waker.clone() {
+            if matches!(this.register(waker), WakerRegistered::NotRegistered) {
+                // A reset to an elapsed deadline must wake a previously pending waiter. Do this
+                // after releasing the time-model borrow, as the waker may access the runtime.
+                this.waker.as_ref().unwrap().wake_by_ref();
+            }
+        }
+    }
+
+    fn register(&mut self, waker: Waker) -> WakerRegistered {
+        let time_model = ExecutionState::with(|state| {
+            assert!(
+                Arc::ptr_eq(&self.execution, &state.timer_context),
+                "timer used outside the execution that created it"
+            );
+            Rc::clone(&state.time_model)
+        });
+        let result = time_model.borrow_mut().register_sleep(self.deadline, self.id, waker);
+        self.registered = matches!(&result, WakerRegistered::Registered);
+        result
+    }
+
+    fn cancel(&mut self) {
+        if std::mem::take(&mut self.registered) {
+            // A timer can outlive its execution. Never remove a later execution's registration
+            // just because it reused the same timer id.
+            if let Ok(Some(time_model)) = ExecutionState::try_with(|state| {
+                Arc::ptr_eq(&self.execution, &state.timer_context).then(|| Rc::clone(&state.time_model))
+            }) {
+                time_model.borrow_mut().unregister_sleep(self.id);
+            }
+        }
+        // Release the saved waker outside the time-model borrow, just as in poll.
+        self.waker = None;
     }
 }
 
-/// Timeout a future
-#[pin_project]
+impl Drop for Sleep {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
+/// A timer that ticks repeatedly at a fixed period.
 #[derive(Debug)]
 pub struct Interval {
-    start: Option<Instant>,
-    ticks: u32,
     period: Duration,
-    current_interval: Option<Pin<Box<Sleep>>>,
+    sleep: Pin<Box<Sleep>>,
 }
 
 /// Missed tick behavior for Interval
@@ -669,10 +719,7 @@ pub enum MissedTickBehavior {
 impl Interval {
     /// tick
     pub async fn tick(&mut self) -> Instant {
-        let deadline = self.next_deadline();
-        async_sleep_until(deadline).await;
-        self.ticks += 1;
-        deadline
+        std::future::poll_fn(|cx| self.poll_tick(cx)).await
     }
 
     /// period for an Interval
@@ -680,41 +727,21 @@ impl Interval {
         self.period
     }
 
-    fn next_deadline(&mut self) -> Instant {
-        if let Some(start) = self.start {
-            let mut total_duration = Duration::ZERO;
-            total_duration += self.period * self.ticks;
-            start.checked_add(total_duration).unwrap()
-        } else {
-            let now = Instant::now();
-            self.start = Some(now);
-            now
-        }
-    }
-
     /// poll tick
     pub fn poll_tick(&mut self, cx: &mut Context<'_>) -> Poll<Instant> {
-        let deadline = self.next_deadline();
-        if self.current_interval.is_none() {
-            self.current_interval = Some(Box::pin(async_sleep_until(deadline)));
-        }
-
-        match self.current_interval.as_mut().unwrap().as_mut().poll(cx) {
-            Poll::Ready(_) => {
-                self.current_interval = None;
+        let deadline = self.sleep.deadline();
+        match self.sleep.as_mut().poll(cx) {
+            Poll::Ready(()) => {
+                self.sleep.as_mut().reset(deadline + self.period);
                 Poll::Ready(deadline)
             }
             Poll::Pending => Poll::Pending,
         }
     }
 
-    /// reset
+    /// Resets the interval to tick one period after the current time.
     pub fn reset(&mut self) {
-        self.start = None;
-        self.ticks = 0;
-        if let Some(x) = self.current_interval.as_mut() {
-            x.as_mut().reset(Instant::now());
-        }
+        self.sleep.as_mut().reset(Instant::now() + self.period);
     }
 
     /// Unimplemented
@@ -734,11 +761,9 @@ pub fn async_timeout<F>(d: Duration, f: F) -> Timeout<F>
 where
     F: Future,
 {
-    let id = increment_timer_counter();
     Timeout {
-        id,
-        deadline: Instant::now().saturating_add(d),
         future: f,
+        sleep: async_sleep(d),
     }
 }
 
@@ -749,10 +774,10 @@ pub struct Timeout<F>
 where
     F: Future,
 {
-    id: u64,
-    deadline: Instant,
     #[pin]
     future: F,
+    #[pin]
+    sleep: Sleep,
 }
 
 /// Elapsed time error variant
@@ -780,25 +805,19 @@ where
     type Output = std::result::Result<F::Output, Elapsed>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let now = Instant::now();
-        let this = self.project();
-
-        if *this.deadline <= now {
-            return Poll::Ready(Err(Elapsed(())));
-        }
-
-        let time_model = get_time_model();
+        let mut this = self.project();
         match this.future.poll(cx) {
-            Poll::Pending => {
-                match time_model
-                    .borrow_mut()
-                    .register_sleep(*this.deadline, *this.id, cx.waker().clone())
-                {
-                    WakerRegistered::NotRegistered => Poll::Ready(Err(Elapsed(()))),
-                    WakerRegistered::Registered => Poll::Pending,
-                }
+            Poll::Ready(value) => {
+                this.sleep.get_mut().cancel();
+                Poll::Ready(Ok(value))
             }
-            Poll::Ready(x) => Poll::Ready(Ok(x)),
+            Poll::Pending => match this.sleep.as_mut().poll(cx) {
+                Poll::Ready(()) => {
+                    this.sleep.get_mut().cancel();
+                    Poll::Ready(Err(Elapsed(())))
+                }
+                Poll::Pending => Poll::Pending,
+            },
         }
     }
 }
