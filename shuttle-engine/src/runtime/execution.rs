@@ -8,6 +8,7 @@ use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::sync_types::{ResourceSignature, ResourceType};
 use crate::thread_support::thread_fn;
+use crate::time::{get_time_model, TimeModel};
 use crate::{backtrace_enabled, Config, MaxSteps, UNGRACEFUL_SHUTDOWN_CONFIG};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
@@ -92,6 +93,7 @@ thread_local! {
 /// static variable, but clients get access to it by calling `ExecutionState::with`.
 pub struct Execution {
     scheduler: Rc<RefCell<dyn Scheduler>>,
+    time_model: Rc<RefCell<dyn TimeModel>>,
     initial_schedule: Schedule,
 }
 
@@ -104,9 +106,14 @@ impl std::fmt::Debug for Execution {
 impl Execution {
     /// Construct a new execution that will use the given scheduler. The execution should then be
     /// invoked via its `run` method, which takes as input the closure for task 0.
-    pub fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+    pub fn new(
+        scheduler: Rc<RefCell<dyn Scheduler>>,
+        initial_schedule: Schedule,
+        time_model: Rc<RefCell<dyn TimeModel>>,
+    ) -> Self {
         Self {
             scheduler,
+            time_model,
             initial_schedule,
         }
     }
@@ -137,6 +144,39 @@ impl StepError {
     }
 }
 
+/// While there are no runnable tasks and tasks are able to be woken by the time model, continually wakes tasks.
+/// The TimeModel's `wake_next` method is called in a loop in case there are stale wakers which do not actually
+/// result in a newly runnable task when woken. Requires access to the ExecutionState to obtain a reference to the
+/// time model.
+fn wake_sleepers_until_runnable() {
+    let time_model = get_time_model();
+    while !ExecutionState::with(|state| state.any_runnable()) && time_model.borrow_mut().wake_next() {}
+}
+
+/// Runs the scheduler, unless `maybe_yield` already has. If it found no runnable task, the time model gets to wake
+/// sleeping tasks, and the scheduler runs again if that made any of them runnable. Waking a task borrows the
+/// `ExecutionState`, so this can't happen inside `ExecutionState::schedule`.
+fn schedule_waking_sleepers() -> Result<(), StepError> {
+    let nothing_runnable = ExecutionState::with(|state| {
+        state.schedule()?;
+        Ok(state.next_task == ScheduledTask::Finished && !state.any_runnable())
+    })?;
+    if !nothing_runnable {
+        return Ok(());
+    }
+
+    wake_sleepers_until_runnable();
+    ExecutionState::with(|state| {
+        if !state.any_runnable() {
+            return Ok(());
+        }
+        // Take back the decision to finish the execution, which counted as a context switch.
+        state.next_task = ScheduledTask::None;
+        state.context_switches -= 1;
+        state.schedule()
+    })
+}
+
 impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
@@ -145,7 +185,11 @@ impl Execution {
     where
         F: FnOnce() + Send + 'static,
     {
-        let state = RefCell::new(ExecutionState::new(config.clone(), Rc::clone(&self.scheduler)));
+        let state = RefCell::new(ExecutionState::new(
+            config.clone(),
+            Rc::clone(&self.scheduler),
+            Rc::clone(&self.time_model),
+        ));
 
         init_panic_hook(config.clone());
         CurrentSchedule::init(self.initial_schedule.clone());
@@ -287,6 +331,7 @@ impl Execution {
     #[inline]
     fn run_to_completion(&mut self, immediately_return_on_panic: bool) -> Result<(), StepError> {
         loop {
+            schedule_waking_sleepers()?;
             let next_step: Option<Rc<RefCell<PooledContinuation>>> = ExecutionState::with(|state| {
                 state.schedule()?;
                 state.advance_to_next_task();
@@ -403,6 +448,10 @@ pub struct ExecutionState {
     // `Finished` is a terminal state: it is only ever set by `Task::finish`, and `block`, `sleep`,
     // and `unblock` all assert that they are never applied to a finished task.
     live_tasks: Vec<TaskId>,
+
+    // Counter for unique timing resource ids (Sleeps, Timeouts and Intervals)
+    pub(crate) timer_id_counter: u64,
+    pub(crate) time_model: Rc<RefCell<dyn TimeModel>>,
 }
 
 impl std::fmt::Debug for ExecutionState {
@@ -442,7 +491,7 @@ pub enum ExecutionStateBorrowError {
 }
 
 impl ExecutionState {
-    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>) -> Self {
+    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, time_model: Rc<RefCell<dyn TimeModel>>) -> Self {
         let (top_level_dispatch, top_level_dispatch_global_ptr) = tracing::dispatcher::get_default(|dispatch| {
             // While no thread has a scoped default, `get_default` hands out the global default, and
             // nested calls get it too rather than `Dispatch::none()`.
@@ -467,6 +516,8 @@ impl ExecutionState {
             top_level_dispatch_global_ptr,
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
             live_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
+            time_model,
+            timer_id_counter: 0,
         }
     }
 
@@ -747,6 +798,8 @@ impl ExecutionState {
         TASK_ID_TO_TAGS.with(|cell| cell.borrow_mut().clear());
         LABELS.with(|cell| cell.borrow_mut().clear());
 
+        Self::with(|s| s.timer_id_counter = 0);
+
         #[cfg(debug_assertions)]
         Self::with(|state| state.has_cleaned_up = true);
 
@@ -898,6 +951,11 @@ impl ExecutionState {
     #[track_caller]
     pub fn new_resource_signature(resource_type: ResourceType) -> ResourceSignature {
         ExecutionState::with(|s| s.current_mut().signature.new_resource(resource_type))
+    }
+
+    /// Whether any task is runnable. Only live tasks are checked, as a finished task never runs again.
+    fn any_runnable(&self) -> bool {
+        self.live_tasks.iter().any(|id| self.tasks[id.0].runnable())
     }
 
     pub fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
