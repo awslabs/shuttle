@@ -158,8 +158,9 @@ fn events_of_each_operation() {
     assert_balanced(&events);
 }
 
-/// A read that waits behind a writer reports `AcquireBlocked`, and then `AcquireUnblocked` from the
-/// waiting task itself.
+/// A read that waits behind a writer reports `AcquireBlocked`. The writer's unlock hands it the lock
+/// (every unlock is fair, see the `raw_rwlock` module docs), so `AcquireUnblocked` comes from the
+/// unlocking task, right after its `Release`.
 #[test]
 fn events_of_a_read_that_waits() {
     let events = lock_events(|| {
@@ -181,7 +182,7 @@ fn events_of_a_read_that_waits() {
         event(0, "AcquireFast", &[n(EXCLUSIVE)]),
         event(1, "AcquireBlocked", &[n(SHARED)]),
         event(0, "Release", &[n(EXCLUSIVE)]),
-        event(1, "AcquireUnblocked", &[n(1), n(SHARED)]),
+        event(0, "AcquireUnblocked", &[n(1), n(SHARED)]),
         event(1, "Release", &[n(SHARED)]),
     ];
     assert_eq!(events, expected);

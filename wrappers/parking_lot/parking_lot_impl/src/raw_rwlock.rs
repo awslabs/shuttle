@@ -8,8 +8,8 @@
 //!
 //! # Modelling
 //!
-//! The lock is a single unfair [`BatchSemaphore`] with `PERMITS_ON_INITIALIZATION` permits, where
-//! each way of holding the lock is a permit count:
+//! The lock is a single [`BatchSemaphore`] with `PERMITS_ON_INITIALIZATION` permits, where each
+//! way of holding the lock is a permit count:
 //!
 //! | Lock state     | Permits held |
 //! |----------------|--------------|
@@ -21,23 +21,26 @@
 //! lock at once (`parking_lot`'s single `UPGRADABLE_BIT`), and an upgradable reader excludes
 //! writers (which need every permit) but not plain readers.
 //!
-//! `parking_lot` (0.12.5, `raw_rwlock.rs`) decides who gets the lock only from its lock word, and
-//! a request that waits does not hold back other requests. A plain read is refused only while
-//! `WRITER_BIT` is set. An unfair semaphore behaves the same way: a request that waits holds
-//! nothing, and after a release, the scheduler can grant any request that the free permits let
-//! in, in any order.
+//! `parking_lot` (0.12.5, `raw_rwlock.rs`) decides whether to grant a new request only from its
+//! lock word, and a request that waits does not hold back other requests. A plain read is refused
+//! only while `WRITER_BIT` is set. The semaphore behaves the same way: it is unfair for new
+//! requests, which it matches against the free permits, and a request that waits holds nothing.
 //!
-//! The semaphore is unfair because `parking_lot`'s plain unlock is. It wakes the parked threads in
-//! the order in which they parked, but it leaves the lock free, so a thread that is not parked,
-//! including the one that unlocked, can take the lock before they run. A woken thread that finds
-//! the lock taken parks again, behind the threads that parked after it, so those can get the lock
-//! before it (`parking_lot_lets_a_later_writer_overtake_a_parked_one` in
-//! `tests/rwlock_reference_model.rs` shows this on the real `parking_lot`). The fairness that
-//! `parking_lot` documents comes from elsewhere, and each part of it has its own model: a writer
-//! that waits stops new readers (`WRITER_BIT`, the reservation below), and a fair unlock hands the
-//! lock over (see below). Eventual fairness makes some plain unlocks fair, on a timer. That needs
-//! no model of its own: after a plain release, the scheduler can let the woken tasks take the lock
-//! first.
+//! Its releases are fair (see [`BatchSemaphore::with_fair_releases`]): every unlock hands the lock
+//! to the longest-waiting requests that it lets in, inside the release itself, as `parking_lot`'s
+//! fair unlock hands the lock to the parked threads. So no request can take the lock ahead of a
+//! task that waits for it, and the lock is as fair as Shuttle's other locks.
+//!
+//! `parking_lot`'s plain unlock is not fair. It wakes the parked threads in the order in which they
+//! parked, but it leaves the lock free, so a thread that is not parked, including the one that
+//! unlocked, can take the lock before they run. A woken thread that finds the lock taken parks
+//! again, behind the threads that parked after it, so those can get the lock before it
+//! (`parking_lot_lets_a_later_writer_overtake_a_parked_one` in `tests/rwlock_reference_model.rs`
+//! shows this on the real `parking_lot`). Eventual fairness makes an unlock fair only once a timer
+//! has run out. The model hands the lock over on every unlock, which is what `parking_lot` does
+//! when every unlock is fair, so every schedule that Shuttle explores is one that `parking_lot` can
+//! give, but Shuttle does not explore the ones in which a plain unlock lets another request in
+//! first. Issue #259 tracks modelling those.
 //!
 //! A permit count alone cannot express `WRITER_BIT` while a writer waits for the readers to
 //! leave. A writer and an upgrade therefore *reserve* the semaphore (see
@@ -57,12 +60,12 @@
 //! while it waits — but every state they can see is a `parking_lot` lock word (the reservation is
 //! `WRITER_BIT`), never an artifact between two separate semaphore operations.
 //!
-//! A fair unlock (`unlock_*_fair`, and the `bump_*` methods, which `lock_api` builds on them) hands
-//! the lock to the waiting tasks, as `parking_lot` hands a fairly unlocked lock directly to the
-//! parked threads: the released permits go to the longest-waiting requests they satisfy inside the
-//! release itself (see [`BatchSemaphore::release_fair`]), so no other request can take the lock in
-//! between. A waiting writer that has already reserved the lock needs no hand-off: the reservation
-//! keeps every other request out either way.
+//! The hand-off goes from the front of the queue for as long as the released permits last (see
+//! [`BatchSemaphore::release_fair`]). A writer at the front that the readers still keep out is
+//! handed the reservation, as `parking_lot` hands it `WRITER_BIT`, and a writer that has already
+//! reserved the lock needs no hand-off: the reservation keeps every other request out either way. A
+//! fair unlock (`unlock_*_fair`, and the `bump_*` methods, which `lock_api` builds on them) is
+//! therefore the same as a plain one.
 //!
 //! `is_locked` and `is_locked_exclusive` are reads of the lock state with one scheduling point and
 //! no effect (see [`BatchSemaphore::load_permits`]), like `parking_lot`'s loads of the state word.
@@ -87,6 +90,8 @@
 //!
 //! # Limits
 //!
+//! * Every unlock is fair (see above), while `parking_lot`'s plain unlock lets a request that does
+//!   not wait take the lock first (#259).
 //! * `parking_lot`'s `try_write` also fails while `PARKED_BIT` is set on a free lock. This happens
 //!   after an unlock that wakes some, but not all, of the parked tasks, so it needs at least two
 //!   parked tasks besides the task that calls `try_write`. This model does not track parked tasks,
@@ -150,7 +155,7 @@ impl RawRwLock {
 unsafe impl lock_api::RawRwLock for RawRwLock {
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: RawRwLock = RawRwLock {
-        sem: BatchSemaphore::const_new(PERMITS_ON_INITIALIZATION, Fairness::Unfair),
+        sem: BatchSemaphore::const_new(PERMITS_ON_INITIALIZATION, Fairness::Unfair).with_fair_releases(),
     };
 
     // Gated by `send_guard`; defined once as `crate::GuardMarker` (see `lib.rs`).
@@ -217,9 +222,9 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
     }
 }
 
-// SAFETY: a fair unlock releases the same permits as a normal unlock. It additionally hands them to
-// waiting requests inside the release, as `parking_lot`'s fair unlock hands the lock to the parked
-// threads (see the module docs), which only restricts who gets the lock next.
+// SAFETY: a fair unlock releases the same permits as a normal unlock, and hands them to waiting
+// requests inside the release, as every unlock of this lock does (see the module docs). The hand-off
+// only restricts who gets the lock next.
 unsafe impl lock_api::RawRwLockFair for RawRwLock {
     unsafe fn unlock_shared_fair(&self) {
         trace!("fair-releasing parking_lot rwlock {:p} (shared)", self);

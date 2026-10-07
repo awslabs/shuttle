@@ -676,10 +676,11 @@ fn reference_model_refuses_try_write_behind_two_parked_writers() {
 }
 
 /// `parking_lot` does not grant the lock in the order in which writers ask for it, which is why the
-/// model and the Shuttle lock let any waiting request win after a plain unlock. A plain unlock
-/// wakes the first parked writer but leaves the lock free, so a thread that is not parked can take
-/// it first (`lock_exclusive_slow` grabs `WRITER_BIT` "even if there are parked threads"). The
-/// woken writer then finds the lock taken and parks again, behind the writers that parked after it.
+/// model lets any waiting request win after a plain unlock. (The Shuttle lock hands the lock over on
+/// every unlock instead, see the `raw_rwlock` module docs and #259.) A plain unlock wakes the first
+/// parked writer but leaves the lock free, so a thread that is not parked can take it first
+/// (`lock_exclusive_slow` grabs `WRITER_BIT` "even if there are parked threads"). The woken writer
+/// then finds the lock taken and parks again, behind the writers that parked after it.
 ///
 /// W1, W2 and W3 ask for the lock in that order while the main thread holds it, 20 ms apart, so
 /// they park in that order. The main thread held the lock for more than a millisecond, so eventual
