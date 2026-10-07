@@ -46,8 +46,8 @@ impl TimeModel for FrozenTimeModel {
         self.inner.instant()
     }
 
-    fn wake_next(&mut self) -> bool {
-        self.inner.wake_next()
+    fn advance_to_next_deadline(&mut self) -> bool {
+        self.inner.advance_to_next_deadline()
     }
 
     fn advance(&mut self, dur: Duration) {
@@ -60,5 +60,9 @@ impl TimeModel for FrozenTimeModel {
 
     fn unregister_sleep(&mut self, sleep_id: u64) {
         self.inner.unregister_sleep(sleep_id);
+    }
+
+    fn take_expired(&mut self) -> Vec<Waker> {
+        self.inner.take_expired()
     }
 }

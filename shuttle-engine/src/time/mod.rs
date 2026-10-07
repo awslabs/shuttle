@@ -46,10 +46,15 @@ pub enum WakerRegistered {
 }
 
 /// The trait implemented by each TimeModel
+///
+/// A model owns the clock and the registered timers, but never calls a timer's waker itself: Shuttle
+/// collects the expired ones with [`TimeModel::take_expired`] after every clock change, and wakes them
+/// once it has released its borrow of the model, because a waker may call back into Shuttle.
 pub trait TimeModel: std::fmt::Debug {
-    /// Wake the next sleeping task; returns true if there exists a task that was able to be woken.
-    /// Called when all tasks are blocked to resolve timing based deadlocks (all unblocked tasks are sleeping).
-    fn wake_next(&mut self) -> bool;
+    /// Moves the clock forward to the earliest registered deadline, if that is later than the current
+    /// time. Returns false if no timer is registered. Called when no task is runnable, so that tasks
+    /// waiting on a timer can make progress.
+    fn advance_to_next_deadline(&mut self) -> bool;
 
     /// Reset the TimeModel state for the next Shuttle iteration
     fn new_execution(&mut self);
@@ -81,12 +86,45 @@ pub trait TimeModel: std::fmt::Debug {
     /// This is also called when timers are dropped during execution cleanup, so implementations
     /// must not require a current task. Removing an id that is no longer registered is a no-op.
     fn unregister_sleep(&mut self, id: u64);
+
+    /// Removes every timer whose deadline is at or before the current time, and returns their wakers
+    /// in the order they should be woken.
+    fn take_expired(&mut self) -> Vec<Waker>;
 }
 
 /// Provides a reference to the current TimeModel for this execution.
 /// Uses `Rc::clone` so that ExecutionState isn't already borrowed when running most TimeModel methods
+#[track_caller]
 pub fn get_time_model() -> Rc<RefCell<dyn TimeModel>> {
     ExecutionState::with(|s| Rc::clone(&s.time_model))
+}
+
+/// Advances the clock by one scheduling step and wakes the timers that expire. Does nothing while no
+/// task is running: during cleanup, and while the scheduler wakes timers (whose wakers may reach a
+/// scheduling point).
+pub(crate) fn step_time_model() {
+    let Some(time_model) = ExecutionState::with(|state| {
+        (!state.in_cleanup() && !state.firing_timers).then(|| Rc::clone(&state.time_model))
+    }) else {
+        return;
+    };
+    let expired = {
+        let mut time_model = time_model.borrow_mut();
+        time_model.step();
+        time_model.take_expired()
+    };
+    for waker in expired {
+        waker.wake();
+    }
+}
+
+/// Wakes the timers that have expired. The wakers run after the borrow of the time model is released,
+/// as a waker may call back into Shuttle, the time model included.
+pub(crate) fn wake_expired_timers(time_model: &RefCell<dyn TimeModel>) {
+    let expired = time_model.borrow_mut().take_expired();
+    for waker in expired {
+        waker.wake();
+    }
 }
 
 #[cfg(feature = "advanced-time-models")]
@@ -564,8 +602,12 @@ pub fn sleep(dur: Duration) {
 /// Advances the current global time without putting the current thread to sleep
 /// Behavior of this function depends on the TimeModel provided to Shuttle
 pub fn advance(dur: Duration) {
-    get_time_model().borrow_mut().advance(dur);
+    // The scheduling point comes first, as for every other visible operation, so that other tasks
+    // can run before the clock jumps.
     thread::switch();
+    let time_model = get_time_model();
+    time_model.borrow_mut().advance(dur);
+    wake_expired_timers(&time_model);
 }
 
 /// Returns a future which sleeps until the duration has elapsed

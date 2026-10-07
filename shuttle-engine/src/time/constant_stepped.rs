@@ -6,14 +6,14 @@ use std::{
 
 use tracing::{trace, warn};
 
-use crate::{current::TaskId, runtime::execution::ExecutionState, time::WakerRegistered};
+use crate::time::WakerRegistered;
 
 use super::{Duration, Instant, TimeModel};
 
+// Timers are ordered by deadline, and then by id, which is creation order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct SleepKey {
     deadline: std::time::Duration,
-    task_id: TaskId,
     sleep_id: u64,
 }
 
@@ -37,21 +37,6 @@ impl ConstantSteppedTimeModel {
             sleep_keys: HashMap::new(),
         }
     }
-
-    // Unblocks expired. Returns `true` if any were woken.
-    fn unblock_expired(&mut self) -> bool {
-        let mut out = false;
-        while let Some((&key, _)) = self.waiters.first_key_value() {
-            if key.deadline > self.current_time_elapsed {
-                break;
-            }
-            let (_, waker) = self.waiters.pop_first().unwrap();
-            self.sleep_keys.remove(&key.sleep_id);
-            waker.wake();
-            out = true;
-        }
-        out
-    }
 }
 
 impl TimeModel for ConstantSteppedTimeModel {
@@ -66,7 +51,6 @@ impl TimeModel for ConstantSteppedTimeModel {
     fn step(&mut self) {
         self.current_time_elapsed += self.step_size;
         trace!("time step to {:?}", self.current_time_elapsed);
-        self.unblock_expired();
     }
 
     fn new_execution(&mut self) {
@@ -79,10 +63,9 @@ impl TimeModel for ConstantSteppedTimeModel {
         Instant::Simulated(self.current_time_elapsed)
     }
 
-    fn wake_next(&mut self) -> bool {
+    fn advance_to_next_deadline(&mut self) -> bool {
         if let Some((key, _)) = self.waiters.first_key_value() {
             self.current_time_elapsed = max(self.current_time_elapsed, key.deadline);
-            self.unblock_expired();
             true
         } else {
             false
@@ -105,11 +88,7 @@ impl TimeModel for ConstantSteppedTimeModel {
             return WakerRegistered::NotRegistered;
         }
 
-        let key = SleepKey {
-            deadline,
-            task_id: ExecutionState::with(|s| s.current().id()),
-            sleep_id,
-        };
+        let key = SleepKey { deadline, sleep_id };
         if let Some(previous) = self.sleep_keys.insert(sleep_id, key) {
             if previous != key {
                 self.waiters.remove(&previous);
@@ -124,5 +103,18 @@ impl TimeModel for ConstantSteppedTimeModel {
         if let Some(key) = self.sleep_keys.remove(&sleep_id) {
             self.waiters.remove(&key);
         }
+    }
+
+    fn take_expired(&mut self) -> Vec<Waker> {
+        let mut expired = Vec::new();
+        while let Some(entry) = self.waiters.first_entry() {
+            if entry.key().deadline > self.current_time_elapsed {
+                break;
+            }
+            let (key, waker) = entry.remove_entry();
+            self.sleep_keys.remove(&key.sleep_id);
+            expired.push(waker);
+        }
+        expired
     }
 }

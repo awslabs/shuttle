@@ -173,13 +173,44 @@ enum TeardownFailure {
     Panic(String),
 }
 
-/// While there are no runnable tasks and tasks are able to be woken by the time model, continually wakes tasks.
-/// The TimeModel's `wake_next` method is called in a loop in case there are stale wakers which do not actually
-/// result in a newly runnable task when woken. Requires access to the ExecutionState to obtain a reference to the
-/// time model.
+/// While no task is runnable, moves the clock to the next deadline and wakes the timers that expire there, until a
+/// task becomes runnable or no timer is left. A timer doesn't always make a task runnable, since its waker may belong
+/// to a custom executor.
+///
+/// No task is running here, so scheduling points are no-ops while the wakers run (see `FiringTimers`).
 fn wake_sleepers_until_runnable() {
     let time_model = get_time_model();
-    while !ExecutionState::with(|state| state.any_runnable()) && time_model.borrow_mut().wake_next() {}
+    while !ExecutionState::with(|state| state.any_runnable()) {
+        let expired = {
+            let mut time_model = time_model.borrow_mut();
+            if !time_model.advance_to_next_deadline() {
+                return;
+            }
+            time_model.take_expired()
+        };
+        let _firing = FiringTimers::start();
+        for waker in expired {
+            waker.wake();
+        }
+    }
+}
+
+/// Marks the scheduler as waking timers for as long as it lives. A waker can do anything, such as unparking a thread
+/// or notifying a condition variable, and those operations have scheduling points. With no task running, the
+/// scheduling points must not try to switch away from one.
+struct FiringTimers;
+
+impl FiringTimers {
+    fn start() -> Self {
+        ExecutionState::with(|state| state.firing_timers = true);
+        Self
+    }
+}
+
+impl Drop for FiringTimers {
+    fn drop(&mut self) {
+        ExecutionState::with(|state| state.firing_timers = false);
+    }
 }
 
 /// Runs the scheduler, unless `maybe_yield` already has. If it found no runnable task, the time model gets to wake
@@ -557,6 +588,8 @@ pub struct ExecutionState {
     // Timers can outlive an execution, but their ids must not refer to timers in a later one.
     pub(crate) timer_context: Arc<()>,
     pub(crate) time_model: Rc<RefCell<dyn TimeModel>>,
+    // Set while the scheduler wakes expired timers, when no task is running (see `FiringTimers`).
+    pub(crate) firing_timers: bool,
 }
 
 impl std::fmt::Debug for ExecutionState {
@@ -855,6 +888,7 @@ impl ExecutionState {
             time_model,
             timer_id_counter: 0,
             timer_context: Arc::new(()),
+            firing_timers: false,
         }
     }
 
@@ -1783,6 +1817,12 @@ impl ExecutionState {
     /// its execution.
     pub fn maybe_yield() -> bool {
         let decision = Self::with(|state| {
+            // A waker the scheduler calls while it wakes timers runs outside of any task, so there is no task to
+            // switch away from.
+            if state.firing_timers {
+                return Ok(false);
+            }
+
             if state.teardown.is_some() {
                 return state.maybe_yield_in_teardown();
             }

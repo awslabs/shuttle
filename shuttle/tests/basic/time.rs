@@ -191,6 +191,21 @@ mod regressions {
     use std::future::Future;
     use std::task::{Context, Poll, Wake, Waker};
 
+    /// Moves the clock to the next deadline and wakes the timers that expire there, as the scheduler does
+    /// when no task is runnable. Returns false if no timer is registered.
+    fn fire_next_timer() -> bool {
+        let time_model = get_time_model();
+        let expired = {
+            let mut time_model = time_model.borrow_mut();
+            if !time_model.advance_to_next_deadline() {
+                return false;
+            }
+            time_model.take_expired()
+        };
+        expired.into_iter().for_each(Waker::wake);
+        true
+    }
+
     #[derive(Default)]
     struct CountWake(AtomicUsize);
 
@@ -357,7 +372,7 @@ mod regressions {
                 sleep.as_mut().reset(Instant::now());
                 assert_eq!(counts.0.load(Ordering::SeqCst), 1);
                 assert!(sleep.as_mut().poll(&mut cx).is_ready());
-                assert!(!get_time_model().borrow_mut().wake_next());
+                assert!(!fire_next_timer());
             },
             1,
         );
@@ -374,7 +389,7 @@ mod regressions {
                 let mut sleep = Box::pin(async_sleep(Duration::from_secs(10)));
                 assert!(sleep.as_mut().poll(&mut cx).is_pending());
                 sleep.as_mut().reset(start + Duration::from_secs(20));
-                assert!(get_time_model().borrow_mut().wake_next());
+                assert!(fire_next_timer());
                 assert_eq!(start.elapsed(), Duration::from_secs(20));
                 assert_eq!(counts.0.load(Ordering::SeqCst), 1);
                 assert!(sleep.as_mut().poll(&mut cx).is_ready());
@@ -398,7 +413,7 @@ mod regressions {
                 assert!(Arc::strong_count(&counts) > 2);
                 drop(sleep);
                 assert_eq!(Arc::strong_count(&counts), 2);
-                assert!(!get_time_model().borrow_mut().wake_next());
+                assert!(!fire_next_timer());
                 assert_eq!(Instant::now(), start);
             },
             1,
@@ -441,7 +456,7 @@ mod regressions {
                 complete.set(true);
                 assert_eq!(timeout.as_mut().poll(&mut cx), Poll::Ready(Ok(42)));
                 assert_eq!(Arc::strong_count(&counts), 2);
-                assert!(!get_time_model().borrow_mut().wake_next());
+                assert!(!fire_next_timer());
             },
             1,
         );
@@ -458,7 +473,7 @@ mod regressions {
                 assert!(timeout.as_mut().poll(&mut cx).is_pending());
                 drop(timeout);
                 assert_eq!(Arc::strong_count(&counts), 2);
-                assert!(!get_time_model().borrow_mut().wake_next());
+                assert!(!fire_next_timer());
             },
             1,
         );
@@ -476,7 +491,7 @@ mod regressions {
                 assert!(interval.poll_tick(&mut cx).is_pending());
                 drop(interval);
                 assert_eq!(Arc::strong_count(&counts), 2);
-                assert!(!get_time_model().borrow_mut().wake_next());
+                assert!(!fire_next_timer());
             },
             1,
         );
@@ -516,5 +531,285 @@ mod regressions {
             },
             1,
         );
+    }
+}
+
+/// The time model wakes timers both from the scheduler, when no task is runnable, and at the end of a scheduling step.
+/// A waker may call back into Shuttle, so these tests use wakers that do.
+mod wakers {
+    use super::*;
+    use shuttle::sync::atomic::AtomicBool;
+    use shuttle::sync::mpsc::{sync_channel, SyncSender};
+    use std::future::Future;
+    use std::pin::{pin, Pin};
+    use std::sync::Mutex as StdMutex;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    /// The `Wake` example from the std docs, with Shuttle's threads. `Thread::unpark` is a scheduling point.
+    struct ThreadWaker(thread::Thread);
+
+    impl Wake for ThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    fn park_block_on<T>(fut: impl Future<Output = T>) -> T {
+        let mut fut = pin!(fut);
+        let waker = Arc::new(ThreadWaker(thread::current())).into();
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            match fut.as_mut().poll(&mut cx) {
+                Poll::Ready(res) => return res,
+                Poll::Pending => thread::park(),
+            }
+        }
+    }
+
+    #[test]
+    fn unpark_waker_woken_while_no_task_is_runnable() {
+        shuttle::check_random(|| park_block_on(async_sleep(Duration::from_millis(1))), 10);
+    }
+
+    #[test]
+    fn unpark_waker_of_a_timeout_woken_while_no_task_is_runnable() {
+        shuttle::check_random(
+            || {
+                let result = park_block_on(async_timeout(Duration::from_millis(1), std::future::pending::<()>()));
+                assert!(result.is_err());
+            },
+            10,
+        );
+    }
+
+    #[test]
+    fn unpark_waker_woken_at_a_scheduling_step() {
+        let time_model = ConstantSteppedTimeModel::new(std::time::Duration::from_micros(10));
+        Runner::new_with_time_model(RandomScheduler::new(10), time_model, Config::new()).run(|| {
+            let spinner = thread::spawn(|| {
+                for _ in 0..100 {
+                    thread::yield_now();
+                }
+            });
+            park_block_on(async_sleep(Duration::from_micros(50)));
+            spinner.join().unwrap();
+        });
+    }
+
+    /// Sets a Shuttle atomic, which is a scheduling point.
+    struct FlagWaker(AtomicBool);
+
+    impl Wake for FlagWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn atomic_flag_waker() {
+        shuttle::check_random(
+            || {
+                let flag = Arc::new(FlagWaker(AtomicBool::new(false)));
+                let waker = Waker::from(flag.clone());
+                let mut cx = Context::from_waker(&waker);
+                let mut sleep = pin!(async_sleep(Duration::from_millis(1)));
+                assert!(sleep.as_mut().poll(&mut cx).is_pending());
+                thread::sleep(Duration::from_millis(2));
+                assert!(flag.0.load(Ordering::SeqCst));
+                assert!(sleep.as_mut().poll(&mut cx).is_ready());
+            },
+            10,
+        );
+    }
+
+    type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    /// A task of an executor that runs tasks it receives on a Shuttle channel. Its waker sends the task again.
+    struct ChannelTask {
+        future: StdMutex<Option<BoxFuture>>,
+        queue: SyncSender<Arc<ChannelTask>>,
+    }
+
+    impl Wake for ChannelTask {
+        fn wake(self: Arc<Self>) {
+            self.queue.send(self.clone()).expect("queue full");
+        }
+    }
+
+    #[test]
+    fn channel_executor_waker() {
+        shuttle::check_random(
+            || {
+                let (tx, rx) = sync_channel::<Arc<ChannelTask>>(16);
+                let task = Arc::new(ChannelTask {
+                    future: StdMutex::new(Some(Box::pin(async_sleep(Duration::from_millis(1))))),
+                    queue: tx.clone(),
+                });
+                tx.send(task).unwrap();
+                drop(tx);
+                // The waker holds a sender, so stop once the only task is done.
+                while let Ok(task) = rx.recv() {
+                    let mut slot = task.future.lock().unwrap();
+                    let mut future = slot.take().unwrap();
+                    let waker = Waker::from(task.clone());
+                    if future.as_mut().poll(&mut Context::from_waker(&waker)).is_ready() {
+                        break;
+                    }
+                    *slot = Some(future);
+                }
+            },
+            10,
+        );
+    }
+
+    /// Records when it was woken, then wakes the task.
+    struct StampWaker(StdMutex<Option<Instant>>, Waker);
+
+    impl Wake for StampWaker {
+        fn wake(self: Arc<Self>) {
+            *self.0.lock().unwrap() = Some(Instant::now());
+            self.1.wake_by_ref();
+        }
+    }
+
+    #[test]
+    fn waker_reads_the_clock() {
+        for step in [std::time::Duration::ZERO, std::time::Duration::from_micros(10)] {
+            let runner = Runner::new_with_time_model(
+                RandomScheduler::new(10),
+                ConstantSteppedTimeModel::new(step),
+                Config::new(),
+            );
+            runner.run(|| {
+                future::block_on(async {
+                    let start = Instant::now();
+                    let mut sleep = pin!(async_sleep(Duration::from_millis(1)));
+                    let mut stamp = None;
+                    futures::future::poll_fn(|cx| {
+                        let waker = stamp
+                            .get_or_insert_with(|| Arc::new(StampWaker(StdMutex::new(None), cx.waker().clone())))
+                            .clone();
+                        sleep.as_mut().poll(&mut Context::from_waker(&Waker::from(waker)))
+                    })
+                    .await;
+                    let woken_at = stamp.unwrap().0.lock().unwrap().unwrap();
+                    assert!(woken_at - start >= Duration::from_millis(1));
+                });
+            });
+        }
+    }
+}
+
+mod advance {
+    use super::*;
+    use shuttle::sync::atomic::AtomicBool;
+    use shuttle::time::frozen::FrozenTimeModel;
+    use shuttle::time::{advance, TimeModel, WakerRegistered};
+    use std::collections::HashSet;
+    use std::future::Future;
+    use std::sync::Mutex as StdMutex;
+    use std::task::Waker;
+
+    // Other tasks can run between the caller's previous operation and the clock jump, as `advance` has its
+    // scheduling point first.
+    #[test]
+    fn scheduling_point_comes_before_the_clock_jump() {
+        let seen = Arc::new(StdMutex::new(HashSet::new()));
+        let seen_inner = seen.clone();
+        Runner::new(DfsScheduler::new(None, false), Config::new()).run(move || {
+            let start = Instant::now();
+            let flag = Arc::new(AtomicBool::new(false));
+            let child = {
+                let flag = flag.clone();
+                thread::spawn(move || (flag.load(Ordering::SeqCst), start.elapsed()))
+            };
+            flag.store(true, Ordering::SeqCst);
+            advance(Duration::from_secs(10));
+            seen_inner.lock().unwrap().insert(child.join().unwrap());
+        });
+        let seen = seen.lock().unwrap();
+        assert!(seen.contains(&(true, Duration::ZERO)), "{seen:?}");
+        assert!(seen.contains(&(true, Duration::from_secs(10))), "{seen:?}");
+    }
+
+    // A sleeper whose deadline `advance` passes is runnable right away, so another task can see its effects
+    // before the caller's next operation.
+    #[test]
+    fn wakes_the_timers_it_passes() {
+        let woke_first = Arc::new(AtomicUsize::new(0));
+        let woke_first_inner = woke_first.clone();
+        Runner::new(DfsScheduler::new(None, false), Config::new()).run(move || {
+            let flag = Arc::new(AtomicBool::new(false));
+            let child = {
+                let flag = flag.clone();
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(10));
+                    flag.store(true, Ordering::SeqCst);
+                })
+            };
+            advance(Duration::from_millis(20));
+            if flag.load(Ordering::SeqCst) {
+                woke_first_inner.fetch_add(1, Ordering::SeqCst);
+            }
+            child.join().unwrap();
+        });
+        assert!(woke_first.load(Ordering::SeqCst) > 0);
+    }
+
+    /// A model with a manual clock: `step` does nothing.
+    #[derive(Debug, Default)]
+    struct ManualClock(FrozenTimeModel);
+
+    impl TimeModel for ManualClock {
+        fn advance_to_next_deadline(&mut self) -> bool {
+            self.0.advance_to_next_deadline()
+        }
+        fn new_execution(&mut self) {
+            self.0.new_execution()
+        }
+        fn step(&mut self) {}
+        fn instant(&self) -> Instant {
+            self.0.instant()
+        }
+        fn pause(&mut self) {}
+        fn resume(&mut self) {}
+        fn advance(&mut self, duration: Duration) {
+            self.0.advance(duration)
+        }
+        fn register_sleep(&mut self, deadline: Instant, id: u64, waker: Waker) -> WakerRegistered {
+            self.0.register_sleep(deadline, id, waker)
+        }
+        fn unregister_sleep(&mut self, id: u64) {
+            self.0.unregister_sleep(id)
+        }
+        fn take_expired(&mut self) -> Vec<Waker> {
+            self.0.take_expired()
+        }
+    }
+
+    #[derive(Default)]
+    struct CountWake(AtomicUsize);
+
+    impl std::task::Wake for CountWake {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    // Shuttle fires the timers after every clock change, so a model doesn't have to.
+    #[test]
+    fn manual_clock_model_wakes_sleepers() {
+        let runner = Runner::new_with_time_model(RandomScheduler::new(10), ManualClock::default(), Config::new());
+        runner.run(|| {
+            let counts = Arc::new(CountWake::default());
+            let waker = Waker::from(counts.clone());
+            let mut sleep = std::pin::pin!(async_sleep(Duration::from_millis(10)));
+            assert!(sleep
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(&waker))
+                .is_pending());
+            advance(Duration::from_millis(20));
+            assert_eq!(counts.0.load(Ordering::SeqCst), 1);
+        });
     }
 }
