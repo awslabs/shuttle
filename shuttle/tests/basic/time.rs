@@ -813,3 +813,69 @@ mod advance {
         });
     }
 }
+
+/// Destructors that sleep, or poll a `Sleep`, when the execution ends.
+mod teardown {
+    use super::*;
+    use futures::FutureExt;
+
+    struct SleepOnDrop;
+
+    impl Drop for SleepOnDrop {
+        fn drop(&mut self) {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    struct PollSleepOnDrop;
+
+    impl Drop for PollSleepOnDrop {
+        fn drop(&mut self) {
+            assert!(async_sleep(Duration::from_millis(1)).now_or_never().is_none());
+        }
+    }
+
+    // The detached task is still waiting when main returns, so its future is dropped during cleanup.
+    #[test]
+    fn sleep_in_the_destructor_of_a_detached_task() {
+        shuttle::check_random(
+            || {
+                drop(future::spawn(async {
+                    let _guard = SleepOnDrop;
+                    futures::future::pending::<()>().await;
+                }));
+                future::block_on(future::yield_now());
+            },
+            10,
+        );
+    }
+
+    #[test]
+    fn poll_a_sleep_in_the_destructor_of_a_detached_task() {
+        shuttle::check_random(
+            || {
+                drop(future::spawn(async {
+                    let _guard = PollSleepOnDrop;
+                    futures::future::pending::<()>().await;
+                }));
+                future::block_on(future::yield_now());
+            },
+            10,
+        );
+    }
+
+    shuttle::lazy_static! {
+        static ref SLEEPS_ON_DROP: SleepOnDrop = SleepOnDrop;
+    }
+
+    // Shuttle drops statics at the end of each execution.
+    #[test]
+    fn sleep_in_the_destructor_of_a_static() {
+        shuttle::check_random(
+            || {
+                let _ = &*SLEEPS_ON_DROP;
+            },
+            10,
+        );
+    }
+}

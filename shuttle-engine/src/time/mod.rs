@@ -592,7 +592,10 @@ impl PartialOrd for Instant {
 /// Puts the current thread to sleep
 /// Behavior of this function depends on the TimeModel provided to Shuttle
 pub fn sleep(dur: Duration) {
-    if dur == Duration::ZERO {
+    // A destructor can sleep while its task unwinds, or while the execution is torn down. Nothing wakes a sleeper
+    // once the execution has finished, so these sleeps are just a scheduling point, as every sleep was before time
+    // models.
+    if dur == Duration::ZERO || std::thread::panicking() || ExecutionState::with(|state| state.in_cleanup()) {
         thread::switch();
         return;
     }
