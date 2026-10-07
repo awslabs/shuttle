@@ -6,6 +6,8 @@
 
 * `shuttle::thread::LocalKey<T>` is now `UnwindSafe` and `RefUnwindSafe` for every `T`, like `std::thread::LocalKey`. It used to take both from `T`, so a type that held a reference to a key, such as `shuttle-tokio`'s `task::LocalKey`, was not `UnwindSafe` if the key's value was a `RefCell`.
 
+* `shuttle-tokio`'s `task::try_id` no longer panics outside of a Shuttle execution or while Shuttle updates its own state, where tokio's returns `None` too.
+
 # 0.9.6 (October 9, 2026)
 
 * Fix a stack overflow when a global `tracing` subscriber at TRACE level calls into Shuttle while it handles an event, for example to call `current::clock()`. Every access to the execution state emits a TRACE event, so the subscriber's own access emitted another event, which called the subscriber again, and so on until the stack overflowed, and the failure report and persisted schedule were lost with the process. Accesses made while that event is being handled no longer emit it. (#382)
