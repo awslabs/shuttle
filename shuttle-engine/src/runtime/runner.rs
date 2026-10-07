@@ -54,32 +54,24 @@ impl Drop for ResetSpanOnDrop {
 /// function as many times as dictated by the scheduler; each execution has its scheduling decisions
 /// resolved by the scheduler, which can make different choices for each execution.
 #[derive(Debug)]
-pub struct Runner<S: ?Sized + Scheduler, T: TimeModel> {
+pub struct Runner<S: ?Sized + Scheduler> {
     scheduler: Rc<RefCell<MetricsScheduler<S>>>,
-    time_model: Rc<RefCell<T>>,
+    time_model: Rc<RefCell<dyn TimeModel>>,
     config: Config,
 }
 
-impl<S: Scheduler + 'static> Runner<S, FrozenTimeModel> {
-    /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
+impl<S: Scheduler + 'static> Runner<S> {
+    /// Construct a new `Runner` that will use the given `Scheduler` to control the test, under the default time model,
+    /// [`FrozenTimeModel`].
     pub fn new(scheduler: S, config: Config) -> Self {
-        let metrics_scheduler = MetricsScheduler::new(scheduler);
-
-        Self {
-            scheduler: Rc::new(RefCell::new(metrics_scheduler)),
-            time_model: Rc::new(RefCell::new(FrozenTimeModel::new())),
-            config,
-        }
+        Self::new_with_time_model(scheduler, FrozenTimeModel::new(), config)
     }
-}
 
-impl<S: Scheduler + 'static, T: TimeModel + 'static> Runner<S, T> {
-    /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
-    pub fn new_with_time_model(scheduler: S, time_model: T, config: Config) -> Self {
-        let metrics_scheduler = MetricsScheduler::new(scheduler);
-
+    /// Construct a new `Runner` that will use the given `Scheduler` to control the test, and the given `TimeModel` to
+    /// control time.
+    pub fn new_with_time_model(scheduler: S, time_model: impl TimeModel + 'static, config: Config) -> Self {
         Self {
-            scheduler: Rc::new(RefCell::new(metrics_scheduler)),
+            scheduler: Rc::new(RefCell::new(MetricsScheduler::new(scheduler))),
             time_model: Rc::new(RefCell::new(time_model)),
             config,
         }

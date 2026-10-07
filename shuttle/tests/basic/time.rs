@@ -1119,3 +1119,29 @@ mod interval {
         );
     }
 }
+
+/// `Runner<S>` has one type parameter, whatever the time model.
+mod runner {
+    use super::*;
+
+    struct Harness {
+        runner: Runner<RandomScheduler>,
+    }
+
+    fn stepped() -> Runner<RandomScheduler> {
+        let time_model = ConstantSteppedTimeModel::new(std::time::Duration::from_millis(1));
+        Runner::new_with_time_model(RandomScheduler::new(1), time_model, Config::new())
+    }
+
+    #[test]
+    fn runners_with_different_time_models_have_the_same_type() {
+        for harness in [
+            Harness { runner: stepped() },
+            Harness {
+                runner: Runner::new(RandomScheduler::new(1), Config::new()),
+            },
+        ] {
+            assert_eq!(harness.runner.run(thread::yield_now), 1);
+        }
+    }
+}
