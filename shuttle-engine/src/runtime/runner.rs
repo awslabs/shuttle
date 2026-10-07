@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::runtime::execution::Execution;
+use crate::runtime::failure::CustomTimeModelGuard;
 use crate::runtime::task::{Task, TaskId};
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::metrics::MetricsScheduler;
@@ -57,6 +58,8 @@ impl Drop for ResetSpanOnDrop {
 pub struct Runner<S: ?Sized + Scheduler> {
     scheduler: Rc<RefCell<MetricsScheduler<S>>>,
     time_model: Rc<RefCell<dyn TimeModel>>,
+    // Whether the time model was given, so that failures are replayed with it.
+    custom_time_model: bool,
     config: Config,
 }
 
@@ -64,15 +67,20 @@ impl<S: Scheduler + 'static> Runner<S> {
     /// Construct a new `Runner` that will use the given `Scheduler` to control the test, under the default time model,
     /// [`FrozenTimeModel`].
     pub fn new(scheduler: S, config: Config) -> Self {
-        Self::new_with_time_model(scheduler, FrozenTimeModel::new(), config)
+        Self {
+            custom_time_model: false,
+            ..Self::new_with_time_model(scheduler, FrozenTimeModel::new(), config)
+        }
     }
 
     /// Construct a new `Runner` that will use the given `Scheduler` to control the test, and the given `TimeModel` to
-    /// control time.
+    /// control time. Its failures replay only under the same time model, configured the same way; see
+    /// `shuttle::replay_with_time_model`.
     pub fn new_with_time_model(scheduler: S, time_model: impl TimeModel + 'static, config: Config) -> Self {
         Self {
             scheduler: Rc::new(RefCell::new(MetricsScheduler::new(scheduler))),
             time_model: Rc::new(RefCell::new(time_model)),
+            custom_time_model: true,
             config,
         }
     }
@@ -85,6 +93,7 @@ impl<S: Scheduler + 'static> Runner<S> {
         F: Fn() + Send + Sync + 'static,
     {
         let _span_drop_guard = ResetSpanOnDrop::new();
+        let _custom_time_model = CustomTimeModelGuard::new(self.custom_time_model);
         // Share continuations across executions to avoid reallocating them
         // TODO it would be a lot nicer if this were a more generic "context" thing that we passed
         // TODO around explicitly rather than being a thread local

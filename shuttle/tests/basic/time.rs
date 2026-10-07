@@ -1145,3 +1145,82 @@ mod runner {
         }
     }
 }
+
+/// Failures found under a custom time model replay under the same model.
+mod replay {
+    use super::*;
+    use shuttle::{replay_from_file_with_time_model, replay_with_time_model, FailurePersistence};
+    use std::any::Any;
+    use std::panic;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::AtomicBool;
+
+    fn time_model() -> ConstantSteppedTimeModel {
+        ConstantSteppedTimeModel::new(std::time::Duration::from_millis(10))
+    }
+
+    // Fails when the sleeper wakes up before main is done yielding, which depends on the time model.
+    fn sleeper_wakes_before_main_is_done() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let child = {
+            let flag = flag.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                flag.store(true, Ordering::SeqCst);
+            })
+        };
+        for _ in 0..50 {
+            thread::yield_now();
+        }
+        assert!(!flag.load(Ordering::SeqCst), "the sleeper woke up first");
+        child.join().unwrap();
+    }
+
+    fn panic_message(payload: Box<dyn Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => payload.downcast::<&str>().map(|m| m.to_string()).unwrap_or_default(),
+        }
+    }
+
+    /// Runs the test until it fails, and returns the file its failing schedule was saved to.
+    fn failing_schedule(dir: &Path) -> PathBuf {
+        let dir_inner = dir.to_path_buf();
+        let result = panic::catch_unwind(move || {
+            let mut config = Config::new();
+            config.failure_persistence = FailurePersistence::File(Some(dir_inner));
+            Runner::new_with_time_model(RandomScheduler::new(100), time_model(), config)
+                .run(sleeper_wakes_before_main_is_done);
+        });
+        assert_eq!(
+            panic_message(result.expect_err("test should fail")),
+            "the sleeper woke up first"
+        );
+        dir.join("schedule000.txt")
+    }
+
+    #[test]
+    fn replay_a_schedule() {
+        let dir = tempfile::tempdir().expect("could not create tempdir");
+        let schedule = std::fs::read_to_string(failing_schedule(dir.path())).unwrap();
+        let replayed =
+            panic::catch_unwind(|| replay_with_time_model(sleeper_wakes_before_main_is_done, &schedule, time_model()));
+        assert_eq!(
+            panic_message(replayed.expect_err("replay should fail")),
+            "the sleeper woke up first"
+        );
+    }
+
+    #[test]
+    fn replay_a_schedule_from_a_file() {
+        let dir = tempfile::tempdir().expect("could not create tempdir");
+        let path = failing_schedule(dir.path());
+        let replayed = panic::catch_unwind(|| {
+            replay_from_file_with_time_model(sleeper_wakes_before_main_is_done, path, time_model())
+        });
+        assert_eq!(
+            panic_message(replayed.expect_err("replay should fail")),
+            "the sleeper woke up first"
+        );
+    }
+}
