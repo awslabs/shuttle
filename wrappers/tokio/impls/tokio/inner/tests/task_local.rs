@@ -34,6 +34,50 @@ async fn scheduling_point() {
     drop(Mutex::new(()).lock().await);
 }
 
+/// A future that records the value of `key` when it is dropped.
+struct RecordOnDrop {
+    key: &'static LocalKey<u32>,
+    seen: &'static std::sync::Mutex<Vec<Option<u32>>>,
+    on_poll: OnPoll,
+}
+
+/// What a `RecordOnDrop` does when it is polled.
+enum OnPoll {
+    /// Return `Pending` this many more times, waking itself each time, and then `Ready`.
+    ReadyAfter(usize),
+    /// Return `Pending` forever, without waking itself.
+    Pending,
+    /// Take the lock in the middle of the poll, and then return `Pending` without waking itself. A
+    /// task that polls it while the lock is held blocks in the middle of the poll.
+    Lock(Arc<shuttle::sync::Mutex<()>>),
+}
+
+impl Future for RecordOnDrop {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        match &mut self.on_poll {
+            OnPoll::ReadyAfter(0) => Poll::Ready(()),
+            OnPoll::ReadyAfter(polls) => {
+                *polls -= 1;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+            OnPoll::Pending => Poll::Pending,
+            OnPoll::Lock(lock) => {
+                drop(lock.lock().unwrap());
+                Poll::Pending
+            }
+        }
+    }
+}
+
+impl Drop for RecordOnDrop {
+    fn drop(&mut self) {
+        self.seen.lock().unwrap().push(self.key.try_get().ok());
+    }
+}
+
 mod api {
     use super::*;
     use test_log::test;
@@ -526,32 +570,6 @@ mod api {
         );
     }
 
-    /// A future that records the value of `key` when it is dropped.
-    struct RecordOnDrop {
-        key: &'static LocalKey<u32>,
-        seen: Arc<std::sync::Mutex<Vec<Option<u32>>>>,
-        polls_until_ready: usize,
-    }
-
-    impl Future for RecordOnDrop {
-        type Output = ();
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-            if self.polls_until_ready == 0 {
-                return Poll::Ready(());
-            }
-            self.polls_until_ready -= 1;
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
-    }
-
-    impl Drop for RecordOnDrop {
-        fn drop(&mut self) {
-            self.seen.lock().unwrap().push(self.key.try_get().ok());
-        }
-    }
-
     /// The future inside a scope is dropped with the value set, whether it has completed, is still
     /// pending, or was never polled.
     #[test]
@@ -560,13 +578,15 @@ mod api {
             static KEY: u32;
         }
 
+        static SEEN: std::sync::Mutex<Vec<Option<u32>>> = std::sync::Mutex::new(Vec::new());
+
         check_dfs(
             || {
-                let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-                let record = |polls_until_ready| RecordOnDrop {
+                SEEN.lock().unwrap().clear();
+                let record = |polls| RecordOnDrop {
                     key: &KEY,
-                    seen: seen.clone(),
-                    polls_until_ready,
+                    seen: &SEEN,
+                    on_poll: OnPoll::ReadyAfter(polls),
                 };
 
                 // Never polled
@@ -580,7 +600,7 @@ mod api {
                 // Completed. The future is dropped as soon as it completes, inside its last poll.
                 block_on(KEY.scope(3, record(1)));
 
-                assert_eq!(*seen.lock().unwrap(), [Some(1), Some(2), Some(3)]);
+                assert_eq!(*SEEN.lock().unwrap(), [Some(1), Some(2), Some(3)]);
                 assert!(KEY.try_get().is_err());
             },
             None,
@@ -1206,32 +1226,6 @@ mod teardown {
     use std::sync::Mutex as StdMutex;
     use test_log::test;
 
-    /// A future that records the value of `key` when it is dropped. Its poll returns `Pending`
-    /// forever, unless it has a `lock` to take, in which case it blocks on the lock in the
-    /// middle of the poll.
-    struct RecordOnDrop {
-        key: &'static LocalKey<u32>,
-        seen: &'static StdMutex<Vec<Option<u32>>>,
-        lock: Option<Arc<shuttle::sync::Mutex<()>>>,
-    }
-
-    impl Future for RecordOnDrop {
-        type Output = ();
-
-        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
-            if let Some(lock) = &self.lock {
-                drop(lock.lock().unwrap());
-            }
-            Poll::Pending
-        }
-    }
-
-    impl Drop for RecordOnDrop {
-        fn drop(&mut self) {
-            self.seen.lock().unwrap().push(self.key.try_get().ok());
-        }
-    }
-
     /// A detached task that is pending in a scope at the end of the execution.
     #[test]
     fn task_pending_in_a_scope() {
@@ -1249,7 +1243,7 @@ mod teardown {
                         RecordOnDrop {
                             key: &KEY,
                             seen: &SCOPED,
-                            lock: None,
+                            on_poll: OnPoll::Pending,
                         },
                     )));
                     // Dropped after the scoped task, so it checks that the scope did not leave its
@@ -1257,7 +1251,7 @@ mod teardown {
                     drop(task::spawn(RecordOnDrop {
                         key: &KEY,
                         seen: &UNSCOPED,
-                        lock: None,
+                        on_poll: OnPoll::Pending,
                     }));
                 })
             },
@@ -1295,13 +1289,13 @@ mod teardown {
                         RecordOnDrop {
                             key: &KEY,
                             seen: &SCOPED,
-                            lock: Some(lock),
+                            on_poll: OnPoll::Lock(lock),
                         },
                     )));
                     drop(task::spawn(RecordOnDrop {
                         key: &KEY,
                         seen: &UNSCOPED,
-                        lock: None,
+                        on_poll: OnPoll::Pending,
                     }));
                 })
             },
