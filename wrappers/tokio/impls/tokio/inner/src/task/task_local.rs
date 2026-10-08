@@ -31,21 +31,25 @@
 //! outlives an execution. Accessing a task-local is not a scheduling point, as it is not in tokio:
 //! it is not visible to any other task.
 //!
-//! Whenever no Shuttle task is running, the slot is a plain `std::thread_local!` instead, which
-//! is what tokio uses all the time. That is the case outside of a Shuttle test, where a
-//! `LocalKey` therefore behaves exactly as tokio's does. It is also the case while Shuttle tears an
-//! execution down and drops the tasks that have not finished, and while Shuttle updates its own
-//! state (which is when it calls `tracing` subscribers for some of its own events). And a task uses
-//! it once its own slot is gone: when a task finishes, Shuttle destroys its thread-locals one at a
-//! time, its slot included, and the destructors that run after the slot's (those of the task's
-//! other thread-locals) use the plain one, as they could tokio's, which the end of a task does not
-//! destroy. In all of these
-//! only one thing runs at a time, so a single slot is as sound there as it is in tokio: scopes can
-//! only nest, never interleave. A future that is dropped at teardown still sees the values of the
-//! scopes it is in, as it does when a tokio runtime shuts down. There is one exception: if the task
-//! was switched out in the middle of a poll of a scope, Shuttle first unwinds its stack, and the
-//! destructors that run during that unwinding (which include those of the local variables of an
-//! `async` block that is being polled) see no value.
+//! Whenever Shuttle has no current task, or is updating its own state, the slot is a plain
+//! `std::thread_local!` instead, which is what tokio uses all the time. That is the case outside of
+//! a Shuttle test, where a `LocalKey` therefore behaves exactly as tokio's does. It is also the case
+//! while Shuttle tears an execution down and drops the tasks that have not finished, and while
+//! Shuttle updates its own state (which is when it calls `tracing` subscribers for some of its own
+//! events). A task also uses the plain slot once its own is gone: when a task finishes, Shuttle
+//! destroys its thread-locals one at a time, its slot included, and the destructors that run after
+//! the slot's (those of the task's other thread-locals) use the plain one, as they could tokio's,
+//! which the end of a task does not destroy. In all of these only one thing runs at a time, so a
+//! single slot is as sound there as it is in tokio: scopes can only nest, never interleave. A future
+//! that is dropped at teardown still sees the values of the scopes it is in, as it does when a tokio
+//! runtime shuts down. There is one exception: if the task was switched out in the middle of a poll
+//! of a scope, Shuttle first unwinds its stack, and the destructors that run during that unwinding
+//! (which include those of the local variables of an `async` block that is being polled) see no
+//! value.
+//!
+//! Between steps, while Shuttle picks the next task to run, its current task is still the one that
+//! ran last. Code that runs there, such as a `tracing` subscriber handling one of the events Shuttle
+//! emits then, therefore sees that task's slot, and the values of the scopes that task is in.
 //!
 //! A `tracing` subscriber may read task-locals while it handles an event, as it can in tokio.
 
@@ -161,11 +165,11 @@ pub struct LocalKey<T: 'static> {
     // Every Shuttle task has its own.
     #[doc(hidden)]
     pub task_slot: &'static shuttle::thread::LocalKey<RefCell<Option<T>>>,
-    // The slot used instead whenever no Shuttle task is running: outside of a Shuttle test, while
-    // Shuttle tears an execution down, and while Shuttle updates its own state, and by a task whose
-    // own slot Shuttle has already destroyed (see the module docs). It is what tokio uses all the
-    // time, and is as sound here as it is there, since only one thing runs at a time in each of
-    // those cases.
+    // The slot used instead whenever Shuttle has no current task or is updating its own state:
+    // outside of a Shuttle test, while Shuttle tears an execution down, and while it updates its
+    // own state. A task also uses it once Shuttle has destroyed the task's own slot (see the module
+    // docs). It is what tokio uses all the time, and is as sound here as it is there, since only
+    // one thing runs at a time in each of those cases.
     #[doc(hidden)]
     pub fallback_slot: thread::LocalKey<RefCell<Option<T>>>,
 }
@@ -304,9 +308,10 @@ impl<T: 'static> LocalKey<T> {
     where
         F: FnOnce(&RefCell<Option<T>>) -> R,
     {
-        // `try_get_current_task` is `None` in exactly the cases the fallback slot is for, and does
-        // not panic in any of them. Checking it first also keeps us from calling into
-        // `shuttle::thread::LocalKey` then, which would panic.
+        // `try_get_current_task` is `None` exactly when Shuttle has no current task or is updating
+        // its own state, which are the cases the fallback slot is for, and does not panic in any of
+        // them. Checking it first also keeps us from calling into `shuttle::thread::LocalKey` then,
+        // which would panic.
         let mut f = Some(f);
         let mut call = |slot: &RefCell<Option<T>>| (f.take().expect("`f` is only called once"))(slot);
         if shuttle::current::try_get_current_task().is_some() {
