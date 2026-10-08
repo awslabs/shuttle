@@ -601,6 +601,12 @@ impl BatchSemaphore {
     /// task that waits gets the lock before any later request.
     ///
     /// On a strictly fair semaphore, every release is already fair, so this changes nothing.
+    ///
+    /// Hidden and deprecated: this exists only so that `shuttle-parking_lot`'s `RwLock` keeps
+    /// modelling every unlock as fair until it models `parking_lot`'s unfair unlocks (#259). Do not
+    /// use it anywhere else.
+    #[doc(hidden)]
+    #[deprecated(note = "only for `shuttle-parking_lot`'s `RwLock`; do not use it")]
     pub const fn with_fair_releases(mut self) -> Self {
         self.release_fairness = Fairness::StrictlyFair;
         self
@@ -893,8 +899,7 @@ impl BatchSemaphore {
     }
 
     /// Release `num_permits` back to the Semaphore. This is a fair release (see
-    /// [`BatchSemaphore::release_fair`]) on a strictly fair semaphore, and on one built
-    /// [`BatchSemaphore::with_fair_releases`].
+    /// [`BatchSemaphore::release_fair`]) on a strictly fair semaphore.
     pub fn release(&self, num_permits: usize) {
         self.release_inner(num_permits, self.release_fairness)
     }
@@ -930,12 +935,10 @@ impl BatchSemaphore {
     /// release behaves like a plain one.
     ///
     /// On a strictly fair semaphore every release already grants from the
-    /// front of the queue, and on one built
-    /// [`BatchSemaphore::with_fair_releases`] every release is fair, so there
-    /// this is the same as [`BatchSemaphore::release`]. On other unfair
-    /// semaphores, a blocking acquire joins the queue without a scheduling
-    /// point of its own, so Shuttle does not explore every order of the queue
-    /// that a fair release grants from.
+    /// front of the queue, so there this is the same as
+    /// [`BatchSemaphore::release`]. On an unfair semaphore, a blocking acquire
+    /// joins the queue without a scheduling point of its own, so Shuttle does
+    /// not explore every order of the queue that a fair release grants from.
     pub fn release_fair(&self, num_permits: usize) {
         self.release_inner(num_permits, Fairness::StrictlyFair)
     }

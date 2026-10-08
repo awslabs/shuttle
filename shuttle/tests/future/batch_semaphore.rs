@@ -1333,6 +1333,7 @@ mod fair_release_tests {
     /// On a semaphore built `with_fair_releases`, every `release` is fair: it grants the queued
     /// waiter its permits inside the release, like `release_fair`.
     #[test_log::test]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
     fn with_fair_releases_makes_release_fair() {
         check_dfs(
             || {
@@ -1358,6 +1359,7 @@ mod fair_release_tests {
     /// both ask while the main task holds it. Without a scheduling point between T1's message and T1
     /// joining the queue, T1 would always be first in the queue, and get the permit first.
     #[test_log::test]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
     fn with_fair_releases_explores_every_queue_order() {
         let orders = Arc::new(Mutex::new(HashSet::new()));
         let orders_clone = Arc::clone(&orders);
