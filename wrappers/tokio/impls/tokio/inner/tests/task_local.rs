@@ -640,6 +640,57 @@ mod api {
         );
     }
 
+    /// When a task finishes, Shuttle destroys its thread-locals one at a time, oldest first. A
+    /// thread-local's destructor can still enter a scope, and drop a pending one with its value set,
+    /// even when the task used the key before it created that thread-local, so that the task's slot
+    /// for the key was destroyed first.
+    #[test]
+    fn thread_local_destructor_uses_a_key_the_task_used_first() {
+        task_local! {
+            static KEY: u32;
+        }
+        static SEEN: std::sync::Mutex<Vec<Option<u32>>> = std::sync::Mutex::new(Vec::new());
+
+        struct UsesKeyOnDrop(Option<Pin<Box<TaskLocalFuture<u32, RecordOnDrop>>>>);
+
+        impl Drop for UsesKeyOnDrop {
+            fn drop(&mut self) {
+                assert_eq!(KEY.sync_scope(2, || KEY.get()), 2);
+                drop(self.0.take());
+            }
+        }
+
+        shuttle::thread_local! {
+            static USES_KEY_ON_DROP: std::cell::RefCell<Option<UsesKeyOnDrop>> = const { std::cell::RefCell::new(None) };
+        }
+
+        check_dfs(
+            || {
+                SEEN.lock().unwrap().clear();
+                for use_key_first in [false, true] {
+                    shuttle::thread::spawn(move || {
+                        if use_key_first {
+                            assert!(KEY.try_get().is_err());
+                        }
+                        let pending = Box::pin(KEY.scope(
+                            3,
+                            RecordOnDrop {
+                                key: &KEY,
+                                seen: &SEEN,
+                                on_poll: OnPoll::Pending,
+                            },
+                        ));
+                        USES_KEY_ON_DROP.with(|uses_key| *uses_key.borrow_mut() = Some(UsesKeyOnDrop(Some(pending))));
+                    })
+                    .join()
+                    .unwrap();
+                }
+                assert_eq!(*SEEN.lock().unwrap(), [Some(3), Some(3)]);
+            },
+            None,
+        );
+    }
+
     /// A scope that panics restores the value it shadowed, so that the panic can be caught.
     #[test]
     fn panicking_scope_restores_the_outer_value() {

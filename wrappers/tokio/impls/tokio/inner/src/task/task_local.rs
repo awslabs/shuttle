@@ -35,7 +35,11 @@
 //! is what tokio uses all the time. That is the case outside of a Shuttle test, where a
 //! `LocalKey` therefore behaves exactly as tokio's does. It is also the case while Shuttle tears an
 //! execution down and drops the tasks that have not finished, and while Shuttle updates its own
-//! state (which is when it calls `tracing` subscribers for some of its own events). In all of these
+//! state (which is when it calls `tracing` subscribers for some of its own events). And a task uses
+//! it once its own slot is gone: when a task finishes, Shuttle destroys its thread-locals one at a
+//! time, its slot included, and the destructors that run after the slot's (those of the task's
+//! other thread-locals) use the plain one, as they could tokio's, which the end of a task does not
+//! destroy. In all of these
 //! only one thing runs at a time, so a single slot is as sound there as it is in tokio: scopes can
 //! only nest, never interleave. A future that is dropped at teardown still sees the values of the
 //! scopes it is in, as it does when a tokio runtime shuts down. There is one exception: if the task
@@ -158,9 +162,10 @@ pub struct LocalKey<T: 'static> {
     #[doc(hidden)]
     pub task_slot: &'static shuttle::thread::LocalKey<RefCell<Option<T>>>,
     // The slot used instead whenever no Shuttle task is running: outside of a Shuttle test, while
-    // Shuttle tears an execution down, and while Shuttle updates its own state (see the module
-    // docs). It is what tokio uses all the time, and is as sound here as it is there, since only
-    // one thing runs at a time in each of those cases.
+    // Shuttle tears an execution down, and while Shuttle updates its own state, and by a task whose
+    // own slot Shuttle has already destroyed (see the module docs). It is what tokio uses all the
+    // time, and is as sound here as it is there, since only one thing runs at a time in each of
+    // those cases.
     #[doc(hidden)]
     pub fallback_slot: thread::LocalKey<RefCell<Option<T>>>,
 }
@@ -302,11 +307,18 @@ impl<T: 'static> LocalKey<T> {
         // `try_get_current_task` is `None` in exactly the cases the fallback slot is for, and does
         // not panic in any of them. Checking it first also keeps us from calling into
         // `shuttle::thread::LocalKey` then, which would panic.
+        let mut f = Some(f);
+        let mut call = |slot: &RefCell<Option<T>>| (f.take().expect("`f` is only called once"))(slot);
         if shuttle::current::try_get_current_task().is_some() {
-            self.task_slot.try_with(f).map_err(|_| AccessError { _private: () })
-        } else {
-            self.fallback_slot.try_with(f).map_err(|_| AccessError { _private: () })
+            // Shuttle destroys a task's slot with its other thread-locals when the task finishes,
+            // one at a time. The destructors that run after the slot's get the fallback slot.
+            if let Ok(res) = self.task_slot.try_with(&mut call) {
+                return Ok(res);
+            }
         }
+        self.fallback_slot
+            .try_with(call)
+            .map_err(|_| AccessError { _private: () })
     }
 
     /// Accesses the current task-local and runs the provided closure.
