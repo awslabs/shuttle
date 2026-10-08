@@ -47,6 +47,12 @@
 //! (which include those of the local variables of an `async` block that is being polled) see no
 //! value.
 //!
+//! Code that Shuttle runs while it updates its own state therefore sees no task's values, even when
+//! it runs on behalf of a task that is inside a scope. That includes `tracing` subscribers handling
+//! some of Shuttle's own events, the `on_enter` and `on_exit` of a task's spans, which Shuttle
+//! replays when it switches tasks, and `ChildLabelFn`s, which it calls when a task spawns another.
+//! In tokio, they would see the task's values.
+//!
 //! Between steps, while Shuttle picks the next task to run, its current task is still the one that
 //! ran last. Code that runs there, such as a `tracing` subscriber handling one of the events Shuttle
 //! emits then, therefore sees that task's slot, and the values of the scopes that task is in.
