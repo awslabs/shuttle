@@ -154,6 +154,8 @@ impl RawRwLock {
 // writer holds them all.
 unsafe impl lock_api::RawRwLock for RawRwLock {
     #[allow(clippy::declare_interior_mutable_const)]
+    // `with_fair_releases` is deprecated so that nothing else uses it; this lock is its only user.
+    #[allow(deprecated)]
     const INIT: RawRwLock = RawRwLock {
         sem: BatchSemaphore::const_new(PERMITS_ON_INITIALIZATION, Fairness::Unfair).with_fair_releases(),
     };
