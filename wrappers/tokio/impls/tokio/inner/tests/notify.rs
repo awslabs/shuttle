@@ -349,3 +349,51 @@ fn notify_one_drop_notified_before_send() {
         });
     });
 }
+
+/// Regression test: Shuttle must be able to schedule a notifier between a
+/// waiter's check and its `notified()`.
+///
+/// The classic `Notify` misuse: check a condition, then create the `Notified`.
+/// If the notifier sets the condition and calls `notify_waiters()` between the
+/// two, the notification is lost and the waiter waits forever.
+#[test]
+#[ignore = "Shuttle never schedules the notifier in this window: https://github.com/awslabs/shuttle/issues/384"]
+#[should_panic(expected = "deadlock")]
+fn notify_lost_wakeup_deadlock() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::Mutex::new(false));
+
+        let waiter = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                let is_ready = *ready.lock().unwrap();
+                if !is_ready {
+                    // BUG (in this test program): registers after checking.
+                    future::block_on(notify.notified());
+                }
+            })
+        };
+
+        *ready.lock().unwrap() = true;
+        notify.notify_waiters();
+
+        waiter.join().unwrap();
+    });
+}
+
+/// Regression test: `notify_waiters` must not discard a stored permit.
+///
+/// `notify_one()` with no waiter stores a permit. `notify_waiters()` notifies
+/// only the waiters registered when it is called and leaves the permit in place,
+/// so the later `notified()` takes it and completes at once.
+#[test]
+#[ignore = "Shuttle's notify_waiters clears the stored permit: https://github.com/awslabs/shuttle/issues/384"]
+fn notify_waiters_keeps_stored_permit() {
+    check_dfs(|| {
+        let notify = Notify::new();
+        notify.notify_one();
+        notify.notify_waiters();
+        future::block_on(notify.notified());
+    });
+}
