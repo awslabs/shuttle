@@ -358,25 +358,37 @@ impl<T: Display + ?Sized> Display for RwLockReadGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
-        self.rwlock.semaphore.release(RwLockType::Read.num_permits());
+        // Execution teardown can unwind the task from the yield point in `release` (see
+        // `ExecutionState::tear_down`). `release` releases the permit even then, and the rest of
+        // unlocking has to happen too, so that the destructors that teardown runs later can lock the
+        // `RwLock`.
+        struct Unlock<'g, 'a, T: ?Sized>(&'g mut RwLockReadGuard<'a, T>);
+        impl<T: ?Sized> Drop for Unlock<'_, '_, T> {
+            #[inline]
+            fn drop(&mut self) {
+                let guard = &mut *self.0;
+                guard.inner = None;
 
-        self.inner = None;
-
-        let mut state = self.rwlock.state.borrow_mut();
-        trace!(
-            holder = ?state.holder,
-            semaphore = ?self.rwlock.semaphore,
-            "releasing Read lock on rwlock {:p}",
-            self.rwlock
-        );
-        let RwLockHolder::Read(readers) = &mut state.holder else {
-            panic!("exiting a reader but rwlock is in the wrong state {:?}", state.holder);
-        };
-        assert!(readers.remove(self.me));
-        if readers.is_empty() {
-            state.holder = RwLockHolder::None;
+                let mut state = guard.rwlock.state.borrow_mut();
+                trace!(
+                    holder = ?state.holder,
+                    semaphore = ?guard.rwlock.semaphore,
+                    "releasing Read lock on rwlock {:p}",
+                    guard.rwlock
+                );
+                let RwLockHolder::Read(readers) = &mut state.holder else {
+                    panic!("exiting a reader but rwlock is in the wrong state {:?}", state.holder);
+                };
+                assert!(readers.remove(guard.me));
+                if readers.is_empty() {
+                    state.holder = RwLockHolder::None;
+                }
+                drop(state);
+            }
         }
-        drop(state);
+        let unlock = Unlock(self);
+
+        unlock.0.rwlock.semaphore.release(RwLockType::Read.num_permits());
     }
 }
 
@@ -415,20 +427,36 @@ impl<T: Display + ?Sized> Display for RwLockWriteGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        self.rwlock.semaphore.release(RwLockType::Write.num_permits());
+        // As for `RwLockReadGuard`.
+        struct Unlock<'g, 'a, T: ?Sized>(&'g mut RwLockWriteGuard<'a, T>);
+        impl<T: ?Sized> Drop for Unlock<'_, '_, T> {
+            #[inline]
+            fn drop(&mut self) {
+                let guard = &mut *self.0;
+                // Teardown unwinding the task is no panic, which mustn't poison the inner lock.
+                let clear_poison = std::thread::panicking()
+                    && !guard.rwlock.inner.is_poisoned()
+                    && ExecutionState::unwinding_for_teardown();
+                guard.inner = None;
+                if clear_poison {
+                    guard.rwlock.inner.clear_poison();
+                }
 
-        self.inner = None;
+                let mut state = guard.rwlock.state.borrow_mut();
+                trace!(
+                    holder = ?state.holder,
+                    semaphore = ?guard.rwlock.semaphore,
+                    "releasing Write lock on rwlock {:p}",
+                    guard.rwlock
+                );
+                assert_eq!(state.holder, RwLockHolder::Write(guard.me));
+                state.holder = RwLockHolder::None;
+                drop(state);
+            }
+        }
+        let unlock = Unlock(self);
 
-        let mut state = self.rwlock.state.borrow_mut();
-        trace!(
-            holder = ?state.holder,
-            semaphore = ?self.rwlock.semaphore,
-            "releasing Write lock on rwlock {:p}",
-            self.rwlock
-        );
-        assert_eq!(state.holder, RwLockHolder::Write(self.me));
-        state.holder = RwLockHolder::None;
-        drop(state);
+        unlock.0.rwlock.semaphore.release(RwLockType::Write.num_permits());
     }
 }
 

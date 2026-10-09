@@ -2,6 +2,7 @@ use crate::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use crate::sync::{ResourceSignature, ResourceType};
 use shuttle_engine::current;
 use shuttle_engine::future::batch_semaphore::{BatchSemaphore, Fairness};
+use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::TaskId;
 use shuttle_engine::runtime::thread;
 use std::cell::RefCell;
@@ -194,15 +195,34 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
+        // Execution teardown can unwind the task from the yield point in `release` (see
+        // `ExecutionState::tear_down`). `release` releases the permit even then, and the rest of
+        // unlocking has to happen too, so that the destructors that teardown runs later can lock the
+        // mutex.
+        struct Unlock<'g, 'a, T: ?Sized>(&'g mut MutexGuard<'a, T>);
+        impl<T: ?Sized> Drop for Unlock<'_, '_, T> {
+            #[inline]
+            fn drop(&mut self) {
+                let guard = &mut *self.0;
+                // Release the inner mutex. Teardown unwinding the task is no panic, which mustn't
+                // poison it.
+                let clear_poison = std::thread::panicking()
+                    && !guard.mutex.inner.is_poisoned()
+                    && ExecutionState::unwinding_for_teardown();
+                guard.inner = None;
+                if clear_poison {
+                    guard.mutex.inner.clear_poison();
+                }
+
+                let mut state = guard.mutex.state.borrow_mut();
+                trace!(semaphore=?guard.mutex.semaphore, "releasing mutex {:p}", guard.mutex);
+                state.holder = None;
+            }
+        }
+        let unlock = Unlock(self);
+
         // Release a permit (this is a yield point)
-        self.mutex.semaphore.release(1);
-
-        // Release the inner mutex
-        self.inner = None;
-
-        let mut state = self.mutex.state.borrow_mut();
-        trace!(semaphore=?self.mutex.semaphore, "releasing mutex {:p}", self.mutex);
-        state.holder = None;
+        unlock.0.mutex.semaphore.release(1);
     }
 }
 

@@ -82,6 +82,14 @@ impl<'scope> Scope<'scope, '_> {
         F: FnOnce() -> T + Send + 'scope,
         T: Send + 'scope,
     {
+        // A task that a destructor spawns while the execution is torn down never runs (see
+        // `ExecutionState::tear_down`), so the scope would wait for it forever. And if that wait is
+        // stopped, the thread would outlive the scope that it borrows from.
+        assert!(
+            !ExecutionState::with(|s| s.in_cleanup()),
+            "a destructor spawned a scoped thread while the execution was being torn down, but tasks don't run \
+             once an execution is over"
+        );
         self.num_running_threads.fetch_add(1, Ordering::Relaxed);
 
         let finished = std::sync::Arc::new(AtomicBool::new(false));
@@ -286,7 +294,13 @@ impl<T> JoinHandle<T> {
             state.update_clock(&clock);
         });
 
-        self.result.lock().unwrap().take().expect("target should have finished")
+        // A thread that execution teardown dropped (see `ExecutionState::tear_down`) has no result,
+        // much as one that panicked has none.
+        self.result.lock().unwrap().take().unwrap_or_else(|| {
+            Err(Box::new(
+                "the thread was dropped at the end of the execution, without running",
+            ))
+        })
     }
 
     /// Extracts a handle to the underlying thread.

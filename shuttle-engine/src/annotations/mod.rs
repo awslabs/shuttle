@@ -417,6 +417,15 @@ cfg_if::cfg_if! {
         pub fn record_tick() {
             record_event(AnnotationEvent::Tick);
         }
+
+        /// Execution teardown runs the task now, without the scheduler (see
+        /// `ExecutionState::tear_down`), so what happens is the task's.
+        pub fn record_teardown_step(task_id: TaskId) {
+            with_state(|state| {
+                state.last_task_id = Some(task_id);
+                state.max_task_id = state.max_task_id.max(Some(task_id));
+            });
+        }
     } else {
         use crate::runtime::task::{Task, TaskId};
 
@@ -474,6 +483,8 @@ cfg_if::cfg_if! {
 
         #[inline(always)]
         pub fn record_tick() {}
+
+        pub fn record_teardown_step(_task_id: TaskId) {}
     }
 }
 

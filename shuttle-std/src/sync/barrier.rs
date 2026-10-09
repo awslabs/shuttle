@@ -128,13 +128,27 @@ impl Barrier {
         });
 
         // Add the current thread to `waiters`. It shouldn't already be present.
-        assert!(state.waiters.insert(ExecutionState::me()));
+        let me = ExecutionState::me();
+        assert!(state.waiters.insert(me));
 
         if state.waiters.len() < state.bound {
             trace!(waiters=?state.waiters, epoch=my_epoch, "blocked on barrier {:?}", self);
             drop(state);
+
+            // If execution teardown unwinds the task from the switch below (see
+            // `ExecutionState::tear_down`), the task is no longer waiting. Its destructors run as the
+            // task, and may wait on this barrier.
+            struct StopWaitingOnUnwind<'a>(&'a Barrier, TaskId);
+            impl Drop for StopWaitingOnUnwind<'_> {
+                fn drop(&mut self) {
+                    self.0.state.borrow_mut().waiters.remove(&self.1);
+                }
+            }
+            let stop_waiting_on_unwind = StopWaitingOnUnwind(self, me);
+
             ExecutionState::with(|s| s.current_mut().block(false));
             thread::switch();
+            std::mem::forget(stop_waiting_on_unwind);
         } else {
             trace!(waiters=?state.waiters, epoch=my_epoch, "releasing waiters on barrier {:?}", self);
 

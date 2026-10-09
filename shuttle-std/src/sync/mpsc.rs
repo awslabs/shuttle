@@ -108,6 +108,46 @@ impl<T> Debug for ChannelState<T> {
     }
 }
 
+/// Which list of waiters a task blocked on a channel is on.
+enum Waiter {
+    Sender,
+    Receiver,
+}
+
+/// Takes a task blocked on a channel off its list of waiters, if execution teardown unwinds the task
+/// from the switch where it blocked (see `ExecutionState::tear_down`). If the task was first in line,
+/// and could have gone on, the next one in line can go on instead.
+struct StopWaitingOnUnwind<'a, T>(&'a Channel<T>, TaskId, Waiter);
+
+impl<T> Drop for StopWaitingOnUnwind<'_, T> {
+    fn drop(&mut self) {
+        let mut state = self.0.state.borrow_mut();
+        let state = &mut *state;
+        let waiters = match self.2 {
+            Waiter::Sender => &mut state.waiting_senders,
+            Waiter::Receiver => &mut state.waiting_receivers,
+        };
+        let Some(position) = waiters.iter().position(|task| *task == self.1) else {
+            return;
+        };
+        waiters.remove(position);
+        let Some(&next) = waiters.first().filter(|_| position == 0) else {
+            return;
+        };
+        // As `send_internal` and `recv_internal` decide whether the next waiter can go on.
+        let can_go_on = match self.2 {
+            Waiter::Sender => match self.0.bound.expect("only a bounded channel has waiting senders") {
+                0 => !state.waiting_receivers.is_empty(),
+                bound => state.messages.len() < bound,
+            },
+            Waiter::Receiver => !state.messages.is_empty(),
+        };
+        if can_go_on {
+            ExecutionState::with(|s| s.get_mut(next).unblock());
+        }
+    }
+}
+
 impl<T> Channel<T> {
     #[track_caller]
     fn new(bound: Option<usize>) -> Self {
@@ -201,7 +241,12 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
+            // If execution teardown unwinds the task from the switch below (see
+            // `ExecutionState::tear_down`), the task is no longer waiting. Destructors that run later
+            // use this channel as if it did.
+            let stop_waiting_on_unwind = StopWaitingOnUnwind(self, me, Waiter::Sender);
             thread::switch();
+            std::mem::forget(stop_waiting_on_unwind);
 
             state = self.state.borrow_mut();
             trace!(
@@ -339,7 +384,10 @@ impl<T> Channel<T> {
             ExecutionState::with(|s| s.current_mut().block(false));
             drop(state);
 
+            // As for a blocked sender.
+            let stop_waiting_on_unwind = StopWaitingOnUnwind(self, me, Waiter::Receiver);
             thread::switch();
+            std::mem::forget(stop_waiting_on_unwind);
 
             state = self.state.borrow_mut();
             trace!(

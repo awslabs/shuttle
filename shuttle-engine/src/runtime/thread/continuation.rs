@@ -1,4 +1,4 @@
-use crate::config::{ContinuationFunctionBehavior, UNGRACEFUL_SHUTDOWN_CONFIG};
+use crate::config::UNGRACEFUL_SHUTDOWN_CONFIG;
 use crate::runtime::execution::ExecutionState;
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
@@ -51,6 +51,8 @@ unsafe impl Send for ContinuationFunction {}
 pub enum ContinuationInput {
     Resume,
     Exit,
+    /// Drop the function instead of running it, or stop the future it polls (see `Continuation::cancel`).
+    Cancel,
 }
 
 /// Outputs that a continuation can pass back to us
@@ -91,14 +93,21 @@ impl Continuation {
                     // Tell the caller we've finished the previous user function (or if this is our
                     // first time around the loop, the caller below expects us to pretend we've
                     // finished the previous function).
-                    match yielder.suspend(ContinuationOutput::Finished(yielder as *const _)) {
+                    let input = yielder.suspend(ContinuationOutput::Finished(yielder as *const _));
+                    let f = match input {
                         ContinuationInput::Exit => break,
-                        ContinuationInput::Resume => {}
+                        ContinuationInput::Resume | ContinuationInput::Cancel => {
+                            function.0.take().expect("must have a function to run")
+                        }
                     };
 
-                    let f = function.0.take().expect("must have a function to run");
-
-                    f();
+                    if input == ContinuationInput::Cancel {
+                        // The function never ran: drop it here, on this stack, so that the destructors
+                        // of what it owns run like a running task's (see `Continuation::cancel`).
+                        drop(f);
+                    } else {
+                        f();
+                    }
                 }
 
                 ContinuationOutput::Exited
@@ -147,6 +156,67 @@ impl Continuation {
         matches!(ret, ContinuationOutput::Finished(_))
     }
 
+    /// Resume the continuation to cancel its function, and return true if the function has
+    /// finished, like `resume`. This is how execution teardown drops a task that is unfinished at
+    /// the end of an execution, on the task's own stack (see `ExecutionState::tear_down`). A
+    /// function that never ran is dropped. A function suspended between polls of a future (see
+    /// `switch_between_polls`) drops the future and returns. Only these two are cancelled: any other
+    /// suspended function is in the middle of user code, which only unwinding its stack can stop.
+    pub fn cancel(&mut self) -> bool {
+        debug_assert!(self.state == ContinuationState::Ready || self.state == ContinuationState::Initialized);
+
+        let ret = self.resume_with_input(ContinuationInput::Cancel);
+        debug_assert_ne!(
+            ret,
+            ContinuationOutput::Exited,
+            "continuation should not exit when cancelled"
+        );
+
+        matches!(ret, ContinuationOutput::Finished(_))
+    }
+
+    /// Whether the continuation has a function that has not started running yet.
+    pub(crate) fn never_ran(&self) -> bool {
+        self.state == ContinuationState::Initialized
+    }
+
+    /// Whether the continuation's function is suspended, and can be resumed.
+    pub(crate) fn suspended(&self) -> bool {
+        self.state == ContinuationState::Ready
+    }
+
+    /// Leak the function the continuation was given, which has not started running, so that the
+    /// continuation can be reused.
+    pub(crate) fn leak_function(&mut self) {
+        debug_assert!(self.never_ran());
+        std::mem::forget(self.function.0.take());
+        self.state = ContinuationState::NotReady;
+    }
+
+    /// Unwind the stack of a continuation that is suspended in its function, which drops what is on
+    /// it, as a panic would. If the function catches the unwind, it starts again where the function
+    /// next switches (see `Coroutine::force_unwind`).
+    pub(crate) fn unwind_stack(&mut self) {
+        debug_assert!(self.state == ContinuationState::Ready);
+        self.coroutine.force_unwind();
+        self.state = ContinuationState::Exited;
+    }
+
+    /// Leak the stack of a continuation that is suspended in its function, or whose function
+    /// panicked out of it: nothing on it is dropped, and the stack is freed with the continuation.
+    pub(crate) fn leak_stack(&mut self) {
+        debug_assert!(self.state == ContinuationState::Ready || self.state == ContinuationState::Running);
+        // SAFETY: this leaks the objects on the coroutine's stack without dropping them, so anything
+        // that still refers into the stack is left dangling (see `Coroutine::force_reset`). Shuttle
+        // has accepted that for stopped and failed executions, whose tasks never run again (see
+        // `ExecutionState::tear_down`). Teardown drops the functions of the tasks that never ran,
+        // which can borrow from another task's stack (scoped threads), before it leaks any stack.
+        unsafe {
+            self.coroutine.force_reset();
+        }
+        self.state = ContinuationState::Exited;
+    }
+
     fn resume_with_input(&mut self, input: ContinuationInput) -> ContinuationOutput {
         self.state = ContinuationState::Running;
         match self.coroutine.resume(input) {
@@ -190,10 +260,12 @@ impl Drop for Continuation {
                 debug_assert_eq!(ret, ContinuationOutput::Exited);
             }
             ContinuationState::Running | ContinuationState::Ready => {
-                // If already panicking or at the end of the execution, don't worry about cleaning up resources
-                // on individual coroutines which are still in-flight. In particular, unwinding a
-                // stopped execution runs drop handlers, which can then panic if they interact with
-                // shuttle atomics, causing a panic-on-drop abort.
+                // Execution teardown unwinds or leaks the stacks of the tasks that are unfinished at
+                // the end of an execution itself (see `ExecutionState::tear_down`), so this is only
+                // reached for a continuation dropped some other way. If already panicking or the
+                // execution stopped, don't worry about cleaning up resources on individual coroutines
+                // which are still in-flight: unwinding them runs drop handlers, which can then panic
+                // if they interact with shuttle atomics, causing a panic-on-drop abort.
                 //
                 // SAFETY: `force_reset` leaks the coroutine. However, given that the execution is *already* aborting
                 // at this point and will soon exit, this is unlikely to cause issues. Leaking the coroutine here also
@@ -273,15 +345,15 @@ impl Drop for PooledContinuation {
             // This is because arguments and captures may already have been moved into the function,
             // and thus these moved objects won't be dropped until the function itself has been
             // dropped. Thus we must drop the inner function before reusing it.
-            let old = c.function.0.replace(None);
-            c.state = ContinuationState::NotReady;
-            if std::thread::panicking() || ExecutionState::in_teardown_after_failure() {
-                match UNGRACEFUL_SHUTDOWN_CONFIG.get().continuation_function_behavior {
-                    ContinuationFunctionBehavior::Drop => drop(old),
-                    ContinuationFunctionBehavior::Leak => std::mem::forget(old),
-                }
+            //
+            // Execution teardown deals with the functions of the tasks that never ran itself (see
+            // `ExecutionState::tear_down`), so this is only reached for a continuation dropped some
+            // other way.
+            if std::thread::panicking() && UNGRACEFUL_SHUTDOWN_CONFIG.get().continuation_function_behavior.leaks() {
+                c.leak_function();
             } else {
-                drop(old);
+                drop(c.function.0.replace(None));
+                c.state = ContinuationState::NotReady;
             }
             self.queue.borrow_mut().push_back(c);
         }
@@ -350,16 +422,36 @@ pub fn switch() {
     crate::annotations::record_tick();
     trace!("switch from {}", Location::caller());
     if ExecutionState::maybe_yield() {
-        let yielder = ExecutionState::with(|state| state.current().yielder);
-
-        // SAFETY: A yielder reference will be valid for the lifetime of the continuation (see `corosensei::Coroutine::with_stack`)
-        // The yielder field is stored on the Task, whose lifetime is necessarily subsumed by the lifetime of the continuation which contains it.
-        // As a result, the task struct cannot contain an invalidated pointer to it's yielder. There are no mutable references to the yielder.
-        match unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded) {
+        match suspend() {
             ContinuationInput::Exit => panic!("unexpected exit continuation"),
             ContinuationInput::Resume => {}
-        };
+            ContinuationInput::Cancel => unreachable!("only a task that is between polls is cancelled"),
+        }
     }
+}
+
+/// Like `switch`, for the loop that polls a future task's future (see `Task::from_future`), between
+/// two polls. Returns true if execution teardown cancelled the task while it was switched out (see
+/// `Continuation::cancel`), in which case the loop drops the future instead of polling it again.
+pub(crate) fn switch_between_polls() -> bool {
+    crate::annotations::record_tick();
+    trace!("switch between polls");
+    ExecutionState::maybe_yield() && suspend() == ContinuationInput::Cancel
+}
+
+/// Suspend the current task's continuation, and return what it is resumed with.
+#[inline(always)]
+fn suspend() -> ContinuationInput {
+    let yielder = ExecutionState::with(|state| state.current().yielder);
+    assert!(!yielder.is_null(), "a task without a stack cannot switch");
+
+    // SAFETY: A yielder reference is valid for the lifetime of the continuation (see
+    // `corosensei::Coroutine::with_stack`), and the task's `yielder` is its continuation's. A task
+    // owns its continuation until execution teardown takes it, to unwind or leak its stack, and
+    // teardown clears `yielder` once the stack is gone. `maybe_yield` only asks a task to switch
+    // while it runs on its continuation, which a task whose stack teardown unwinds still does. There
+    // are no mutable references to the yielder.
+    unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded)
 }
 
 #[cfg(test)]

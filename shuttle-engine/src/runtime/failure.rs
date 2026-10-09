@@ -93,9 +93,9 @@ pub fn init_panic_hook(config: Config) {
     INIT.call_once(|| {
         let original_hook = panic::take_hook();
         panic::set_hook(Box::new(move |panic_info| {
-            // The panics from tearing down a failed execution are ignored, so that its failure is
-            // what gets reported (see `ExecutionState::cleanup`).
-            if ExecutionState::in_teardown_after_failure() {
+            // Execution teardown ignores some of the panics it catches, which aren't to be reported
+            // (see `ExecutionState::tear_down`).
+            if ExecutionState::teardown_ignores_panic(panic_info.payload()) {
                 return;
             }
             eprintln!("Task failed, serializing schedule");
