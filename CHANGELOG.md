@@ -1,6 +1,6 @@
-# Unreleased
+# 0.9.6 (October 9, 2026)
 
-* Fix a stack overflow when a global `tracing` subscriber at TRACE level calls into Shuttle while it handles an event, for example to call `current::clock()`. Every access to the execution state emits a TRACE event, so the subscriber's own access emitted another event, which called the subscriber again, and so on until the stack overflowed, and the failure report and persisted schedule were lost with the process. Accesses made while that event is being handled no longer emit it.
+* Fix a stack overflow when a global `tracing` subscriber at TRACE level calls into Shuttle while it handles an event, for example to call `current::clock()`. Every access to the execution state emits a TRACE event, so the subscriber's own access emitted another event, which called the subscriber again, and so on until the stack overflowed, and the failure report and persisted schedule were lost with the process. Accesses made while that event is being handled no longer emit it. (#382)
 
 * Execution teardown no longer panics or aborts when destructors use Shuttle. When an execution ends, Shuttle drops the tasks that have not finished, so the destructors of everything they own run then. Almost every Shuttle operation panicked in those destructors, because it looked up the running task and there was none; the panic came from a destructor, so the process aborted, and the failure report was lost with it. Among them were `Mutex::lock` and `try_lock` (and the tokio wrapper's), `RwLock`, `BatchSemaphore::try_acquire`, atomics, channel sends, spawning, `thread::current` and `block_on`. (0.9.5 made `current::clock()` safe, but the operations that use the clock still looked up the running task right after it.) (#381)
 
@@ -17,6 +17,10 @@
 * A panic out of the executor, such as a scheduler's when a replayed schedule doesn't fit the test, no longer skips execution teardown, which aborted the process if a destructor then used Shuttle. (#381)
 
 * `BatchSemaphore`: a task that takes a permit of an unfair semaphore while an `Acquire` of its own is still queued on it is no longer blocked by that `Acquire`. Waking a waker of a task of another execution no longer panics. (#381)
+
+* Add `BatchSemaphore::acquire_reserving`, for unfair semaphores. The request holds nothing and waits like an `acquire` until `min_permits` permits are available, and then reserves the semaphore in the same step: from then on no other request can take a permit, and the request takes its `num_permits` as soon as that many are available. The reservation ends when the request is granted or its future is dropped, and while it lasts, `available_permits` is zero. It models a lock that holds back new requests before it holds everything it asked for, such as a `parking_lot` `RwLock` writer, which sets `WRITER_BIT` and then waits for the readers to leave. `BatchSemaphore::upgrade` on an unfair semaphore now reserves the semaphore too, as soon as no other request holds the reservation, so that nothing can overtake it while it waits for the tasks that hold permits. (#374)
+
+* Publish `shuttle-engine` 0.1.4 and `shuttle-std` 0.1.3, which between them have all of the changes above. `shuttle-std` now requires `shuttle-engine` 0.1.4, whose teardown support it uses. `shuttle-schedulers` is unchanged at 0.1.1; it takes `shuttle-engine` as `^0.1.1`, so it builds against 0.1.4 as it stands. `shuttle`'s own source is unchanged too; it now requires `shuttle-engine` 0.1.4 and `shuttle-std` 0.1.3, so that upgrading to 0.9.6 brings the fixes with it. No wrapper is republished; they get these fixes through `shuttle`.
 
 # 0.9.5 (September 30, 2026)
 
