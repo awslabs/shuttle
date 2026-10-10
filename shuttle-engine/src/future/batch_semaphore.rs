@@ -109,9 +109,16 @@ struct PermitsAvailable {
     /// deque is lazily initialized; see `const_new`.
     permit_clocks: Option<VecDeque<(usize, VectorClock)>>,
 
-    /// The clock of the last successful acquire event. Used for causal
-    /// dependence in `try_acquire` failures.
+    /// The join of the clocks of the successful acquire events, and of the
+    /// requests that reserved the semaphore (see
+    /// [`BatchSemaphore::acquire_reserving`]). Used for causal dependence in
+    /// `try_acquire` failures and in [`BatchSemaphore::load_permits`].
     last_acquire: VectorClock,
+
+    /// The join of the clocks of the release events, and of the requests that
+    /// gave up a reservation. Used for causal dependence in
+    /// [`BatchSemaphore::load_permits`].
+    last_release: VectorClock,
 }
 
 // Implement debug in order to not output the `VectorClock`s
@@ -133,6 +140,7 @@ impl PermitsAvailable {
             num_available: num_permits,
             permit_clocks: Some(permit_clocks),
             last_acquire: VectorClock::new(),
+            last_release: VectorClock::new(),
         }
     }
 
@@ -145,6 +153,7 @@ impl PermitsAvailable {
             num_available: num_permits,
             permit_clocks: None,
             last_acquire: VectorClock::new(),
+            last_release: VectorClock::new(),
         }
     }
 
@@ -212,6 +221,7 @@ impl PermitsAvailable {
 
     fn release(&mut self, num_permits: usize, clock: VectorClock) {
         self.init_permit_clocks();
+        self.last_release.update(&clock);
         self.num_available += num_permits;
         self.permit_clocks.as_mut().unwrap().push_back((num_permits, clock));
     }
@@ -470,6 +480,10 @@ impl BatchSemaphoreState {
                 let waiter = self.waiters.pop_front().unwrap();
                 assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
                 trace!("handed the reservation to waiter {:?}", waiter);
+                // A request that the reservation refuses is after the request that holds it, and
+                // after the release that handed it over (see `try_acquire`).
+                self.permits_available.last_acquire.update(&waiter.clock);
+                self.permits_available.last_acquire.update(&current::clock());
                 self.reservation = Some(waiter);
                 return true;
             } else {
@@ -654,10 +668,20 @@ impl BatchSemaphore {
     ///
     /// Both parts of the result describe the same instant: no scheduling point
     /// separates the closed check from the permit count.
+    ///
+    /// The read is causally after every acquire and release of the semaphore
+    /// before it, and after the requests that reserved the semaphore or gave a
+    /// reservation up, as a load of an atomic word is after the stores to it.
+    /// So a schedule replayed up to the read's clock (see
+    /// `ReplayScheduler::set_target_clock`) reads the same state.
     pub fn load_permits(&self) -> Option<usize> {
         thread::switch();
 
         let state = self.state.borrow();
+        ExecutionState::with(|s| {
+            s.update_clock(&state.permits_available.last_acquire);
+            s.update_clock(&state.permits_available.last_release);
+        });
         if state.closed {
             None
         } else {
@@ -734,7 +758,8 @@ impl BatchSemaphore {
             .acquire_permits(num_permits, self.fairness, Priority::Back)
             .inspect_err(|_err| {
                 // Conservatively, the requester causally depends on the
-                // last successful acquire.
+                // last successful acquire, and on the request that holds the
+                // reservation, if one refused it.
                 // TODO: This is not precise, but `try_acquire` causal dependency
                 // TODO: is both hard to define, and is most likely not worth the
                 // TODO: effort. The cases where causality would be tracked
@@ -875,6 +900,8 @@ impl BatchSemaphore {
 
         assert!(state.is_reserved_by(waiter));
         state.reservation = None;
+        // Giving up the reservation changes the state that `load_permits` reads.
+        state.permits_available.last_release.update(&current::clock());
 
         // Wake the waiters that can now take the permits, unless `release`
         // wouldn't either (see `ExecutionState::should_stop`).
@@ -1394,7 +1421,11 @@ impl<'a> Acquire<'a> {
         } else {
             crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
         }
-        semaphore.state.borrow_mut().reservation = Some(waiter);
+        let mut state = semaphore.state.borrow_mut();
+        // A request that the reservation refuses is after this one (see `try_acquire`).
+        state.permits_available.last_acquire.update(&current::clock());
+        state.reservation = Some(waiter);
+        drop(state);
         trace!("Acquire::poll for {:?} that reserved the semaphore", self);
         // No waiter can take a permit now.
         semaphore.reblock_if_unfair();

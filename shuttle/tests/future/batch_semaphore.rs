@@ -1609,8 +1609,8 @@ mod load_permits_tests {
 
     /// `load_permits` changes nothing, but it is a scheduling point: another task can run between
     /// two reads, so two consecutive reads can disagree. Reading with `try_acquire` + `release`
-    /// instead would transiently take the permit, which a concurrent `try_acquire` could observe;
-    /// `cannot_fail` below rules that out.
+    /// instead would transiently take the permit, which would make the other task's `try_acquire`
+    /// fail.
     #[test_log::test]
     fn load_permits_is_a_scheduling_point_without_effects() {
         let observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
@@ -1639,6 +1639,78 @@ mod load_permits_tests {
             observed,
             HashSet::from([(1, 1), (1, 0), (0, 0), (0, 1)]),
             "each read must have its own scheduling point"
+        );
+    }
+
+    /// A read is causally after the acquires and the releases before it, as a load of an atomic
+    /// word is after the stores to it, so a replay up to its clock reads the same state. Task 1
+    /// releases another semaphore first, so that its clock has an event of its own when it takes
+    /// the permit. `released` is a `std` atomic, which adds no scheduling point and no clock edge.
+    #[test_log::test]
+    fn load_permits_is_after_the_acquires_and_releases() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair));
+                let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let other = {
+                    let (sem, released) = (Arc::clone(&sem), Arc::clone(&released));
+                    thread::spawn(move || {
+                        assert_eq!(me(), 1);
+                        BatchSemaphore::new(0, Fairness::Unfair).release(1);
+                        sem.acquire_blocking(1).unwrap();
+                        sem.release(1);
+                        released.store(true, Ordering::SeqCst);
+                    })
+                };
+                let taken = sem.load_permits() == Some(0);
+                if taken || released.load(Ordering::SeqCst) {
+                    check_clock(|i, c| (i != 1) || (c > 0));
+                } else {
+                    check_clock(|i, c| (i != 1) || (c == 0));
+                }
+                other.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// A `try_acquire` that a reservation refuses is after the request that holds the reservation,
+    /// although that request holds no permits yet, as a `try_write` of a `parking_lot` lock that
+    /// sees `WRITER_BIT` is after the writer that set it. Task 1 releases another semaphore first,
+    /// so that its clock has an event of its own when it reserves the semaphore.
+    #[test_log::test]
+    fn failed_try_acquire_is_after_the_reservation() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(2, Fairness::Unfair));
+                sem.acquire_blocking(1).unwrap();
+                let reserver = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        assert_eq!(me(), 1);
+                        BatchSemaphore::new(0, Fairness::Unfair).release(1);
+                        future::block_on(sem.acquire_reserving(1, 2)).unwrap();
+                        sem.release(2);
+                    })
+                };
+                let other = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        assert_eq!(me(), 2);
+                        // One permit is free while the main task holds the other, so only task 1
+                        // can make this fail, by reserving the semaphore or by holding it.
+                        match sem.try_acquire(1) {
+                            Ok(()) => sem.release(1),
+                            Err(_) => check_clock(|i, c| (i != 1) || (c > 0)),
+                        }
+                    })
+                };
+                thread::yield_now();
+                sem.release(1);
+                reserver.join().unwrap();
+                other.join().unwrap();
+            },
+            None,
         );
     }
 }

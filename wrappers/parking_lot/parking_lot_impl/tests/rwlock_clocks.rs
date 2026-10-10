@@ -7,6 +7,7 @@
 
 use shuttle::{check_dfs, current, thread};
 use shuttle_parking_lot_impl::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 fn me() -> usize {
@@ -40,7 +41,7 @@ fn check_reader_after_writer(read: fn(&RwLock<Option<usize>>) -> Option<Option<u
         thread::spawn(move || match read(&lock) {
             Some(Some(id)) => assert!(after(id), "the reader is not after the writer"),
             Some(None) => assert!(!after(writer_id), "the reader is after a writer that has not unlocked"),
-            // A `try_read` that fails is checked by `failed_try_joins_nothing`.
+            // A `try_read` that fails is checked by `failed_try_read_is_after_the_reserving_writer`.
             None => {}
         })
     };
@@ -298,4 +299,91 @@ fn failed_try_write_is_after_the_holder() {
         },
         None,
     );
+}
+
+/// A `try_read` that a waiting writer refuses (its reservation is `WRITER_BIT`) is after the writer,
+/// although the writer does not hold the lock yet: a failed `try_*` also joins the clock of the
+/// request that holds the reservation. The writer locks a Shuttle mutex first, so that its clock has
+/// an event of its own when it asks for the lock.
+#[test]
+fn failed_try_read_is_after_the_reserving_writer() {
+    check_dfs(
+        || {
+            let lock = Arc::new(RwLock::new(()));
+            let read = lock.read();
+            let mutex = Arc::new(shuttle::sync::Mutex::new(()));
+            let writer = {
+                let lock = Arc::clone(&lock);
+                thread::spawn(move || {
+                    drop(mutex.lock().unwrap());
+                    drop(lock.write());
+                })
+            };
+            let writer_id = usize::from(writer.thread().id());
+            let other = {
+                let lock = Arc::clone(&lock);
+                thread::spawn(move || {
+                    // The main task's read guard lets in every other reader, so only the writer
+                    // can make this fail, by reserving the lock or by holding it.
+                    if lock.try_read().is_none() {
+                        assert!(after(writer_id), "a failed try_read is not after the writer");
+                    }
+                })
+            };
+            thread::yield_now();
+            drop(read);
+            writer.join().unwrap();
+            other.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// `is_locked` and `is_locked_exclusive` load the lock state, so, like a load of an atomic word,
+/// each is after the lock operations before it: after the holder's lock when it reads that a task
+/// holds the lock, and after the unlock when it reads that the lock is free. Without these edges,
+/// `ReplayScheduler::set_target_clock` could not replay a failure that depends on the result,
+/// because it would leave out the holder's steps. The holder locks a Shuttle mutex first, so that
+/// its clock has an event of its own when it asks for the lock. `unlocked` is a `std` atomic, which
+/// adds no scheduling point and no clock edge, so it says whether the unlock happened before the
+/// load.
+fn check_load_after_holder(locked: fn(&RwLock<()>) -> bool) {
+    let lock = Arc::new(RwLock::new(()));
+    let mutex = Arc::new(shuttle::sync::Mutex::new(()));
+    let unlocked = Arc::new(AtomicBool::new(false));
+    let holder = {
+        let (lock, unlocked) = (Arc::clone(&lock), Arc::clone(&unlocked));
+        thread::spawn(move || {
+            drop(mutex.lock().unwrap());
+            drop(lock.write());
+            unlocked.store(true, Ordering::SeqCst);
+        })
+    };
+    let holder_id = usize::from(holder.thread().id());
+    let other = {
+        let lock = Arc::clone(&lock);
+        thread::spawn(move || {
+            let locked = locked(&lock);
+            if locked || unlocked.load(Ordering::SeqCst) {
+                assert!(after(holder_id), "the load is not after the holder (locked: {locked})");
+            } else {
+                assert!(
+                    !after(holder_id),
+                    "the load is after a holder that has not asked for the lock"
+                );
+            }
+        })
+    };
+    holder.join().unwrap();
+    other.join().unwrap();
+}
+
+#[test]
+fn is_locked_is_after_the_holder() {
+    check_dfs(|| check_load_after_holder(|lock| lock.is_locked()), None);
+}
+
+#[test]
+fn is_locked_exclusive_is_after_the_holder() {
+    check_dfs(|| check_load_after_holder(|lock| lock.is_locked_exclusive()), None);
 }
