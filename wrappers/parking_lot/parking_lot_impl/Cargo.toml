@@ -21,16 +21,18 @@ deadlock_detection = []
 hardware-lock-elision = []
 
 [dependencies]
-# `>=0.9.6`: the lock needs `BatchSemaphore::acquire_reserving`, `with_fair_releases` and
-# `load_permits`, and the unfair `upgrade` that reserves the semaphore, which first ship in shuttle
-# 0.9.6.
-shuttle = { path = "../../../shuttle", version = ">=0.9.6, <0.10"}
-lock_api = "0.4"
+# `>=0.9.7`: the lock needs `BatchSemaphore::acquire_reserving` and the unfair `upgrade` that
+# reserves the semaphore, which first ship in shuttle 0.9.6, and `with_fair_releases`, `load_permits`
+# and `has_waiters`, which first ship in 0.9.7.
+shuttle = { path = "../../../shuttle", version = ">=0.9.7, <0.10"}
+# `0.4.6`: `RawRwLock` implements `is_locked_exclusive`, which is a trait method from 0.4.6 on.
+lock_api = "0.4.6"
 tracing = { version = "0.1.36", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-# `tests/rwlock_clocks.rs` reads vector clocks, which are empty without this feature.
-shuttle = { path = "../../../shuttle", features = ["vector-clocks"] }
+# `tests/rwlock_clocks.rs` reads vector clocks, which are empty without this feature. The version
+# keeps this dependency in the published crate: `cargo package` drops a path dependency without one.
+shuttle = { path = "../../../shuttle", version = ">=0.9.7, <0.10", features = ["vector-clocks"] }
 # `tests/rwlock_reference_model.rs` checks the parity tests' reference model against the real
 # `parking_lot`. The model copies 0.12.5. `Cargo.lock` is not tracked, so each CI run uses the newest
 # 0.12.x release, and a release that changes the behavior that the model copies fails the test, also
