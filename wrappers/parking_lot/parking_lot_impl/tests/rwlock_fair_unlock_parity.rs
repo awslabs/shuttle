@@ -2,7 +2,7 @@
 //! behave like `parking_lot`?
 //!
 //! Shuttle's fair unlock hands the lock to the waiting tasks inside the release (see
-//! `BatchSemaphore::release_fair`), which removes schedules rather than adding them: no request can
+//! `BatchSemaphore::with_fair_releases`), which removes schedules rather than adding them: no request can
 //! overtake the hand-off. The reference model keeps every order, because `parking_lot` reaches each
 //! of them by delaying when its tasks park (see "Why the model does not need the order in which
 //! `parking_lot` wakes tasks" in the reference module docs). So what this table pins down is that

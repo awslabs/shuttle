@@ -61,11 +61,14 @@
 //! `WRITER_BIT`), never an artifact between two separate semaphore operations.
 //!
 //! The hand-off goes from the front of the queue for as long as the released permits last (see
-//! [`BatchSemaphore::release_fair`]). A writer at the front that the readers still keep out is
+//! [`BatchSemaphore::with_fair_releases`]). A writer at the front that the readers still keep out is
 //! handed the reservation, as `parking_lot` hands it `WRITER_BIT`, and a writer that has already
-//! reserved the lock needs no hand-off: the reservation keeps every other request out either way. A
-//! fair unlock (`unlock_*_fair`, and the `bump_*` methods, which `lock_api` builds on them) is
-//! therefore the same as a plain one.
+//! reserved the lock needs no hand-off: the reservation keeps every other request out either way.
+//! Unlike `parking_lot`'s, the hand-off stops at the first request that does not fit: when it lets
+//! in an upgradable reader, `parking_lot` also hands the lock to the plain readers that wait behind
+//! the writers after it, and here those readers are only woken, to race for the lock. That gives the
+//! same outcomes. A fair unlock (`unlock_*_fair`, and the `bump_*` methods, which `lock_api` builds
+//! on them) is therefore the same as a plain one.
 //!
 //! `is_locked` and `is_locked_exclusive` are reads of the lock state with one scheduling point and
 //! no effect (see [`BatchSemaphore::load_permits`]), like `parking_lot`'s loads of the state word.
@@ -230,12 +233,12 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
 unsafe impl lock_api::RawRwLockFair for RawRwLock {
     unsafe fn unlock_shared_fair(&self) {
         trace!("fair-releasing parking_lot rwlock {:p} (shared)", self);
-        self.sem.release_fair(SHARED);
+        self.sem.release(SHARED);
     }
 
     unsafe fn unlock_exclusive_fair(&self) {
         trace!("fair-releasing parking_lot rwlock {:p} (exclusive)", self);
-        self.sem.release_fair(EXCLUSIVE);
+        self.sem.release(EXCLUSIVE);
     }
 }
 
@@ -307,6 +310,6 @@ unsafe impl lock_api::RawRwLockUpgradeDowngrade for RawRwLock {
 unsafe impl lock_api::RawRwLockUpgradeFair for RawRwLock {
     unsafe fn unlock_upgradable_fair(&self) {
         trace!("fair-releasing parking_lot rwlock {:p} (upgradable)", self);
-        self.sem.release_fair(UPGRADABLE);
+        self.sem.release(UPGRADABLE);
     }
 }

@@ -45,9 +45,9 @@
 //! task is parked, and the OS can delay a thread for any time just before it parks. So any outcome
 //! that a plain unlock reaches, `parking_lot` reaches with the same schedule except that the tasks
 //! the hand-off would favour park only after the requests that overtook them. The stress test of
-//! `rwlock_reference_model` checks this on the real `parking_lot`, and
-//! `rwlock_fair_unlock_parity` checks the other direction: Shuttle's hand-off (see
-//! `BatchSemaphore::release_fair`) must still reach every outcome of the model.
+//! `rwlock_reference_model` checks this on the real `parking_lot`, and the parity tables check the
+//! other direction: every unlock of Shuttle's lock is a hand-off (see
+//! `BatchSemaphore::with_fair_releases`), which must still reach every outcome of the model.
 //!
 //! One limit: `try_write` also fails when `PARKED_BIT` is set on a free lock. That needs two or more
 //! parked tasks, one of which the last unlock did not wake. The model ignores `PARKED_BIT`, and it
