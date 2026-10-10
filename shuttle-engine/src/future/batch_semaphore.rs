@@ -1,6 +1,6 @@
 //! A counting semaphore supporting both async and sync operations.
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{clock::VectorClock, TaskId};
+use crate::runtime::task::{clock::VectorClock, TaskId, TaskSet};
 use crate::runtime::thread;
 use crate::sync_types::{ResourceSignature, ResourceType};
 use crate::{backtrace_enabled, current};
@@ -842,6 +842,14 @@ impl BatchSemaphore {
             };
             ExecutionState::with(|s| {
                 let me = s.try_current().map(|task| task.id());
+                // The tasks that can make progress through an `Acquire` of
+                // theirs: one that a fair release granted permits to, which they
+                // have to run to take, or a queued one that fits. Collected once,
+                // so that this stays linear in the number of waiters.
+                let mut progressing = TaskSet::new();
+                for waiter in state.granted.iter().chain(state.waiters.iter().filter(|w| fits(w))) {
+                    progressing.insert(waiter.task_id());
+                }
                 for waiter in &state.waiters {
                     let task = waiter.task_id();
                     // Only a task that a release woke, and that has not run
@@ -852,21 +860,15 @@ impl BatchSemaphore {
                     // That also skips stale waiters (see `is_stale`). And skip the
                     // current task's own waiters: it is running, which an
                     // `Acquire` of its that is still queued doesn't change.
-                    if fits(waiter) || Some(task) == me || !s.try_get(task).is_some_and(|t| t.runnable()) {
+                    if progressing.contains(task) || Some(task) == me || !s.try_get(task).is_some_and(|t| t.runnable())
+                    {
                         continue;
                     }
-                    // The task can still make progress if another `Acquire` of
-                    // its can: one that a fair release granted permits to, which
-                    // it has to run to take, or a queued one that fits.
-                    let can_progress = state.granted.iter().any(|w| w.task_id() == task)
-                        || state.waiters.iter().any(|w| w.task_id() == task && fits(w));
-                    if !can_progress {
-                        // Put the task back to sleep: this waiter cannot succeed
-                        // (there are not enough permits available), and its
-                        // `poll` would return without resolving. A wake of any
-                        // of the task's futures wakes it again.
-                        s.get_mut(task).sleep();
-                    }
+                    // Put the task back to sleep: this waiter cannot succeed (there
+                    // are not enough permits available), and its `poll` would
+                    // return without resolving. A wake of any of the task's futures
+                    // wakes it again.
+                    s.get_mut(task).sleep();
                 }
             });
         }
