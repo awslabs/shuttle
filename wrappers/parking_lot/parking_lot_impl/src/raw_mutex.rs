@@ -63,4 +63,15 @@ unsafe impl lock_api::RawMutexFair for RawMutex {
         trace!("fair-releasing parking_lot mutex {:p}", self);
         self.semaphore.release(1);
     }
+
+    /// `parking_lot` unlocks and locks again only while `PARKED_BIT` is set, that is, while a task
+    /// waits for the lock. Otherwise the lock stays held. The check is a load of the lock state, with
+    /// one scheduling point.
+    unsafe fn bump(&self) {
+        if self.semaphore.load_permits().is_some() && self.semaphore.has_waiters() {
+            // SAFETY: the caller holds the lock.
+            unsafe { self.unlock_fair() };
+            lock_api::RawMutex::lock(self);
+        }
+    }
 }

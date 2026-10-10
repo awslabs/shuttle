@@ -67,8 +67,10 @@
 //! Unlike `parking_lot`'s, the hand-off stops at the first request that does not fit: when it lets
 //! in an upgradable reader, `parking_lot` also hands the lock to the plain readers that wait behind
 //! the writers after it, and here those readers are only woken, to race for the lock. That gives the
-//! same outcomes. A fair unlock (`unlock_*_fair`, and the `bump_*` methods, which `lock_api` builds
-//! on them) is therefore the same as a plain one.
+//! same outcomes. A fair unlock (`unlock_*_fair`) is therefore the same as a plain one. The `bump_*`
+//! methods unlock and lock again only while a task waits for the lock, as `parking_lot`'s do
+//! (`bump_shared` only while a writer waits for the readers to leave), so they hand the lock to that
+//! task and otherwise keep it held.
 //!
 //! `is_locked` and `is_locked_exclusive` are reads of the lock state with one scheduling point and
 //! no effect (see [`BatchSemaphore::load_permits`]), like `parking_lot`'s loads of the state word.
@@ -97,13 +99,8 @@
 //!   not wait take the lock first (#259).
 //! * `parking_lot`'s `try_write` also fails while `PARKED_BIT` is set on a free lock. This happens
 //!   after an unlock that wakes some, but not all, of the parked tasks, so it needs at least two
-//!   parked tasks besides the task that calls `try_write`. This model does not track parked tasks,
-//!   so there its `try_write` can succeed.
-//! * The `bump_*` methods always unlock fairly and lock again (the `lock_api` defaults), while
-//!   `parking_lot`'s do nothing when no task waits. A task that arrives during the `bump` can then
-//!   take the lock in the middle of it, where `parking_lot` would have kept the lock held. The
-//!   outcomes are the ones of `parking_lot`, where that task takes the lock just before or just
-//!   after the `bump` instead.
+//!   parked tasks besides the task that calls `try_write`. This model's `try_write` does not look at
+//!   parked tasks, so there it can succeed.
 
 use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness};
 use std::thread;
@@ -139,6 +136,13 @@ pub struct RawRwLock {
 }
 
 impl RawRwLock {
+    /// `parking_lot`: `state & PARKED_BIT != 0`, which is set while a request waits for the lock
+    /// (see `BatchSemaphore::has_waiters`). A load of the lock state, with one scheduling point,
+    /// like `is_locked`.
+    fn parked(&self) -> bool {
+        self.sem.load_permits().is_some() && self.sem.has_waiters()
+    }
+
     /// Block until `acquire` resolves.
     #[inline]
     fn block_on(acquire: shuttle::future::batch_semaphore::Acquire<'_>) {
@@ -240,6 +244,27 @@ unsafe impl lock_api::RawRwLockFair for RawRwLock {
         trace!("fair-releasing parking_lot rwlock {:p} (exclusive)", self);
         self.sem.release(EXCLUSIVE);
     }
+
+    /// `parking_lot` unlocks and locks again only while `WRITER_BIT` is set, which a reader sees
+    /// only while a `write` or an `upgrade` waits for the readers to leave: then the reservation
+    /// keeps every free permit (see `is_locked_exclusive`). Otherwise the lock stays held.
+    unsafe fn bump_shared(&self) {
+        if self.sem.load_permits() == Some(0) {
+            // SAFETY: the caller holds a shared lock.
+            unsafe { lock_api::RawRwLock::unlock_shared(self) };
+            lock_api::RawRwLock::lock_shared(self);
+        }
+    }
+
+    /// `parking_lot` unlocks and locks again only while `PARKED_BIT` is set, that is, while a request
+    /// waits for the lock. Otherwise the lock stays held.
+    unsafe fn bump_exclusive(&self) {
+        if self.parked() {
+            // SAFETY: the caller holds an exclusive lock.
+            unsafe { self.unlock_exclusive_fair() };
+            lock_api::RawRwLock::lock_exclusive(self);
+        }
+    }
 }
 
 // SAFETY: downgrading only ever releases permits, so it cannot violate exclusivity; the caller
@@ -311,5 +336,14 @@ unsafe impl lock_api::RawRwLockUpgradeFair for RawRwLock {
     unsafe fn unlock_upgradable_fair(&self) {
         trace!("fair-releasing parking_lot rwlock {:p} (upgradable)", self);
         self.sem.release(UPGRADABLE);
+    }
+
+    /// As `bump_exclusive`: only while a request waits for the lock.
+    unsafe fn bump_upgradable(&self) {
+        if self.parked() {
+            // SAFETY: the caller holds an upgradable lock.
+            unsafe { self.unlock_upgradable_fair() };
+            lock_api::RawRwLockUpgrade::lock_upgradable(self);
+        }
     }
 }
