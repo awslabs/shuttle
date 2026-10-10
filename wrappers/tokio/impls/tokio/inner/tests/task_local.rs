@@ -793,9 +793,18 @@ mod api {
         assert!(KEY.try_get().is_err());
 
         // Dropping a scope that has not completed re-enters it to drop the future.
-        let mut fut = Box::pin(KEY.scope(4, std::future::pending::<()>()));
+        static SEEN: std::sync::Mutex<Vec<Option<u32>>> = std::sync::Mutex::new(Vec::new());
+        let mut fut = Box::pin(KEY.scope(
+            4,
+            RecordOnDrop {
+                key: &KEY,
+                seen: &SEEN,
+                on_poll: OnPoll::Pending,
+            },
+        ));
         assert!(fut.as_mut().now_or_never().is_none());
         drop(fut);
+        assert_eq!(*SEEN.lock().unwrap(), [Some(4)]);
         assert!(KEY.try_get().is_err());
     }
 
@@ -988,28 +997,12 @@ mod isolation {
     /// `$tokio_failure`.
     macro_rules! scenario {
         ($scenario:ident, tokio fails with $tokio_failure:literal) => {
-            mod $scenario {
-                use test_log::test;
-
-                #[test]
-                fn passes_with_shuttle_task_local() {
-                    shuttle_tokio_impl_inner::task_local! {
-                        static KEY: u32;
-                    }
-                    super::$scenario(&KEY);
-                }
-
-                #[test]
-                #[should_panic(expected = $tokio_failure)]
-                fn fails_with_tokio_task_local() {
-                    tokio::task_local! {
-                        static KEY: u32;
-                    }
-                    super::$scenario(&KEY);
-                }
-            }
+            scenario!(@tests $scenario, fails_with_tokio_task_local, #[should_panic(expected = $tokio_failure)]);
         };
         ($scenario:ident, tokio passes) => {
+            scenario!(@tests $scenario, passes_with_tokio_task_local,);
+        };
+        (@tests $scenario:ident, $tokio_test:ident, $(#[$tokio_attr:meta])*) => {
             mod $scenario {
                 use test_log::test;
 
@@ -1022,7 +1015,8 @@ mod isolation {
                 }
 
                 #[test]
-                fn passes_with_tokio_task_local() {
+                $(#[$tokio_attr])*
+                fn $tokio_test() {
                     tokio::task_local! {
                         static KEY: u32;
                     }
@@ -1310,6 +1304,46 @@ mod teardown {
     use std::sync::Mutex as StdMutex;
     use test_log::test;
 
+    /// Spawns a detached task in a scope of `key` and one in no scope, whose futures have not
+    /// finished when the execution ends, and checks what the futures see when Shuttle drops them.
+    /// `on_poll` makes what the scoped task's future does when it is polled.
+    fn scoped_and_unscoped_task_at_teardown(
+        key: &'static LocalKey<u32>,
+        scoped: &'static StdMutex<Vec<Option<u32>>>,
+        unscoped: &'static StdMutex<Vec<Option<u32>>>,
+        on_poll: fn() -> OnPoll,
+    ) {
+        check_dfs(
+            move || {
+                block_on(async move {
+                    drop(task::spawn(key.scope(
+                        7,
+                        RecordOnDrop {
+                            key,
+                            seen: scoped,
+                            on_poll: on_poll(),
+                        },
+                    )));
+                    // Dropped after the scoped task, so it checks that the scope did not leave its
+                    // value behind.
+                    drop(task::spawn(RecordOnDrop {
+                        key,
+                        seen: unscoped,
+                        on_poll: OnPoll::Pending,
+                    }));
+                })
+            },
+            None,
+        );
+
+        let scoped = scoped.lock().unwrap();
+        assert!(!scoped.is_empty());
+        assert!(scoped.iter().all(|seen| *seen == Some(7)), "{scoped:?}");
+        let unscoped = unscoped.lock().unwrap();
+        assert_eq!(unscoped.len(), scoped.len());
+        assert!(unscoped.iter().all(|seen| seen.is_none()), "{unscoped:?}");
+    }
+
     /// A detached task that is pending in a scope at the end of the execution.
     #[test]
     fn task_pending_in_a_scope() {
@@ -1319,35 +1353,7 @@ mod teardown {
         static SCOPED: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
         static UNSCOPED: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
 
-        check_dfs(
-            || {
-                block_on(async {
-                    drop(task::spawn(KEY.scope(
-                        7,
-                        RecordOnDrop {
-                            key: &KEY,
-                            seen: &SCOPED,
-                            on_poll: OnPoll::Pending,
-                        },
-                    )));
-                    // Dropped after the scoped task, so it checks that the scope did not leave its
-                    // value behind.
-                    drop(task::spawn(RecordOnDrop {
-                        key: &KEY,
-                        seen: &UNSCOPED,
-                        on_poll: OnPoll::Pending,
-                    }));
-                })
-            },
-            None,
-        );
-
-        let scoped = SCOPED.lock().unwrap();
-        assert!(!scoped.is_empty());
-        assert!(scoped.iter().all(|seen| *seen == Some(7)), "{scoped:?}");
-        let unscoped = UNSCOPED.lock().unwrap();
-        assert_eq!(unscoped.len(), scoped.len());
-        assert!(unscoped.iter().all(|seen| seen.is_none()), "{unscoped:?}");
+        scoped_and_unscoped_task_at_teardown(&KEY, &SCOPED, &UNSCOPED, || OnPoll::Pending);
     }
 
     /// A detached task that is blocked in the middle of a poll of a scope at the end of the
@@ -1361,37 +1367,12 @@ mod teardown {
         static SCOPED: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
         static UNSCOPED: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
 
-        check_dfs(
-            || {
-                let lock = Arc::new(shuttle::sync::Mutex::new(()));
-                // Never released, so that the task below blocks forever
-                std::mem::forget(lock.lock().unwrap());
-
-                block_on(async move {
-                    drop(task::spawn(KEY.scope(
-                        7,
-                        RecordOnDrop {
-                            key: &KEY,
-                            seen: &SCOPED,
-                            on_poll: OnPoll::Lock(lock),
-                        },
-                    )));
-                    drop(task::spawn(RecordOnDrop {
-                        key: &KEY,
-                        seen: &UNSCOPED,
-                        on_poll: OnPoll::Pending,
-                    }));
-                })
-            },
-            None,
-        );
-
-        let scoped = SCOPED.lock().unwrap();
-        assert!(!scoped.is_empty());
-        assert!(scoped.iter().all(|seen| *seen == Some(7)), "{scoped:?}");
-        let unscoped = UNSCOPED.lock().unwrap();
-        assert_eq!(unscoped.len(), scoped.len());
-        assert!(unscoped.iter().all(|seen| seen.is_none()), "{unscoped:?}");
+        scoped_and_unscoped_task_at_teardown(&KEY, &SCOPED, &UNSCOPED, || {
+            let lock = Arc::new(shuttle::sync::Mutex::new(()));
+            // Never released, so that the task blocks forever
+            std::mem::forget(lock.lock().unwrap());
+            OnPoll::Lock(lock)
+        });
     }
 
     /// A local variable of an `async` block, in a detached task that is switched out in the middle
@@ -1483,11 +1464,11 @@ mod teardown {
                         drop(task::spawn(KEY.scope(outer, async move {
                             task_started.store(true, Ordering::SeqCst);
                             let _held = for_outer_scope;
-                            let _inner = KEY.scope(outer + 1, async move {
+                            KEY.scope(outer + 1, async move {
                                 let _held = for_inner_scope;
                                 std::future::pending::<()>().await
-                            });
-                            std::future::pending::<()>().await
+                            })
+                            .await
                         })));
                     }
 
