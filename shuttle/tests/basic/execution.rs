@@ -169,6 +169,98 @@ fn context_switches_outside_execution() {
 }
 
 #[test]
+#[should_panic(expected = "`ExecutionState` is not set")]
+fn get_current_task_outside_execution() {
+    current::get_current_task();
+}
+
+/// `try_get_current_task` tells the current task from everywhere a `Drop` handler or a `tracing`
+/// subscriber can run: inside tasks, outside an execution, and while Shuttle drops the tasks that
+/// did not finish, where it is the task being dropped.
+#[test]
+fn try_get_current_task_everywhere() {
+    assert_eq!(current::try_get_current_task(), None);
+
+    struct RecordTaskOnDrop(Arc<std::sync::Mutex<Vec<Option<current::TaskId>>>>);
+
+    impl Drop for RecordTaskOnDrop {
+        fn drop(&mut self) {
+            self.0.lock().unwrap().push(current::try_get_current_task());
+        }
+    }
+
+    let dropped_in_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let dropped_in_cleanup_clone = dropped_in_cleanup.clone();
+    check_dfs(
+        move || {
+            assert_eq!(current::try_get_current_task(), Some(current::me()));
+
+            let thread = thread::spawn(current::try_get_current_task);
+            let task = shuttle::future::spawn(async { current::try_get_current_task() });
+            let thread_id: usize = thread.thread().id().into();
+            assert_eq!(thread.join().unwrap().map(usize::from), Some(thread_id));
+            assert_eq!(shuttle::future::block_on(task).unwrap(), Some(current::TaskId::from(2)));
+
+            // Detached and never finishes, so Shuttle drops it when the execution is over, as the
+            // current task.
+            let record = RecordTaskOnDrop(dropped_in_cleanup_clone.clone());
+            drop(shuttle::future::spawn(async move {
+                let _record = record;
+                std::future::pending::<()>().await
+            }));
+        },
+        None,
+    );
+
+    let dropped_in_cleanup = dropped_in_cleanup.lock().unwrap();
+    assert!(!dropped_in_cleanup.is_empty());
+    assert!(
+        dropped_in_cleanup
+            .iter()
+            .all(|id| *id == Some(current::TaskId::from(3))),
+        "{dropped_in_cleanup:?}"
+    );
+}
+
+/// `try_get_current_task` never panics in a `tracing` subscriber, including on the events that
+/// Shuttle emits while it is updating its own state, where `get_current_task` panics.
+#[test]
+fn try_get_current_task_from_a_tracing_subscriber() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Layer;
+
+    #[derive(Default)]
+    struct Seen {
+        task: AtomicUsize,
+        none: AtomicUsize,
+    }
+
+    struct GetsCurrentTask(Arc<Seen>);
+
+    impl<S: tracing::Subscriber> Layer<S> for GetsCurrentTask {
+        fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+            let seen = match current::try_get_current_task() {
+                Some(_) => &self.0.task,
+                None => &self.0.none,
+            };
+            seen.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let seen = Arc::new(Seen::default());
+    let subscriber = tracing_subscriber::registry()
+        .with(GetsCurrentTask(seen.clone()).with_filter(tracing_subscriber::filter::LevelFilter::TRACE));
+    tracing::subscriber::with_default(subscriber, || {
+        check_dfs(|| thread::spawn(|| ()).join().unwrap(), None);
+    });
+
+    // Some events come from tasks, and some from Shuttle while it holds its state, where there is
+    // no current task to get.
+    assert!(seen.task.load(Ordering::SeqCst) > 0);
+    assert!(seen.none.load(Ordering::SeqCst) > 0);
+}
+
+#[test]
 fn context_switches_atomic() {
     // The current implementation makes the following context switches:
     // 2 spawns

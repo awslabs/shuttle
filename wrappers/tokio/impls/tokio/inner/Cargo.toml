@@ -1,6 +1,6 @@
 [package]
 name = "shuttle-tokio-impl-inner"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "MIT"
 description = "Internal implementation of the `tokio` crate for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-tokio`."
@@ -54,6 +54,7 @@ criterion = { version = "0.8", features = [
 ] }
 futures = "0.3.24"
 pin-project = "1.0.12"
+pin-project-lite = "0.2.11"
 regex = "1.10.1"
 shuttle = { version = "0.9", path = "../../../../../shuttle" }
 smallvec = "1.6.1"
@@ -67,6 +68,8 @@ tokio-macros = { package = "shuttle-tokio-macros-impl", path = "../../tokio-macr
 
 [dev-dependencies]
 assert_matches = "1.5"
+# The task-local tests run tokio's own `task_local!` under Shuttle, to show that it does not work there.
+tokio = { version = "1.42", features = ["rt"] }
 
 # docs.rs builds with no features by default, which hides most of the crate.
 [package.metadata.docs.rs]
