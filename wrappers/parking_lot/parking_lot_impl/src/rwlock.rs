@@ -623,7 +623,7 @@ mod tests {
     }
 
     /// A fair unlock hands the lock to a waiting task inside the release (see
-    /// `BatchSemaphore::release_fair`), and a `bump` is a fair unlock plus a relock, so it yields
+    /// `BatchSemaphore::with_fair_releases`), and a `bump` is a fair unlock plus a relock, so it yields
     /// the lock to the tasks that wait. The hand-off itself is pinned down by the engine's
     /// `fair_release_tests`; this exercises every fair unlock and the `bump` of the lock across all
     /// schedules: a reader must be admitted before, inside, and after the `bump` (and nowhere

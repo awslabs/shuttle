@@ -1083,12 +1083,18 @@ mod reservation_tests {
     }
 }
 
-/// Tests of `BatchSemaphore::release_fair`: a release that grants already waiting requests their
-/// permits inside the release itself, so that no other request can overtake them, like
+/// Tests of a semaphore built `with_fair_releases`: its releases grant already waiting requests
+/// their permits inside the release itself, so that no other request can overtake them, like
 /// `parking_lot`'s fair unlock.
+#[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
 mod fair_release_tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+
+    /// An unfair semaphore whose releases are fair.
+    fn fair_releases(num_permits: usize) -> BatchSemaphore {
+        BatchSemaphore::new(num_permits, Fairness::Unfair).with_fair_releases()
+    }
 
     /// A waiter granted by a fair release is causally after the release, whether the grant happens
     /// inside the release (the hand-off, which assigns the permits' clock to the waiter there) or
@@ -1099,12 +1105,12 @@ mod fair_release_tests {
     fn fair_release_clock() {
         check_dfs(
             || {
-                let s = Arc::new(BatchSemaphore::new(0, Fairness::Unfair));
+                let s = Arc::new(fair_releases(0));
 
                 let s2 = s.clone();
                 thread::spawn(move || {
                     assert_eq!(me(), 1);
-                    s2.release_fair(1);
+                    s2.release(1);
                 });
                 thread::spawn(move || {
                     assert_eq!(me(), 2);
@@ -1126,12 +1132,12 @@ mod fair_release_tests {
         check_dfs(
             || {
                 future::block_on(async {
-                    let sem = BatchSemaphore::new(1, Fairness::Unfair);
+                    let sem = fair_releases(1);
                     sem.acquire(1).await.unwrap();
                     let mut waiting = Box::pin(sem.acquire(1));
                     assert!(futures::poll!(waiting.as_mut()).is_pending());
 
-                    sem.release_fair(1);
+                    sem.release(1);
                     // No scheduling point separates the release from this read, so only the grant
                     // inside the release can have taken the permit.
                     assert_eq!(sem.available_permits(), 0, "the waiter was not granted the permit");
@@ -1177,14 +1183,14 @@ mod fair_release_tests {
         check_dfs(
             || {
                 future::block_on(async {
-                    let sem = BatchSemaphore::new(3, Fairness::Unfair);
+                    let sem = fair_releases(3);
                     sem.acquire(3).await.unwrap();
                     let mut first = Box::pin(sem.acquire(2));
                     assert!(futures::poll!(first.as_mut()).is_pending());
                     let mut second = Box::pin(sem.acquire(2));
                     assert!(futures::poll!(second.as_mut()).is_pending());
 
-                    sem.release_fair(3);
+                    sem.release(3);
                     // The first waiter took 2 inside the release; the second does not fit the 1
                     // that is left, which stays available rather than earmarked.
                     assert_eq!(sem.available_permits(), 1);
@@ -1208,14 +1214,14 @@ mod fair_release_tests {
         check_dfs(
             || {
                 future::block_on(async {
-                    let sem = BatchSemaphore::new(2, Fairness::Unfair);
+                    let sem = fair_releases(2);
                     sem.acquire(1).await.unwrap();
                     let mut reserve = Box::pin(sem.acquire_reserving(1, 2));
                     assert!(futures::poll!(reserve.as_mut()).is_pending());
                     let mut waiting = Box::pin(sem.acquire(1));
                     assert!(futures::poll!(waiting.as_mut()).is_pending());
 
-                    sem.release_fair(1);
+                    sem.release(1);
                     assert_eq!(sem.available_permits(), 0);
                     assert!(
                         futures::poll!(reserve.as_mut()).is_ready(),
@@ -1233,18 +1239,18 @@ mod fair_release_tests {
     }
 
     /// On a strictly fair semaphore every release already grants from the front of the queue, so
-    /// `release_fair` is the same as `release`.
+    /// `with_fair_releases` changes nothing.
     #[test_log::test]
-    fn fair_release_on_a_strictly_fair_semaphore_is_a_release() {
+    fn fair_releases_change_nothing_on_a_strictly_fair_semaphore() {
         check_dfs(
             || {
                 future::block_on(async {
-                    let sem = BatchSemaphore::new(1, Fairness::StrictlyFair);
+                    let sem = BatchSemaphore::new(1, Fairness::StrictlyFair).with_fair_releases();
                     sem.acquire(1).await.unwrap();
                     let mut waiting = Box::pin(sem.acquire(1));
                     assert!(futures::poll!(waiting.as_mut()).is_pending());
 
-                    sem.release_fair(1);
+                    sem.release(1);
                     assert_eq!(sem.available_permits(), 0);
                     waiting.as_mut().await.unwrap();
                     sem.release(1);
@@ -1264,7 +1270,7 @@ mod fair_release_tests {
         static SAW_FREE: AtomicBool = AtomicBool::new(false);
         check_dfs(
             || {
-                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair));
+                let sem = Arc::new(fair_releases(1));
                 sem.acquire_blocking(1).unwrap();
                 let waiter = {
                     let sem = sem.clone();
@@ -1273,7 +1279,7 @@ mod fair_release_tests {
                         sem.release(1);
                     })
                 };
-                sem.release_fair(1);
+                sem.release(1);
                 // No scheduling point since the release: 0 means the waiter was queued and was
                 // granted the permit inside the release; 1 means it had not asked yet.
                 match sem.available_permits() {
@@ -1300,7 +1306,7 @@ mod fair_release_tests {
         check_dfs(
             || {
                 future::block_on(async {
-                    let sem = BatchSemaphore::new(3, Fairness::Unfair);
+                    let sem = fair_releases(3);
                     // Like an upgradable reader (2 permits) and a plain reader (1).
                     sem.acquire(2).await.unwrap();
                     sem.acquire(1).await.unwrap();
@@ -1309,7 +1315,7 @@ mod fair_release_tests {
                     let mut later = Box::pin(sem.acquire(1));
                     assert!(futures::poll!(later.as_mut()).is_pending());
 
-                    sem.release_fair(2);
+                    sem.release(2);
                     assert_eq!(sem.available_permits(), 0, "the writer was not handed the reservation");
                     assert!(
                         futures::poll!(later.as_mut()).is_pending(),
@@ -1330,42 +1336,18 @@ mod fair_release_tests {
         );
     }
 
-    /// On a semaphore built `with_fair_releases`, every `release` is fair: it grants the queued
-    /// waiter its permits inside the release, like `release_fair`.
-    #[test_log::test]
-    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
-    fn with_fair_releases_makes_release_fair() {
-        check_dfs(
-            || {
-                future::block_on(async {
-                    let sem = BatchSemaphore::new(1, Fairness::Unfair).with_fair_releases();
-                    sem.acquire(1).await.unwrap();
-                    let mut waiting = Box::pin(sem.acquire(1));
-                    assert!(futures::poll!(waiting.as_mut()).is_pending());
-
-                    sem.release(1);
-                    assert_eq!(sem.available_permits(), 0, "the waiter was not granted the permit");
-                    waiting.as_mut().await.unwrap();
-                    sem.release(1);
-                });
-            },
-            None,
-        );
-    }
-
     /// On a semaphore built `with_fair_releases`, the order of the queue decides who gets the
     /// permits, so Shuttle must explore every order in which tasks can join it. T2 asks for the
     /// permit only after T1's message, and the main task releases it only after T2's message, so
     /// both ask while the main task holds it. Without a scheduling point between T1's message and T1
     /// joining the queue, T1 would always be first in the queue, and get the permit first.
     #[test_log::test]
-    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
     fn with_fair_releases_explores_every_queue_order() {
         let orders = Arc::new(Mutex::new(HashSet::new()));
         let orders_clone = Arc::clone(&orders);
         check_dfs(
             move || {
-                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair).with_fair_releases());
+                let sem = Arc::new(fair_releases(1));
                 sem.acquire_blocking(1).unwrap();
                 let order = Arc::new(Mutex::new(Vec::new()));
                 let (to_second, from_first) = shuttle::sync::mpsc::channel();
