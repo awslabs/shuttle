@@ -1,0 +1,23 @@
+[book]
+title = "The Shuttle Book"
+authors = ["The Shuttle contributors"]
+description = "A guide to testing concurrent Rust code with Shuttle"
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/awslabs/shuttle"
+edit-url-template = "https://github.com/awslabs/shuttle/edit/main/book/{path}"
+site-url = "/shuttle/"
+
+[output.html.playground]
+runnable = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[rust]
+edition = "2021"
