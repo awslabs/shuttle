@@ -1,7 +1,6 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::thread;
 use std::marker::PhantomData;
-use std::panic::{RefUnwindSafe, UnwindSafe};
 
 /// Cooperatively gives up a timeslice to the Shuttle scheduler.
 pub fn yield_now() {
@@ -41,19 +40,12 @@ pub fn thread_fn<F, T>(
 pub struct LocalKey<T: 'static> {
     #[doc(hidden)]
     pub init: fn() -> T,
+    // A `LocalKey` holds no `T` of its own, only the means to reach each thread's, so like
+    // `std::thread::LocalKey` it is `Send`, `Sync` and unwind safe whatever `T` is. `fn() -> T`
+    // gives it all four.
     #[doc(hidden)]
-    pub _p: PhantomData<T>,
+    pub _p: PhantomData<fn() -> T>,
 }
-
-// Safety: `LocalKey` implements thread-local storage; each thread sees its own value of the type T.
-unsafe impl<T> Send for LocalKey<T> {}
-unsafe impl<T> Sync for LocalKey<T> {}
-
-// Like `std::thread::LocalKey`, a `LocalKey` is unwind safe whatever `T` is: it holds no `T` of its
-// own, only the means to reach each thread's. Without these, the `PhantomData<T>` would make it
-// inherit `T`'s unwind safety.
-impl<T> UnwindSafe for LocalKey<T> {}
-impl<T> RefUnwindSafe for LocalKey<T> {}
 
 impl<T: 'static> std::fmt::Debug for LocalKey<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
