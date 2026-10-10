@@ -1688,6 +1688,52 @@ fn ignored_panic_payload_from_an_unwound_stack_is_dropped_as_its_task() {
     assert_eq!(dropped.load(StdOrdering::SeqCst), 1);
 }
 
+/// A suppressed payload's destructor can use Shuttle and panic too. The first failure is
+/// preserved even if the new payload would also panic on drop.
+#[test]
+fn ignored_panic_payload_that_panics_on_drop_preserves_first_failure() {
+    shuttle::thread_local! {
+        static LOCAL: std::cell::RefCell<Option<BoxedOnDrop>> = const { std::cell::RefCell::new(None) };
+    }
+
+    for failed_execution in [false, true] {
+        let dropped = Arc::new(StdAtomicUsize::new(0));
+        let counter = dropped.clone();
+        let mut config = Config::new();
+        config.ungraceful_shutdown_config.continuation_function_behavior = ContinuationFunctionBehavior::Drop;
+        let message = panic_message(|| {
+            Runner::new(RandomScheduler::new(1), config).run(move || {
+                if !failed_execution {
+                    park_until_teardown(|| panic!("first destructor panic"));
+                }
+                let counter = counter.clone();
+                let panic_on_drop: Box<dyn FnOnce() + Send> = Box::new(move || {
+                    let payload = YieldsOnDrop(current::me(), counter);
+                    panic::panic_any(on_drop(move || {
+                        drop(payload);
+                        // Teardown must also avoid dropping the payload of this second panic.
+                        panic::panic_any(on_drop(|| panic!("replacement panic payload was dropped")));
+                    }));
+                });
+                if failed_execution {
+                    // Leave a destructor behind after the test body has already failed.
+                    LOCAL.with(|local| *local.borrow_mut() = Some(OnDrop(Some(panic_on_drop))));
+                    panic!("original failure");
+                } else {
+                    park_until_teardown(panic_on_drop);
+                }
+            });
+        });
+        let expected = if failed_execution {
+            "original failure"
+        } else {
+            "first destructor panic"
+        };
+        assert_eq!(message, expected);
+        assert_eq!(dropped.load(StdOrdering::SeqCst), 1);
+    }
+}
+
 /// A destructor that exceeds the step bound abandons the rest of the execution, as if it had failed:
 /// the stacks that are left are leaked, along with a task's default `tracing` dispatcher.
 #[test]
