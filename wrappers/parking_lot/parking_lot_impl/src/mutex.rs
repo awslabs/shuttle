@@ -32,6 +32,49 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
+    /// `is_locked` reads the lock state without taking the lock, as `parking_lot`'s does, so a
+    /// concurrent `try_lock` cannot fail against it.
+    #[test]
+    fn is_locked_does_not_take_the_lock() {
+        check_dfs(
+            || {
+                let lock = Arc::new(Mutex::new(()));
+                let prober = {
+                    let lock = Arc::clone(&lock);
+                    thread::spawn(move || {
+                        lock.is_locked();
+                    })
+                };
+                assert!(
+                    lock.try_lock().is_some(),
+                    "try_lock failed on a mutex that no task holds"
+                );
+                prober.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// `is_locked` is true exactly while a task holds the lock.
+    #[test]
+    fn is_locked_reads_the_lock_state() {
+        check_dfs(
+            || {
+                let lock = Arc::new(Mutex::new(()));
+                assert!(!lock.is_locked());
+                let guard = lock.lock();
+                let prober = {
+                    let lock = Arc::clone(&lock);
+                    thread::spawn(move || assert!(lock.is_locked(), "is_locked is false while the lock is held"))
+                };
+                prober.join().unwrap();
+                drop(guard);
+                assert!(!lock.is_locked());
+            },
+            None,
+        );
+    }
+
     /// `parking_lot`'s `MutexGuard::bump` unlocks and locks again only while a task waits for the
     /// lock. A `try_lock` never waits, so it can't get in during the `bump`.
     #[test]

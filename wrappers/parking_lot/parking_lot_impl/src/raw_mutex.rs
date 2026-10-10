@@ -54,6 +54,14 @@ unsafe impl lock_api::RawMutex for RawMutex {
         trace!("releasing parking_lot mutex {:p}", self);
         self.semaphore.release(1);
     }
+
+    /// `parking_lot`: `state & LOCKED_BIT != 0`. A read of the lock state with one scheduling point
+    /// and no effect (see `BatchSemaphore::load_permits`), unlike the `lock_api` default, which
+    /// takes the lock and unlocks it again: a concurrent `try_lock` could fail against that probe,
+    /// which `parking_lot` cannot show. A closed lock refuses every request, so it never looks free.
+    fn is_locked(&self) -> bool {
+        self.semaphore.load_permits() != Some(1)
+    }
 }
 
 // SAFETY: Shuttle's semaphore is strictly fair, so a plain `release` already hands the permit to the
