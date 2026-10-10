@@ -276,7 +276,14 @@ struct BatchSemaphoreState {
     // !R.is_queued && !R.has_permits
     //
     // (6) closed ==> reservation.is_none()
+    //
+    // (7) W in granted ==> W.has_permits && !W.is_queued, and the semaphore is unfair
     waiters: VecDeque<Arc<Waiter>>,
+    /// The waiters of an unfair semaphore that a fair release granted their permits to (see
+    /// `BatchSemaphore::with_fair_releases`), and whose `Acquire` has not taken them yet. The task
+    /// of such a waiter has to run to take them, so `BatchSemaphore::reblock_if_unfair` leaves it
+    /// runnable.
+    granted: Vec<Arc<Waiter>>,
     /// The waiter that holds the semaphore's reservation, if any (see
     /// [`BatchSemaphore::acquire_reserving`]). While it is set, the available
     /// permits are kept for this waiter: no other request can take one, and the
@@ -391,7 +398,12 @@ impl BatchSemaphoreState {
         }
     }
 
-    fn unblock_waiters_from_front(&mut self) {
+    /// Grant the waiters at the front of the queue their permits, for as long as the available
+    /// permits last. On an unfair semaphore (`track_grants`), also remember each granted waiter in
+    /// `granted`, until its `Acquire` takes the permits. Returns whether this granted any waiter
+    /// its permits or handed one the reservation.
+    fn unblock_waiters_from_front(&mut self, track_grants: bool) -> bool {
+        let mut handed_over = false;
         while let Some(front) = self.waiters.front() {
             // There is nobody to unblock for a stale waiter (see `is_stale`),
             // so discard it without consuming permits; if the `Acquire` is
@@ -441,6 +453,11 @@ impl BatchSemaphoreState {
                 if let Some(waker) = maybe_waker.take() {
                     waker.wake();
                 }
+                drop(maybe_waker);
+                if track_grants {
+                    self.granted.push(waiter);
+                }
+                handed_over = true;
             } else if front.min_permits < front.num_permits
                 && front.min_permits <= self.permits_available.available()
                 && self.reservation.is_none()
@@ -454,11 +471,12 @@ impl BatchSemaphoreState {
                 assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
                 trace!("handed the reservation to waiter {:?}", waiter);
                 self.reservation = Some(waiter);
-                return;
+                return true;
             } else {
-                return;
+                break;
             }
         }
+        handed_over
     }
 }
 
@@ -544,6 +562,7 @@ impl BatchSemaphore {
         let state = RefCell::new(BatchSemaphoreState {
             id: Some(crate::annotations::record_semaphore_created()),
             waiters: VecDeque::new(),
+            granted: Vec::new(),
             reservation: None,
             permits_available: PermitsAvailable::new(num_permits),
             closed: false,
@@ -574,6 +593,7 @@ impl BatchSemaphore {
         let state = RefCell::new(BatchSemaphoreState {
             id: None,
             waiters: VecDeque::new(),
+            granted: Vec::new(),
             reservation: None,
             permits_available: PermitsAvailable::const_new(num_permits),
             closed: false,
@@ -743,30 +763,48 @@ impl BatchSemaphore {
         res
     }
 
-    /// Clean-up method used when a thread succeeds in acquiring permits. If
-    /// the semaphore is unfair, a preceding `release` may have unblocked a
-    /// number of threads, some of which may no longer be able to succeed with
-    /// the permits remaining in the semaphore.
+    /// Clean-up method used when a thread succeeds in acquiring permits, or
+    /// when a release grants them. If the semaphore is unfair, a preceding
+    /// `release` may have woken a number of tasks, some of which may no longer
+    /// be able to succeed with the permits remaining in the semaphore. Those
+    /// go back to sleep, as they were before the release woke them.
     fn reblock_if_unfair(&self) {
         if self.fairness == Fairness::Unfair {
             let state = self.state.borrow_mut();
+            if state.waiters.is_empty() {
+                return;
+            }
+            // A queued waiter cannot make progress while a reservation keeps
+            // the available permits.
+            let fits = |waiter: &Waiter| {
+                state.reservation.is_none() && waiter.min_permits <= state.permits_available.available()
+            };
             ExecutionState::with(|s| {
                 let me = s.try_current().map(|task| task.id());
                 for waiter in &state.waiters {
-                    let available = state.permits_available.available();
-                    // A queued waiter cannot make progress while a reservation
-                    // keeps the available permits.
-                    let can_progress = state.reservation.is_none() && waiter.min_permits <= available;
-                    // Skip stale waiters (see `is_stale`): there is nobody to
-                    // block. And skip the current task's own waiters: it is
-                    // running, which an `Acquire` of its that is still queued
-                    // doesn't change, and it would only block itself.
                     let task = waiter.task_id();
-                    if !can_progress && Some(task) != me && s.try_get(task).is_some_and(|t| !t.finished()) {
-                        // Block this waiter: it cannot succeed (there are not
-                        // enough permits available); its `poll` would return
-                        // without resolving.
-                        s.get_mut(task).block(false);
+                    // Only a task that a release woke, and that has not run
+                    // since, is runnable here. A task that waits for its
+                    // `Acquire` sleeps (see `block_on`), and one that is blocked
+                    // waits for something else: there is nothing to undo, and
+                    // blocking either would lose the wakes of its other futures.
+                    // That also skips stale waiters (see `is_stale`). And skip the
+                    // current task's own waiters: it is running, which an
+                    // `Acquire` of its that is still queued doesn't change.
+                    if fits(waiter) || Some(task) == me || !s.try_get(task).is_some_and(|t| t.runnable()) {
+                        continue;
+                    }
+                    // The task can still make progress if another `Acquire` of
+                    // its can: one that a fair release granted permits to, which
+                    // it has to run to take, or a queued one that fits.
+                    let can_progress = state.granted.iter().any(|w| w.task_id() == task)
+                        || state.waiters.iter().any(|w| w.task_id() == task && fits(w));
+                    if !can_progress {
+                        // Put the task back to sleep: this waiter cannot succeed
+                        // (there are not enough permits available), and its
+                        // `poll` would return without resolving. A wake of any
+                        // of the task's futures wakes it again.
+                        s.get_mut(task).sleep();
                     }
                 }
             });
@@ -820,7 +858,7 @@ impl BatchSemaphore {
                     // - the semahore has 1 permit available
                     // - there are 2 waiters W1 and W2 where W1 wants 2 permits, and W2 wants 1 permit
                     // - if W1 gives up and drops out, we want to ensure W2 is granted the semaphore
-                    state.unblock_waiters_from_front();
+                    state.unblock_waiters_from_front(false);
                 }
             }
             Fairness::Unfair => {}
@@ -1005,11 +1043,11 @@ impl BatchSemaphore {
         // `ExecutionState::with` on every release even with tracing disabled.
         trace!(task = ?ExecutionState::me(), avail = ?state.permits_available, waiters = ?state.waiters, "released {} permits for semaphore {:p}", num_permits, &self.state);
 
-        let granted_unfair_waiters = match self.fairness {
+        let handed_over = match self.fairness {
             Fairness::StrictlyFair => {
                 // in a strictly fair mode we will grant permits to waiters from the front
                 // of the queue, as long as there are enough permits available
-                state.unblock_waiters_from_front();
+                state.unblock_waiters_from_front(false);
                 false
             }
             Fairness::Unfair => {
@@ -1017,21 +1055,20 @@ impl BatchSemaphore {
                 // release, so that no other request can overtake them (see `release_fair`).
                 // Not while a reservation holds the semaphore: the permits are already kept
                 // for its holder, which `wake_unfair_waiters` takes care of below.
-                let grant = release_fairness == Fairness::StrictlyFair && state.reservation.is_none();
-                if grant {
-                    state.unblock_waiters_from_front();
-                }
+                let handed_over = release_fairness == Fairness::StrictlyFair
+                    && state.reservation.is_none()
+                    && state.unblock_waiters_from_front(true);
                 // in an unfair mode, we will unblock all the waiters for which
                 // there are enough permits available, then let them race
                 state.wake_unfair_waiters();
-                grant
+                handed_over
             }
         };
         drop(state);
 
-        // The grants, or the reservation that they handed over, can leave a waiter that an earlier
+        // The grants, or the reservation that they handed over, can leave a task that an earlier
         // release woke unable to make progress.
-        if granted_unfair_waiters {
+        if handed_over {
             self.reblock_if_unfair();
         }
     }
@@ -1234,6 +1271,18 @@ impl<'a> Acquire<'a> {
         }
     }
 
+    /// Forget that a fair release granted this acquire its permits (see
+    /// `BatchSemaphoreState::granted`), now that the acquire takes them or gives
+    /// them back.
+    fn forget_grant(&self) {
+        if let Some(waiter) = &self.waiter {
+            let mut state = self.semaphore.state.borrow_mut();
+            if let Some(index) = state.granted.iter().position(|w| Arc::ptr_eq(w, waiter)) {
+                state.granted.swap_remove(index);
+            }
+        }
+    }
+
     fn grant_permits(&mut self) {
         match &self.waiter {
             Some(waiter) => waiter.has_permits.store(true, Ordering::SeqCst),
@@ -1403,6 +1452,7 @@ impl Future for Acquire<'_> {
 
         let out = if self.has_permits() {
             assert!(!self.is_queued());
+            self.forget_grant();
             self.completed = true;
             trace!("Acquire::poll for {:?} with permits", self);
             Poll::Ready(Ok(()))
@@ -1570,6 +1620,7 @@ impl Drop for Acquire<'_> {
             // If the waiter was granted permits, release them. Note this must also
             // fire for an acquire that got its permits without ever allocating a
             // waiter, otherwise the semaphore leaks permits.
+            self.forget_grant();
             self.semaphore.release(self.num_permits);
         }
     }
