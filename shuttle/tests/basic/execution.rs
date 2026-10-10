@@ -222,6 +222,44 @@ fn try_get_current_task_everywhere() {
     );
 }
 
+/// `try_get_current_task` never panics in a `tracing` subscriber, including on the events that
+/// Shuttle emits while it is updating its own state, where `get_current_task` panics.
+#[test]
+fn try_get_current_task_from_a_tracing_subscriber() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Layer;
+
+    #[derive(Default)]
+    struct Seen {
+        task: AtomicUsize,
+        none: AtomicUsize,
+    }
+
+    struct GetsCurrentTask(Arc<Seen>);
+
+    impl<S: tracing::Subscriber> Layer<S> for GetsCurrentTask {
+        fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+            let seen = match current::try_get_current_task() {
+                Some(_) => &self.0.task,
+                None => &self.0.none,
+            };
+            seen.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let seen = Arc::new(Seen::default());
+    let subscriber = tracing_subscriber::registry()
+        .with(GetsCurrentTask(seen.clone()).with_filter(tracing_subscriber::filter::LevelFilter::TRACE));
+    tracing::subscriber::with_default(subscriber, || {
+        check_dfs(|| thread::spawn(|| ()).join().unwrap(), None);
+    });
+
+    // Some events come from tasks, and some from Shuttle while it holds its state, where there is
+    // no current task to get.
+    assert!(seen.task.load(Ordering::SeqCst) > 0);
+    assert!(seen.none.load(Ordering::SeqCst) > 0);
+}
+
 #[test]
 fn context_switches_atomic() {
     // The current implementation makes the following context switches:
