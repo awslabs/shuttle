@@ -623,8 +623,8 @@ mod tests {
     }
 
     /// A fair unlock hands the lock to a waiting task inside the release (see
-    /// `BatchSemaphore::with_fair_releases`), and a `bump` is a fair unlock plus a relock, so it yields
-    /// the lock to the tasks that wait. The hand-off itself is pinned down by the engine's
+    /// `BatchSemaphore::with_fair_releases`), and while a task waits, a `bump` is a fair unlock plus a
+    /// relock, so it yields the lock to the tasks that wait. The hand-off itself is pinned down by the engine's
     /// `fair_release_tests`; this exercises every fair unlock and the `bump` of the lock across all
     /// schedules: a reader must be admitted before, inside, and after the `bump` (and nowhere
     /// else), and nothing may deadlock.
@@ -632,11 +632,14 @@ mod tests {
     fn fair_unlock_and_bump_admit_the_readers() {
         let reader_observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
         let reader_observed_clone = Arc::clone(&reader_observed);
+        let upgradable_observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let upgradable_observed_clone = Arc::clone(&upgradable_observed);
 
         check_dfs(
             move || {
                 let lock = Arc::new(RwLock::new(0));
                 let reader_observed = Arc::clone(&reader_observed_clone);
+                let upgradable_observed = Arc::clone(&upgradable_observed_clone);
                 let writer = {
                     let lock = Arc::clone(&lock);
                     spawn(move || {
@@ -658,7 +661,7 @@ mod tests {
                 };
                 // An upgradable read can also be admitted before, inside, or after the bump.
                 let u = lock.upgradable_read();
-                assert!(*u <= 2, "the writer tore a value");
+                upgradable_observed.lock().unwrap().insert(*u);
                 RwLockUpgradableReadGuard::unlock_fair(u);
                 writer.join().unwrap();
                 reader.join().unwrap();
@@ -671,6 +674,80 @@ mod tests {
             *reader_observed.lock().unwrap(),
             HashSet::from([0, 1, 2]),
             "the reader should get the lock before, inside, and after the bump",
+        );
+        assert_eq!(
+            *upgradable_observed.lock().unwrap(),
+            HashSet::from([0, 1, 2]),
+            "the upgradable reader should get the lock before, inside, and after the bump",
+        );
+    }
+
+    /// `parking_lot`'s `bump` methods unlock and lock again only while a task waits for the lock
+    /// (`bump_shared`: while a writer waits for the readers to leave). A `try_write` never waits, so
+    /// it can't get in during a `bump`: the guard reads the same value before and after it.
+    #[test]
+    fn bump_keeps_the_lock_while_no_task_waits() {
+        check_dfs(
+            || {
+                let lock = Arc::new(RwLock::new(0));
+                let other = {
+                    let lock = Arc::clone(&lock);
+                    spawn(move || {
+                        if let Some(mut w) = lock.try_write() {
+                            *w += 1;
+                        }
+                    })
+                };
+                {
+                    let mut r = lock.read();
+                    let before = *r;
+                    RwLockReadGuard::bump(&mut r);
+                    assert_eq!(before, *r, "a try_write got in during bump_shared");
+                }
+                {
+                    let mut u = lock.upgradable_read();
+                    let before = *u;
+                    RwLockUpgradableReadGuard::bump(&mut u);
+                    assert_eq!(before, *u, "a try_write got in during bump_upgradable");
+                }
+                {
+                    let mut w = lock.write();
+                    let before = *w;
+                    RwLockWriteGuard::bump(&mut w);
+                    assert_eq!(before, *w, "a try_write got in during bump_exclusive");
+                }
+                other.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// A reader's `bump` yields to a writer that waits for the readers to leave (`WRITER_BIT`), and
+    /// the relock waits for the writer. When the writer has not asked yet, the `bump` keeps the lock.
+    #[test]
+    fn bump_shared_yields_to_a_waiting_writer() {
+        let observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let observed_clone = Arc::clone(&observed);
+        check_dfs(
+            move || {
+                let lock = Arc::new(RwLock::new(0));
+                let mut r = lock.read();
+                let writer = {
+                    let lock = Arc::clone(&lock);
+                    spawn(move || *lock.write() += 1)
+                };
+                thread::yield_now();
+                RwLockReadGuard::bump(&mut r);
+                observed_clone.lock().unwrap().insert(*r);
+                drop(r);
+                writer.join().unwrap();
+            },
+            None,
+        );
+        assert_eq!(
+            *observed.lock().unwrap(),
+            HashSet::from([0, 1]),
+            "the bump should keep the lock, or yield it to the writer"
         );
     }
 }

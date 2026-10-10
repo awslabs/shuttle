@@ -705,6 +705,26 @@ impl BatchSemaphore {
         }
     }
 
+    /// Whether a request waits in the semaphore's queue for a release to wake it. A request that a
+    /// release has already woken, to race for the permits, does not count, and neither does one
+    /// that holds the reservation, which is not in the queue. Like
+    /// [`BatchSemaphore::available_permits`], this has no scheduling point: read it right after
+    /// [`BatchSemaphore::load_permits`] to see the same instant.
+    ///
+    /// The motivating use case is `parking_lot`'s `PARKED_BIT`, which is set while a thread is
+    /// parked on the lock, and not for a thread that an unlock has woken: its `bump` methods unlock
+    /// and lock again only while it is set.
+    pub fn has_waiters(&self) -> bool {
+        let state = self.state.borrow();
+        ExecutionState::try_with(|s| {
+            state.waiters.iter().any(|waiter| {
+                s.try_get(waiter.task_id())
+                    .is_some_and(|task| !task.finished() && !task.runnable())
+            })
+        })
+        .unwrap_or(false)
+    }
+
     fn init_object_id(&self) {
         let mut state = self.state.borrow_mut();
         if state.id.is_none() {

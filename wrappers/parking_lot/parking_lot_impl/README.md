@@ -38,13 +38,7 @@ Shuttle does not explore those schedules
 `RwLock::try_write` can succeed in one state where `parking_lot`'s fails: on a free lock while
 `parking_lot`'s `PARKED_BIT` is set. This happens after an unlock that wakes some, but not all, of
 the parked tasks, so it needs at least two parked tasks besides the task that calls `try_write`.
-Shuttle does not track parked tasks.
-
-The `bump` methods always unlock fairly and lock again (the `lock_api` defaults), while
-`parking_lot`'s do nothing when no task waits. A task that arrives during a `bump` can then take
-the lock in the middle of it, where `parking_lot` would have kept the lock held; the outcomes are
-ones `parking_lot` can give, with that task's turn falling just before or just after the `bump`
-instead.
+Shuttle's `try_write` does not look at parked tasks.
 
 If your project needs functionality which is not currently supported, please file an issue or,
 better yet, open a PR to contribute the functionality.
