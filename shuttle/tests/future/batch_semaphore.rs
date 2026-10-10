@@ -1402,6 +1402,180 @@ mod fair_release_tests {
     }
 }
 
+/// Tests of how an unfair semaphore puts a task that a release woke back to sleep once the task can
+/// no longer make progress (`reblock_if_unfair`), when the task polls more than one future.
+mod reblock_tests {
+    use super::*;
+    use futures::channel::oneshot;
+    use futures::future::{select, Either};
+
+    /// A task waits on two acquires at once. A fair release grants the first one, and the task
+    /// must then run to take its permits, although its second acquire is still queued and cannot
+    /// make progress.
+    #[test_log::test]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
+    fn fair_release_leaves_the_task_it_granted_runnable() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(0, Fairness::Unfair).with_fair_releases());
+                let waiter = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let (one, two) = (sem.acquire(1), sem.acquire(2));
+                            futures::pin_mut!(one, two);
+                            match select(one, two).await {
+                                Either::Left((result, _)) => result.unwrap(),
+                                Either::Right((result, _)) => result.unwrap(),
+                            }
+                        })
+                    })
+                };
+                sem.release(1);
+                waiter.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// As above, but another task takes the permits that are left before the granted task runs.
+    /// Its acquire puts the tasks that can no longer make progress back to sleep, and must still
+    /// leave the granted task runnable.
+    #[test_log::test]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
+    fn later_acquire_leaves_a_granted_task_runnable() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(0, Fairness::Unfair).with_fair_releases());
+                let (queued_tx, queued_rx) = shuttle::sync::mpsc::channel();
+                let waiter = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let (one, two) = (sem.acquire(1), sem.acquire(2));
+                            futures::pin_mut!(one, two);
+                            assert!(futures::poll!(one.as_mut()).is_pending());
+                            assert!(futures::poll!(two.as_mut()).is_pending());
+                            queued_tx.send(()).unwrap();
+                            match select(one, two).await {
+                                Either::Left((result, _)) => result.unwrap(),
+                                Either::Right((result, _)) => result.unwrap(),
+                            }
+                        })
+                    })
+                };
+                queued_rx.recv().unwrap();
+                // Grants `acquire(1)`, which is first in the queue; `acquire(2)` does not fit the
+                // permit that is left.
+                sem.release(2);
+                sem.try_acquire(1).unwrap();
+                waiter.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// A release that grants nothing changes nothing about who can make progress, so a task that
+    /// sleeps on an acquire and a channel must still be woken by the channel.
+    #[test_log::test]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
+    fn release_that_grants_nothing_keeps_the_other_wakes() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(2, Fairness::Unfair).with_fair_releases());
+                sem.acquire_blocking(2).unwrap();
+                let (tx, rx) = oneshot::channel::<()>();
+                let waiter = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let acquire = sem.acquire(2);
+                            futures::pin_mut!(acquire);
+                            match select(acquire, rx).await {
+                                Either::Left(_) => panic!("the main task holds a permit until the join"),
+                                Either::Right((result, _)) => result.unwrap(),
+                            }
+                        })
+                    })
+                };
+                // Grants nothing: the queued `acquire(2)` does not fit one permit.
+                sem.release(1);
+                tx.send(()).unwrap();
+                waiter.join().unwrap();
+                sem.release(1);
+            },
+            None,
+        );
+    }
+
+    /// The same with a plain unfair semaphore, where a release only wakes the waiters that fit:
+    /// another task's acquire must not block a sleeping task whose acquire cannot make progress,
+    /// as that loses the wake of the task's channel.
+    #[test_log::test]
+    fn acquire_keeps_the_other_wakes_of_a_sleeping_task() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair));
+                let (tx, rx) = oneshot::channel::<()>();
+                let waiter = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let acquire = sem.acquire(2);
+                            futures::pin_mut!(acquire);
+                            match select(acquire, rx).await {
+                                Either::Left(_) => panic!("the semaphore never has two permits"),
+                                Either::Right((result, _)) => result.unwrap(),
+                            }
+                        })
+                    })
+                };
+                sem.acquire_blocking(1).unwrap();
+                tx.send(()).unwrap();
+                waiter.join().unwrap();
+                sem.release(1);
+            },
+            None,
+        );
+    }
+
+    /// A waiter that a release does not grant keeps sleeping on its pending future, so a deadlock
+    /// report shows it as such, rather than as blocked by the releasing task.
+    #[test_log::test]
+    #[should_panic(expected = "(2), pending future)")]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
+    fn deadlock_report_shows_a_waiter_that_a_release_passed_over_as_pending() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair).with_fair_releases());
+                sem.acquire_blocking(1).unwrap();
+                let (queued_tx, queued_rx) = shuttle::sync::mpsc::channel();
+                let spawn_waiter = |queued_tx: shuttle::sync::mpsc::Sender<()>| {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let mut acquire = Box::pin(sem.acquire(1));
+                            assert!(futures::poll!(acquire.as_mut()).is_pending());
+                            queued_tx.send(()).unwrap();
+                            // Keeps the permit: the second waiter never gets it.
+                            acquire.await.unwrap();
+                        })
+                    })
+                };
+                let first = spawn_waiter(queued_tx.clone());
+                queued_rx.recv().unwrap();
+                let second = spawn_waiter(queued_tx);
+                queued_rx.recv().unwrap();
+                // Grants the first waiter, and passes over the second.
+                sem.release(1);
+                first.join().unwrap();
+                second.join().unwrap();
+            },
+            None,
+        );
+    }
+}
+
 /// Tests of `BatchSemaphore::load_permits`: a read of the semaphore's state with one scheduling
 /// point and no effect.
 mod load_permits_tests {
