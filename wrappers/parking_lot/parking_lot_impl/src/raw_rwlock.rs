@@ -86,12 +86,17 @@
 //! acquire, as for Shuttle's other semaphore-based locks. `PERMITS_ON_INITIALIZATION` is small
 //! enough for Explorer (JavaScript) to show the permit counts exactly.
 //!
-//! # Stopped executions
+//! # Panics and stopped executions
 //!
-//! While Shuttle stops an execution, for example after a panic, the first release closes the
-//! semaphore, as for every lock that is built on `BatchSemaphore`. After that, a `try_*` fails,
-//! and a blocking request returns at once without the lock if the task is unwinding, and panics
-//! otherwise.
+//! A release that a task makes while it panics, or while Shuttle stops an execution, closes the
+//! semaphore, as for every lock that is built on `BatchSemaphore`: that is how Shuttle models lock
+//! poisoning. This includes a panic that the task catches and survives, after which the lock stays
+//! closed for the rest of the execution. On a closed lock, a `try_*` fails, `is_locked` and
+//! `is_locked_exclusive` are true, and a blocking request returns at once without the lock while
+//! `std::thread::panicking()` is true, and panics otherwise. All tasks share one OS thread, so
+//! `panicking()` is also true in a task that runs while another task is suspended in the middle of
+//! unwinding: that task can then get a guard without the lock while another task holds it.
+//! `parking_lot` has none of these states, since its locks are not poisoned.
 //!
 //! # Limits
 //!
@@ -147,10 +152,15 @@ impl RawRwLock {
     #[inline]
     fn block_on(acquire: shuttle::future::batch_semaphore::Acquire<'_>) {
         shuttle::future::block_on(acquire).unwrap_or_else(|_| {
-            // The semaphore is never explicitly closed and is owned exclusively by this lock, so a
-            // closed semaphore here can only be observed while unwinding from a panic.
+            // The semaphore is never explicitly closed and is owned exclusively by this lock, so
+            // only a release made while a task panicked can have closed it (see "Panics and stopped
+            // executions" in the module docs). While a task unwinds, go on without the lock, so that
+            // a destructor that locks can finish.
             if !thread::panicking() {
-                unreachable!()
+                panic!(
+                    "this `RwLock` was closed by an unlock made while a task panicked, as Shuttle \
+                     models lock poisoning, and cannot be locked again"
+                );
             }
         });
     }
@@ -210,8 +220,8 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
     /// default, which transiently takes the lock.
     fn is_locked(&self) -> bool {
         match self.sem.load_permits() {
-            // While Shuttle stops an execution, the closed lock refuses every request, so it never
-            // looks free (see "Stopped executions" in the module docs).
+            // A closed lock refuses every request, so it never looks free (see "Panics and stopped
+            // executions" in the module docs).
             None => true,
             Some(available) => available < PERMITS_ON_INITIALIZATION,
         }

@@ -435,10 +435,32 @@ mod tests {
         );
     }
 
+    /// An unlock made while a task panics closes the lock, also if the task catches the panic (see
+    /// "Panics and stopped executions" in the `raw_rwlock` module docs). The lock then never looks
+    /// free, refuses every `try_*`, and a blocking request panics with a message that says why.
+    #[test]
+    #[should_panic(expected = "closed by an unlock made while a task panicked")]
+    fn unlock_while_panicking_closes_the_lock() {
+        check_dfs(
+            || {
+                let lock = RwLock::new(());
+                let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _read = lock.read();
+                    panic!("a caught panic");
+                }));
+                assert!(caught.is_err());
+                assert!(lock.is_locked());
+                assert!(lock.try_read().is_none());
+                drop(lock.write());
+            },
+            None,
+        );
+    }
+
     /// Run a test in which the main task panics with "the original panic" while another task holds
     /// a read lock. While the main task unwinds, it first releases its own read lock, and then it
-    /// drops the value that `on_drop` made. The release closes the lock (see "Stopped executions" in
-    /// the `raw_rwlock` module docs).
+    /// drops the value that `on_drop` made. The release closes the lock (see "Panics and stopped
+    /// executions" in the `raw_rwlock` module docs).
     fn panic_while_another_task_reads<D: 'static>(on_drop: fn(Arc<RwLock<()>>) -> D) {
         check_dfs(
             move || {

@@ -40,5 +40,13 @@ Shuttle does not explore those schedules
 the parked tasks, so it needs at least two parked tasks besides the task that calls `try_write`.
 Shuttle's `try_write` does not look at parked tasks.
 
+An unlock that a task makes while it panics closes the lock for the rest of the execution, as
+Shuttle models lock poisoning, also if the task catches the panic. After that, `try_lock` and the
+other `try_*` methods fail, `is_locked` is true, and a blocking lock panics, except while a task is
+unwinding: then it returns without the lock, so that destructors can finish. Tasks share one OS
+thread, so this also happens in a task that runs while another one is suspended in the middle of
+unwinding, which can then get a guard while another task holds the lock. `parking_lot`'s locks are
+not poisoned.
+
 If your project needs functionality which is not currently supported, please file an issue or,
 better yet, open a PR to contribute the functionality.
