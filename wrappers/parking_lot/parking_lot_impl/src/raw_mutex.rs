@@ -37,10 +37,15 @@ unsafe impl lock_api::RawMutex for RawMutex {
     fn lock(&self) {
         trace!("acquiring parking_lot mutex {:p}", self);
         self.semaphore.acquire_blocking(1).unwrap_or_else(|_| {
-            // The semaphore is never explicitly closed and we own it exclusively, so a closed
-            // semaphore here can only be observed while unwinding from a panic.
+            // The semaphore is never explicitly closed and we own it exclusively, so only an unlock
+            // made while a task panicked can have closed it, as for the `RwLock` (see "Panics and
+            // stopped executions" in `raw_rwlock.rs`). While a task unwinds, go on without the
+            // lock, so that a destructor that locks can finish.
             if !thread::panicking() {
-                unreachable!()
+                panic!(
+                    "this `Mutex` was closed by an unlock made while a task panicked, as Shuttle \
+                     models lock poisoning, and cannot be locked again"
+                );
             }
         });
         trace!("acquired parking_lot mutex {:p}", self);
