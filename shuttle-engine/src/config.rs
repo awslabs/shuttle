@@ -55,13 +55,18 @@ std::thread_local! {
 
 #[derive(Copy, Clone, Debug)]
 #[non_exhaustive]
-/// What to do with the continuation function when a task panics.
+/// What to do with what the unfinished tasks of a failed execution leave behind: the functions of
+/// the tasks that never ran, and the futures of the future tasks that are waiting to be polled.
+/// The stacks of a failed execution's other unfinished tasks are always leaked, and its task-local
+/// values and statics are always dropped. Panics while dropping any of them are ignored, so that
+/// the failure is what gets reported.
+///
 /// Modelled as a non-exhaustive enum because there are a couple of unimplemented behaviors, such as
 /// returning the continuation function, or sending the function to a "sacrificial" thread to be dropped
 pub enum ContinuationFunctionBehavior {
-    /// Drop the continuation function when a task panics.
+    /// Drop them, each on its task's own stack and as that task.
     Drop,
-    /// Leak the continuation function when a task panics.
+    /// Leak them.
     Leak,
 }
 
@@ -72,6 +77,14 @@ impl ContinuationFunctionBehavior {
         // the volume of leaks is low, and because we already default to leaking the continuation itself (via
         // `force_reset`), which is a much bigger memory leak.
         Self::Leak
+    }
+
+    /// Whether this leaks what it applies to, rather than dropping it.
+    pub(crate) const fn leaks(self) -> bool {
+        match self {
+            Self::Drop => false,
+            Self::Leak => true,
+        }
     }
 }
 
@@ -94,7 +107,9 @@ pub struct UngracefulShutdownConfig {
     /// while calling drop handlers.
     pub immediately_return_on_panic: bool,
 
-    /// What to do with the continuation function when it is dropped after a panic.
+    /// What to do with the functions of a failed execution's tasks that never ran, and with the
+    /// futures of its future tasks that are waiting to be polled (see
+    /// [`ContinuationFunctionBehavior`]).
     pub continuation_function_behavior: ContinuationFunctionBehavior,
 }
 
@@ -114,13 +129,16 @@ impl Default for UngracefulShutdownConfig {
     }
 }
 
+/// The step bound of the default configuration.
+pub(crate) const DEFAULT_MAX_STEPS: usize = 1_000_000;
+
 impl Config {
     /// Create a new default configuration
     pub fn new() -> Self {
         Self {
             stack_size: 0xf000,
             failure_persistence: FailurePersistence::Print,
-            max_steps: MaxSteps::FailAfter(1_000_000),
+            max_steps: MaxSteps::FailAfter(DEFAULT_MAX_STEPS),
             max_time: None,
             silence_warnings: false,
             record_steps_in_span: false,
@@ -166,6 +184,10 @@ pub enum FailurePersistence {
 /// schedules that thread, a livelock occurs and the test will not terminate without a step bound.
 ///
 /// By default, Shuttle fails a test after 1,000,000 steps.
+///
+/// The bound applies to the destructors that run when an execution is torn down too, whose
+/// scheduling points count as steps: a destructor that spins fails the test. Under `ContinueAfter`,
+/// they get at least the default 1,000,000 steps, because teardown cannot stop and continue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MaxSteps {

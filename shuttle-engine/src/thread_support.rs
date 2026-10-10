@@ -25,12 +25,7 @@ pub fn thread_fn<F, T>(
     }
 
     tracing::trace!("thread finished, dropping thread locals");
-
-    while let Some(local) = ExecutionState::with(|state| state.current_mut().pop_local()) {
-        tracing::trace!("dropping thread local {:p}", local);
-        drop(local);
-    }
-
+    ExecutionState::drop_task_locals();
     tracing::trace!("done dropping thread locals");
 
     *result.lock().unwrap() = Some(Ok(ret));

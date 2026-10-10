@@ -13,7 +13,7 @@
 
 #[allow(deprecated)]
 use crate::runtime::execution::TASK_ID_TO_TAGS;
-use crate::runtime::execution::{CurrentSchedule, ExecutionState, LABELS};
+use crate::runtime::execution::{ExecutionState, LABELS};
 use crate::runtime::task::clock::VectorClock;
 pub use crate::runtime::task::labels::Labels;
 pub use crate::runtime::task::{ChildLabelFn, TaskId, TaskName};
@@ -36,9 +36,10 @@ pub fn context_switches() -> usize {
 /// Get the current thread's vector clock, or an empty clock if there is no current task.
 ///
 /// Every `BatchSemaphore` operation calls this, so a `Drop` handler that touches a modelled
-/// primitive during execution teardown reaches it with `ExecutionState` unavailable or no task
-/// scheduled. Panicking there happens inside a destructor, which aborts the process instead of
-/// reporting the failure under investigation.
+/// primitive reaches it wherever the value is dropped: outside an execution, or while
+/// `ExecutionState` is borrowed. Panicking there happens inside a destructor, which can abort the
+/// process instead of reporting the failure under investigation. (While an execution is torn down,
+/// the task being torn down is the current task.)
 pub fn clock() -> VectorClock {
     ExecutionState::try_with(|state| {
         let id = state.try_current().map(|me| me.id());
@@ -124,7 +125,7 @@ pub fn me() -> TaskId {
 ///
 /// NOTE: Be careful when using this, as if used wrongly it can be used to make a test execute forever.
 pub fn reset_step_count() {
-    ExecutionState::with(|s| s.steps_reset_at = CurrentSchedule::len());
+    ExecutionState::with(|s| s.reset_step_count());
 }
 
 /// Sets the `tag` field of the current task.

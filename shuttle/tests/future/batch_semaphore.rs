@@ -705,6 +705,28 @@ fn bugged_cleanup_would_cause_deadlock() {
 
 /// Tests of `BatchSemaphore::acquire_reserving`, and of `upgrade` on an unfair semaphore, which
 /// reserves the semaphore too.
+/// A task that takes a permit of an unfair semaphore while an `Acquire` of its own is still queued
+/// on it isn't blocked by that `Acquire`: the task is running.
+#[test]
+fn queued_acquire_of_the_current_task_does_not_block_it() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let sem = BatchSemaphore::new(0, Fairness::Unfair);
+                let mut queued = Box::pin(sem.acquire(1));
+                assert!(futures::poll!(queued.as_mut()).is_pending());
+                sem.release(1);
+                // Re-blocks the waiters that can no longer succeed, but not the task's own one.
+                sem.try_acquire(1).unwrap();
+                thread::yield_now();
+                drop(queued);
+                sem.release(1);
+            });
+        },
+        None,
+    );
+}
+
 mod reservation_tests {
     use super::*;
     use std::sync::atomic::AtomicBool;

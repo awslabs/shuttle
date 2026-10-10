@@ -150,9 +150,21 @@ impl Condvar {
         state.waiters.push((me, CondvarWaitStatus::Waiting));
         drop(state);
 
+        // If execution teardown unwinds the task from the switch below (see
+        // `ExecutionState::tear_down`), the task is no longer waiting. Its destructors run as the task,
+        // and may notify this condvar.
+        struct StopWaitingOnUnwind<'a>(&'a Condvar, TaskId);
+        impl Drop for StopWaitingOnUnwind<'_> {
+            fn drop(&mut self) {
+                <_ as AssocExt<_, _>>::remove(&mut self.0.state.borrow_mut().waiters, &self.1);
+            }
+        }
+        let stop_waiting_on_unwind = StopWaitingOnUnwind(self, me);
+
         // TODO: Condvar::wait should allow for spurious wakeups.
         ExecutionState::with(|s| s.current_mut().block(false));
         thread::switch();
+        std::mem::forget(stop_waiting_on_unwind);
 
         // After the context switch, consume whichever signal that woke this thread
         let mut state = self.state.borrow_mut();

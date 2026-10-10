@@ -353,12 +353,11 @@ impl BatchSemaphoreState {
     fn wake_unfair_waiters(&mut self) {
         if let Some(holder) = &self.reservation {
             // Like a waiter in the queue, a holder whose task has already
-            // finished is stale (see `unblock_waiters_from_front`). Drop the
-            // reservation, so that it does not keep the permits from the
-            // waiters below. If the `Acquire` is still alive and another task
-            // polls it, it will reserve or acquire again.
-            let stale = ExecutionState::with(|s| s.get_mut(holder.task_id()).finished());
-            if stale {
+            // finished is stale (see `is_stale`). Drop the reservation, so
+            // that it does not keep the permits from the waiters below. If the
+            // `Acquire` is still alive and another task polls it, it will
+            // reserve or acquire again.
+            if is_stale(holder) {
                 trace!("dropping stale reservation {:?} for finished task", holder);
                 self.reservation = None;
             } else {
@@ -377,22 +376,11 @@ impl BatchSemaphoreState {
         let num_available = self.permits_available.available();
         for waiter in &mut self.waiters {
             if waiter.min_permits <= num_available {
-                // A waiter whose task has already finished is stale: its
-                // `Acquire` was cancelled (and possibly cached in a
-                // longer-lived object) and the task then exited. Unlike
-                // the strictly fair case there is nothing to clean up —
-                // an unfair waiter holds no permits, so it blocks
-                // nobody — but there is also nobody to unblock.
-                let stale = ExecutionState::with(|s| {
-                    let task = s.get_mut(waiter.task_id());
-                    if task.finished() {
-                        true
-                    } else {
-                        task.unblock();
-                        false
-                    }
-                });
-                if stale {
+                // Unlike the strictly fair case, there is nothing to clean
+                // up for a stale waiter (see `is_stale`): an unfair waiter
+                // holds no permits, so it blocks nobody. But there is also
+                // nobody to unblock.
+                if !unblock_unless_stale(waiter) {
                     continue;
                 }
                 let maybe_waker = waiter.waker.lock().unwrap();
@@ -405,22 +393,11 @@ impl BatchSemaphoreState {
 
     fn unblock_waiters_from_front(&mut self) {
         while let Some(front) = self.waiters.front() {
-            // A waiter whose task has already finished is stale: its `Acquire`
-            // future was cancelled (e.g. a `select!` branch lost, or a
-            // `poll_recv`-style API cached the `Acquire` inside a longer-lived
-            // object) and the registering task then exited. There is nobody to
-            // unblock, so discard the waiter without consuming permits; if the
-            // `Acquire` is still alive and some other task polls it, it will
-            // re-acquire from the (still available) permits.
-            //
-            // `remove_waiter` can reach this during execution cleanup, when the
-            // task list is gone, so probe defensively and treat "can't tell" as
-            // not stale (i.e. preserve the old behaviour).
-            let front_is_stale = ExecutionState::try_with(|s| {
-                !s.in_cleanup() && s.try_get(front.task_id()).is_some_and(|t| t.finished())
-            })
-            .unwrap_or(false);
-            if front_is_stale {
+            // There is nobody to unblock for a stale waiter (see `is_stale`),
+            // so discard it without consuming permits; if the `Acquire` is
+            // still alive and some other task polls it, it will re-acquire
+            // from the (still available) permits.
+            if is_stale(front) {
                 let waiter = self.waiters.pop_front().unwrap();
                 waiter.is_queued.store(false, Ordering::SeqCst);
                 // Preserve the "queued <=> waker registered" invariant asserted
@@ -469,6 +446,30 @@ impl BatchSemaphoreState {
             }
         }
     }
+}
+
+/// Whether `waiter` is stale: the task that registered it has finished, after its `Acquire` future
+/// was cancelled (e.g. a `select!` branch lost, or a `poll_recv`-style API cached the `Acquire`
+/// inside a longer-lived object). If the `Acquire` is still alive, another task can poll it again.
+/// Can't tell outside an execution, and then says no, which preserves the old behaviour.
+#[inline]
+fn is_stale(waiter: &Waiter) -> bool {
+    ExecutionState::try_with(|s| s.try_get(waiter.task_id()).is_some_and(|task| task.finished())).unwrap_or(false)
+}
+
+/// Unblock the task that registered `waiter`, unless the waiter is stale (see `is_stale`). Returns
+/// whether it unblocked the task.
+#[inline]
+fn unblock_unless_stale(waiter: &Waiter) -> bool {
+    ExecutionState::with(|s| {
+        let task = s.get_mut(waiter.task_id());
+        if task.finished() {
+            false
+        } else {
+            task.unblock();
+            true
+        }
+    })
 }
 
 /// Counting semaphore
@@ -614,13 +615,8 @@ impl BatchSemaphore {
                 waiter,
             );
             assert!(!waiter.has_permits.load(Ordering::SeqCst)); // sanity check
-            ExecutionState::with(|exec_state| {
-                // A waiter whose task has finished is stale (its `Acquire` was
-                // cancelled and the task exited); there is nothing to unblock.
-                if !exec_state.in_cleanup() && !exec_state.get(waiter.task_id()).finished() {
-                    exec_state.get_mut(waiter.task_id()).unblock();
-                }
-            });
+                                                                 // There is nothing to unblock for a stale waiter (see `is_stale`).
+            unblock_unless_stale(&waiter);
             let mut maybe_waker = waiter.waker.lock().unwrap();
             if let Some(waker) = maybe_waker.take() {
                 waker.wake();
@@ -685,18 +681,22 @@ impl BatchSemaphore {
         if self.fairness == Fairness::Unfair {
             let state = self.state.borrow_mut();
             ExecutionState::with(|s| {
+                let me = s.try_current().map(|task| task.id());
                 for waiter in &state.waiters {
                     let available = state.permits_available.available();
                     // A queued waiter cannot make progress while a reservation
                     // keeps the available permits.
                     let can_progress = state.reservation.is_none() && waiter.min_permits <= available;
-                    // Skip stale waiters: the task that registered the waiter
-                    // has finished, so there is nothing to block.
-                    if !can_progress && s.try_get(waiter.task_id()).is_some_and(|t| !t.finished()) {
+                    // Skip stale waiters (see `is_stale`): there is nobody to
+                    // block. And skip the current task's own waiters: it is
+                    // running, which an `Acquire` of its that is still queued
+                    // doesn't change, and it would only block itself.
+                    let task = waiter.task_id();
+                    if !can_progress && Some(task) != me && s.try_get(task).is_some_and(|t| !t.finished()) {
                         // Block this waiter: it cannot succeed (there are not
                         // enough permits available); its `poll` would return
                         // without resolving.
-                        s.get_mut(waiter.task_id()).block(false);
+                        s.get_mut(task).block(false);
                     }
                 }
             });
@@ -768,12 +768,9 @@ impl BatchSemaphore {
         assert!(state.is_reserved_by(waiter));
         state.reservation = None;
 
-        // Wake the waiters that can now take the permits. Not while the
-        // execution stops or is cleaned up: then `release` does not wake waiters
-        // either, and there may be no task list to look at.
-        let can_wake = !std::thread::panicking()
-            && !ExecutionState::execution_stopped()
-            && ExecutionState::try_with(|s| !s.in_cleanup()).unwrap_or(false);
+        // Wake the waiters that can now take the permits, unless `release`
+        // wouldn't either (see `ExecutionState::should_stop`).
+        let can_wake = ExecutionState::try_with(|s| !s.stops(std::thread::panicking())).unwrap_or(false);
         if can_wake {
             state.wake_unfair_waiters();
         }
@@ -833,8 +830,25 @@ impl BatchSemaphore {
 
     /// Release `num_permits` back to the Semaphore
     pub fn release(&self, num_permits: usize) {
+        // Execution teardown can unwind a task's stack from this scheduling point, which is often in
+        // a destructor that releases a lock (see `ExecutionState::tear_down`). The permits must not
+        // be lost then, as destructors that run later can need them.
+        struct ReleaseOnUnwind<'a>(&'a BatchSemaphore, usize);
+        impl Drop for ReleaseOnUnwind<'_> {
+            fn drop(&mut self) {
+                self.0.release_no_scheduling_point(self.1);
+            }
+        }
+        let release_on_unwind = ReleaseOnUnwind(self, num_permits);
         thread::switch();
+        std::mem::forget(release_on_unwind);
 
+        self.release_no_scheduling_point(num_permits);
+    }
+
+    /// `release` without its scheduling point.
+    #[inline]
+    fn release_no_scheduling_point(&self, num_permits: usize) {
         self.init_object_id();
         if num_permits == 0 {
             return;

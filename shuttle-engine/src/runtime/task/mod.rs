@@ -20,9 +20,10 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::Location;
-use std::rc::Rc;
+use std::pin::Pin;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::task::{Context, Waker};
+use std::task::{Context, Poll, Waker};
 use tracing::{error_span, event, field, Level, Span};
 
 pub mod clock;
@@ -272,11 +273,12 @@ impl ParkedDefault {
 }
 
 impl Drop for ParkedDefault {
-    // Only reached when the task is torn down while switched out. Reinstating the task's default then
-    // lets the guards on its stack restore their priors in order as the stack unwinds, which leaves
-    // the execution's default in place. A stack that is leaked instead of unwound (see
-    // `Continuation::drop`) would leave the task's default installed for good, so in that case keep
-    // the execution's default, and leak the guard along with the stack.
+    // Only reached when the task's stack is leaked (see `ExecutionState::tear_down`), or the task is
+    // dropped some other way while switched out. Reinstating the task's default lets the guards on
+    // its stack restore their priors in order as the stack unwinds, which leaves the execution's
+    // default in place. A stack that is leaked instead of unwound would leave the task's default
+    // installed for good, so in that case keep the execution's default, and leak the guard along
+    // with the stack.
     fn drop(&mut self) {
         if let Some(guard) = self.0.take() {
             if std::thread::panicking() || ExecutionState::execution_stopped() {
@@ -284,6 +286,33 @@ impl Drop for ParkedDefault {
             }
         }
     }
+}
+
+/// The slot in which a future task keeps its future, a `RefCell<Option<F>>` in an allocation of its
+/// own (see `Task::from_future`). The loop that polls the future borrows the slot for exactly as
+/// long as it polls the future. So a future task whose slot is not borrowed, and which has not
+/// finished, is parked between two polls, and execution teardown can cancel it there, without
+/// unwinding its stack (see `ExecutionState::tear_down`).
+trait FutureSlot {
+    /// Whether the future is being polled.
+    fn is_being_polled(&self) -> bool;
+}
+
+impl<F> FutureSlot for RefCell<Option<F>> {
+    fn is_being_polled(&self) -> bool {
+        self.try_borrow_mut().is_err()
+    }
+}
+
+/// Poll the future in `slot` where it is.
+fn poll_in_place<F: Future>(slot: &RefCell<Option<F>>, cx: &mut Context<'_>) -> Poll<F::Output> {
+    let mut slot = slot.borrow_mut();
+    let future = slot
+        .as_mut()
+        .expect("a future task drops its future only when it stops polling it");
+    // SAFETY: nothing moves the future out of the slot, whose allocation stays where it is, so the
+    // future stays where it is until it is dropped there.
+    unsafe { Pin::new_unchecked(future) }.poll(cx)
 }
 
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within
@@ -300,14 +329,19 @@ pub struct Task {
     // `continuation`, so that it is dropped before the task's stack is (see `ParkedDefault`).
     pub(super) parked_default: Option<ParkedDefault>,
 
-    pub(super) continuation: Rc<RefCell<PooledContinuation>>,
+    // The slot of a future task's future (see `FutureSlot`), until the task finishes. `None` for
+    // threads.
+    future: Option<Weak<dyn FutureSlot>>,
+
+    // `None` only once execution teardown has taken it, and then `yielder` is null once the stack is
+    // gone.
+    pub(super) continuation: Option<Rc<RefCell<PooledContinuation>>>,
     pub(super) yielder: *const Yielder<ContinuationInput, ContinuationOutput>,
 
     pub clock: VectorClock,
 
     waiter: Option<TaskId>,
 
-    waker: Waker,
     // Remember whether the waker was invoked while we were running
     woken: bool,
 
@@ -366,7 +400,6 @@ impl Task {
         let mut continuation = ContinuationPool::acquire(stack_size);
         continuation.initialize(f);
         let yielder = continuation.yielder;
-        let waker = make_waker(id);
         let continuation = Rc::new(RefCell::new(continuation));
 
         let step_span =
@@ -381,11 +414,11 @@ impl Task {
             parent_task_id,
             state: TaskState::Runnable,
             parked_default: None,
-            continuation,
+            future: None,
+            continuation: Some(continuation),
             yielder,
             clock,
             waiter: None,
-            waker,
             woken: false,
             detached: false,
             park_state: ParkState::default(),
@@ -453,15 +486,25 @@ impl Task {
     where
         F: Future<Output = ()> + 'static,
     {
-        let mut future = Box::pin(future);
+        // The future lives in the slot, where it stays pinned (see `poll_in_place`). The loop below
+        // owns the slot, and the task keeps a weak reference to it (see `FutureSlot`).
+        let slot = Rc::new(RefCell::new(Some(future)));
+        let weak_slot: Weak<dyn FutureSlot> = Rc::downgrade(&slot) as _;
 
-        Self::new(
+        let mut task = Self::new(
             Box::new(move || {
                 let waker = ExecutionState::with(|state| state.current_mut().waker());
                 let cx = &mut Context::from_waker(&waker);
-                while future.as_mut().poll(cx).is_pending() {
+                while poll_in_place(&slot, cx).is_pending() {
                     ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
-                    thread::switch();
+                    if thread::switch_between_polls() {
+                        // Execution teardown cancelled the task (see `ExecutionState::tear_down`).
+                        // Drop the future here, on the task's own stack, and then the task's
+                        // task-local values, as the task does when its future finishes.
+                        *slot.borrow_mut() = None;
+                        ExecutionState::drop_task_locals();
+                        break;
+                    }
                 }
             }),
             stack_size,
@@ -473,7 +516,40 @@ impl Task {
             tag,
             parent_task_id,
             signature,
-        )
+        );
+        task.future = Some(weak_slot);
+        task
+    }
+
+    /// Whether the task has not started running (see `ExecutionState::tear_down`).
+    pub(crate) fn never_ran(&self) -> bool {
+        self.continuation.as_ref().is_some_and(|c| c.borrow().never_ran())
+    }
+
+    /// Whether the task is suspended in the middle of its function, and can be resumed.
+    pub(crate) fn suspended(&self) -> bool {
+        self.continuation.as_ref().is_some_and(|c| c.borrow().suspended())
+    }
+
+    /// Whether this is a future task that is parked between two polls of its future (see
+    /// `FutureSlot`).
+    pub(crate) fn parked_between_polls(&self) -> bool {
+        self.future
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|slot| !slot.is_being_polled())
+    }
+
+    /// Take the task's continuation, for execution teardown to unwind or leak the task's stack (see
+    /// `ExecutionState::tear_down`). The task can switch only while teardown unwinds the stack.
+    pub(crate) fn take_continuation(&mut self) -> Option<Rc<RefCell<PooledContinuation>>> {
+        self.continuation.take()
+    }
+
+    /// The task's stack is gone, once execution teardown has unwound or leaked it: the task cannot
+    /// switch any more.
+    pub(crate) fn lose_stack(&mut self) {
+        self.yielder = std::ptr::null();
     }
 
     /// Returns the identifier of this task.
@@ -526,7 +602,8 @@ impl Task {
     }
 
     pub fn waker(&self) -> Waker {
-        self.waker.clone()
+        // A task's waker is just the task's id (see `make_waker`), so there's nothing to keep.
+        make_waker(self.id)
     }
 
     /// Block the current thread. If `allow_spurious_wakeups` is true, then the scheduler is
@@ -564,6 +641,23 @@ impl Task {
     pub fn finish(&mut self) {
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Finished;
+        // Only an unfinished task is ever torn down (see `FutureSlot`).
+        self.future = None;
+    }
+
+    /// Make the task runnable while execution teardown drops something of the task's on the
+    /// executor's stack, as the task (see `ExecutionState::tear_down`): its task-local values once
+    /// its stack is gone, or a static, for which the main thread stands in. Then what destructors do
+    /// to the task (block it, park it) works as in a running task, even though the task may have
+    /// finished. Returns the task's state, for `stop_standing_in`.
+    pub(crate) fn stand_in(&mut self) -> TaskState {
+        self.park_state.blocked_in_park = false;
+        std::mem::replace(&mut self.state, TaskState::Runnable)
+    }
+
+    /// Undo `stand_in`.
+    pub(crate) fn stop_standing_in(&mut self, state: TaskState) {
+        self.state = state;
     }
 
     /// Potentially put this task to sleep after it was polled by the executor, unless someone has
@@ -611,6 +705,11 @@ impl Task {
         self.name.clone()
     }
 
+    /// The task's name, or `task-N` if it has none.
+    pub fn display_name(&self) -> String {
+        self.name().unwrap_or_else(|| format!("task-{}", self.id.0))
+    }
+
     /// Retrieve a reference to the given thread-local storage slot.
     ///
     /// Returns Some(Err(_)) if the slot has already been destructed. Returns None if the slot has
@@ -624,6 +723,23 @@ impl Task {
     /// Panics if the slot has already been initialized.
     pub fn init_local<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
         self.local_storage.init(key.into(), value)
+    }
+
+    /// Whether some thread-local storage slot is still initialized.
+    pub(crate) fn has_locals(&self) -> bool {
+        !self.local_storage.is_empty()
+    }
+
+    /// Whether the task holds something whose destructor may run user code: a span that a `tracing`
+    /// subscriber sees close, or a tag (see `ExecutionState::tear_down`).
+    pub(crate) fn has_leftovers(&self) -> bool {
+        self.tag.is_some() || !self.step_span.is_disabled() || self.span_stack.iter().any(|span| !span.is_disabled())
+    }
+
+    /// Take what `has_leftovers` looks for, to be dropped.
+    pub(crate) fn take_leftovers(&mut self) -> impl Any {
+        let step_span = std::mem::replace(&mut self.step_span, Span::none());
+        (step_span, std::mem::take(&mut self.span_stack), self.tag.take())
     }
 
     /// Return ownership of the next still-initialized thread-local storage slot, to be used when

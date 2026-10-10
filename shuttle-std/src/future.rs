@@ -208,7 +208,7 @@ impl<T> Drop for JoinHandle<T> {
         // Dropping a JoinHandle does NOT cancel the task (unlike abort()).
         let res = ExecutionState::try_with(|state| {
             if !state.is_finished() {
-                state.get_mut(self.task_id).detach();
+                state.detach(self.task_id);
             }
         });
         if let Err(e) = res {
@@ -253,7 +253,8 @@ struct Wrapper<F: Future> {
     /// The inner future. Wrapped in `Option` so we can drop it explicitly in the
     /// abort path (before running thread-local destructors).
     future: Option<Pin<Box<F>>>,
-    inner: Arc<std::sync::Mutex<JoinHandleInner<F::Output>>>,
+    /// Where the result goes, until it has been published.
+    inner: Option<Arc<std::sync::Mutex<JoinHandleInner<F::Output>>>>,
     aborted: Arc<AtomicBool>,
 }
 
@@ -265,7 +266,7 @@ where
     fn new(future: F, inner: Arc<std::sync::Mutex<JoinHandleInner<F::Output>>>, aborted: Arc<AtomicBool>) -> Self {
         Self {
             future: Some(Box::pin(future)),
-            inner,
+            inner: Some(inner),
             aborted,
         }
     }
@@ -278,17 +279,35 @@ where
 {
     /// Clean up thread-local storage, publish the result to the JoinHandle, and wake
     /// any task waiting on the result.
-    fn finish(&self, result: Result<F::Output, JoinError>) {
+    fn finish(&mut self, result: Result<F::Output, JoinError>) {
         // Run thread-local destructors.
-        // See `pop_local` for details on why this loop looks slightly funky.
-        while let Some(local) = ExecutionState::with(|state| state.current_mut().pop_local()) {
-            drop(local);
-        }
+        ExecutionState::drop_task_locals();
 
-        let mut lock = self.inner.lock().unwrap();
+        let inner = self.inner.take().expect("a task's result is published once");
+        let mut lock = inner.lock().unwrap();
         lock.result = Some(result);
         if let Some(waker) = lock.waker.take() {
             waker.wake();
+        }
+    }
+}
+
+impl<F: Future> Drop for Wrapper<F> {
+    fn drop(&mut self) {
+        // A task whose future is dropped before it finished was torn down at the end of the
+        // execution, which cancels it, as if it was aborted (see `ExecutionState::tear_down`, which
+        // drops the task's thread-local storage). Unless the execution is abandoned: then Shuttle's
+        // own destructors skip their bookkeeping.
+        if let Some(inner) = self.inner.take() {
+            // Drop the inner future first, like `finish`.
+            self.future.take();
+            if !ExecutionState::should_stop() {
+                let mut lock = inner.lock().unwrap();
+                lock.result = Some(Err(JoinError::Cancelled));
+                if let Some(waker) = lock.waker.take() {
+                    waker.wake();
+                }
+            }
         }
     }
 }
