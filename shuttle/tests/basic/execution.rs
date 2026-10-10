@@ -176,7 +176,7 @@ fn get_current_task_outside_execution() {
 
 /// `try_get_current_task` tells the current task from everywhere a `Drop` handler or a `tracing`
 /// subscriber can run: inside tasks, outside an execution, and while Shuttle drops the tasks that
-/// did not finish, where there is none.
+/// did not finish, where it is the task being dropped.
 #[test]
 fn try_get_current_task_everywhere() {
     assert_eq!(current::try_get_current_task(), None);
@@ -201,8 +201,8 @@ fn try_get_current_task_everywhere() {
             assert_eq!(thread.join().unwrap().map(usize::from), Some(thread_id));
             assert_eq!(shuttle::future::block_on(task).unwrap(), Some(current::TaskId::from(2)));
 
-            // Detached and never finishes, so Shuttle drops it with no task running, when the
-            // execution is over.
+            // Detached and never finishes, so Shuttle drops it when the execution is over, as the
+            // current task.
             let record = RecordTaskOnDrop(dropped_in_cleanup_clone.clone());
             drop(shuttle::future::spawn(async move {
                 let _record = record;
@@ -215,7 +215,9 @@ fn try_get_current_task_everywhere() {
     let dropped_in_cleanup = dropped_in_cleanup.lock().unwrap();
     assert!(!dropped_in_cleanup.is_empty());
     assert!(
-        dropped_in_cleanup.iter().all(|id| id.is_none()),
+        dropped_in_cleanup
+            .iter()
+            .all(|id| *id == Some(current::TaskId::from(3))),
         "{dropped_in_cleanup:?}"
     );
 }
