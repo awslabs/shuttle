@@ -1,0 +1,28 @@
+[package]
+name = "shuttle-parking_lot-annotation-tests"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Tests of the Shuttle Explorer events of `shuttle-parking_lot-impl`."
+repository = "https://github.com/awslabs/shuttle"
+
+# This crate exists only for `tests/rwlock_annotations.rs`. It has no library code.
+publish = false
+
+[features]
+# Turns on `shuttle`'s `annotation` feature, and with it `tests/rwlock_annotations.rs`. The
+# `test-annotation` job in `.github/workflows/tests.yml` turns it on with
+# `--workspace --features annotation`. The tests are behind a feature because Cargo unifies features
+# across a workspace build: if this crate always turned on `shuttle/annotation`, the default
+# `cargo test --workspace` job would also build every other crate with it.
+annotation = ["shuttle/annotation"]
+
+[dependencies]
+shuttle = { path = "../../../shuttle" }
+
+[dev-dependencies]
+shuttle-parking_lot-impl = { path = "../parking_lot_impl" }
+# `tests/rwlock_annotations.rs` reads the annotation file that `AnnotationScheduler` writes. The
+# same versions as in `shuttle`'s dev-dependencies and its optional `serde_json`.
+serde_json = "1.0"
+tempfile = "3.2.0"

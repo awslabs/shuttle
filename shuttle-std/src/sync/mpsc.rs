@@ -449,7 +449,7 @@ impl<T> Channel<T> {
     }
 }
 
-// Safety: A Channel is never actually passed across true threads, only across continuations. The
+// SAFETY: A Channel is never actually passed across true threads, only across continuations. The
 // Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
 // TODO We use this workaround in several places in Shuttle.  Maybe there's a cleaner solution.
 unsafe impl<T: Send> Send for Channel<T> {}

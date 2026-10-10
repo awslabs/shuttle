@@ -703,6 +703,28 @@ fn bugged_cleanup_would_cause_deadlock() {
     )
 }
 
+/// A task that polls more than one `Acquire` can own a queued waiter that cannot make progress.
+/// When the task then takes permits of the unfair semaphore, the semaphore must not block it: the
+/// task is running, and blocks itself if it waits for that `Acquire`. Blocking it here made the
+/// next scheduling point a false deadlock.
+#[test]
+fn acquiring_does_not_block_the_running_task() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let sem = BatchSemaphore::new(1, Fairness::Unfair);
+                let mut waiting = Box::pin(sem.acquire(2));
+                assert!(futures::poll!(waiting.as_mut()).is_pending());
+                sem.try_acquire(1).unwrap();
+                thread::yield_now();
+                sem.release(1);
+                drop(waiting);
+            });
+        },
+        None,
+    )
+}
+
 /// Tests of `BatchSemaphore::acquire_reserving`, and of `upgrade` on an unfair semaphore, which
 /// reserves the semaphore too.
 /// A task that takes a permit of an unfair semaphore while an `Acquire` of its own is still queued
@@ -1055,6 +1077,620 @@ mod reservation_tests {
             || {
                 let sem = BatchSemaphore::new(1, Fairness::StrictlyFair);
                 drop(sem.acquire_reserving(1, 1));
+            },
+            None,
+        );
+    }
+}
+
+/// Tests of a semaphore built `with_fair_releases`: its releases grant already waiting requests
+/// their permits inside the release itself, so that no other request can overtake them, like
+/// `parking_lot`'s fair unlock.
+#[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
+mod fair_release_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    /// An unfair semaphore whose releases are fair.
+    fn fair_releases(num_permits: usize) -> BatchSemaphore {
+        BatchSemaphore::new(num_permits, Fairness::Unfair).with_fair_releases()
+    }
+
+    /// A waiter granted by a fair release is causally after the release, whether the grant happens
+    /// inside the release (the hand-off, which assigns the permits' clock to the waiter there) or
+    /// the waiter acquires on its own poll. The sibling tasks share no other causality, so the
+    /// clock edge can only come from the grant. `batch_semaphore_clock_1` is the plain-release
+    /// equivalent.
+    #[test_log::test]
+    fn fair_release_clock() {
+        check_dfs(
+            || {
+                let s = Arc::new(fair_releases(0));
+
+                let s2 = s.clone();
+                thread::spawn(move || {
+                    assert_eq!(me(), 1);
+                    s2.release(1);
+                });
+                thread::spawn(move || {
+                    assert_eq!(me(), 2);
+                    check_clock(|i, c| (i != 1) || (c == 0));
+                    s.acquire_blocking(1).unwrap();
+                    // after the acquire, we are causally dependent on task 1's release
+                    check_clock(|i, c| (i != 1) || (c > 0));
+                });
+            },
+            None,
+        );
+    }
+
+    /// A fair release grants a queued waiter its permits inside the release: afterwards the permits
+    /// are gone, with no scheduling point in between at which anything could have barged. A plain
+    /// release instead leaves the permits available and lets every request race for them.
+    #[test_log::test]
+    fn fair_release_grants_the_queued_waiter_inside_the_release() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = fair_releases(1);
+                    sem.acquire(1).await.unwrap();
+                    let mut waiting = Box::pin(sem.acquire(1));
+                    assert!(futures::poll!(waiting.as_mut()).is_pending());
+
+                    sem.release(1);
+                    // No scheduling point separates the release from this read, so only the grant
+                    // inside the release can have taken the permit.
+                    assert_eq!(sem.available_permits(), 0, "the waiter was not granted the permit");
+                    waiting.as_mut().await.unwrap();
+                    sem.release(1);
+                });
+            },
+            None,
+        );
+    }
+
+    /// The contrast to the test above, pinning down what plain `release` does on an unfair
+    /// semaphore: the permits stay available, and the releasing task itself can take them back
+    /// ahead of the queued waiter.
+    #[test_log::test]
+    fn plain_release_lets_the_releaser_barge_past_the_waiter() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = BatchSemaphore::new(1, Fairness::Unfair);
+                    sem.acquire(1).await.unwrap();
+                    let mut waiting = Box::pin(sem.acquire(1));
+                    assert!(futures::poll!(waiting.as_mut()).is_pending());
+
+                    sem.release(1);
+                    // The permit is up for grabs rather than granted: any request could now take
+                    // it ahead of the waiter (`fair_release_hands_off_to_a_waiting_task` shows the
+                    // race across tasks).
+                    assert_eq!(sem.available_permits(), 1, "a plain release must not hand off");
+                    waiting.as_mut().await.unwrap();
+                    sem.release(1);
+                });
+            },
+            None,
+        );
+    }
+
+    /// A fair release grants from the front of the queue, for as long as the permits last: the
+    /// longest-waiting request first, and a request that does not fit stops the scan, like the
+    /// first parked writer stops `parking_lot`'s wake-up. What is left over is free for anyone.
+    #[test_log::test]
+    fn fair_release_grants_from_the_front_until_the_permits_run_out() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = fair_releases(3);
+                    sem.acquire(3).await.unwrap();
+                    let mut first = Box::pin(sem.acquire(2));
+                    assert!(futures::poll!(first.as_mut()).is_pending());
+                    let mut second = Box::pin(sem.acquire(2));
+                    assert!(futures::poll!(second.as_mut()).is_pending());
+
+                    sem.release(3);
+                    // The first waiter took 2 inside the release; the second does not fit the 1
+                    // that is left, which stays available rather than earmarked.
+                    assert_eq!(sem.available_permits(), 1);
+                    assert!(futures::poll!(first.as_mut()).is_ready());
+                    assert!(futures::poll!(second.as_mut()).is_pending());
+
+                    // The first waiter leaves, and the second takes its permits.
+                    sem.release(2);
+                    second.as_mut().await.unwrap();
+                    sem.release(2);
+                });
+            },
+            None,
+        );
+    }
+
+    /// While a reservation holds the semaphore, a fair release changes nothing about who is next:
+    /// the permits are kept for the reservation's holder, not handed to the queue.
+    #[test_log::test]
+    fn fair_release_defers_to_the_reservation() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = fair_releases(2);
+                    sem.acquire(1).await.unwrap();
+                    let mut reserve = Box::pin(sem.acquire_reserving(1, 2));
+                    assert!(futures::poll!(reserve.as_mut()).is_pending());
+                    let mut waiting = Box::pin(sem.acquire(1));
+                    assert!(futures::poll!(waiting.as_mut()).is_pending());
+
+                    sem.release(1);
+                    assert_eq!(sem.available_permits(), 0);
+                    assert!(
+                        futures::poll!(reserve.as_mut()).is_ready(),
+                        "the reservation's holder did not get the permits"
+                    );
+                    assert!(futures::poll!(waiting.as_mut()).is_pending());
+
+                    sem.release(2);
+                    waiting.as_mut().await.unwrap();
+                    sem.release(1);
+                });
+            },
+            None,
+        );
+    }
+
+    /// On a strictly fair semaphore every release already grants from the front of the queue, so
+    /// `with_fair_releases` changes nothing.
+    #[test_log::test]
+    fn fair_releases_change_nothing_on_a_strictly_fair_semaphore() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = BatchSemaphore::new(1, Fairness::StrictlyFair).with_fair_releases();
+                    sem.acquire(1).await.unwrap();
+                    let mut waiting = Box::pin(sem.acquire(1));
+                    assert!(futures::poll!(waiting.as_mut()).is_pending());
+
+                    sem.release(1);
+                    assert_eq!(sem.available_permits(), 0);
+                    waiting.as_mut().await.unwrap();
+                    sem.release(1);
+                });
+            },
+            None,
+        );
+    }
+
+    /// The hand-off across tasks: whenever the waiter's request is queued at the moment of the fair
+    /// release, the waiter gets the permit inside the release (`available_permits` is 0 with no
+    /// scheduling point in between). Both that case and the one where the waiter had not asked yet
+    /// must show up across the schedules.
+    #[test_log::test]
+    fn fair_release_hands_off_to_a_waiting_task() {
+        static SAW_HANDOFF: AtomicBool = AtomicBool::new(false);
+        static SAW_FREE: AtomicBool = AtomicBool::new(false);
+        check_dfs(
+            || {
+                let sem = Arc::new(fair_releases(1));
+                sem.acquire_blocking(1).unwrap();
+                let waiter = {
+                    let sem = sem.clone();
+                    thread::spawn(move || {
+                        sem.acquire_blocking(1).unwrap();
+                        sem.release(1);
+                    })
+                };
+                sem.release(1);
+                // No scheduling point since the release: 0 means the waiter was queued and was
+                // granted the permit inside the release; 1 means it had not asked yet.
+                match sem.available_permits() {
+                    0 => SAW_HANDOFF.store(true, Ordering::SeqCst),
+                    1 => SAW_FREE.store(true, Ordering::SeqCst),
+                    n => panic!("impossible permit count {n}"),
+                }
+                waiter.join().unwrap();
+            },
+            None,
+        );
+        assert!(SAW_HANDOFF.load(Ordering::SeqCst), "no schedule had a queued waiter");
+        assert!(
+            SAW_FREE.load(Ordering::SeqCst),
+            "no schedule had the waiter still to ask"
+        );
+    }
+
+    /// A fair release hands a queued reserving waiter the reservation when it can reserve but not
+    /// yet take all of its permits, as `parking_lot` hands a writer `WRITER_BIT` while readers are
+    /// left. A request that queued after it can then not overtake it.
+    #[test_log::test]
+    fn fair_release_hands_the_reservation_to_the_front_waiter() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = fair_releases(3);
+                    // Like an upgradable reader (2 permits) and a plain reader (1).
+                    sem.acquire(2).await.unwrap();
+                    sem.acquire(1).await.unwrap();
+                    let mut writer = Box::pin(sem.acquire_reserving(2, 3));
+                    assert!(futures::poll!(writer.as_mut()).is_pending());
+                    let mut later = Box::pin(sem.acquire(1));
+                    assert!(futures::poll!(later.as_mut()).is_pending());
+
+                    sem.release(2);
+                    assert_eq!(sem.available_permits(), 0, "the writer was not handed the reservation");
+                    assert!(
+                        futures::poll!(later.as_mut()).is_pending(),
+                        "a later request overtook the writer"
+                    );
+                    assert!(futures::poll!(writer.as_mut()).is_pending());
+
+                    // The last reader leaves, and the writer takes every permit.
+                    sem.release(1);
+                    assert!(futures::poll!(writer.as_mut()).is_ready());
+                    assert!(futures::poll!(later.as_mut()).is_pending());
+                    sem.release(3);
+                    later.as_mut().await.unwrap();
+                    sem.release(1);
+                });
+            },
+            None,
+        );
+    }
+
+    /// On a semaphore built `with_fair_releases`, the order of the queue decides who gets the
+    /// permits, so Shuttle must explore every order in which tasks can join it. T2 asks for the
+    /// permit only after T1's message, and the main task releases it only after T2's message, so
+    /// both ask while the main task holds it. Without a scheduling point between T1's message and T1
+    /// joining the queue, T1 would always be first in the queue, and get the permit first.
+    #[test_log::test]
+    fn with_fair_releases_explores_every_queue_order() {
+        let orders = Arc::new(Mutex::new(HashSet::new()));
+        let orders_clone = Arc::clone(&orders);
+        check_dfs(
+            move || {
+                let sem = Arc::new(fair_releases(1));
+                sem.acquire_blocking(1).unwrap();
+                let order = Arc::new(Mutex::new(Vec::new()));
+                let (to_second, from_first) = shuttle::sync::mpsc::channel();
+                let (to_main, from_second) = shuttle::sync::mpsc::channel();
+                let first = {
+                    let (sem, order) = (Arc::clone(&sem), Arc::clone(&order));
+                    thread::spawn(move || {
+                        to_second.send(()).unwrap();
+                        sem.acquire_blocking(1).unwrap();
+                        order.lock().unwrap().push(1);
+                        sem.release(1);
+                    })
+                };
+                let second = {
+                    let (sem, order) = (Arc::clone(&sem), Arc::clone(&order));
+                    thread::spawn(move || {
+                        from_first.recv().unwrap();
+                        to_main.send(()).unwrap();
+                        sem.acquire_blocking(1).unwrap();
+                        order.lock().unwrap().push(2);
+                        sem.release(1);
+                    })
+                };
+                from_second.recv().unwrap();
+                sem.release(1);
+                first.join().unwrap();
+                second.join().unwrap();
+                orders_clone.lock().unwrap().insert(order.lock().unwrap().clone());
+            },
+            None,
+        );
+        let orders = orders.lock().unwrap();
+        assert_eq!(*orders, HashSet::from([vec![1, 2], vec![2, 1]]));
+    }
+}
+
+/// Tests of how an unfair semaphore puts a task that a release woke back to sleep once the task can
+/// no longer make progress (`reblock_if_unfair`), when the task polls more than one future.
+mod reblock_tests {
+    use super::*;
+    use futures::channel::oneshot;
+    use futures::future::{select, Either};
+
+    /// A task waits on two acquires at once. A fair release grants the first one, and the task
+    /// must then run to take its permits, although its second acquire is still queued and cannot
+    /// make progress.
+    #[test_log::test]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
+    fn fair_release_leaves_the_task_it_granted_runnable() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(0, Fairness::Unfair).with_fair_releases());
+                let waiter = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let (one, two) = (sem.acquire(1), sem.acquire(2));
+                            futures::pin_mut!(one, two);
+                            match select(one, two).await {
+                                Either::Left((result, _)) => result.unwrap(),
+                                Either::Right((result, _)) => result.unwrap(),
+                            }
+                        })
+                    })
+                };
+                sem.release(1);
+                waiter.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// As above, but another task takes the permits that are left before the granted task runs.
+    /// Its acquire puts the tasks that can no longer make progress back to sleep, and must still
+    /// leave the granted task runnable.
+    #[test_log::test]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
+    fn later_acquire_leaves_a_granted_task_runnable() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(0, Fairness::Unfair).with_fair_releases());
+                let (queued_tx, queued_rx) = shuttle::sync::mpsc::channel();
+                let waiter = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let (one, two) = (sem.acquire(1), sem.acquire(2));
+                            futures::pin_mut!(one, two);
+                            assert!(futures::poll!(one.as_mut()).is_pending());
+                            assert!(futures::poll!(two.as_mut()).is_pending());
+                            queued_tx.send(()).unwrap();
+                            match select(one, two).await {
+                                Either::Left((result, _)) => result.unwrap(),
+                                Either::Right((result, _)) => result.unwrap(),
+                            }
+                        })
+                    })
+                };
+                queued_rx.recv().unwrap();
+                // Grants `acquire(1)`, which is first in the queue; `acquire(2)` does not fit the
+                // permit that is left.
+                sem.release(2);
+                sem.try_acquire(1).unwrap();
+                waiter.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// A release that grants nothing changes nothing about who can make progress, so a task that
+    /// sleeps on an acquire and a channel must still be woken by the channel.
+    #[test_log::test]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
+    fn release_that_grants_nothing_keeps_the_other_wakes() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(2, Fairness::Unfair).with_fair_releases());
+                sem.acquire_blocking(2).unwrap();
+                let (tx, rx) = oneshot::channel::<()>();
+                let waiter = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let acquire = sem.acquire(2);
+                            futures::pin_mut!(acquire);
+                            match select(acquire, rx).await {
+                                Either::Left(_) => panic!("the main task holds a permit until the join"),
+                                Either::Right((result, _)) => result.unwrap(),
+                            }
+                        })
+                    })
+                };
+                // Grants nothing: the queued `acquire(2)` does not fit one permit.
+                sem.release(1);
+                tx.send(()).unwrap();
+                waiter.join().unwrap();
+                sem.release(1);
+            },
+            None,
+        );
+    }
+
+    /// The same with a plain unfair semaphore, where a release only wakes the waiters that fit:
+    /// another task's acquire must not block a sleeping task whose acquire cannot make progress,
+    /// as that loses the wake of the task's channel.
+    #[test_log::test]
+    fn acquire_keeps_the_other_wakes_of_a_sleeping_task() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair));
+                let (tx, rx) = oneshot::channel::<()>();
+                let waiter = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let acquire = sem.acquire(2);
+                            futures::pin_mut!(acquire);
+                            match select(acquire, rx).await {
+                                Either::Left(_) => panic!("the semaphore never has two permits"),
+                                Either::Right((result, _)) => result.unwrap(),
+                            }
+                        })
+                    })
+                };
+                sem.acquire_blocking(1).unwrap();
+                tx.send(()).unwrap();
+                waiter.join().unwrap();
+                sem.release(1);
+            },
+            None,
+        );
+    }
+
+    /// A waiter that a release does not grant keeps sleeping on its pending future, so a deadlock
+    /// report shows it as such, rather than as blocked by the releasing task.
+    #[test_log::test]
+    #[should_panic(expected = "(2), pending future)")]
+    #[allow(deprecated)] // `with_fair_releases` is deprecated so that only `shuttle-parking_lot` uses it.
+    fn deadlock_report_shows_a_waiter_that_a_release_passed_over_as_pending() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair).with_fair_releases());
+                sem.acquire_blocking(1).unwrap();
+                let (queued_tx, queued_rx) = shuttle::sync::mpsc::channel();
+                let spawn_waiter = |queued_tx: shuttle::sync::mpsc::Sender<()>| {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        future::block_on(async {
+                            let mut acquire = Box::pin(sem.acquire(1));
+                            assert!(futures::poll!(acquire.as_mut()).is_pending());
+                            queued_tx.send(()).unwrap();
+                            // Keeps the permit: the second waiter never gets it.
+                            acquire.await.unwrap();
+                        })
+                    })
+                };
+                let first = spawn_waiter(queued_tx.clone());
+                queued_rx.recv().unwrap();
+                let second = spawn_waiter(queued_tx);
+                queued_rx.recv().unwrap();
+                // Grants the first waiter, and passes over the second.
+                sem.release(1);
+                first.join().unwrap();
+                second.join().unwrap();
+            },
+            None,
+        );
+    }
+}
+
+/// Tests of `BatchSemaphore::load_permits`: a read of the semaphore's state with one scheduling
+/// point and no effect.
+mod load_permits_tests {
+    use super::*;
+
+    /// `load_permits` reports the permits a request could take now: the free permits, zero while a
+    /// reservation lasts, and `None` once the semaphore is closed.
+    #[test_log::test]
+    fn load_permits_reads_the_state() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = BatchSemaphore::new(3, Fairness::Unfair);
+                    assert_eq!(sem.load_permits(), Some(3));
+                    sem.acquire(1).await.unwrap();
+                    assert_eq!(sem.load_permits(), Some(2));
+
+                    let mut reserve = Box::pin(sem.acquire_reserving(2, 3));
+                    assert!(futures::poll!(reserve.as_mut()).is_pending());
+                    assert_eq!(sem.load_permits(), Some(0), "a reservation keeps the permits");
+                    drop(reserve);
+                    assert_eq!(sem.load_permits(), Some(2));
+
+                    sem.close();
+                    assert_eq!(sem.load_permits(), None);
+                });
+            },
+            None,
+        );
+    }
+
+    /// `load_permits` changes nothing, but it is a scheduling point: another task can run between
+    /// two reads, so two consecutive reads can disagree. Reading with `try_acquire` + `release`
+    /// instead would transiently take the permit, which would make the other task's `try_acquire`
+    /// fail.
+    #[test_log::test]
+    fn load_permits_is_a_scheduling_point_without_effects() {
+        let observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let observed_clone = Arc::clone(&observed);
+        check_dfs(
+            move || {
+                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair));
+                let other = {
+                    let sem = sem.clone();
+                    thread::spawn(move || {
+                        // The permit is only ever held here, so only a probe with effects could
+                        // make this fail.
+                        sem.try_acquire(1).expect("a load_permits took the permit");
+                        sem.release(1);
+                    })
+                };
+                let first = sem.load_permits().unwrap();
+                let second = sem.load_permits().unwrap();
+                observed_clone.lock().unwrap().insert((first, second));
+                other.join().unwrap();
+            },
+            None,
+        );
+        let observed = Arc::try_unwrap(observed).unwrap().into_inner().unwrap();
+        assert_eq!(
+            observed,
+            HashSet::from([(1, 1), (1, 0), (0, 0), (0, 1)]),
+            "each read must have its own scheduling point"
+        );
+    }
+
+    /// A read is causally after the acquires and the releases before it, as a load of an atomic
+    /// word is after the stores to it, so a replay up to its clock reads the same state. Task 1
+    /// releases another semaphore first, so that its clock has an event of its own when it takes
+    /// the permit. `released` is a `std` atomic, which adds no scheduling point and no clock edge.
+    #[test_log::test]
+    fn load_permits_is_after_the_acquires_and_releases() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair));
+                let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let other = {
+                    let (sem, released) = (Arc::clone(&sem), Arc::clone(&released));
+                    thread::spawn(move || {
+                        assert_eq!(me(), 1);
+                        BatchSemaphore::new(0, Fairness::Unfair).release(1);
+                        sem.acquire_blocking(1).unwrap();
+                        sem.release(1);
+                        released.store(true, Ordering::SeqCst);
+                    })
+                };
+                let taken = sem.load_permits() == Some(0);
+                if taken || released.load(Ordering::SeqCst) {
+                    check_clock(|i, c| (i != 1) || (c > 0));
+                } else {
+                    check_clock(|i, c| (i != 1) || (c == 0));
+                }
+                other.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// A `try_acquire` that a reservation refuses is after the request that holds the reservation,
+    /// although that request holds no permits yet, as a `try_write` of a `parking_lot` lock that
+    /// sees `WRITER_BIT` is after the writer that set it. Task 1 releases another semaphore first,
+    /// so that its clock has an event of its own when it reserves the semaphore.
+    #[test_log::test]
+    fn failed_try_acquire_is_after_the_reservation() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(2, Fairness::Unfair));
+                sem.acquire_blocking(1).unwrap();
+                let reserver = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        assert_eq!(me(), 1);
+                        BatchSemaphore::new(0, Fairness::Unfair).release(1);
+                        future::block_on(sem.acquire_reserving(1, 2)).unwrap();
+                        sem.release(2);
+                    })
+                };
+                let other = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        assert_eq!(me(), 2);
+                        // One permit is free while the main task holds the other, so only task 1
+                        // can make this fail, by reserving the semaphore or by holding it.
+                        match sem.try_acquire(1) {
+                            Ok(()) => sem.release(1),
+                            Err(_) => check_clock(|i, c| (i != 1) || (c > 0)),
+                        }
+                    })
+                };
+                thread::yield_now();
+                sem.release(1);
+                reserver.join().unwrap();
+                other.join().unwrap();
             },
             None,
         );

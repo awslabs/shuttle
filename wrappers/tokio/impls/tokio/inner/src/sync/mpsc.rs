@@ -334,7 +334,7 @@ impl<T> ReceiverInternal<T> {
         // so the waiter stays registered in the semaphore queue.
         if self.pending_acquire.is_none() {
             let acquire = self.chan.recv_semaphore.acquire(1);
-            // Safety: Acquire borrows recv_semaphore which lives in self.chan
+            // SAFETY: Acquire borrows recv_semaphore which lives in self.chan
             // (behind Arc). We clear pending_acquire on completion, on close,
             // and in Drop — so the borrow never outlives the semaphore.
             let acquire: Acquire<'static> = unsafe { std::mem::transmute(acquire) };

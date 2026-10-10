@@ -306,7 +306,7 @@ impl<T: ?Sized> RwLock<T> {
     }
 }
 
-// Safety: RwLock is never actually passed across true threads, only across continuations. The
+// SAFETY: RwLock is never actually passed across true threads, only across continuations. The
 // Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
 // TODO we shouldn't need to do this, but RefCell is not Send, and anything we put within a RwLock
 // TODO needs to be Send.
