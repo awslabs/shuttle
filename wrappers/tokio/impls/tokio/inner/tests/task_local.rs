@@ -9,7 +9,7 @@
 //!   of that poll find the value as well. Each scenario passes with this crate's implementation
 //!   and fails with tokio's, which is what `shuttle-tokio` used to re-export.
 //! * `teardown` covers the ends of an execution that leave a scoped future unfinished, where
-//!   Shuttle drops the future without any task running.
+//!   Shuttle drops the future as its task.
 
 use futures::FutureExt;
 use shuttle::future::block_on;
@@ -1302,9 +1302,9 @@ mod isolation {
 
 mod teardown {
     //! When the test returns, Shuttle drops the tasks that have not finished, such as a detached
-    //! task that is still pending. It does so with no task running, as a tokio runtime that shuts
-    //! down drops its tasks outside of any of them. The futures of those tasks can still see their
-    //! own task-local values while they are dropped, like they can in tokio.
+    //! task that is still pending, each as the current task while it does. The futures of those
+    //! tasks see their own task-local values while they are dropped, as they do when a tokio
+    //! runtime shuts down.
 
     use super::*;
     use std::sync::Mutex as StdMutex;
@@ -1352,7 +1352,7 @@ mod teardown {
 
     /// A detached task that is blocked in the middle of a poll of a scope at the end of the
     /// execution. Shuttle unwinds the task's stack, and the scope has to move its value from the
-    /// task's storage back into the `TaskLocalFuture`, even though no task is running.
+    /// task's storage back into the `TaskLocalFuture`.
     #[test]
     fn task_blocked_in_the_middle_of_a_poll_of_a_scope() {
         task_local! {
@@ -1394,10 +1394,45 @@ mod teardown {
         assert!(unscoped.iter().all(|seen| seen.is_none()), "{unscoped:?}");
     }
 
+    /// A local variable of an `async` block, in a detached task that is switched out in the middle
+    /// of a poll of a scope at the end of the execution. Shuttle unwinds the task's stack, and the
+    /// local's destructor sees the scope's value, as it would in tokio.
+    #[test]
+    fn local_of_a_task_switched_out_in_the_middle_of_a_poll_of_a_scope() {
+        task_local! {
+            static KEY: u32;
+        }
+        static SEEN: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
+
+        struct RecordKeyOnDrop;
+
+        impl Drop for RecordKeyOnDrop {
+            fn drop(&mut self) {
+                SEEN.lock().unwrap().push(KEY.try_get().ok());
+            }
+        }
+
+        check_dfs(
+            || {
+                block_on(async {
+                    drop(task::spawn(KEY.scope(7, async {
+                        let _record = RecordKeyOnDrop;
+                        scheduling_point().await;
+                        std::future::pending::<()>().await
+                    })));
+                })
+            },
+            None,
+        );
+
+        let seen = SEEN.lock().unwrap();
+        assert!(!seen.is_empty());
+        assert!(seen.iter().all(|seen| *seen == Some(7)), "{seen:?}");
+    }
+
     /// Two detached tasks, each pending inside two nested scopes of the same key, and one outside
-    /// of any scope. While Shuttle drops them, the scopes of all of them use the same slot (the one
-    /// for when no task runs). Every value they hold must see the innermost scope it is in, and
-    /// never a value of another task.
+    /// of any scope. Every value they hold must see the innermost scope it is in when Shuttle drops
+    /// them, and never a value of another task.
     #[test]
     fn tasks_pending_in_nested_scopes() {
         task_local! {

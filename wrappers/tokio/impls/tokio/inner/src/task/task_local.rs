@@ -28,24 +28,22 @@
 //! Here the slot is Shuttle's task-local storage instead (`shuttle::thread_local!`), so every
 //! Shuttle task (async task or thread) has a slot of its own, and is the only one to see the values
 //! it scopes, wherever it is switched out. A task's slot goes away with the task, so nothing
-//! outlives an execution. Accessing a task-local is not a scheduling point, as it is not in tokio:
-//! it is not visible to any other task.
+//! outlives an execution. When an execution ends, Shuttle drops the tasks that have not finished
+//! one at a time, each as the current task, so a future that is dropped then sees the values of the
+//! scopes it is in, as it does when a tokio runtime shuts down. That includes the destructors that
+//! run while Shuttle unwinds a task that was switched out in the middle of a poll of a scope, such
+//! as those of the local variables of an `async` block. Accessing a task-local is not a scheduling
+//! point, as it is not in tokio: it is not visible to any other task.
 //!
 //! Whenever Shuttle has no current task, or is updating its own state, the slot is a plain
 //! `std::thread_local!` instead, which is what tokio uses all the time. That is the case outside of
-//! a Shuttle test, where a `LocalKey` therefore behaves exactly as tokio's does. It is also the case
-//! while Shuttle tears an execution down and drops the tasks that have not finished, and while
-//! Shuttle updates its own state (which is when it calls `tracing` subscribers for some of its own
-//! events). A task also uses the plain slot once its own is gone: when a task finishes, Shuttle
-//! destroys its thread-locals one at a time, its slot included, and the destructors that run after
-//! the slot's (those of the task's other thread-locals) use the plain one, as they could tokio's,
-//! which the end of a task does not destroy. In all of these only one thing runs at a time, so a
-//! single slot is as sound there as it is in tokio: scopes can only nest, never interleave. A future
-//! that is dropped at teardown still sees the values of the scopes it is in, as it does when a tokio
-//! runtime shuts down. There is one exception: if the task was switched out in the middle of a poll
-//! of a scope, Shuttle first unwinds its stack, and the destructors that run during that unwinding
-//! (which include those of the local variables of an `async` block that is being polled) see no
-//! value.
+//! a Shuttle test, where a `LocalKey` therefore behaves exactly as tokio's does, and while Shuttle
+//! updates its own state (which is when it calls `tracing` subscribers for some of its own events).
+//! A task also uses the plain slot once its own is gone: when a task finishes, Shuttle destroys its
+//! thread-locals one at a time, its slot included, and the destructors that run after the slot's
+//! (those of the task's other thread-locals) use the plain one, as they could tokio's, which the end
+//! of a task does not destroy. In all of these only one thing runs at a time, so a single slot is as
+//! sound there as it is in tokio: scopes can only nest, never interleave.
 //!
 //! Code that Shuttle runs while it updates its own state therefore sees no task's values, even when
 //! it runs on behalf of a task that is inside a scope. That includes `tracing` subscribers handling
@@ -172,10 +170,10 @@ pub struct LocalKey<T: 'static> {
     #[doc(hidden)]
     pub task_slot: &'static shuttle::thread::LocalKey<RefCell<Option<T>>>,
     // The slot used instead whenever Shuttle has no current task or is updating its own state:
-    // outside of a Shuttle test, while Shuttle tears an execution down, and while it updates its
-    // own state. A task also uses it once Shuttle has destroyed the task's own slot (see the module
-    // docs). It is what tokio uses all the time, and is as sound here as it is there, since only
-    // one thing runs at a time in each of those cases.
+    // outside of a Shuttle test, and while it updates its own state. A task also uses it once
+    // Shuttle has destroyed the task's own slot (see the module docs). It is what tokio uses all
+    // the time, and is as sound here as it is there, since only one thing runs at a time in each
+    // of those cases.
     #[doc(hidden)]
     pub fallback_slot: thread::LocalKey<RefCell<Option<T>>>,
 }
@@ -277,14 +275,8 @@ impl<T: 'static> LocalKey<T> {
                 // there's no way for user-code to forget to destroy a guard.
                 //
                 // SHUTTLE_CHANGES: The value goes back out of the slot it was moved into, not out
-                // of a fresh lookup's. `with_slot` picks the slot by whether a task is running, and
-                // that can change while `f` runs: if the execution ends while this task is switched
-                // out inside `f` (blocked in the middle of a poll), `ExecutionState::cleanup`
-                // unwinds the task's stack with no task running. A lookup would return the fallback
-                // slot, leaving the value in the task's slot, and the `TaskLocalFuture` would drop
-                // its future without it. The task's slot is still there then, as Shuttle drops a
-                // task's stack before its storage. Covered by
-                // `teardown::task_blocked_in_the_middle_of_a_poll_of_a_scope`.
+                // of a fresh lookup's, so that it goes back where it came from whichever slot
+                // `with_slot` would pick by the time the scope ends.
                 let mut ref_mut = self.cell.borrow_mut();
                 mem::swap(self.slot, &mut *ref_mut);
             }
@@ -305,11 +297,11 @@ impl<T: 'static> LocalKey<T> {
     }
 
     // SHUTTLE_CHANGES: Added. tokio uses its one thread-local wherever this is called.
-    /// Runs `f` on the slot that a scope's value is moved into: the running Shuttle task's own, or
-    /// the fallback slot if no task is running (see the fields of `LocalKey`).
+    /// Runs `f` on the slot that a scope's value is moved into: the current Shuttle task's own, or
+    /// the fallback slot (see the fields of `LocalKey`).
     ///
-    /// Returns an `AccessError` if the slot has already been destroyed, which happens if this is
-    /// called from the destructor of another task-local or thread-local value.
+    /// Returns an `AccessError` if the fallback slot has already been destroyed, which, as in tokio,
+    /// only happens while the OS thread exits.
     fn with_slot<F, R>(&'static self, f: F) -> Result<R, AccessError>
     where
         F: FnOnce(&RefCell<Option<T>>) -> R,
