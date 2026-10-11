@@ -45,6 +45,11 @@ pub struct LocalKey<T: 'static> {
     // gives it all four.
     #[doc(hidden)]
     pub _p: PhantomData<fn() -> T>,
+    // Whether the thread's slot for this key is destroyed after all of its other thread-locals when
+    // the thread finishes, so that their destructors can still use it. `shuttle-tokio` sets it for
+    // the slots of its task-locals, which in tokio are thread-locals that outlive every task.
+    #[doc(hidden)]
+    pub destroy_last: bool,
 }
 
 impl<T: 'static> std::fmt::Debug for LocalKey<T> {

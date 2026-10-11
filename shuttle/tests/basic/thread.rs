@@ -448,6 +448,58 @@ mod thread_local {
         );
     }
 
+    /// A thread's slot for a key with `destroy_last` set is destroyed after its other thread-locals,
+    /// even when it was created first, so their destructors can still use it. A key without it is
+    /// destroyed in creation order, so it is already gone for them.
+    #[test]
+    fn destroy_last() {
+        use std::cell::Cell;
+        use std::marker::PhantomData;
+
+        static DESTROYED_LAST: LocalKey<Cell<u32>> = LocalKey {
+            init: || Cell::new(1),
+            _p: PhantomData,
+            destroy_last: true,
+        };
+        static DESTROYED_IN_ORDER: LocalKey<Cell<u32>> = LocalKey {
+            init: || Cell::new(2),
+            _p: PhantomData,
+            destroy_last: false,
+        };
+        static SEEN: std::sync::Mutex<Vec<(Option<u32>, Option<u32>)>> = std::sync::Mutex::new(Vec::new());
+
+        struct ReadsKeysOnDrop;
+
+        impl Drop for ReadsKeysOnDrop {
+            fn drop(&mut self) {
+                SEEN.lock().unwrap().push((
+                    DESTROYED_LAST.try_with(Cell::get).ok(),
+                    DESTROYED_IN_ORDER.try_with(Cell::get).ok(),
+                ));
+            }
+        }
+
+        shuttle::thread_local! {
+            static READS_KEYS_ON_DROP: RefCell<Option<ReadsKeysOnDrop>> = const { RefCell::new(None) };
+        }
+
+        check_dfs(
+            || {
+                SEEN.lock().unwrap().clear();
+                thread::spawn(|| {
+                    // Both slots are created before the thread-local that reads them when it drops.
+                    DESTROYED_LAST.with(|_| ());
+                    DESTROYED_IN_ORDER.with(|_| ());
+                    READS_KEYS_ON_DROP.with(|reads| *reads.borrow_mut() = Some(ReadsKeysOnDrop));
+                })
+                .join()
+                .unwrap();
+                assert_eq!(*SEEN.lock().unwrap(), [(Some(1), None)]);
+            },
+            None,
+        );
+    }
+
     /// A `LocalKey` has the same auto traits as `std::thread::LocalKey`, whatever it holds.
     #[test]
     fn auto_traits() {

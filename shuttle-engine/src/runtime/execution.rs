@@ -2040,7 +2040,7 @@ impl ExecutionState {
     }
 
     pub fn init_storage<K: Into<StorageKey>, T: 'static>(&mut self, key: K, value: T) {
-        self.storage.init(key.into(), value);
+        self.storage.init(key.into(), value, false);
     }
 
     pub fn get_clock(&self, id: TaskId) -> &VectorClock {

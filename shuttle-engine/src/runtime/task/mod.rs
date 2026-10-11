@@ -722,7 +722,7 @@ impl Task {
     ///
     /// Panics if the slot has already been initialized.
     pub fn init_local<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
-        self.local_storage.init(key.into(), value)
+        self.local_storage.init(key.into(), value, key.destroy_last)
     }
 
     /// Whether some thread-local storage slot is still initialized.
