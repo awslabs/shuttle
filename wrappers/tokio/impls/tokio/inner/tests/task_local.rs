@@ -640,10 +640,10 @@ mod api {
         );
     }
 
-    /// When a task finishes, Shuttle destroys its thread-locals one at a time, oldest first. A
-    /// thread-local's destructor can still enter a scope, and drop a pending one with its value set,
-    /// even when the task used the key before it created that thread-local, so that the task's slot
-    /// for the key was destroyed first.
+    /// When a task finishes, Shuttle destroys its thread-locals one at a time, oldest first, but
+    /// its slots for task-locals last. So a thread-local's destructor can enter a scope, and drop a
+    /// pending one with its value set, even when the task used the key before it created that
+    /// thread-local.
     #[test]
     fn thread_local_destructor_uses_a_key_the_task_used_first() {
         task_local! {
@@ -689,6 +689,99 @@ mod api {
             },
             None,
         );
+    }
+
+    /// The thread-local destructors of two tasks are inside scopes of a key at the same time, and
+    /// each sees only its own value, also when the tasks used the key before they created those
+    /// thread-locals.
+    #[test]
+    fn thread_local_destructors_of_two_tasks_are_in_scopes_at_once() {
+        task_local! {
+            static KEY: u32;
+        }
+
+        struct InScopeOnDrop(u32);
+
+        impl Drop for InScopeOnDrop {
+            fn drop(&mut self) {
+                let value = self.0;
+                KEY.sync_scope(value, || {
+                    shuttle::thread::yield_now();
+                    assert_eq!(KEY.get(), value);
+                    KEY.with(|_| shuttle::thread::yield_now());
+                });
+            }
+        }
+
+        shuttle::thread_local! {
+            static IN_SCOPE_ON_DROP: std::cell::RefCell<Option<InScopeOnDrop>> = const { std::cell::RefCell::new(None) };
+        }
+
+        fn set_up(value: u32) {
+            assert!(KEY.try_get().is_err());
+            IN_SCOPE_ON_DROP.with(|on_drop| *on_drop.borrow_mut() = Some(InScopeOnDrop(value)));
+        }
+
+        // Threads, which destroy their thread-locals when their function returns.
+        check_dfs(
+            || {
+                let threads: Vec<_> = (1..=2)
+                    .map(|value| shuttle::thread::spawn(move || set_up(value)))
+                    .collect();
+                for thread in threads {
+                    thread.join().unwrap();
+                }
+            },
+            None,
+        );
+
+        // Future tasks, which destroy theirs when their future finishes.
+        check_dfs(
+            || {
+                let tasks: Vec<_> = (1..=2).map(|value| task::spawn(async move { set_up(value) })).collect();
+                block_on(async {
+                    for task in tasks {
+                        task.await.unwrap();
+                    }
+                });
+            },
+            None,
+        );
+    }
+
+    /// An execution that is stopped while a thread-local's destructor is inside a scope leaves the
+    /// value with its task, not where code outside of the execution, or the next one, would see it.
+    #[test]
+    fn stopped_execution_leaves_no_value_behind() {
+        task_local! {
+            static KEY: u32;
+        }
+
+        struct SpinsInScopeOnDrop;
+
+        impl Drop for SpinsInScopeOnDrop {
+            fn drop(&mut self) {
+                KEY.sync_scope(1, || loop {
+                    shuttle::thread::yield_now();
+                });
+            }
+        }
+
+        shuttle::thread_local! {
+            static SPINS_IN_SCOPE_ON_DROP: std::cell::RefCell<Option<SpinsInScopeOnDrop>> = const { std::cell::RefCell::new(None) };
+        }
+
+        let mut config = Config::new();
+        config.max_steps = MaxSteps::ContinueAfter(50);
+        Runner::new(RandomScheduler::new(1), config).run(|| {
+            shuttle::thread::spawn(|| {
+                assert!(KEY.try_get().is_err());
+                SPINS_IN_SCOPE_ON_DROP.with(|on_drop| *on_drop.borrow_mut() = Some(SpinsInScopeOnDrop));
+            })
+            .join()
+            .unwrap();
+        });
+        assert!(KEY.try_get().is_err(), "a scope's value outlived its execution");
     }
 
     /// A scope that panics restores the value it shadowed, so that the panic can be caught.

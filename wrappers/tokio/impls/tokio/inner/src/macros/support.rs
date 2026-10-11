@@ -16,7 +16,7 @@ pub fn poll_budget_available(_: &mut Context<'_>) -> Poll<()> {
 
 // SHUTTLE_CHANGES: Used by `task_local!`, for the storage of each Shuttle task.
 #[doc(hidden)]
-pub use shuttle::thread_local as __shuttle_thread_local;
+pub use shuttle::thread::LocalKey as __ShuttleLocalKey;
 
 pub use std::future::{Future, IntoFuture};
 pub use std::pin::Pin;
