@@ -1,6 +1,8 @@
-# Unreleased
+# tokio wrappers (October 12, 2026)
 
-* `shuttle-tokio`: `Notify::notified()` is now a scheduling point, so Shuttle finds the classic `Notify` lost wakeup. `notified()` registers the waiter that `notify_waiters()` notifies, but no other task could run between that registration and the task's previous operation. So Shuttle never ran a notifier between a check of a condition and the `notified()` after it, where a notifier that sets the condition and calls `notify_waiters()` finds no waiter, and on tokio the waiter then waits forever. Each `notified()` call now takes a step, so schedules saved before this change may not replay.
+Published `shuttle-tokio-impl-inner` 0.1.3. The already-published `shuttle-tokio-impl` 0.1.1 and `shuttle-tokio` 1.0.0 both require it as `^0.1.1` and re-export it with a glob, so they pick these changes up without being republished. `shuttle-tokio-impl-inner` now depends on `shuttle-engine` directly, as `^0.1.4`, and requires `shuttle` 0.9.2 or later, the first `shuttle` built on `shuttle-engine`. With 0.9.0 or 0.9.1, `shuttle-engine` would be a second engine that never runs, and `notified()` would panic, so projects on those versions stay on 0.1.2. With `shuttle` 0.9.2 to 0.9.5, upgrading brings `shuttle-engine` 0.1.4 along. The `shuttle` crate is unchanged at 0.9.6.
+
+* `shuttle-tokio`: `Notify::notified()` is now a scheduling point, so Shuttle finds the classic `Notify` lost wakeup. `notified()` registers the waiter that `notify_waiters()` notifies, but no other task could run between that registration and the task's previous operation. So Shuttle never ran a notifier between a check of a condition and the `notified()` after it, where a notifier that sets the condition and calls `notify_waiters()` finds no waiter, and on tokio the waiter then waits forever. Each `notified()` call now takes a step, so schedules saved before this change may not replay. (#389)
 
 # 0.9.6 (October 9, 2026)
 
