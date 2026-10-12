@@ -56,6 +56,9 @@ futures = "0.3.24"
 pin-project = "1.0.12"
 regex = "1.10.1"
 shuttle = { version = "0.9", path = "../../../../../shuttle" }
+# For `runtime::thread::switch`, a scheduling point that, unlike `shuttle::thread::yield_now`,
+# doesn't wake the current task.
+shuttle-engine = { version = "0.1.4", path = "../../../../../shuttle-engine" }
 smallvec = "1.6.1"
 test-log = { version = "0.2.11", default-features = false, features = [
     "trace",
