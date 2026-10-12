@@ -546,6 +546,53 @@ mod thread_local {
         });
     }
 
+    /// The result of a task that nobody can join any more, a detached future task's output or the
+    /// return value of a thread whose `JoinHandle` is gone, is dropped before the task's
+    /// thread-locals, as std drops a thread's, so its destructor can still use them.
+    #[test]
+    fn unjoinable_result_is_dropped_before_thread_locals() {
+        use shuttle::sync::mpsc;
+        use std::cell::Cell;
+
+        shuttle::thread_local! {
+            static LOCAL: Cell<u32> = const { Cell::new(0) };
+        }
+
+        struct SendsLocalOnDrop(mpsc::Sender<u32>);
+
+        impl Drop for SendsLocalOnDrop {
+            fn drop(&mut self) {
+                self.0.send(LOCAL.with(Cell::get)).unwrap();
+            }
+        }
+
+        check_dfs(
+            || {
+                let (seen_tx, seen_rx) = mpsc::channel();
+                let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+                let (thread_seen_tx, thread_dropped_rx) = (seen_tx.clone(), dropped_rx);
+                std::mem::drop(thread::spawn(move || {
+                    LOCAL.with(|local| local.set(1));
+                    // Only once the `JoinHandle` is gone
+                    thread_dropped_rx.recv().unwrap();
+                    SendsLocalOnDrop(thread_seen_tx)
+                }));
+                dropped_tx.send(()).unwrap();
+                assert_eq!(seen_rx.recv().unwrap(), 1);
+
+                let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+                std::mem::drop(future::spawn(async move {
+                    LOCAL.with(|local| local.set(2));
+                    dropped_rx.recv().unwrap();
+                    SendsLocalOnDrop(seen_tx)
+                }));
+                dropped_tx.send(()).unwrap();
+                assert_eq!(seen_rx.recv().unwrap(), 2);
+            },
+            None,
+        );
+    }
+
     /// A `LocalKey` has the same auto traits as `std::thread::LocalKey`, whatever it holds.
     #[test]
     fn auto_traits() {

@@ -24,11 +24,22 @@ pub fn thread_fn<F, T>(
         thread::switch();
     }
 
+    // Nobody can join a thread whose `JoinHandle` is gone, so drop what it returned now, while its
+    // thread-locals are still there for the value's destructors, as std does.
+    let ret = if std::sync::Arc::strong_count(&result) > 1 {
+        Some(ret)
+    } else {
+        drop(ret);
+        None
+    };
+
     tracing::trace!("thread finished, dropping thread locals");
     ExecutionState::drop_task_locals();
     tracing::trace!("done dropping thread locals");
 
-    *result.lock().unwrap() = Some(Ok(ret));
+    if let Some(ret) = ret {
+        *result.lock().unwrap() = Some(Ok(ret));
+    }
     ExecutionState::with(|state| {
         if let Some(waiter) = state.current_mut().take_waiter() {
             state.get_mut(waiter).unblock();
