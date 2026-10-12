@@ -6,7 +6,7 @@
 
 * `shuttle::thread::LocalKey<T>` is now `UnwindSafe` and `RefUnwindSafe` for every `T`, like `std::thread::LocalKey`. It used to take both from `T`, so a type that held a reference to a key, such as `shuttle-tokio`'s `task::LocalKey`, was not `UnwindSafe` if the key's value was a `RefCell`.
 
-* `shuttle-tokio`'s `task::try_id` no longer panics outside of a Shuttle execution or while Shuttle updates its own state, where tokio's returns `None` too.
+* `shuttle-tokio`'s `task::try_id` no longer panics outside of a Shuttle execution or while Shuttle updates its own state, as tokio's never panics. It returns `None` in both, even in a task, as in a `tracing` subscriber that handles some of Shuttle's own events, where tokio's would return the task.
 
 * A future task that finishes now drops its future before its thread-locals, as an aborted one already did, so that the destructors of futures it still owns, such as the one inside a `timeout` that fired, can use them. A `shuttle-tokio` `task_local!` scope held that way is now dropped with its value set, as in tokio. Likewise, the output of a detached future task, and what a thread returns once its `JoinHandle` is gone, are now dropped before the task's thread-locals, as std drops a thread's, so that their destructors can use them.
 

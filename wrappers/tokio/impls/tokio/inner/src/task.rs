@@ -41,6 +41,10 @@ pub fn id() -> Id {
 
 /// Returns the [`Id`] of the currently running task, or `None` if called outside
 /// of a task.
+///
+/// SHUTTLE_CHANGES: It also returns `None` while Shuttle is updating its own state, even in a task,
+/// as in a `tracing` subscriber that handles some of Shuttle's own events. See
+/// `shuttle::current::try_get_current_task`.
 pub fn try_id() -> Option<Id> {
     shuttle::current::try_get_current_task()
 }
