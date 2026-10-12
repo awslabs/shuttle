@@ -1,3 +1,7 @@
+# Unreleased
+
+* `shuttle-tokio`: `Notify::notified()` is now a scheduling point, so Shuttle finds the classic `Notify` lost wakeup. `notified()` registers the waiter that `notify_waiters()` notifies, but no other task could run between that registration and the task's previous operation. So Shuttle never ran a notifier between a check of a condition and the `notified()` after it, where a notifier that sets the condition and calls `notify_waiters()` finds no waiter, and on tokio the waiter then waits forever. Each `notified()` call now takes a step, so schedules saved before this change may not replay.
+
 # 0.9.6 (October 9, 2026)
 
 * Fix a stack overflow when a global `tracing` subscriber at TRACE level calls into Shuttle while it handles an event, for example to call `current::clock()`. Every access to the execution state emits a TRACE event, so the subscriber's own access emitted another event, which called the subscriber again, and so on until the stack overflowed, and the failure report and persisted schedule were lost with the process. Accesses made while that event is being handled no longer emit it. (#382)

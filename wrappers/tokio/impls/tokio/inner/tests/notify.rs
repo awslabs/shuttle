@@ -357,7 +357,6 @@ fn notify_one_drop_notified_before_send() {
 /// If the notifier sets the condition and calls `notify_waiters()` between the
 /// two, the notification is lost and the waiter waits forever.
 #[test]
-#[ignore = "Shuttle never schedules the notifier in this window: https://github.com/awslabs/shuttle/issues/384"]
 #[should_panic(expected = "deadlock")]
 fn notify_lost_wakeup_deadlock() {
     check_dfs(|| {
@@ -379,6 +378,58 @@ fn notify_lost_wakeup_deadlock() {
         notify.notify_waiters();
 
         waiter.join().unwrap();
+    });
+}
+
+/// `notify_lost_wakeup_deadlock` with a future task that checks an atomic, so
+/// that the scheduling point in `notified()` is taken in the middle of a poll.
+#[test]
+#[should_panic(expected = "deadlock")]
+fn notify_lost_wakeup_deadlock_async() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        let waiter = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            future::spawn(async move {
+                if !ready.load(Ordering::SeqCst) {
+                    // BUG (in this test program): registers after checking.
+                    notify.notified().await;
+                }
+            })
+        };
+
+        ready.store(true, Ordering::SeqCst);
+        notify.notify_waiters();
+
+        future::block_on(waiter).unwrap();
+    });
+}
+
+/// The fix for `notify_lost_wakeup_deadlock`: create the `Notified` before the
+/// check. `notify_waiters` notifies it from then on, even before it is polled,
+/// so no interleaving loses the wakeup.
+#[test]
+fn notify_register_before_check_no_deadlock() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        let waiter = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            future::spawn(async move {
+                let notified = notify.notified();
+                if !ready.load(Ordering::SeqCst) {
+                    notified.await;
+                }
+            })
+        };
+
+        ready.store(true, Ordering::SeqCst);
+        notify.notify_waiters();
+
+        future::block_on(waiter).unwrap();
     });
 }
 

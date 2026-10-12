@@ -6,6 +6,7 @@
 use crate::sync::oneshot;
 use pin_project::{pin_project, pinned_drop};
 use shuttle::rand::{rngs::ThreadRng, thread_rng, Rng};
+use shuttle_engine::runtime::thread;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -95,6 +96,13 @@ impl Notify {
 
     /// Wait for a notification.
     pub fn notified(&self) -> Notified<'_> {
+        // Scheduling point precedes the visible registration: from then on, the
+        // waiter receives every `notify_waiters` call. Without it, no notifier
+        // could run between a check of a condition and the `notified()` after
+        // it, which is where the classic lost wakeup happens. `switch` rather
+        // than `yield_now`, which also wakes the current task: a future that
+        // never registers its waker would then spin instead of deadlocking.
+        thread::switch();
         let (tx, rx) = oneshot::channel();
         let mut state = self.state.lock().unwrap();
         let id = state.next_id;
