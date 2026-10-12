@@ -254,7 +254,6 @@ macro_rules! __thread_local_inner {
             $crate::thread::LocalKey {
                 init: || { $init },
                 _p: std::marker::PhantomData,
-                destroy_last: false,
             };
     }
 }

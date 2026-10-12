@@ -111,14 +111,12 @@ macro_rules! __task_local_inner {
         $vis static $name: $crate::task::LocalKey<$t> = {
             // SHUTTLE_CHANGES: tokio declares a single `std::thread_local!` here. See `LocalKey`
             // for what each of these two slots is for.
-            static __TASK_SLOT: $crate::macros::support::__ShuttleLocalKey<
+            // Destroyed after the task's other thread-locals, whose destructors may use the key.
+            static __TASK_SLOT: $crate::macros::support::__ShuttleDestroyedLastKey<
                 ::std::cell::RefCell<::std::option::Option<$t>>,
-            > = $crate::macros::support::__ShuttleLocalKey {
-                init: || ::std::cell::RefCell::new(::std::option::Option::None),
-                _p: ::std::marker::PhantomData,
-                // After the task's other thread-locals, whose destructors may use the key.
-                destroy_last: true,
-            };
+            > = $crate::macros::support::__ShuttleDestroyedLastKey::new(|| {
+                ::std::cell::RefCell::new(::std::option::Option::None)
+            });
             ::std::thread_local! {
                 static __FALLBACK_SLOT: ::std::cell::RefCell<::std::option::Option<$t>> =
                     const { ::std::cell::RefCell::new(::std::option::Option::None) };
@@ -171,7 +169,7 @@ pub struct LocalKey<T: 'static> {
     // The slot that a scope's value is moved into while the running Shuttle task polls the scope.
     // Every Shuttle task has its own, which Shuttle destroys after the task's other thread-locals.
     #[doc(hidden)]
-    pub task_slot: &'static shuttle::thread::LocalKey<RefCell<Option<T>>>,
+    pub task_slot: &'static shuttle::thread::DestroyedLastKey<RefCell<Option<T>>>,
     // The slot used instead whenever Shuttle has no current task or is updating its own state:
     // outside of a Shuttle test, and while it updates its own state (see the module docs). It is
     // what tokio uses all the time, and is as sound here as it is there, since only one thing runs

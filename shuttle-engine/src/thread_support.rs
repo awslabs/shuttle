@@ -56,11 +56,38 @@ pub struct LocalKey<T: 'static> {
     // gives it all four.
     #[doc(hidden)]
     pub _p: PhantomData<fn() -> T>,
-    // Whether the thread's slot for this key is destroyed after all of its other thread-locals when
-    // the thread finishes, so that their destructors can still use it. `shuttle-tokio` sets it for
-    // the slots of its task-locals, which in tokio are thread-locals that outlive every task.
-    #[doc(hidden)]
-    pub destroy_last: bool,
+}
+
+/// A [`LocalKey`] whose slot is destroyed after all of a thread's other thread-locals when the
+/// thread finishes, so that their destructors can still use it however early it was created.
+/// `shuttle-tokio` uses it for the slots of its task-locals, which in tokio are thread-locals that
+/// outlive every task.
+#[doc(hidden)]
+pub struct DestroyedLastKey<T: 'static> {
+    key: LocalKey<T>,
+}
+
+impl<T: 'static> DestroyedLastKey<T> {
+    /// A key whose slots start out as what `init` returns.
+    pub const fn new(init: fn() -> T) -> Self {
+        Self {
+            key: LocalKey { init, _p: PhantomData },
+        }
+    }
+
+    /// Like [`LocalKey::try_with`].
+    pub fn try_with<F, R>(&'static self, f: F) -> std::result::Result<R, AccessError>
+    where
+        F: FnOnce(&T) -> R,
+    {
+        self.key.try_with_slot(f, true)
+    }
+}
+
+impl<T: 'static> std::fmt::Debug for DestroyedLastKey<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DestroyedLastKey").finish_non_exhaustive()
+    }
 }
 
 impl<T: 'static> std::fmt::Debug for LocalKey<T> {
@@ -92,6 +119,15 @@ impl<T: 'static> LocalKey<T> {
     where
         F: FnOnce(&T) -> R,
     {
+        self.try_with_slot(f, false)
+    }
+
+    /// `try_with`, creating the slot, if it has to, as one that is destroyed after the thread's other
+    /// slots if `destroyed_last` is set.
+    fn try_with_slot<F, R>(&'static self, f: F, destroyed_last: bool) -> std::result::Result<R, AccessError>
+    where
+        F: FnOnce(&T) -> R,
+    {
         let value = self.get().unwrap_or_else(|| {
             let value = (self.init)();
 
@@ -100,7 +136,11 @@ impl<T: 'static> LocalKey<T> {
             // then, and drop the new value once the state is no longer borrowed.
             let unused = ExecutionState::with(move |state| {
                 if state.current().local(self).is_none() {
-                    state.current_mut().init_local(self, value);
+                    if destroyed_last {
+                        state.current_mut().init_local_destroyed_last(self, value);
+                    } else {
+                        state.current_mut().init_local(self, value);
+                    }
                     None
                 } else {
                     Some(value)

@@ -41,15 +41,20 @@ impl StorageMap {
         })
     }
 
-    /// Initialize a slot. With `destruct_last`, it is destructed after every slot without it.
-    pub fn init<T: 'static>(&mut self, key: StorageKey, value: T, destruct_last: bool) {
+    pub fn init<T: 'static>(&mut self, key: StorageKey, value: T) {
+        self.insert(key, value);
+        self.order.push_back(key);
+    }
+
+    /// Like `init`, for a slot that is destructed after every slot initialized with `init`.
+    pub fn init_destructed_last<T: 'static>(&mut self, key: StorageKey, value: T) {
+        self.insert(key, value);
+        self.last.push_back(key);
+    }
+
+    fn insert<T: 'static>(&mut self, key: StorageKey, value: T) {
         let result = self.locals.insert(key, Some(Box::new(value)));
         assert!(result.is_none(), "cannot reinitialize a storage slot");
-        if destruct_last {
-            self.last.push_back(key);
-        } else {
-            self.order.push_back(key);
-        }
     }
 
     /// Whether no slot is still initialized.

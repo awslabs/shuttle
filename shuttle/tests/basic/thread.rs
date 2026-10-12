@@ -448,23 +448,19 @@ mod thread_local {
         );
     }
 
-    /// A thread's slot for a key with `destroy_last` set is destroyed after its other thread-locals,
-    /// even when it was created first, so their destructors can still use it. A key without it is
+    /// A thread's slot for a `DestroyedLastKey` is destroyed after its other thread-locals, even
+    /// when it was created first, so their destructors can still use it. A `LocalKey`'s slot is
     /// destroyed in creation order, so it is already gone for them.
     #[test]
-    fn destroy_last() {
+    fn destroyed_last_key() {
         use std::cell::Cell;
         use std::marker::PhantomData;
 
-        static DESTROYED_LAST: LocalKey<Cell<u32>> = LocalKey {
-            init: || Cell::new(1),
-            _p: PhantomData,
-            destroy_last: true,
-        };
+        static DESTROYED_LAST: shuttle::thread::DestroyedLastKey<Cell<u32>> =
+            shuttle::thread::DestroyedLastKey::new(|| Cell::new(1));
         static DESTROYED_IN_ORDER: LocalKey<Cell<u32>> = LocalKey {
             init: || Cell::new(2),
             _p: PhantomData,
-            destroy_last: false,
         };
         static SEEN: std::sync::Mutex<Vec<(Option<u32>, Option<u32>)>> = std::sync::Mutex::new(Vec::new());
 
@@ -488,7 +484,7 @@ mod thread_local {
                 SEEN.lock().unwrap().clear();
                 thread::spawn(|| {
                     // Both slots are created before the thread-local that reads them when it drops.
-                    DESTROYED_LAST.with(|_| ());
+                    DESTROYED_LAST.try_with(|_| ()).unwrap();
                     DESTROYED_IN_ORDER.with(|_| ());
                     READS_KEYS_ON_DROP.with(|reads| *reads.borrow_mut() = Some(ReadsKeysOnDrop));
                 })
