@@ -1,6 +1,6 @@
 # Unreleased
 
-* Implement `task_local!` in `shuttle-tokio`, with `task::LocalKey` and `task::futures::TaskLocalFuture`. Requires the `shuttle` release that has `current::try_get_current_task`.
+* Implement `task_local!` in `shuttle-tokio`, with `task::LocalKey` and `task::futures::TaskLocalFuture`. Requires `shuttle` 0.9.7.
 
 * Add `current::try_get_current_task`, a non-panicking `get_current_task` for `Drop` handlers and `tracing` subscribers. It returns `None` outside of an execution and while Shuttle updates its own state.
 
@@ -10,11 +10,11 @@
 
 * A future task that finishes now drops its future before its thread-locals, as an aborted one already did, so that the destructors of futures it still owns, such as the one inside a `timeout` that fired, can use them. A `shuttle-tokio` `task_local!` scope held that way is now dropped with its value set, as in tokio. Likewise, the output of a detached future task, and what a thread returns once its `JoinHandle` is gone, are now dropped before the task's thread-locals, as std drops a thread's, so that their destructors can use them.
 
-* Publish `shuttle-tokio-impl-inner` 0.1.3, which has the new `task_local!`, and `shuttle-tokio-impl` 0.1.2, which requires it. `shuttle-tokio-impl` 0.1.1 re-exports tokio's `task_local!` over the glob re-export of inner, so it would keep the old macro even with inner 0.1.3.
-
 * Fix a stack overflow when the filter of a global `tracing` subscriber at TRACE level calls into Shuttle, for example to read a `shuttle-tokio` task-local. `ExecutionState::try_with` asked whether its event was enabled, which runs the filters, before it set the flag that stops an access from inside the event's handling from emitting it again.
 
 * Fix a "cannot reinitialize a storage slot" panic on the first use of a `thread_local!` in a thread, when the key was used again while its slot was being created: by its initializer, or by a `tracing` subscriber of the TRACE event that Shuttle emits there. The slot created in between is kept.
+
+* Publish `shuttle` 0.9.7, `shuttle-engine` 0.1.5 and `shuttle-std` 0.1.4, which between them have the changes to Shuttle above, and `shuttle-tokio-impl-inner` 0.1.3 and `shuttle-tokio-impl` 0.1.2, which have the new `task_local!`. `shuttle-std` requires `shuttle-engine` 0.1.5, and `shuttle` requires both, so that upgrading to 0.9.7 brings the fixes with it. `shuttle-engine` 0.1.5 still works with the `thread_local!` of older `shuttle`s, as `LocalKey`'s fields are unchanged. `shuttle-schedulers` is unchanged at 0.1.1; it takes `shuttle-engine` as `^0.1.1`, so it builds against 0.1.5 as it stands. Inner requires `shuttle` 0.9.7, which has `current::try_get_current_task`, and impl requires inner 0.1.3: impl 0.1.1 re-exports tokio's `task_local!` over the glob re-export of inner, so it would keep the old macro even with inner 0.1.3.
 
 # tokio wrappers, `shuttle-tokio-impl-inner` 0.1.4 (October 12, 2026)
 
