@@ -179,7 +179,9 @@ impl Notify {
         // Notify all waiters, including those not yet enabled
         let waiters = std::mem::take(&mut state.waiters);
         trace!("notify_waiters for {:p} notifying waiters {:?}", self, waiters);
-        state.pending = false;
+        // Leave a permit that `notify_one` stored in place, as tokio does: it
+        // is for the next `notified()`, and the waiters notified here don't
+        // take it.
         drop(state);
         // Since we have removed all the waiters, we need to clear all the
         // flags first, before waking any of them.  This is because sending
