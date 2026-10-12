@@ -500,6 +500,52 @@ mod thread_local {
         );
     }
 
+    /// Creating a thread's slot for a key takes two accesses to the execution state, one to find
+    /// that there is no slot and one to create it. A `tracing` subscriber that uses the key on the
+    /// event for the second creates the slot first, and the access that started it uses that slot.
+    #[test]
+    fn slot_created_by_a_subscriber_while_it_is_created() {
+        use std::cell::Cell;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::Layer;
+
+        shuttle::thread_local! {
+            static KEY: Cell<u32> = Cell::new(7);
+        }
+        static ARMED: AtomicBool = AtomicBool::new(false);
+        static EVENTS: AtomicUsize = AtomicUsize::new(0);
+
+        struct UsesKeyOnSecondEvent;
+
+        impl<S: tracing::Subscriber> Layer<S> for UsesKeyOnSecondEvent {
+            fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+                if ARMED.load(Ordering::SeqCst) && EVENTS.fetch_add(1, Ordering::SeqCst) == 1 {
+                    assert_eq!(KEY.with(Cell::get), 7);
+                }
+            }
+        }
+
+        let subscriber = tracing_subscriber::registry()
+            .with(UsesKeyOnSecondEvent.with_filter(tracing_subscriber::filter::LevelFilter::TRACE));
+        tracing::subscriber::with_default(subscriber, || {
+            check_dfs(
+                || {
+                    thread::spawn(|| {
+                        EVENTS.store(0, Ordering::SeqCst);
+                        ARMED.store(true, Ordering::SeqCst);
+                        let value = KEY.with(Cell::get);
+                        ARMED.store(false, Ordering::SeqCst);
+                        assert_eq!(value, 7);
+                        assert!(EVENTS.load(Ordering::SeqCst) >= 2, "the subscriber never used the key");
+                    })
+                    .join()
+                    .unwrap();
+                },
+                None,
+            );
+        });
+    }
+
     /// A `LocalKey` has the same auto traits as `std::thread::LocalKey`, whatever it holds.
     #[test]
     fn auto_traits() {

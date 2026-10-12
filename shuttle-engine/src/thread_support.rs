@@ -84,9 +84,18 @@ impl<T: 'static> LocalKey<T> {
         let value = self.get().unwrap_or_else(|| {
             let value = (self.init)();
 
-            ExecutionState::with(move |state| {
-                state.current_mut().init_local(self, value);
+            // `init`, or a `tracing` subscriber of the event that `ExecutionState::with` emits, may
+            // have used this key, and so created the slot, since `get` found none. Keep that slot
+            // then, and drop the new value once the state is no longer borrowed.
+            let unused = ExecutionState::with(move |state| {
+                if state.current().local(self).is_none() {
+                    state.current_mut().init_local(self, value);
+                    None
+                } else {
+                    Some(value)
+                }
             });
+            drop(unused);
 
             self.get().unwrap()
         })?;
