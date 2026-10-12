@@ -12,6 +12,8 @@
 
 * Publish `shuttle-tokio-impl-inner` 0.1.3, which has the new `task_local!`, and `shuttle-tokio-impl` 0.1.2, which requires it. `shuttle-tokio-impl` 0.1.1 re-exports tokio's `task_local!` over the glob re-export of inner, so it would keep the old macro even with inner 0.1.3.
 
+* Fix a stack overflow when the filter of a global `tracing` subscriber at TRACE level calls into Shuttle, for example to read a `shuttle-tokio` task-local. `ExecutionState::try_with` asked whether its event was enabled, which runs the filters, before it set the flag that stops an access from inside the event's handling from emitting it again.
+
 # tokio wrappers, `shuttle-tokio-impl-inner` 0.1.4 (October 12, 2026)
 
 Published `shuttle-tokio-impl-inner` 0.1.4. Like 0.1.3, it requires `shuttle` 0.9.2 or later and `shuttle-engine` `^0.1.4`, and the already-published `shuttle-tokio-impl` 0.1.1 and `shuttle-tokio` 1.0.0 pick it up without being republished. The `shuttle` crate is unchanged at 0.9.6.

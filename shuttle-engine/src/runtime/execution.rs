@@ -834,8 +834,11 @@ impl ExecutionState {
     where
         F: FnOnce(&mut ExecutionState) -> T,
     {
-        // Check that the event is enabled first, so that accesses don't pay for the flag when it isn't.
-        if tracing::enabled!(tracing::Level::TRACE) && !TRACING_TRY_WITH.with(|emitting| emitting.replace(true)) {
+        // Check the level first, which only reads the most verbose level that any subscriber enables,
+        // so that accesses don't pay for the flag when TRACE is off. Asking whether the event is
+        // enabled runs the subscribers' filters, which can access the state too (to read a
+        // task-local, say), so it has to wait until the flag is set, which `trace!` below does.
+        if tracing::level_enabled!(tracing::Level::TRACE) && !TRACING_TRY_WITH.with(|emitting| emitting.replace(true)) {
             struct Reset;
             impl Drop for Reset {
                 fn drop(&mut self) {
