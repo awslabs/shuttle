@@ -3,11 +3,11 @@
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::TaskId;
 use shuttle_engine::runtime::thread;
-use shuttle_engine::time::Duration;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
 pub use shuttle_engine::time::sleep;
 pub use std::thread::{panicking, Result};

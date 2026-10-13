@@ -1,10 +1,10 @@
 use shuttle::scheduler::PctScheduler;
 use shuttle::sync::Mutex;
-use shuttle::time::Duration;
 use shuttle::{check_pct, check_random, thread, Config, MaxSteps, Runner};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 use test_log::test;
 
 const TEST_LENGTH: usize = 20;

@@ -912,9 +912,7 @@ mod overflow {
     use shuttle::MaxSteps;
     use test_log::test;
 
-    fn thirty_years() -> Duration {
-        Duration::from_secs(86400 * 365 * 30)
-    }
+    const THIRTY_YEARS: Duration = Duration::from_secs(86400 * 365 * 30);
 
     fn run_stepped(iterations: usize, f: impl Fn() + Send + Sync + 'static) {
         let time_model = ConstantSteppedTimeModel::new(std::time::Duration::from_micros(10));
@@ -926,7 +924,7 @@ mod overflow {
         run_stepped(10, || {
             let start = Instant::now();
             thread::sleep(Duration::MAX);
-            assert!(start.elapsed() >= thirty_years());
+            assert!(start.elapsed() >= THIRTY_YEARS);
             let _ = Instant::now() + Duration::from_millis(1);
         });
     }
