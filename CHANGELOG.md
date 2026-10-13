@@ -1,5 +1,6 @@
 # Unreleased
 
+* Add `BatchSemaphore::load_permits`: a read of the semaphore's state with one scheduling point, which takes and releases nothing — `None` once the semaphore is closed, otherwise the free permits (zero while a reservation keeps them). This models reading a lock's atomic state word, such as `parking_lot`'s `is_locked`, which a `try_acquire` and a `release` would only probe by holding the permits across more scheduling points. Like such a load, the read is causally after the acquires and the reservations before it, as a failed `try_acquire` is. (#399)
 * A `try_acquire` or `try_upgrade` of an unfair `BatchSemaphore` that a reservation refuses (see `BatchSemaphore::acquire_reserving`) is now causally after the request that holds the reservation, as one that too few permits refuse is after the last acquire. That request holds no permits yet, so the failure was after nothing of it, and `ReplayScheduler::set_target_clock` could leave its steps out of a replay of a failure that depends on the `try_*`. (#399)
 
 # 0.9.7 (October 14, 2026)

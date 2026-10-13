@@ -1138,6 +1138,107 @@ mod reservation_tests {
     }
 }
 
+/// Tests of `BatchSemaphore::load_permits`: a read of the semaphore's state with one scheduling
+/// point and no effect.
+mod load_permits_tests {
+    use super::*;
+
+    /// `load_permits` reports the free permits, zero while a reservation lasts, and `None` once the
+    /// semaphore is closed.
+    #[test_log::test]
+    fn load_permits_reads_the_state() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = BatchSemaphore::new(3, Fairness::Unfair);
+                    assert_eq!(sem.load_permits(), Some(3));
+                    sem.acquire(1).await.unwrap();
+                    assert_eq!(sem.load_permits(), Some(2));
+
+                    let mut reserve = Box::pin(sem.acquire_reserving(2, 3));
+                    assert!(futures::poll!(reserve.as_mut()).is_pending());
+                    assert_eq!(sem.load_permits(), Some(0), "a reservation keeps the permits");
+                    drop(reserve);
+                    assert_eq!(sem.load_permits(), Some(2));
+
+                    sem.close();
+                    assert_eq!(sem.load_permits(), None);
+                });
+            },
+            None,
+        );
+    }
+
+    /// `load_permits` changes nothing, but it is a scheduling point: another task can run between
+    /// two reads, so two consecutive reads can disagree. Reading with `try_acquire` + `release`
+    /// instead would transiently take the permit, which would make the other task's `try_acquire`
+    /// fail.
+    #[test_log::test]
+    fn load_permits_is_a_scheduling_point_without_effects() {
+        let observed = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let observed_clone = Arc::clone(&observed);
+        check_dfs(
+            move || {
+                let sem = Arc::new(BatchSemaphore::new(1, Fairness::Unfair));
+                let other = {
+                    let sem = sem.clone();
+                    thread::spawn(move || {
+                        // The permit is only ever held here, so only a probe with effects could
+                        // make this fail.
+                        sem.try_acquire(1).expect("a load_permits took the permit");
+                        sem.release(1);
+                    })
+                };
+                let first = sem.load_permits().unwrap();
+                let second = sem.load_permits().unwrap();
+                observed_clone.lock().unwrap().insert((first, second));
+                other.join().unwrap();
+            },
+            None,
+        );
+        let observed = Arc::try_unwrap(observed).unwrap().into_inner().unwrap();
+        assert_eq!(
+            observed,
+            HashSet::from([(1, 1), (1, 0), (0, 0), (0, 1)]),
+            "each read must have its own scheduling point"
+        );
+    }
+
+    /// A read is causally after the acquires before it, as a load of an atomic word is after the
+    /// stores to it, and as a failed `try_acquire` is. Task 1 releases another semaphore first, so
+    /// that its clock has an event of its own when it takes the permit. `released` is a `std`
+    /// atomic, which adds no scheduling point and no clock edge.
+    #[test_log::test]
+    fn load_permits_is_after_the_acquires() {
+        for fairness in [Fairness::StrictlyFair, Fairness::Unfair] {
+            check_dfs(
+                move || {
+                    let sem = Arc::new(BatchSemaphore::new(1, fairness));
+                    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let other = {
+                        let (sem, released) = (Arc::clone(&sem), Arc::clone(&released));
+                        thread::spawn(move || {
+                            assert_eq!(me(), 1);
+                            BatchSemaphore::new(0, Fairness::Unfair).release(1);
+                            sem.acquire_blocking(1).unwrap();
+                            sem.release(1);
+                            released.store(true, Ordering::SeqCst);
+                        })
+                    };
+                    let taken = sem.load_permits() == Some(0);
+                    if taken || released.load(Ordering::SeqCst) {
+                        check_clock(|i, c| (i != 1) || (c > 0));
+                    } else {
+                        check_clock(|i, c| (i != 1) || (c == 0));
+                    }
+                    other.join().unwrap();
+                },
+                None,
+            );
+        }
+    }
+}
+
 // This test exercises scenarios to ensure that the BatchSemaphore behaves correctly in the presence
 // of tasks that drop an `Acquire` guard without waiting for the semaphore to become available.
 //

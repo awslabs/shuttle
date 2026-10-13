@@ -112,7 +112,7 @@ struct PermitsAvailable {
     /// The join of the clocks of the successful acquire events, and of the
     /// requests that reserved the semaphore (see
     /// [`BatchSemaphore::acquire_reserving`]). Used for causal dependence in
-    /// `try_acquire` failures.
+    /// `try_acquire` failures and in [`BatchSemaphore::load_permits`].
     last_acquire: VectorClock,
 }
 
@@ -575,6 +575,30 @@ impl BatchSemaphore {
     pub fn available_permits(&self) -> usize {
         let state = self.state.borrow();
         state.available()
+    }
+
+    /// Reads the semaphore's state in one scheduling point: `None` if it is closed, and otherwise
+    /// `Some` of the free permits, which are zero while a reservation keeps them (see
+    /// [`BatchSemaphore::available_permits`]).
+    ///
+    /// This models a load of a lock's atomic word, like `parking_lot`'s `is_locked`: the read takes
+    /// and releases nothing, while probing with `try_acquire` and `release` would hold the permits
+    /// across more scheduling points, where other tasks could see a state that the lock never
+    /// shows. The read is causally after the acquires and the reservations before it, as a failed
+    /// `try_acquire` is, but not after the releases: the semaphore does not keep their clocks, so
+    /// that releases do not pay for them.
+    pub fn load_permits(&self) -> Option<usize> {
+        thread::switch();
+
+        let state = self.state.borrow();
+        ExecutionState::with(|s| {
+            s.update_clock(&state.permits_available.last_acquire);
+        });
+        if state.closed {
+            None
+        } else {
+            Some(state.available())
+        }
     }
 
     fn init_object_id(&self) {
