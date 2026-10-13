@@ -1,5 +1,4 @@
-//! Tests for `task::try_id`, which, unlike tokio's, can be called while Shuttle is updating its own
-//! state, and then returns `None`. (One test, as Shuttle's own events reach a scoped subscriber
+//! Tests for `task::try_id`. (One test, as Shuttle's own events reach a scoped subscriber
 //! unreliably while other tests in the process run Shuttle tests.)
 
 use shuttle::check_dfs;
@@ -12,7 +11,7 @@ use tracing_subscriber::Layer;
 
 /// Outside of a Shuttle test there is no task, as in tokio outside of a runtime. In a task, it is
 /// the task's id. And a `tracing` subscriber can call it on every event, including Shuttle's own,
-/// some of which Shuttle emits while it updates its own state, where `task::id` would panic.
+/// some of which Shuttle emits while it updates its own state, which a task can be doing.
 #[test]
 fn try_id() {
     assert_eq!(task::try_id(), None);

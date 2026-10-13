@@ -110,25 +110,24 @@ pub fn set_name_for_task(task_id: TaskId, task_name: impl Into<TaskName>) -> Opt
 
 /// Gets the `TaskId` of the current task, or `None` if there is no current task.
 ///
-/// Panics if called outside of a Shuttle execution, or while Shuttle is updating its own state
-/// (which is when it calls `tracing` subscribers for some of its own events). Use
-/// [`try_get_current_task`] in code that can run in those places.
+/// Panics if called outside of a Shuttle execution. Use [`try_get_current_task`] in code that can
+/// run there. It doesn't need the execution's state, so it works while Shuttle is updating its own
+/// state too, as in the `tracing` subscribers, span callbacks and `ChildLabelFn`s it calls then.
 pub fn get_current_task() -> Option<TaskId> {
-    ExecutionState::with(|s| Some(s.try_current()?.id()))
+    crate::runtime::execution::current_task_id_in_execution()
 }
 
 /// Gets the `TaskId` of the current task, or `None` if there is no current task.
 ///
 /// Unlike [`get_current_task`], this never panics, so it is meant for code that can run anywhere,
 /// such as `Drop` handlers and `tracing` subscribers. It returns `None` outside of a Shuttle
-/// execution, and whenever Shuttle is updating its own state, even while a task is running. That
-/// includes the code that Shuttle runs from there: `tracing` subscribers handling some of Shuttle's
-/// own events, `ChildLabelFn`s, and the destructors of labels and tags. Between steps, while
-/// Shuttle picks the next task to run, it returns the task that ran last. While Shuttle tears an
-/// execution down, it returns the task being torn down, and the main thread's while Shuttle drops
-/// statics.
+/// execution. Inside one, it works while Shuttle is updating its own state too, as in the `tracing`
+/// subscribers, span callbacks and `ChildLabelFn`s it calls then. Between steps, while Shuttle picks
+/// the next task to run, it returns the task that ran last. While Shuttle tears an execution down,
+/// it returns the task being torn down, the main thread's while Shuttle drops statics, and `None`
+/// once it is done with the tasks, as when it drops their labels and tags.
 pub fn try_get_current_task() -> Option<TaskId> {
-    ExecutionState::try_with(|s| Some(s.try_current()?.id())).ok().flatten()
+    crate::runtime::execution::current_task_id()
 }
 
 /// Get the `TaskId` of the current task.  Panics if there is no current task.

@@ -1,7 +1,7 @@
 use crate::backtrace_enabled;
 use crate::current::get_name_for_task;
 use crate::runtime::execution::{ExecutionState, TASK_ID_TO_TAGS};
-use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
+use crate::runtime::storage::{AlreadyDestructedError, StorageKey};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
 use crate::runtime::thread;
@@ -347,8 +347,6 @@ pub struct Task {
 
     name: Option<String>,
 
-    local_storage: StorageMap,
-
     // The `Span` which looks like this: step{task=task_id}, or, if step count recording is enabled, like this:
     // step{task=task_id i=step_count}. Becomes the parent of the spans created by the `Task`.
     pub step_span: Span,
@@ -425,7 +423,6 @@ impl Task {
             name,
             step_span,
             span_stack,
-            local_storage: StorageMap::new(),
             tag: None,
             backtrace: None,
             signature,
@@ -715,24 +712,24 @@ impl Task {
     /// Returns Some(Err(_)) if the slot has already been destructed. Returns None if the slot has
     /// not yet been initialized.
     pub fn local<T: 'static>(&self, key: &'static LocalKey<T>) -> Option<Result<&T, AlreadyDestructedError>> {
-        self.local_storage.get(key.into())
+        crate::runtime::execution::task_local(self.id, key.into())
     }
 
     /// Initialize the given thread-local storage slot with a new value.
     ///
     /// Panics if the slot has already been initialized.
     pub fn init_local<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
-        self.local_storage.init(key.into(), value)
+        crate::runtime::execution::init_task_local(self.id, key.into(), value, false)
     }
 
     /// Like `init_local`, for a slot that is destroyed after the task's other thread-local slots.
     pub fn init_local_destroyed_last<T: 'static>(&mut self, key: &'static LocalKey<T>, value: T) {
-        self.local_storage.init_destructed_last(key.into(), value)
+        crate::runtime::execution::init_task_local(self.id, key.into(), value, true)
     }
 
     /// Whether some thread-local storage slot is still initialized.
     pub(crate) fn has_locals(&self) -> bool {
-        !self.local_storage.is_empty()
+        crate::runtime::execution::task_has_locals(self.id)
     }
 
     /// Whether the task holds something whose destructor may run user code: a span that a `tracing`
@@ -762,7 +759,7 @@ impl Task {
     ///    forbid *reinitializing* a TLS slot whose destructor has already run, or is currently
     ///    being run.
     pub fn pop_local(&mut self) -> Option<Box<dyn Any>> {
-        self.local_storage.pop()
+        crate::runtime::execution::pop_task_local(self.id)
     }
 
     /// Park the task if its park token is unavailable. If the task blocks, then it will be woken up

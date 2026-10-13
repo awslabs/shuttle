@@ -2,17 +2,19 @@
 
 * Implement `task_local!` in `shuttle-tokio`, with `task::LocalKey` and `task::futures::TaskLocalFuture`. Requires `shuttle` 0.9.7.
 
-* Add `current::try_get_current_task`, a non-panicking `get_current_task` for `Drop` handlers and `tracing` subscribers. It returns `None` outside of an execution and while Shuttle updates its own state.
+* Add `current::try_get_current_task`, a non-panicking `get_current_task` for `Drop` handlers and `tracing` subscribers. It returns `None` outside of an execution.
 
 * `shuttle::thread::LocalKey<T>` is now `UnwindSafe` and `RefUnwindSafe` for every `T`, like `std::thread::LocalKey`. It used to take both from `T`, so a type that held a reference to a key, such as `shuttle-tokio`'s `task::LocalKey`, was not `UnwindSafe` if the key's value was a `RefCell`.
 
-* `shuttle-tokio`'s `task::try_id` no longer panics outside of a Shuttle execution or while Shuttle updates its own state, as tokio's never panics. It returns `None` in both, even in a task, as in a `tracing` subscriber that handles some of Shuttle's own events, where tokio's would return the task.
+* `shuttle-tokio`'s `task::try_id` no longer panics outside of a Shuttle execution, or while Shuttle updates its own state, as tokio's never panics. Outside of an execution it returns `None`, as tokio's does outside of a runtime.
 
 * A future task that finishes now drops its future before its thread-locals, as an aborted one already did, so that the destructors of futures it still owns, such as the one inside a `timeout` that fired, can use them. A `shuttle-tokio` `task_local!` scope held that way is now dropped with its value set, as in tokio. Likewise, the output of a detached future task, and what a thread returns once its `JoinHandle` is gone, are now dropped before the task's thread-locals, as std drops a thread's, so that their destructors can use them.
 
 * Fix a stack overflow when the filter of a global `tracing` subscriber at TRACE level calls into Shuttle, for example to read a `shuttle-tokio` task-local. `ExecutionState::try_with` asked whether its event was enabled, which runs the filters, before it set the flag that stops an access from inside the event's handling from emitting it again.
 
 * Fix a "cannot reinitialize a storage slot" panic on the first use of a `thread_local!` in a thread, when the key was used again while its slot was being created: by its initializer, or by a `tracing` subscriber of the TRACE event that Shuttle emits there. The slot created in between is kept.
+
+* `thread_local!` values, `current::get_current_task` and `current::try_get_current_task` now work while Shuttle is updating its own state, which a task can be doing: in the `tracing` subscribers Shuttle calls for some of its own events, in the callbacks of the task's spans, which Shuttle replays when it switches tasks, and in `ChildLabelFn`s. Shuttle keeps the current task and the tasks' thread-local storage out of its state for that. Before, `get_current_task` and thread-local access panicked there, and `try_get_current_task` returned `None`. `shuttle-tokio`'s task-locals and `task::try_id` see the current task there too, as they would in tokio.
 
 * Publish `shuttle` 0.9.7, `shuttle-engine` 0.1.5 and `shuttle-std` 0.1.4, which between them have the changes to Shuttle above, and `shuttle-tokio-impl-inner` 0.2.0 and `shuttle-tokio-impl` 0.1.2, which have the new `task_local!`. `shuttle-std` requires `shuttle-engine` 0.1.5, and `shuttle` requires both, so that upgrading to 0.9.7 brings the fixes with it. `shuttle-engine` 0.1.5 still works with the `thread_local!` of older `shuttle`s, as `LocalKey`'s fields are unchanged. `shuttle-schedulers` is unchanged at 0.1.1; it takes `shuttle-engine` as `^0.1.1`, so it builds against 0.1.5 as it stands. Inner requires `shuttle` 0.9.7, which has `current::try_get_current_task`, and impl requires inner 0.2.0. Inner is a new major version because it changes what `task::futures::TaskLocalFuture` is, and impl 0.1.1, which re-exports tokio's `task_local!` over the glob re-export of inner, must not be paired with it: code that names `TaskLocalFuture` would fail to compile, and `task_local!` would still be tokio's.
 

@@ -37,18 +37,15 @@
 //! of a scope, such as those of the local variables of an `async` block. Accessing a task-local is
 //! not a scheduling point, as it is not in tokio: it is not visible to any other task.
 //!
-//! Whenever Shuttle has no current task, or is updating its own state, the slot is a plain
-//! `std::thread_local!` instead, which is what tokio uses all the time. That is the case outside of
-//! a Shuttle test, where a `LocalKey` therefore behaves exactly as tokio's does, and while Shuttle
-//! updates its own state (which is when it calls `tracing` subscribers for some of its own events).
-//! In both, only one thing runs at a time, so a single slot is as sound there as it is in tokio:
-//! scopes can only nest, never interleave.
+//! Whenever Shuttle has no current task, which is the case outside of a Shuttle test, the slot is a
+//! plain `std::thread_local!` instead, which is what tokio uses all the time, so that a `LocalKey`
+//! behaves there exactly as tokio's does.
 //!
-//! Code that Shuttle runs while it updates its own state therefore sees no task's values, even when
-//! it runs on behalf of a task that is inside a scope. That includes `tracing` subscribers handling
-//! some of Shuttle's own events, the `on_enter` and `on_exit` of a task's spans, which Shuttle
-//! replays when it switches tasks, and `ChildLabelFn`s, which it calls when a task spawns another.
-//! In tokio, they would see the task's values.
+//! The current task's slot can be used while Shuttle is updating its own state too, as it is not
+//! part of that state. So the code that Shuttle runs from there on behalf of a task sees the values
+//! of the task's scopes, as it would in tokio: `tracing` subscribers handling some of Shuttle's own
+//! events, the `on_enter` and `on_exit` of the task's spans, which Shuttle replays when it switches
+//! tasks, and `ChildLabelFn`s, which it calls when the task spawns another.
 //!
 //! Between steps, while Shuttle picks the next task to run, its current task is still the one that
 //! ran last. Code that runs there, such as a `tracing` subscriber handling one of the events Shuttle
@@ -170,10 +167,8 @@ pub struct LocalKey<T: 'static> {
     // Every Shuttle task has its own, which Shuttle destroys after the task's other thread-locals.
     #[doc(hidden)]
     pub task_slot: &'static shuttle::thread::DestroyedLastKey<RefCell<Option<T>>>,
-    // The slot used instead whenever Shuttle has no current task or is updating its own state:
-    // outside of a Shuttle test, and while it updates its own state (see the module docs). It is
-    // what tokio uses all the time, and is as sound here as it is there, since only one thing runs
-    // at a time in each of those cases.
+    // The slot used instead whenever Shuttle has no current task: outside of a Shuttle test (see the
+    // module docs). It is what tokio uses all the time, and is as sound here as it is there.
     #[doc(hidden)]
     pub fallback_slot: thread::LocalKey<RefCell<Option<T>>>,
 }
@@ -307,10 +302,9 @@ impl<T: 'static> LocalKey<T> {
     where
         F: FnOnce(&RefCell<Option<T>>) -> R,
     {
-        // `try_get_current_task` is `None` exactly when Shuttle has no current task or is updating
-        // its own state, which are the cases the fallback slot is for, and does not panic in any of
-        // them. Checking it first also keeps us from calling into `shuttle::thread::LocalKey` then,
-        // which would panic.
+        // `try_get_current_task` is `None` exactly when Shuttle has no current task, which is what
+        // the fallback slot is for, and does not panic then. Checking it first also keeps us from
+        // calling into `shuttle::thread::LocalKey` then, which would panic.
         if shuttle::current::try_get_current_task().is_some() {
             self.task_slot.try_with(f).map_err(|_| AccessError { _private: () })
         } else {
