@@ -1279,8 +1279,9 @@ impl ExecutionState {
             plan.next_task += 1;
             let id = task.id();
             if task.finished() {
-                // A future task's future can set task-local values after the task dropped its own
-                // ones (see `Wrapper::finish`).
+                // A task can set task-local values after it dropped its own ones: the result it
+                // keeps for its `JoinHandle` is dropped after them if the handle is dropped while
+                // they are (see `Wrapper::finish` and `thread_fn`).
                 if task.has_locals() {
                     return TeardownJob::TaskLocals(id);
                 }

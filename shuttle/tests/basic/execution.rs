@@ -181,14 +181,6 @@ fn get_current_task_outside_execution() {
 fn try_get_current_task_everywhere() {
     assert_eq!(current::try_get_current_task(), None);
 
-    struct RecordTaskOnDrop(Arc<std::sync::Mutex<Vec<Option<current::TaskId>>>>);
-
-    impl Drop for RecordTaskOnDrop {
-        fn drop(&mut self) {
-            self.0.lock().unwrap().push(current::try_get_current_task());
-        }
-    }
-
     let dropped_in_cleanup = Arc::new(std::sync::Mutex::new(Vec::new()));
     let dropped_in_cleanup_clone = dropped_in_cleanup.clone();
     check_dfs(
@@ -203,11 +195,10 @@ fn try_get_current_task_everywhere() {
 
             // Detached and never finishes, so Shuttle drops it when the execution is over, as the
             // current task.
-            let record = RecordTaskOnDrop(dropped_in_cleanup_clone.clone());
-            drop(shuttle::future::spawn(async move {
-                let _record = record;
-                std::future::pending::<()>().await
-            }));
+            let dropped_in_cleanup = dropped_in_cleanup_clone.clone();
+            super::teardown::park_until_teardown(move || {
+                dropped_in_cleanup.lock().unwrap().push(current::try_get_current_task());
+            });
         },
         None,
     );
