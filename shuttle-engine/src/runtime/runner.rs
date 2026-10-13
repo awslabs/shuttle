@@ -5,7 +5,7 @@ use crate::runtime::task::{Task, TaskId};
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::time::{frozen::FrozenTimeModel, TimeModel};
+use crate::time::{DefaultTimeModel, TimeModel};
 use std::cell::RefCell;
 use std::fmt;
 use std::panic::{self, Location};
@@ -64,12 +64,14 @@ pub struct Runner<S: ?Sized + Scheduler> {
 }
 
 impl<S: Scheduler + 'static> Runner<S> {
-    /// Construct a new `Runner` that will use the given `Scheduler` to control the test, under the default time model,
-    /// [`FrozenTimeModel`].
+    /// Construct a new `Runner` that will use the given `Scheduler` to control the test, under Shuttle's default time
+    /// model. Under it, `thread::sleep` is a single scheduling point, as it was before Shuttle modelled time, and moves
+    /// the clock forward to the sleep's deadline once the thread continues. The timers of async sleeps, timeouts and
+    /// intervals fire when the clock reaches them or when no task can run. See [`crate::time`].
     pub fn new(scheduler: S, config: Config) -> Self {
         Self {
             custom_time_model: false,
-            ..Self::new_with_time_model(scheduler, FrozenTimeModel::new(), config)
+            ..Self::new_with_time_model(scheduler, DefaultTimeModel::new(), config)
         }
     }
 

@@ -1,6 +1,11 @@
 //! Time
 //!
 //! Timing primitives allow Shuttle tests to interact with wall-clock time (Instant, Duration, Timeout, etc.) in a deterministic manner
+//!
+//! How time passes depends on the [`TimeModel`] of the test. Under the default one, which [`Runner::new`](crate::Runner::new)
+//! and the `check_*` functions use, `thread::sleep` is a single scheduling point, as before Shuttle modelled time, and
+//! moves the clock forward to the sleep's deadline once the thread continues. [`frozen::FrozenTimeModel`] and
+//! [`constant_stepped::ConstantSteppedTimeModel`] can be chosen with `Runner::new_with_time_model`.
 
 use std::cmp::Ordering;
 use std::future::Future;
@@ -19,6 +24,7 @@ use crate::runtime::thread;
 
 /// Constant stepped time model implementation
 pub mod constant_stepped;
+mod default_model;
 /// Frozen time model implementation
 pub mod frozen;
 
@@ -87,7 +93,19 @@ pub trait TimeModel: std::fmt::Debug {
     /// Removes every timer whose deadline is at or before the current time, and returns their wakers
     /// in the order they should be woken.
     fn take_expired(&mut self) -> Vec<Waker>;
+
+    /// Whether `thread::sleep` is only a scheduling point, after which Shuttle moves the clock forward to the sleep's
+    /// deadline, rather than blocking the thread until the deadline, as it does by default. Shuttle's default time model
+    /// uses this to keep how `thread::sleep` behaved before time models.
+    ///
+    /// This is not part of the public API, and may change or go away.
+    #[doc(hidden)]
+    fn sleep_is_a_scheduling_point(&self) -> bool {
+        false
+    }
 }
+
+pub(crate) use default_model::DefaultTimeModel;
 
 /// Provides a reference to the current TimeModel for this execution.
 /// Uses `Rc::clone` so that ExecutionState isn't already borrowed when running most TimeModel methods
@@ -282,7 +300,24 @@ pub fn sleep(dur: Duration) {
         thread::switch();
         return;
     }
+    if get_time_model().borrow().sleep_is_a_scheduling_point() {
+        let deadline = Instant::now().deadline_after(dur);
+        thread::switch();
+        // However long the thread waited to run again, at least its sleep has passed by now.
+        move_clock_to(deadline);
+        return;
+    }
     crate::future::block_on(async_sleep(dur));
+}
+
+/// Moves the clock forward to `deadline`, unless it is there already, and wakes the timers that expire.
+fn move_clock_to(deadline: Instant) {
+    let time_model = get_time_model();
+    let now = time_model.borrow().instant();
+    if let Some(gap) = deadline.checked_duration_since(now).filter(|gap| !gap.is_zero()) {
+        time_model.borrow_mut().advance(gap);
+    }
+    wake_expired_timers(&time_model);
 }
 
 /// Advances the current global time without putting the current thread to sleep

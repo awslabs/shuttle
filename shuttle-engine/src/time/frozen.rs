@@ -4,7 +4,10 @@ use crate::time::WakerRegistered;
 
 use super::{constant_stepped::ConstantSteppedTimeModel, Duration, Instant, TimeModel};
 
-/// A time model where time does not advance unless forced
+/// A time model where time does not advance unless forced: the clock only moves on `shuttle::time::advance`, or to the
+/// next timer's deadline when no task can run. A sleeping thread or future can't run until then, so this model is
+/// like tokio's paused clock, and a task that waits for a sleeper by spinning never sees it wake up. Shuttle's default
+/// time model differs in `thread::sleep`, which there is a scheduling point after which the thread can run again.
 #[derive(Debug, Clone)]
 pub struct FrozenTimeModel {
     inner: ConstantSteppedTimeModel,

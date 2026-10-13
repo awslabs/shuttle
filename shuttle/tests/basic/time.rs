@@ -628,21 +628,20 @@ mod wakers {
         }
     }
 
+    // `thread::sleep` blocks under the frozen model, so the timer fires from the run loop.
     #[test]
     fn atomic_flag_waker() {
-        shuttle::check_random(
-            || {
-                let flag = Arc::new(FlagWaker(AtomicBool::new(false)));
-                let waker = Waker::from(flag.clone());
-                let mut cx = Context::from_waker(&waker);
-                let mut sleep = pin!(async_sleep(Duration::from_millis(1)));
-                assert!(sleep.as_mut().poll(&mut cx).is_pending());
-                thread::sleep(Duration::from_millis(2));
-                assert!(flag.0.load(Ordering::SeqCst));
-                assert!(sleep.as_mut().poll(&mut cx).is_ready());
-            },
-            10,
-        );
+        let time_model = shuttle::time::frozen::FrozenTimeModel::new();
+        Runner::new_with_time_model(RandomScheduler::new(10), time_model, Config::new()).run(|| {
+            let flag = Arc::new(FlagWaker(AtomicBool::new(false)));
+            let waker = Waker::from(flag.clone());
+            let mut cx = Context::from_waker(&waker);
+            let mut sleep = pin!(async_sleep(Duration::from_millis(1)));
+            assert!(sleep.as_mut().poll(&mut cx).is_pending());
+            thread::sleep(Duration::from_millis(2));
+            assert!(flag.0.load(Ordering::SeqCst));
+            assert!(sleep.as_mut().poll(&mut cx).is_ready());
+        });
     }
 
     type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -762,7 +761,8 @@ mod advance {
     fn wakes_the_timers_it_passes() {
         let woke_first = Arc::new(AtomicUsize::new(0));
         let woke_first_inner = woke_first.clone();
-        Runner::new(DfsScheduler::new(None, false), Config::new()).run(move || {
+        let runner = Runner::new_with_time_model(DfsScheduler::new(None, false), FrozenTimeModel::new(), Config::new());
+        runner.run(move || {
             let flag = Arc::new(AtomicBool::new(false));
             let child = {
                 let flag = flag.clone();
@@ -1247,61 +1247,192 @@ mod replay {
 /// The default time model, `FrozenTimeModel`: the clock only moves when no task can run, or on `advance`.
 mod frozen {
     use super::*;
+    use shuttle::time::frozen::FrozenTimeModel;
     use test_log::test;
+
+    fn run_frozen(scheduler: impl shuttle::scheduler::Scheduler + 'static, f: impl Fn() + Send + Sync + 'static) {
+        Runner::new_with_time_model(scheduler, FrozenTimeModel::new(), Config::new()).run(f);
+    }
 
     #[test]
     fn sleep_moves_the_clock_by_exactly_its_duration() {
-        shuttle::check_random(
-            || {
-                let start = Instant::now();
-                thread::sleep(Duration::from_secs(1));
-                assert_eq!(start.elapsed(), Duration::from_secs(1));
-            },
-            10,
-        );
+        run_frozen(RandomScheduler::new(10), || {
+            let start = Instant::now();
+            thread::sleep(Duration::from_secs(1));
+            assert_eq!(start.elapsed(), Duration::from_secs(1));
+        });
     }
 
     #[test]
     fn the_clock_does_not_move_at_scheduling_points() {
-        shuttle::check_random(
-            || {
-                let start = Instant::now();
-                let child = thread::spawn(|| {
-                    for _ in 0..10 {
-                        thread::yield_now();
-                    }
-                });
+        run_frozen(RandomScheduler::new(10), || {
+            let start = Instant::now();
+            let child = thread::spawn(|| {
                 for _ in 0..10 {
                     thread::yield_now();
                 }
-                child.join().unwrap();
-                assert_eq!(Instant::now(), start);
-            },
-            10,
-        );
+            });
+            for _ in 0..10 {
+                thread::yield_now();
+            }
+            child.join().unwrap();
+            assert_eq!(Instant::now(), start);
+        });
     }
 
     #[test]
     fn sleepers_wake_in_deadline_order() {
-        shuttle::check_dfs(
+        run_frozen(DfsScheduler::new(None, false), || {
+            let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sleepers: Vec<_> = [30, 10, 20]
+                .into_iter()
+                .map(|ms| {
+                    let order = order.clone();
+                    thread::spawn(move || {
+                        thread::sleep(Duration::from_millis(ms));
+                        order.lock().unwrap().push(ms);
+                    })
+                })
+                .collect();
+            for sleeper in sleepers {
+                sleeper.join().unwrap();
+            }
+            assert_eq!(*order.lock().unwrap(), [10, 20, 30]);
+        });
+    }
+}
+
+/// The default time model keeps how Shuttle behaved before it modelled time: `thread::sleep` is a single scheduling
+/// point, and the clock moves forward to its deadline once the thread continues.
+mod default_model {
+    use super::*;
+    use shuttle::sync::atomic::AtomicBool;
+    use shuttle::sync::Mutex;
+    use std::panic;
+    use test_log::test;
+
+    /// The number of executions DFS explores for a child that sleeps for `sleep` and then writes, while main reads twice.
+    fn executions(sleep: Duration) -> usize {
+        Runner::new(DfsScheduler::new(None, false), Config::new()).run(move || {
+            let lock = Arc::new(Mutex::new(0));
+            let child = {
+                let lock = lock.clone();
+                thread::spawn(move || {
+                    thread::sleep(sleep);
+                    *lock.lock().unwrap() = 1;
+                })
+            };
+            let _ = *lock.lock().unwrap();
+            let _ = *lock.lock().unwrap();
+            child.join().unwrap();
+        })
+    }
+
+    #[test]
+    fn sleeping_explores_like_a_context_switch() {
+        let switch = executions(Duration::ZERO);
+        assert_eq!(executions(Duration::from_millis(1)), switch);
+        assert_eq!(executions(Duration::from_secs(3600)), switch);
+    }
+
+    #[test]
+    fn finds_a_race_behind_a_sleep() {
+        let result = panic::catch_unwind(|| {
+            shuttle::check_dfs(
+                || {
+                    let lock = Arc::new(Mutex::new(0));
+                    {
+                        let lock = lock.clone();
+                        thread::spawn(move || {
+                            thread::sleep(Duration::from_millis(1));
+                            *lock.lock().unwrap() = 1;
+                        });
+                    }
+                    let a = *lock.lock().unwrap();
+                    let b = *lock.lock().unwrap();
+                    assert_eq!(a, b, "the sleeper wrote between the reads");
+                },
+                None,
+            )
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn spinning_until_a_sleeper_wakes_up_finishes() {
+        shuttle::check_random(
             || {
-                let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let flag = Arc::new(AtomicBool::new(false));
+                {
+                    let flag = flag.clone();
+                    thread::spawn(move || {
+                        thread::sleep(Duration::from_millis(10));
+                        flag.store(true, Ordering::SeqCst);
+                    });
+                }
+                while !flag.load(Ordering::SeqCst) {
+                    thread::yield_now();
+                }
+            },
+            100,
+        );
+    }
+
+    #[test]
+    fn a_sleeper_continues_at_or_after_its_deadline() {
+        shuttle::check_random(
+            || {
+                let start = Instant::now();
                 let sleepers: Vec<_> = [30, 10, 20]
                     .into_iter()
                     .map(|ms| {
-                        let order = order.clone();
                         thread::spawn(move || {
                             thread::sleep(Duration::from_millis(ms));
-                            order.lock().unwrap().push(ms);
+                            assert!(start.elapsed() >= Duration::from_millis(ms));
                         })
                     })
                     .collect();
                 for sleeper in sleepers {
                     sleeper.join().unwrap();
                 }
-                assert_eq!(*order.lock().unwrap(), [10, 20, 30]);
+                assert!(start.elapsed() >= Duration::from_millis(30));
             },
-            None,
+            100,
+        );
+        shuttle::check_random(
+            || {
+                let start = Instant::now();
+                thread::sleep(Duration::from_secs(1));
+                assert_eq!(start.elapsed(), Duration::from_secs(1));
+            },
+            1,
+        );
+    }
+
+    // Async timers fire when no task can run, as under the frozen model.
+    #[test]
+    fn a_timeout_fires_when_nothing_else_can_run() {
+        shuttle::check_random(
+            || {
+                let start = Instant::now();
+                let result = future::block_on(async_timeout(Duration::from_millis(10), std::future::pending::<()>()));
+                assert!(result.is_err());
+                assert_eq!(start.elapsed(), Duration::from_millis(10));
+            },
+            1,
+        );
+    }
+
+    // A thread that sleeps past an async sleeper's deadline moves the clock past it, which fires its timer.
+    #[test]
+    fn a_thread_sleep_fires_the_timers_it_passes() {
+        shuttle::check_random(
+            || {
+                let sleeper = future::spawn(async_sleep(Duration::from_millis(10)));
+                thread::sleep(Duration::from_millis(20));
+                future::block_on(sleeper).unwrap();
+            },
+            10,
         );
     }
 }
