@@ -404,7 +404,7 @@ impl Execution {
                 // Task finished
                 Ok(true) => {
                     crate::annotations::record_task_terminated();
-                    ExecutionState::with(|state| {
+                    let stack = ExecutionState::with(|state| {
                         state.finish_current_task();
                         // The task may have caught the panic that was unwinding last, and finished
                         // without another scheduling point. Here, between steps,
@@ -413,7 +413,15 @@ impl Execution {
                         if state.switched_out_unwinding && !std::thread::panicking() {
                             state.forget_unwinding_task();
                         }
+                        state.current_mut().take_stack()
                     });
+                    // Return the stack to the pool, for a task spawned later in this execution to
+                    // reuse. The clone of the continuation this step ran on went out of scope with
+                    // the step, so this drops the last one. Outside the `ExecutionState` borrow,
+                    // like every other release of a task's stack, though this one runs no user code.
+                    if let Some(continuation) = stack {
+                        Rc::into_inner(continuation).expect("a finished task's stack is not shared");
+                    }
                 }
                 // Task yielded
                 Ok(false) => {

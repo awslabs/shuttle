@@ -163,6 +163,109 @@ fn thread_builder_name() {
     );
 }
 
+/// The address of a stack local of the running thread, which identifies the stack it runs on.
+fn stack_address() -> usize {
+    let local = 0u8;
+    std::hint::black_box(&local) as *const u8 as usize
+}
+
+/// A finished thread's stack goes back to the pool as soon as the thread finishes, so threads
+/// spawned later in the same execution run on it again instead of each getting a stack of its own.
+/// Without that, the memory an execution uses grows with the number of threads it has ever spawned.
+#[test]
+fn finished_thread_stack_is_reused() {
+    check_random(
+        || {
+            let stacks = Arc::new(Mutex::new(HashSet::new()));
+            // Spawned and joined one after the other, so only ever one of them is alive, and each
+            // finds the previous one's stack waiting in the pool.
+            for _ in 0..20 {
+                let stacks = Arc::clone(&stacks);
+                thread::spawn(move || {
+                    stacks.lock().unwrap().insert(stack_address());
+                })
+                .join()
+                .unwrap();
+            }
+            assert_eq!(
+                stacks.lock().unwrap().len(),
+                1,
+                "every thread should have run on the same reused stack"
+            );
+        },
+        10,
+    );
+}
+
+/// Use at least `depth` KiB of stack, in frames smaller than a page, so that running out of stack
+/// faults on the guard page instead of writing past it. A frame is about 1 KiB at `-O` and about
+/// 2 KiB unoptimized, so pick a `depth` that clears the stack under test in both profiles.
+fn use_stack(depth: usize) -> u8 {
+    let frame = std::hint::black_box([depth as u8; 1024]);
+    if depth == 0 {
+        frame[0]
+    } else {
+        frame[1023].wrapping_add(use_stack(depth - 1))
+    }
+}
+
+/// A thread built with a larger stack than the default gets one, even when the smaller stack of a
+/// thread that already finished in the same execution is waiting in the pool.
+///
+/// A regression here overflows the builder thread's stack, which faults on the coroutine's guard
+/// page rather than panicking, so it takes the whole test binary with it. The non-destructive
+/// version of this check is `recycled_continuation_has_a_large_enough_stack` in the engine; these
+/// two tests are what catch the same mistake end to end.
+#[test]
+fn thread_builder_stack_size() {
+    check_dfs(
+        || {
+            thread::spawn(|| {}).join().unwrap();
+
+            // 128 frames is ~132 KiB at `-O` and ~269 KiB unoptimized: over the 60 KiB default
+            // stack in both profiles, and well under the 1 MiB this thread asks for.
+            thread::Builder::new()
+                .stack_size(1 << 20)
+                .spawn(|| use_stack(128))
+                .unwrap()
+                .join()
+                .unwrap();
+        },
+        None,
+    );
+}
+
+/// The pool outlives each execution, so a stack freed by a thread in one execution must not be
+/// handed to a larger-stacked thread in the next. Two parents each spawn a child with a different
+/// stack size, so the scheduler varies which child is created first, and therefore which pooled
+/// stack each one is offered.
+#[test]
+fn thread_builder_stack_size_across_executions() {
+    check_dfs(
+        || {
+            let small = thread::spawn(|| {
+                thread::Builder::new()
+                    .stack_size(1 << 16)
+                    .spawn(|| use_stack(8))
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            });
+            let large = thread::spawn(|| {
+                thread::Builder::new()
+                    .stack_size(1 << 20)
+                    .spawn(|| use_stack(128))
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            });
+            small.join().unwrap();
+            large.join().unwrap();
+        },
+        None,
+    );
+}
+
 #[test]
 fn thread_identity() {
     check_dfs(

@@ -546,6 +546,31 @@ impl Task {
         self.continuation.take()
     }
 
+    /// Take what the task needs only while it can still run, now that it has finished: its
+    /// continuation, and with it its stack, and any backtrace captured while it was blocked.
+    /// Dropping the continuation returns it to the pool, where a task spawned later in the same
+    /// execution reuses it, rather than holding the stack until execution teardown.
+    ///
+    /// Nothing of the user's is dropped with these. A task that ran to completion is suspended at
+    /// the top of its continuation's loop with no function in it, so the continuation is reusable as
+    /// it stands, and the task's function and everything it owned are already gone. What the task
+    /// still holds whose destructors do run user code — its spans, its tag and its task-local
+    /// values — stays for teardown to drop as the task (see `take_leftovers` and `has_locals`).
+    pub(crate) fn take_stack(&mut self) -> Option<Rc<RefCell<PooledContinuation>>> {
+        debug_assert!(self.finished());
+        // The parked default has to go before the task's stack does (see `ParkedDefault`). A task
+        // that has finished has none: `enter_task_span` takes it when the task is resumed, and only
+        // a task that switches out parks one. Asserted rather than debug-asserted because dropping
+        // one after the stack it points into is a use after free, and CI runs the tests in release.
+        assert!(
+            self.parked_default.is_none(),
+            "a task that has finished cannot have parked a `tracing` default"
+        );
+        self.backtrace = None;
+        self.lose_stack();
+        self.take_continuation()
+    }
+
     /// The task's stack is gone, once execution teardown has unwound or leaked it: the task cannot
     /// switch any more.
     pub(crate) fn lose_stack(&mut self) {
