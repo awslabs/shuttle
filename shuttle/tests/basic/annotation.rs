@@ -1,8 +1,12 @@
 use serde_json::Value;
 use shuttle::annotations::WithName;
-use shuttle::scheduler::{AnnotationScheduler, RoundRobinScheduler};
+use shuttle::future::{
+    self,
+    batch_semaphore::{BatchSemaphore, Fairness},
+};
+use shuttle::scheduler::{AnnotationScheduler, DfsScheduler, RoundRobinScheduler, Scheduler};
 use shuttle::sync::{mpsc, Mutex};
-use shuttle::{current, future, thread, Runner};
+use shuttle::{current, thread, Runner};
 use std::sync::Arc;
 
 /// Two tasks contending on a mutex, so the annotated schedule contains task creation
@@ -31,6 +35,15 @@ fn annotated<F>(f: F) -> Value
 where
     F: Fn() + Send + Sync + 'static,
 {
+    annotated_with(RoundRobinScheduler::new(1), f)
+}
+
+/// As `annotated`, with an `AnnotationScheduler` around `scheduler`, which runs one execution.
+fn annotated_with<S, F>(scheduler: S, f: F) -> Value
+where
+    S: Scheduler + 'static,
+    F: Fn() + Send + Sync + 'static,
+{
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = LOCK.lock().unwrap();
 
@@ -40,10 +53,7 @@ where
 
     {
         // `AnnotationScheduler` writes the file when it is dropped
-        let runner = Runner::new(
-            AnnotationScheduler::new(RoundRobinScheduler::new(1)),
-            Default::default(),
-        );
+        let runner = Runner::new(AnnotationScheduler::new(scheduler), Default::default());
         runner.run(f);
     }
 
@@ -246,4 +256,599 @@ fn teardown_annotations_follow_task_and_clock() {
             assert!(matching[0][4].is_null(), "teardown does not schedule runnable tasks");
         }
     }
+}
+
+/// The events of the first semaphore that `f` creates, as the task that recorded each, its kind
+/// without the `Semaphore` prefix, and its arguments after the object ID.
+fn semaphore_events<F>(f: F) -> Vec<(u64, String, Vec<Value>)>
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    semaphore_events_with(RoundRobinScheduler::new(1), f)
+}
+
+/// As `semaphore_events`, under `scheduler`.
+fn semaphore_events_with<S, F>(scheduler: S, f: F) -> Vec<(u64, String, Vec<Value>)>
+where
+    S: Scheduler + 'static,
+    F: Fn() + Send + Sync + 'static,
+{
+    let schedule = annotated_with(scheduler, f);
+    let mut object = None;
+    let mut events = Vec::new();
+    for event in schedule["events"].as_array().unwrap() {
+        let Value::Object(map) = &event[2] else { continue };
+        let (name, payload) = map.iter().next().unwrap();
+        let Some(kind) = name.strip_prefix("Semaphore") else {
+            continue;
+        };
+        let (id, args) = match payload {
+            Value::Array(values) => (values[0].clone(), values[1..].to_vec()),
+            id => (id.clone(), Vec::new()),
+        };
+        if *object.get_or_insert_with(|| id.clone()) == id {
+            events.push((event[0].as_u64().unwrap(), kind.to_string(), args));
+        }
+    }
+    events
+}
+
+fn event(task: u64, kind: &str, args: &[u64]) -> (u64, String, Vec<Value>) {
+    (
+        task,
+        kind.to_string(),
+        args.iter().map(|&arg| Value::from(arg)).collect(),
+    )
+}
+
+fn try_acquire(task: u64, num_permits: u64) -> (u64, String, Vec<Value>) {
+    (
+        task,
+        "TryAcquire".to_string(),
+        vec![Value::from(num_permits), Value::from(true)],
+    )
+}
+
+/// On a `Fairness::ParkingLot` semaphore, a release wakes a waiter to try again, and leaves the
+/// permit free. The waiter takes it when it tries, so the waiter itself reports
+/// `AcquireUnblocked`, after the release.
+#[test]
+fn parking_lot_events_of_a_woken_waiter() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::ParkingLot));
+        semaphore.try_acquire(1).unwrap();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            thread::spawn(move || {
+                semaphore.acquire_blocking(1).unwrap();
+                semaphore.release(1);
+            })
+        };
+        // Under `RoundRobinScheduler`, these yields run the waiter until it parks.
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(1);
+        waiter.join().unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        event(1, "AcquireUnblocked", &[1, 1]),
+        event(1, "Release", &[1]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// A woken waiter that loses the race for the permit parks again, which it reports as another
+/// `AcquireBlocked`.
+#[test]
+fn parking_lot_events_of_a_lost_race() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::ParkingLot));
+        semaphore.try_acquire(1).unwrap();
+        let (go_tx, go_rx) = shuttle::sync::mpsc::channel::<()>();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            future::spawn(async move {
+                let mut acquire = Box::pin(semaphore.acquire(1));
+                assert!(futures::poll!(acquire.as_mut()).is_pending());
+                go_rx.recv().unwrap();
+                acquire.await.unwrap();
+                semaphore.release(1);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(1); // wakes the waiter, which waits for `go`
+        semaphore.try_acquire(1).unwrap();
+        go_tx.send(()).unwrap();
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(1);
+        future::block_on(waiter).unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        event(1, "AcquireUnblocked", &[1, 1]),
+        event(1, "Release", &[1]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// A fair release hands the permit to the waiter inside the release, so the releasing task
+/// reports `AcquireUnblocked`, right after its `Release`, as on a strictly fair semaphore.
+#[test]
+fn parking_lot_events_of_a_fair_release() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::ParkingLot));
+        semaphore.try_acquire(1).unwrap();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            thread::spawn(move || {
+                semaphore.acquire_blocking(1).unwrap();
+                semaphore.release(1);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release_fair(1);
+        waiter.join().unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        event(0, "AcquireUnblocked", &[1, 1]),
+        event(1, "Release", &[1]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// The eventual-fairness stand-in grants a woken waiter that has been overtaken twice inside a
+/// release, so the releasing task reports `AcquireUnblocked`. Here the waiter waits for its
+/// acquire, as a blocking call does, but the first execution of DFS runs the main task, which
+/// takes and releases the permit, for as long as it can run.
+#[test]
+fn parking_lot_events_of_a_stand_in_grant() {
+    let events = semaphore_events_with(DfsScheduler::new(Some(1), false), || {
+        let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::ParkingLot));
+        semaphore.try_acquire(1).unwrap();
+        let (parked_tx, parked_rx) = shuttle::sync::mpsc::channel::<()>();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            future::spawn(async move {
+                let mut acquire = Box::pin(semaphore.acquire(1));
+                assert!(futures::poll!(acquire.as_mut()).is_pending());
+                parked_tx.send(()).unwrap();
+                acquire.await.unwrap();
+                semaphore.release(1);
+            })
+        };
+        parked_rx.recv().unwrap();
+        semaphore.release(1); // wakes the waiter
+        for _ in 0..2 {
+            semaphore.try_acquire(1).unwrap();
+            semaphore.release(1); // overtakes the waiter, and the second time, grants it
+        }
+        future::block_on(waiter).unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        try_acquire(0, 1),
+        event(0, "Release", &[1]),
+        try_acquire(0, 1),
+        event(0, "Release", &[1]),
+        event(0, "AcquireUnblocked", &[1, 1]),
+        event(1, "Release", &[1]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// As `parking_lot_events_of_a_woken_waiter`, for a reserving acquire (a writer of an `RwLock`):
+/// the woken waiter that wins its try reports `AcquireUnblocked` itself.
+#[test]
+fn parking_lot_events_of_a_woken_reserving_waiter() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(2, Fairness::ParkingLot));
+        semaphore.try_acquire(2).unwrap();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            thread::spawn(move || {
+                future::block_on(semaphore.acquire_reserving(1, 2)).unwrap();
+                semaphore.release(2);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(2);
+        waiter.join().unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 2),
+        event(1, "AcquireBlocked", &[2]),
+        event(0, "Release", &[2]),
+        event(1, "AcquireUnblocked", &[1, 2]),
+        event(1, "Release", &[2]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// As `parking_lot_events_of_a_lost_race`, for a reserving acquire: the woken waiter that loses
+/// parks again, which it reports as another `AcquireBlocked`.
+#[test]
+fn parking_lot_events_of_a_lost_race_of_a_reserving_waiter() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(2, Fairness::ParkingLot));
+        semaphore.try_acquire(2).unwrap();
+        let (go_tx, go_rx) = shuttle::sync::mpsc::channel::<()>();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            future::spawn(async move {
+                let mut acquire = Box::pin(semaphore.acquire_reserving(1, 2));
+                assert!(futures::poll!(acquire.as_mut()).is_pending());
+                go_rx.recv().unwrap();
+                acquire.await.unwrap();
+                semaphore.release(2);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(2); // wakes the waiter, which waits for `go`
+        semaphore.try_acquire(2).unwrap();
+        go_tx.send(()).unwrap();
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(2);
+        future::block_on(waiter).unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 2),
+        event(1, "AcquireBlocked", &[2]),
+        event(0, "Release", &[2]),
+        try_acquire(0, 2),
+        event(1, "AcquireBlocked", &[2]),
+        event(0, "Release", &[2]),
+        event(1, "AcquireUnblocked", &[1, 2]),
+        event(1, "Release", &[2]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// A read of the state (`load_permits`) that grants a starving woken waiter its permit grants it
+/// inside the read, so the reading task reports `AcquireUnblocked`, as for a stand-in grant at a
+/// release.
+#[test]
+fn parking_lot_events_of_a_grant_at_a_read() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::ParkingLot));
+        semaphore.try_acquire(1).unwrap();
+        let (go_tx, go_rx) = shuttle::sync::mpsc::channel::<()>();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            future::spawn(async move {
+                let mut acquire = Box::pin(semaphore.acquire(1));
+                assert!(futures::poll!(acquire.as_mut()).is_pending());
+                go_rx.recv().unwrap();
+                acquire.await.unwrap();
+                semaphore.release(1);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(1); // wakes the waiter, which waits for `go`
+        assert_eq!(semaphore.load_permits(), Some(1)); // overtakes the waiter once
+        assert_eq!(semaphore.load_permits(), Some(0)); // twice: it tries at the read, and wins
+        go_tx.send(()).unwrap();
+        future::block_on(waiter).unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        event(0, "AcquireUnblocked", &[1, 1]),
+        event(1, "Release", &[1]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// A starving woken waiter that loses at a read parks again, as one that loses its own try does,
+/// and reports another `AcquireBlocked`. The read runs in another task, so the waiter's task
+/// reports it when it next polls the `Acquire`, as it is still parked.
+#[test]
+fn parking_lot_events_of_a_lost_race_at_a_read() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::ParkingLot));
+        semaphore.try_acquire(1).unwrap();
+        let (go_tx, go_rx) = shuttle::sync::mpsc::channel::<()>();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            future::spawn(async move {
+                let mut acquire = Box::pin(semaphore.acquire(1));
+                assert!(futures::poll!(acquire.as_mut()).is_pending());
+                go_rx.recv().unwrap();
+                acquire.await.unwrap();
+                semaphore.release(1);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(1); // wakes the waiter, which waits for `go`
+        semaphore.try_acquire(1).unwrap();
+        assert_eq!(semaphore.load_permits(), Some(0)); // overtakes the waiter once
+        assert_eq!(semaphore.load_permits(), Some(0)); // twice: it tries at the read, and parks again
+        assert!(semaphore.has_waiters(), "the waiter did not park again at the read");
+        go_tx.send(()).unwrap();
+        for _ in 0..5 {
+            thread::yield_now(); // the waiter polls its `Acquire`, which is parked
+        }
+        semaphore.release_fair(1); // hands the waiter the permit
+        future::block_on(waiter).unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        event(0, "AcquireUnblocked", &[1, 1]),
+        event(1, "Release", &[1]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// As above, but a fair release hands the waiter the permit before its task polls the `Acquire`
+/// again, as the `bump` of a lock that waits for `PARKED_BIT` does. The waiter reports nothing
+/// of the park at the read then, only that it was blocked until the release unblocked it.
+#[test]
+fn parking_lot_events_of_a_lost_race_at_a_read_before_a_hand_off() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::ParkingLot));
+        semaphore.try_acquire(1).unwrap();
+        let (go_tx, go_rx) = shuttle::sync::mpsc::channel::<()>();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            future::spawn(async move {
+                let mut acquire = Box::pin(semaphore.acquire(1));
+                assert!(futures::poll!(acquire.as_mut()).is_pending());
+                go_rx.recv().unwrap();
+                acquire.await.unwrap();
+                semaphore.release(1);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(1); // wakes the waiter, which waits for `go`
+        semaphore.try_acquire(1).unwrap();
+        assert_eq!(semaphore.load_permits(), Some(0)); // overtakes the waiter once
+        assert_eq!(semaphore.load_permits(), Some(0)); // twice: it tries at the read, and parks again
+        assert!(semaphore.has_waiters(), "the waiter did not park again at the read");
+        semaphore.release_fair(1); // hands the waiter the permit
+        go_tx.send(()).unwrap();
+        future::block_on(waiter).unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        try_acquire(0, 1),
+        event(0, "Release", &[1]),
+        event(0, "AcquireUnblocked", &[1, 1]),
+        event(1, "Release", &[1]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// A starving woken waiter that loses at a release parks again, as at a read: here a fair release
+/// hands the permit to another request, which is parked, so the waiter reports another
+/// `AcquireBlocked` when its task next polls the `Acquire`, which is still parked.
+#[test]
+fn parking_lot_events_of_a_lost_race_at_a_release() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::ParkingLot));
+        semaphore.try_acquire(1).unwrap();
+        let (go_tx, go_rx) = shuttle::sync::mpsc::channel::<()>();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            future::spawn(async move {
+                let mut acquire = Box::pin(semaphore.acquire(1));
+                assert!(futures::poll!(acquire.as_mut()).is_pending());
+                go_rx.recv().unwrap();
+                acquire.await.unwrap();
+                semaphore.release(1);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(1); // wakes the waiter, which waits for `go`
+        semaphore.try_acquire(1).unwrap();
+        semaphore.release(1); // overtakes the waiter once
+        semaphore.try_acquire(1).unwrap();
+        future::block_on(async {
+            let mut other = Box::pin(semaphore.acquire(1));
+            assert!(futures::poll!(other.as_mut()).is_pending());
+            // Overtakes the waiter twice: it tries, and loses to `other`, which is handed the permit.
+            semaphore.release_fair(1);
+            assert!(semaphore.has_waiters(), "the waiter did not park again at the release");
+            go_tx.send(()).unwrap();
+            for _ in 0..5 {
+                thread::yield_now(); // the waiter polls its `Acquire`, which is parked
+            }
+            other.await.unwrap();
+        });
+        semaphore.release(1); // wakes the waiter, which starves: granted
+        future::block_on(waiter).unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        try_acquire(0, 1),
+        event(0, "Release", &[1]),
+        try_acquire(0, 1),
+        event(0, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        event(0, "AcquireUnblocked", &[0, 1]),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        event(0, "AcquireUnblocked", &[1, 1]),
+        event(1, "Release", &[1]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// A request that a read parked again, and that then parks again by itself, reports the park of its
+/// own only, as it no longer waits where the read parked it. Here its task finishes without
+/// polling it, and the main task polls the abandoned `Acquire`, which leaves the queue, tries like
+/// a new request, loses, and parks again (see `release_passes_over_a_parked_waiter_of_a_finished_task`).
+#[test]
+fn parking_lot_events_of_a_request_parked_by_a_read_and_then_by_itself() {
+    let events = semaphore_events(|| {
+        // Leaked, so that the abandoned `Acquire` can outlive the task that made it.
+        let semaphore: &'static BatchSemaphore = Box::leak(Box::new(BatchSemaphore::new(1, Fairness::ParkingLot)));
+        semaphore.try_acquire(1).unwrap();
+        let stash = Arc::new(std::sync::Mutex::new(None));
+        let (parked_tx, parked_rx) = shuttle::sync::mpsc::channel::<()>();
+        let (go_tx, go_rx) = shuttle::sync::mpsc::channel::<()>();
+        let registrant = {
+            let stash = stash.clone();
+            future::spawn(async move {
+                let mut acquire = Box::pin(semaphore.acquire(1));
+                assert!(futures::poll!(acquire.as_mut()).is_pending());
+                *stash.lock().unwrap() = Some(acquire);
+                parked_tx.send(()).unwrap();
+                go_rx.recv().unwrap();
+            })
+        };
+        parked_rx.recv().unwrap();
+        semaphore.release(1); // wakes the registrant's request
+        semaphore.try_acquire(1).unwrap();
+        assert_eq!(semaphore.load_permits(), Some(0)); // overtakes the request once
+        assert_eq!(semaphore.load_permits(), Some(0)); // twice: it tries at the read, and parks again
+        go_tx.send(()).unwrap();
+        future::block_on(registrant).unwrap(); // its task finishes without polling the request
+        let mut acquire = stash.lock().unwrap().take().unwrap();
+        future::block_on(async {
+            // Leaves the queue, tries, loses, and parks again.
+            assert!(futures::poll!(acquire.as_mut()).is_pending());
+            // Parked, so it does not try, and has nothing more to report.
+            assert!(futures::poll!(acquire.as_mut()).is_pending());
+        });
+        semaphore.release_fair(1); // hands it the permit
+        future::block_on(acquire).unwrap();
+        semaphore.release(1);
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        try_acquire(0, 1),
+        event(1, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        try_acquire(0, 1),
+        event(0, "AcquireBlocked", &[1]),
+        event(0, "Release", &[1]),
+        event(0, "AcquireUnblocked", &[0, 1]),
+        event(0, "Release", &[1]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// A request that never parks reports `AcquireFast`, as does a reserving one that takes all of
+/// its permits at once. One that reserves the semaphore reports `AcquireBlocked`, as it waits, and
+/// once it takes the permits that the reservation kept for it, it reports `AcquireUnblocked`
+/// itself.
+#[test]
+fn parking_lot_events_of_a_reservation() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(2, Fairness::ParkingLot));
+        future::block_on(semaphore.acquire(1)).unwrap();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            thread::spawn(move || {
+                // One permit is free, so this reserves the semaphore, and waits for the other.
+                future::block_on(semaphore.acquire_reserving(1, 2)).unwrap();
+                semaphore.release(2);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release(1); // frees the last permit: wakes the holder of the reservation
+        waiter.join().unwrap();
+        future::block_on(semaphore.acquire_reserving(1, 2)).unwrap(); // both are free
+        semaphore.release(2);
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        event(0, "AcquireFast", &[1]),
+        event(1, "AcquireBlocked", &[2]),
+        event(0, "Release", &[1]),
+        event(1, "AcquireUnblocked", &[1, 2]),
+        event(1, "Release", &[2]),
+        event(0, "AcquireFast", &[2]),
+        event(0, "Release", &[2]),
+    ];
+    assert_eq!(events, expected);
+}
+
+/// A fair release that hands a parked request the reservation records nothing for it, as a
+/// request that reserves the semaphore itself reports nothing more than that it waits: the request
+/// reports `AcquireUnblocked` itself, once it has taken its permits.
+#[test]
+fn parking_lot_events_of_a_reservation_hand_over() {
+    let events = semaphore_events(|| {
+        let semaphore = Arc::new(BatchSemaphore::new(2, Fairness::ParkingLot));
+        future::block_on(semaphore.acquire(2)).unwrap();
+        let waiter = {
+            let semaphore = semaphore.clone();
+            thread::spawn(move || {
+                future::block_on(semaphore.acquire_reserving(1, 2)).unwrap(); // parks
+                semaphore.release(2);
+            })
+        };
+        for _ in 0..5 {
+            thread::yield_now();
+        }
+        semaphore.release_fair(1); // hands the waiter the reservation
+        semaphore.release(1); // frees its last permit: wakes it
+        waiter.join().unwrap();
+    });
+    let expected = vec![
+        event(0, "Created", &[]),
+        event(0, "AcquireFast", &[2]),
+        event(1, "AcquireBlocked", &[2]),
+        event(0, "Release", &[1]),
+        event(0, "Release", &[1]),
+        event(1, "AcquireUnblocked", &[1, 2]),
+        event(1, "Release", &[2]),
+    ];
+    assert_eq!(events, expected);
 }

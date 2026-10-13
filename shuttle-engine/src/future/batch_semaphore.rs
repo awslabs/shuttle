@@ -2095,3 +2095,167 @@ impl BatchSemaphore {
         &self.signature
     }
 }
+
+#[cfg(test)]
+mod parking_lot_filter_tests {
+    //! `take_unpark_set` takes exactly the waiters that `parking_lot` 0.12.5's unlocks unpark: the
+    //! filter of `RawRwLock::wake_parked_threads`, which this copies line by line, for every queue
+    //! of up to 8 parked requests and every release that unparks threads, and `unpark_one` of
+    //! `RawMutex`. A reader of the `RwLock` takes one permit, an upgradable reader a majority, and
+    //! a writer all of them, reserving the semaphore once no other writer or upgradable reader
+    //! holds it.
+    use super::*;
+
+    const N: usize = 1 << 30;
+    const UPGRADABLE: usize = N / 2 + 1;
+    const WRITER_RESERVES_AT: usize = N - UPGRADABLE + 1;
+
+    // `parking_lot`'s state bits, and the tokens that its requests park with.
+    const UPGRADABLE_BIT: usize = 0b0100;
+    const WRITER_BIT: usize = 0b1000;
+    const ONE_READER: usize = 0b10000;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Request {
+        Read,
+        UpgradableRead,
+        Write,
+    }
+
+    /// `wake_parked_threads`' filter, from `parking_lot`'s initial state `state`: which requests
+    /// of `queue` it unparks.
+    fn parking_lot_filter(queue: &[Request], mut state: usize) -> Vec<bool> {
+        let mut unparked = vec![false; queue.len()];
+        for (i, request) in queue.iter().enumerate() {
+            let token = match request {
+                Request::Read => ONE_READER,
+                Request::UpgradableRead => ONE_READER | UPGRADABLE_BIT,
+                Request::Write => WRITER_BIT,
+            };
+            if state & WRITER_BIT != 0 {
+                break; // FilterOp::Stop
+            }
+            if token & (UPGRADABLE_BIT | WRITER_BIT) != 0 && state & UPGRADABLE_BIT != 0 {
+                continue; // FilterOp::Skip
+            }
+            state += token;
+            unparked[i] = true;
+        }
+        unparked
+    }
+
+    /// The waiters of `take_unpark_set` for a queue of `(min_permits, num_permits)` with
+    /// `available` free permits: which ones it takes.
+    fn shuttle_filter(queue: &[(usize, usize)], available: usize) -> Vec<bool> {
+        let waiters = queue
+            .iter()
+            .map(|&(min_permits, num_permits)| {
+                Arc::new(Waiter {
+                    task_id: AtomicUsize::new(0),
+                    num_permits,
+                    min_permits,
+                    is_queued: AtomicBool::new(true),
+                    has_permits: AtomicBool::new(false),
+                    woken: AtomicBool::new(false),
+                    overtakes: AtomicUsize::new(0),
+                    ticket: AtomicUsize::new(0),
+                    park_unreported: AtomicBool::new(false),
+                    clock: VectorClock::new(),
+                    waker: Mutex::new(None),
+                })
+            })
+            .collect::<Vec<_>>();
+        let semaphore = BatchSemaphore::const_new(available, Fairness::ParkingLot);
+        let mut state = semaphore.state.borrow_mut();
+        state.waiters.extend(waiters.iter().cloned());
+        let unparked = state.take_unpark_set();
+        let taken = waiters
+            .iter()
+            .map(|waiter| unparked.iter().any(|w| Arc::ptr_eq(w, waiter)))
+            .collect::<Vec<_>>();
+        // The rest stay in the queue, in order.
+        let stayed = waiters.iter().zip(&taken).filter(|(_, &taken)| !taken);
+        assert!(stayed
+            .map(|(waiter, _)| Arc::as_ptr(waiter))
+            .eq(state.waiters.iter().map(Arc::as_ptr)));
+        taken
+    }
+
+    fn permits(request: Request) -> (usize, usize) {
+        match request {
+            Request::Read => (1, 1),
+            Request::UpgradableRead => (UPGRADABLE, UPGRADABLE),
+            Request::Write => (WRITER_RESERVES_AT, N),
+        }
+    }
+
+    /// Every queue of up to `max_len` requests.
+    fn queues(max_len: usize) -> Vec<Vec<Request>> {
+        let mut all = vec![vec![]];
+        let mut longest = vec![vec![]];
+        for _ in 0..max_len {
+            longest = longest
+                .iter()
+                .flat_map(|queue: &Vec<Request>| {
+                    [Request::Read, Request::UpgradableRead, Request::Write].map(|request| {
+                        let mut queue = queue.clone();
+                        queue.push(request);
+                        queue
+                    })
+                })
+                .collect();
+            all.extend(longest.iter().cloned());
+        }
+        all
+    }
+
+    #[test]
+    fn rwlock_wake_sets_match_parking_lot() {
+        // Each release that unparks threads: `parking_lot`'s initial filter state, and the permits
+        // that are free after it in Shuttle, while `readers` readers keep holding the lock.
+        let mut releases = vec![
+            ("unlock_exclusive", 0, 0, N),
+            ("downgrade", 0, ONE_READER, N - 1),
+            (
+                "downgrade_to_upgradable",
+                0,
+                ONE_READER | UPGRADABLE_BIT,
+                N - UPGRADABLE,
+            ),
+        ];
+        for readers in 0..4 {
+            releases.extend([
+                ("unlock_upgradable", readers, 0, N - readers),
+                ("downgrade_upgradable", readers, ONE_READER, N - 1 - readers),
+                ("a writer that waits for the readers times out", readers, 0, N - readers),
+                (
+                    "an upgrade that waits for the readers times out",
+                    readers,
+                    ONE_READER | UPGRADABLE_BIT,
+                    N - UPGRADABLE - readers,
+                ),
+            ]);
+        }
+        let mut checked = 0;
+        for queue in queues(8) {
+            let shape = queue.iter().map(|&request| permits(request)).collect::<Vec<_>>();
+            for &(release, readers, state, available) in &releases {
+                assert_eq!(
+                    shuttle_filter(&shape, available),
+                    parking_lot_filter(&queue, state),
+                    "{release} with {readers} readers staying, queue {queue:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 186_979);
+    }
+
+    #[test]
+    fn mutex_wakes_the_head_only() {
+        for len in 0..8 {
+            let unparked = shuttle_filter(&vec![(1, 1); len], 1);
+            assert_eq!(unparked, (0..len).map(|i| i == 0).collect::<Vec<_>>());
+        }
+    }
+}
