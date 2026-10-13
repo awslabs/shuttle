@@ -1,6 +1,6 @@
 use crate::config::DEFAULT_MAX_STEPS;
 use crate::runtime::failure::{init_panic_hook, persist_failure};
-use crate::runtime::storage::{StorageKey, StorageMap};
+use crate::runtime::storage::{AlreadyDestructedError, StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
 use crate::runtime::task::{ChildLabelFn, ParkedDefault, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
@@ -48,6 +48,80 @@ thread_local! {
     // access must not emit the event again: `tracing` only refuses re-entrant calls for scoped
     // subscribers, and with a global one this would recurse until the stack overflows.
     static TRACING_TRY_WITH: Cell<bool> = const { Cell::new(false) };
+}
+
+thread_local! {
+    // The current task, and every task's thread-local storage, kept out of `EXECUTION_STATE` so that
+    // `thread::LocalKey` and `current::{get,try_get}_current_task` can reach them while the state is
+    // borrowed. Shuttle runs code from inside that borrow, which can be on behalf of a task: `tracing`
+    // subscribers for some of its own events, the callbacks of the task's spans, `ChildLabelFn`s.
+    // `ExecutionState::set_current_task` keeps `CURRENT_TASK` in step with `current_task`.
+    static CURRENT_TASK: Cell<Option<TaskId>> = const { Cell::new(None) };
+    static TASK_STORAGE: RefCell<HashMap<TaskId, StorageMap>> = RefCell::new(HashMap::new());
+}
+
+/// The current task, if there is an execution and it has one. Doesn't borrow the execution's state.
+pub(crate) fn current_task_id() -> Option<TaskId> {
+    if EXECUTION_STATE.is_set() {
+        CURRENT_TASK.with(Cell::get)
+    } else {
+        None
+    }
+}
+
+/// Like `current_task_id`, but panics outside of an execution, as `ExecutionState::with` does.
+pub(crate) fn current_task_id_in_execution() -> Option<TaskId> {
+    if !EXECUTION_STATE.is_set() {
+        panic!("`ExecutionState::with` panicked because `ExecutionState` is not set. Are you accessing a Shuttle primitive outside of a Shuttle test?");
+    }
+    CURRENT_TASK.with(Cell::get)
+}
+
+/// The current task, for code that needs one, such as `thread::LocalKey::try_with`. Panics as
+/// `ExecutionState::with(|state| state.current())` does, without borrowing the state.
+pub(crate) fn expect_current_task_id() -> TaskId {
+    current_task_id_in_execution().expect("there is no current task")
+}
+
+/// The slot of `task`'s thread-local storage for `key`: `None` if it was never created, an error if
+/// it was destroyed.
+pub(crate) fn task_local<T: 'static>(
+    task: TaskId,
+    key: StorageKey,
+) -> Option<Result<&'static T, AlreadyDestructedError>> {
+    TASK_STORAGE.with(|storage| {
+        let storage = storage.borrow();
+        let value = storage.get(&task)?.get::<T>(key)?;
+        // Safety: a slot's value is boxed, so it stays where it is until the slot is destroyed. That
+        // happens once its task can no longer use it: when the task has finished, or teardown has
+        // unwound the task's stack. So giving the caller the lifetime it asks for is safe, as it was
+        // when the storage was in `ExecutionState`, which outlives every task too.
+        Some(value.map(|value| unsafe { &*(value as *const T) }))
+    })
+}
+
+/// Create `task`'s slot for `key`, holding `value`. With `destructed_last`, it is destroyed after the
+/// task's other slots (see `StorageMap::init_destructed_last`).
+pub(crate) fn init_task_local<T: 'static>(task: TaskId, key: StorageKey, value: T, destructed_last: bool) {
+    TASK_STORAGE.with(|storage| {
+        let mut storage = storage.borrow_mut();
+        let storage = storage.entry(task).or_insert_with(StorageMap::new);
+        if destructed_last {
+            storage.init_destructed_last(key, value);
+        } else {
+            storage.init(key, value);
+        }
+    })
+}
+
+/// Whether some slot of `task`'s thread-local storage is still initialized.
+pub(crate) fn task_has_locals(task: TaskId) -> bool {
+    TASK_STORAGE.with(|storage| storage.borrow().get(&task).is_some_and(|storage| !storage.is_empty()))
+}
+
+/// The next of `task`'s thread-local values to destroy (see `StorageMap::pop`).
+pub(crate) fn pop_task_local(task: TaskId) -> Option<Box<dyn Any>> {
+    TASK_STORAGE.with(|storage| storage.borrow_mut().get_mut(&task)?.pop())
 }
 
 // The reason this is separated out from `ExecutionState` is to ensure that we're always able to persist the schedule.
@@ -178,6 +252,10 @@ impl Execution {
 
         init_panic_hook(config.clone());
         CurrentSchedule::init(self.initial_schedule.clone());
+        // Only a previous execution whose teardown panicked leaves task-local values behind. Forget
+        // them rather than drop them here, outside of any execution.
+        CURRENT_TASK.with(|current| current.set(None));
+        std::mem::forget(TASK_STORAGE.with(|storage| std::mem::take(&mut *storage.borrow_mut())));
         UNGRACEFUL_SHUTDOWN_CONFIG.set(config.ungraceful_shutdown_config);
 
         EXECUTION_STATE.set(&state, move || {
@@ -421,7 +499,7 @@ impl Execution {
                     // If `immediately_return_on_panic` is set, we will then return. If we don't do this, then we run the risk of panicking
                     // again in some other task, which would result in the test aborting.
                     if immediately_return_on_panic && std::thread::panicking() {
-                        ExecutionState::with(|state| state.current_task = ScheduledTask::Stopped);
+                        ExecutionState::with(|state| state.set_current_task(ScheduledTask::Stopped));
                         return Err(StepError::TaskPanicEarlyReturn);
                     }
                 }
@@ -1115,7 +1193,7 @@ impl ExecutionState {
         // out is unwinding a panic still (see `record_unwinding_task`).
         let unwinding = std::thread::panicking();
         let lost_panic = Self::with(|state| {
-            state.current_task = kind.final_state();
+            state.set_current_task(kind.final_state());
             state.next_task = ScheduledTask::None;
             state.teardown = Some(Teardown::new(kind, CurrentSchedule::len()));
             if kind != TeardownKind::Failed && unwinding {
@@ -1221,6 +1299,13 @@ impl ExecutionState {
         labels.sort_unstable_by_key(|&(id, _)| id);
         for (_, labels) in labels {
             report.catch(move || drop(labels));
+        }
+        // What is left of the tasks' thread-local storage, as their `Task`s go (see `TASK_STORAGE`).
+        let storage = TASK_STORAGE.with(|storage| std::mem::take(&mut *storage.borrow_mut()));
+        let mut storage = storage.into_iter().collect::<Vec<_>>();
+        storage.sort_unstable_by_key(|&(id, _)| id);
+        for (_, storage) in storage {
+            report.catch(move || drop(storage));
         }
         let tasks = Self::with(|state| std::mem::take(&mut state.tasks));
         report.catch(move || drop(tasks));
@@ -1354,7 +1439,7 @@ impl ExecutionState {
         let teardown = self.teardown_mut();
         if teardown.kind == TeardownKind::Finished {
             teardown.kind = TeardownKind::Failed;
-            self.current_task = TeardownKind::Failed.final_state();
+            self.set_current_task(TeardownKind::Failed.final_state());
         }
     }
 
@@ -1634,7 +1719,7 @@ impl ExecutionState {
             TeardownStep::Static => TaskId(0),
             TeardownStep::Idle => unreachable!("teardown is always doing something during a step"),
         };
-        self.current_task = ScheduledTask::Some(id);
+        self.set_current_task(ScheduledTask::Some(id));
         self.teardown_mut().step = step;
         TEARDOWN_STEP_PANICS.set(0);
         crate::annotations::record_teardown_step(id);
@@ -1644,7 +1729,8 @@ impl ExecutionState {
     fn end_teardown_step(&mut self) {
         let teardown = self.teardown_mut();
         teardown.step = TeardownStep::Idle;
-        self.current_task = teardown.kind.final_state();
+        let kind = teardown.kind;
+        self.set_current_task(kind.final_state());
     }
 
     fn teardown(&self) -> &Teardown {
@@ -1981,6 +2067,12 @@ impl ExecutionState {
         self.try_get(self.current_task.id()?)
     }
 
+    /// Change the current task. Every change goes through here, so that `CURRENT_TASK` follows.
+    fn set_current_task(&mut self, task: ScheduledTask) {
+        CURRENT_TASK.with(|current| current.set(task.id()));
+        self.current_task = task;
+    }
+
     pub fn get(&self, id: TaskId) -> &Task {
         self.try_get(id).unwrap()
     }
@@ -2218,7 +2310,8 @@ impl ExecutionState {
     /// Set the next task as the current task
     fn advance_to_next_task(&mut self) {
         debug_assert_ne!(self.next_task, ScheduledTask::None);
-        self.current_task = self.next_task.take();
+        let next = self.next_task.take();
+        self.set_current_task(next);
 
         if let ScheduledTask::Some(tid) = self.current_task {
             CurrentSchedule::push_task(tid);

@@ -213,16 +213,25 @@ fn try_get_current_task_everywhere() {
     );
 }
 
-/// `try_get_current_task` never panics in a `tracing` subscriber, including on the events that
-/// Shuttle emits while it is updating its own state, where `get_current_task` panics.
+/// A `tracing` subscriber can get the current task, and use its thread-locals, on every event,
+/// including those that Shuttle emits while it is updating its own state: they are kept out of that
+/// state, so they don't need it.
 #[test]
-fn try_get_current_task_from_a_tracing_subscriber() {
+fn current_task_from_a_tracing_subscriber() {
+    use shuttle_engine::runtime::execution::ExecutionState;
+    use std::cell::Cell;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
 
+    shuttle::thread_local! {
+        static LOCAL: Cell<u32> = const { Cell::new(0) };
+    }
+
     #[derive(Default)]
     struct Seen {
-        task: AtomicUsize,
+        /// Events in a task while Shuttle was updating its own state
+        task_while_borrowed: AtomicUsize,
+        /// Events with no current task
         none: AtomicUsize,
     }
 
@@ -230,11 +239,19 @@ fn try_get_current_task_from_a_tracing_subscriber() {
 
     impl<S: tracing::Subscriber> Layer<S> for GetsCurrentTask {
         fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-            let seen = match current::try_get_current_task() {
-                Some(_) => &self.0.task,
-                None => &self.0.none,
+            let Some(task) = current::try_get_current_task() else {
+                self.0.none.fetch_add(1, Ordering::SeqCst);
+                return;
             };
-            seen.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(current::get_current_task(), Some(task));
+            // The main thread sets `LOCAL` to 1 before anything else, and no other task sets it. A
+            // task's thread-locals are gone once it has destroyed them, on its way out.
+            if let Ok(local) = LOCAL.try_with(Cell::get) {
+                assert!(local == 0 || (task == current::TaskId::from(0) && local == 1));
+            }
+            if ExecutionState::try_with(|_| ()).is_err() {
+                self.0.task_while_borrowed.fetch_add(1, Ordering::SeqCst);
+            }
         }
     }
 
@@ -242,12 +259,16 @@ fn try_get_current_task_from_a_tracing_subscriber() {
     let subscriber = tracing_subscriber::registry()
         .with(GetsCurrentTask(seen.clone()).with_filter(tracing_subscriber::filter::LevelFilter::TRACE));
     tracing::subscriber::with_default(subscriber, || {
-        check_dfs(|| thread::spawn(|| ()).join().unwrap(), None);
+        check_dfs(
+            || {
+                LOCAL.with(|local| local.set(1));
+                thread::spawn(|| ()).join().unwrap();
+            },
+            None,
+        );
     });
 
-    // Some events come from tasks, and some from Shuttle while it holds its state, where there is
-    // no current task to get.
-    assert!(seen.task.load(Ordering::SeqCst) > 0);
+    assert!(seen.task_while_borrowed.load(Ordering::SeqCst) > 0);
     assert!(seen.none.load(Ordering::SeqCst) > 0);
 }
 

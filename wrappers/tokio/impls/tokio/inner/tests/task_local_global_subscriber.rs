@@ -1,10 +1,9 @@
 //! A global `tracing` subscriber that reads a task-local on every event, at TRACE level, so that
-//! it also gets every event Shuttle emits about its own bookkeeping, including the one it emits for
-//! every access to its execution state, which reading a task-local makes. That access must not
-//! emit the event again from inside its handling, since the subscriber would then be called again
-//! from inside the read, and so on until the stack overflows. (With a scoped subscriber, `tracing`
-//! refuses the re-entrant call instead, so this needs a global one; a global subscriber is
-//! process-wide, which is why this test has a binary of its own.)
+//! it also gets every event Shuttle emits about its own bookkeeping. Reading a task-local must not
+//! emit an event itself, since the subscriber would then be called again from inside the read, and
+//! so on until the stack overflows. It doesn't access Shuttle's execution state, so it emits none.
+//! (With a scoped subscriber, `tracing` refuses the re-entrant call instead, so this needs a global
+//! one; a global subscriber is process-wide, which is why this test has a binary of its own.)
 
 use shuttle::future::block_on;
 use shuttle_tokio_impl_inner::sync::Mutex;
@@ -59,12 +58,9 @@ fn reading_a_task_local_from_a_global_subscriber_does_not_recurse() {
     );
 
     assert!(EVENTS.load(Ordering::SeqCst) > 0, "the subscriber got no events");
-    // Reading the task-local while handling any other event emits the event for the read's access
-    // to the state, so the subscriber is called once more from in there, but the read it makes
-    // then doesn't emit it.
     assert_eq!(
         MAX_DEPTH.load(Ordering::SeqCst),
-        2,
-        "reading a task-local emitted an event while that event was being handled"
+        1,
+        "reading a task-local emitted an event"
     );
 }

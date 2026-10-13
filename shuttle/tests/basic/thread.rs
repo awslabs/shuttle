@@ -496,50 +496,44 @@ mod thread_local {
         );
     }
 
-    /// Creating a thread's slot for a key takes two accesses to the execution state, one to find
-    /// that there is no slot and one to create it. A `tracing` subscriber that uses the key on the
-    /// event for the second creates the slot first, and the access that started it uses that slot.
+    /// A key's `init` can end up using the key itself: here it emits an event, and a `tracing`
+    /// subscriber uses the key while it handles that, which creates the slot before `init` returns.
+    /// The access that ran `init` then keeps that slot, rather than failing to create it again.
     #[test]
-    fn slot_created_by_a_subscriber_while_it_is_created() {
+    fn slot_created_while_init_runs() {
         use std::cell::Cell;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::Layer;
 
         shuttle::thread_local! {
-            static KEY: Cell<u32> = Cell::new(7);
+            static KEY: Cell<u32> = {
+                tracing::info!(target: "slot_created_while_init_runs", "initializing KEY");
+                Cell::new(7)
+            };
         }
-        static ARMED: AtomicBool = AtomicBool::new(false);
-        static EVENTS: AtomicUsize = AtomicUsize::new(0);
+        static USES: AtomicUsize = AtomicUsize::new(0);
 
-        struct UsesKeyOnSecondEvent;
+        struct UsesKeyOnInit;
 
-        impl<S: tracing::Subscriber> Layer<S> for UsesKeyOnSecondEvent {
-            fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-                if ARMED.load(Ordering::SeqCst) && EVENTS.fetch_add(1, Ordering::SeqCst) == 1 {
+        impl<S: tracing::Subscriber> Layer<S> for UsesKeyOnInit {
+            fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+                if event.metadata().target() == "slot_created_while_init_runs" {
+                    USES.fetch_add(1, Ordering::SeqCst);
                     assert_eq!(KEY.with(Cell::get), 7);
                 }
             }
         }
 
-        let subscriber = tracing_subscriber::registry()
-            .with(UsesKeyOnSecondEvent.with_filter(tracing_subscriber::filter::LevelFilter::TRACE));
+        let subscriber = tracing_subscriber::registry().with(UsesKeyOnInit);
         tracing::subscriber::with_default(subscriber, || {
             check_dfs(
                 || {
-                    thread::spawn(|| {
-                        EVENTS.store(0, Ordering::SeqCst);
-                        ARMED.store(true, Ordering::SeqCst);
-                        let value = KEY.with(Cell::get);
-                        ARMED.store(false, Ordering::SeqCst);
-                        assert_eq!(value, 7);
-                        assert!(EVENTS.load(Ordering::SeqCst) >= 2, "the subscriber never used the key");
-                    })
-                    .join()
-                    .unwrap();
+                    thread::spawn(|| assert_eq!(KEY.with(Cell::get), 7)).join().unwrap();
                 },
                 None,
             );
         });
+        assert!(USES.load(Ordering::SeqCst) > 0, "the subscriber never used the key");
     }
 
     /// The result of a task that nobody can join any more, a detached future task's output or the
