@@ -409,9 +409,17 @@ impl BatchSemaphoreState {
     }
 
     /// Grant the waiters at the front of the queue their permits, for as long as the available
-    /// permits last. On an unfair semaphore (`track_grants`), also remember each granted waiter in
-    /// `granted`, until its `Acquire` takes the permits. Returns whether this granted any waiter
-    /// its permits or handed one the reservation.
+    /// permits last. Returns whether this granted any waiter its permits or handed one the
+    /// reservation.
+    ///
+    /// `track_grants` is whether the semaphore is unfair, which this state doesn't know; this is
+    /// then a fair release (see `BatchSemaphore::with_fair_releases`). If so, each granted waiter
+    /// is also kept in `granted` until its `Acquire` takes or returns the permits, because
+    /// `BatchSemaphore::reblock_if_unfair` must leave its task runnable: the task has to run to
+    /// take the permits, but the waiter has left the queue, so if the task has another `Acquire`
+    /// there that can't succeed, it would be put back to sleep, which can deadlock. A strictly fair
+    /// semaphore never re-blocks, as its releases wake only the waiters they grant, so there the
+    /// list would be bookkeeping on every grant that nothing reads.
     fn unblock_waiters_from_front(&mut self, track_grants: bool) -> bool {
         let mut handed_over = false;
         while let Some(front) = self.waiters.front() {
