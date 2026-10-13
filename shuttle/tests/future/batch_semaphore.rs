@@ -1048,6 +1048,83 @@ mod reservation_tests {
         );
     }
 
+    /// A `try_acquire` that a reservation refuses is after the request that holds the reservation,
+    /// although that request holds no permits yet, as a `try_write` of a `parking_lot` lock that
+    /// sees `WRITER_BIT` is after the writer that set it. Task 1 releases another semaphore first,
+    /// so that its clock has an event of its own when it reserves the semaphore.
+    #[test_log::test]
+    fn failed_try_acquire_is_after_the_reservation() {
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(2, Fairness::Unfair));
+                sem.acquire_blocking(1).unwrap();
+                let reserver = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        assert_eq!(me(), 1);
+                        BatchSemaphore::new(0, Fairness::Unfair).release(1);
+                        future::block_on(sem.acquire_reserving(1, 2)).unwrap();
+                        sem.release(2);
+                    })
+                };
+                let other = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        assert_eq!(me(), 2);
+                        // One permit is free while the main task holds the other, so only task 1
+                        // can make this fail, by reserving the semaphore or by holding it.
+                        match sem.try_acquire(1) {
+                            Ok(()) => sem.release(1),
+                            Err(_) => check_clock(|i, c| (i != 1) || (c > 0)),
+                        }
+                    })
+                };
+                thread::yield_now();
+                sem.release(1);
+                reserver.join().unwrap();
+                other.join().unwrap();
+            },
+            None,
+        );
+    }
+
+    /// The same for a `try_upgrade`. The main task holds two of the four permits, as an upgradable
+    /// reader of an `RwLock` does, and task 1 reserves the semaphore after an event of its own,
+    /// which the main task is not after. The two free permits let the upgrade in unless task 1 has
+    /// reserved them first.
+    #[test_log::test]
+    fn failed_try_upgrade_is_after_the_reservation() {
+        static REFUSED: AtomicBool = AtomicBool::new(false);
+        check_dfs(
+            || {
+                let sem = Arc::new(BatchSemaphore::new(4, Fairness::Unfair));
+                sem.acquire_blocking(2).unwrap();
+                let reserver = {
+                    let sem = Arc::clone(&sem);
+                    thread::spawn(move || {
+                        assert_eq!(me(), 1);
+                        BatchSemaphore::new(0, Fairness::Unfair).release(1);
+                        future::block_on(sem.acquire_reserving(1, 4)).unwrap();
+                        sem.release(4);
+                    })
+                };
+                thread::yield_now();
+                assert!(!after(1));
+                match sem.try_upgrade(2, 4) {
+                    Ok(()) => sem.release(4),
+                    Err(_) => {
+                        REFUSED.store(true, Ordering::SeqCst);
+                        assert!(after(1), "the failed try_upgrade is not after the reservation");
+                        sem.release(2);
+                    }
+                }
+                reserver.join().unwrap();
+            },
+            None,
+        );
+        assert!(REFUSED.load(Ordering::SeqCst), "no schedule refused the try_upgrade");
+    }
+
     #[test_log::test]
     #[should_panic(expected = "only an unfair semaphore supports reservations")]
     fn reserving_on_a_fair_semaphore_panics() {

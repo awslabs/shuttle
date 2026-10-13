@@ -1,3 +1,7 @@
+# Unreleased
+
+* A `try_acquire` or `try_upgrade` of an unfair `BatchSemaphore` that a reservation refuses (see `BatchSemaphore::acquire_reserving`) is now causally after the request that holds the reservation, as one that too few permits refuse is after the last acquire. That request holds no permits yet, so the failure was after nothing of it, and `ReplayScheduler::set_target_clock` could leave its steps out of a replay of a failure that depends on the `try_*`. (#399)
+
 # 0.9.7 (October 14, 2026)
 
 * Implement `task_local!` in `shuttle-tokio`, with `task::LocalKey` and `task::futures::TaskLocalFuture`. `shuttle-tokio` used to re-export tokio's, which keeps a scope's value in a thread-local that every Shuttle task shares, so tasks saw each other's values. Each task now sees only the values of its own scopes, as in tokio, so a test that read a task-local outside of its own scope, such as in a task spawned from inside one, no longer passes by accident. Requires `shuttle` 0.9.7. (#380)

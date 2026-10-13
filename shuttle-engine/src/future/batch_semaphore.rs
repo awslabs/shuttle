@@ -109,8 +109,10 @@ struct PermitsAvailable {
     /// deque is lazily initialized; see `const_new`.
     permit_clocks: Option<VecDeque<(usize, VectorClock)>>,
 
-    /// The clock of the last successful acquire event. Used for causal
-    /// dependence in `try_acquire` failures.
+    /// The join of the clocks of the successful acquire events, and of the
+    /// requests that reserved the semaphore (see
+    /// [`BatchSemaphore::acquire_reserving`]). Used for causal dependence in
+    /// `try_acquire` failures.
     last_acquire: VectorClock,
 }
 
@@ -644,7 +646,8 @@ impl BatchSemaphore {
             .acquire_permits(num_permits, self.fairness, Priority::Back)
             .inspect_err(|_err| {
                 // Conservatively, the requester causally depends on the
-                // last successful acquire.
+                // last successful acquire, and on the request that holds the
+                // reservation, if one refused it.
                 // TODO: This is not precise, but `try_acquire` causal dependency
                 // TODO: is both hard to define, and is most likely not worth the
                 // TODO: effort. The cases where causality would be tracked
@@ -1212,7 +1215,11 @@ impl<'a> Acquire<'a> {
         } else {
             crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
         }
-        semaphore.state.borrow_mut().reservation = Some(waiter);
+        let mut state = semaphore.state.borrow_mut();
+        // A request that the reservation refuses is after this one (see `try_acquire`).
+        state.permits_available.last_acquire.update(&current::clock());
+        state.reservation = Some(waiter);
+        drop(state);
         trace!("Acquire::poll for {:?} that reserved the semaphore", self);
         // No waiter can take a permit now.
         semaphore.reblock_if_unfair();
