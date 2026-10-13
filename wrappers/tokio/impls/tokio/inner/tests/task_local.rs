@@ -968,6 +968,158 @@ mod api {
         }
     }
 
+    /// A `tracing` layer that reads a task-local in the `on_enter` and `on_exit` of spans that tasks
+    /// enter inside scopes. Besides the callbacks of every poll, it gets those that Shuttle replays,
+    /// while it is updating its own state, when it switches a task out in the middle of a poll and
+    /// back in. Each must see the value of the task whose span it is, as it would in tokio, where
+    /// the callbacks run inside the poll of the scope.
+    #[test]
+    fn read_from_span_callbacks() {
+        use shuttle_engine::runtime::execution::ExecutionState;
+        use tracing::Instrument;
+        use tracing_subscriber::layer::Context;
+        use tracing_subscriber::registry::LookupSpan;
+
+        task_local! {
+            static KEY: u32;
+        }
+
+        /// The value that the callbacks of a span must see, which is the span's `value` field.
+        struct Expected(u32);
+
+        impl tracing::field::Visit for Expected {
+            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                if field.name() == "value" {
+                    self.0 = value.try_into().unwrap();
+                }
+            }
+
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+        }
+
+        /// What a callback saw.
+        struct Read {
+            expected: u32,
+            seen: Option<u32>,
+            /// Whether Shuttle was updating its own state.
+            updating_state: bool,
+        }
+
+        struct ReadsKey {
+            reads: Arc<std::sync::Mutex<Vec<Read>>>,
+        }
+
+        impl ReadsKey {
+            fn read<S: tracing::Subscriber + for<'a> LookupSpan<'a>>(
+                &self,
+                id: &tracing::span::Id,
+                ctx: Context<'_, S>,
+            ) {
+                let expected = ctx.span(id).unwrap().extensions().get::<Expected>().map(|e| e.0);
+                if let Some(expected) = expected {
+                    let updating_state = ExecutionState::try_with(|_| ()).is_err();
+                    let seen = KEY.try_get().ok();
+                    self.reads.lock().unwrap().push(Read {
+                        expected,
+                        seen,
+                        updating_state,
+                    });
+                }
+            }
+        }
+
+        impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> tracing_subscriber::Layer<S> for ReadsKey {
+            fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id, ctx: Context<'_, S>) {
+                if attrs.metadata().name() == "in_scope" {
+                    let mut expected = Expected(0);
+                    attrs.record(&mut expected);
+                    ctx.span(id).unwrap().extensions_mut().insert(expected);
+                }
+            }
+
+            fn on_enter(&self, id: &tracing::span::Id, ctx: Context<'_, S>) {
+                self.read(id, ctx);
+            }
+
+            fn on_exit(&self, id: &tracing::span::Id, ctx: Context<'_, S>) {
+                self.read(id, ctx);
+            }
+        }
+
+        let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(ReadsKey { reads: reads.clone() });
+
+        tracing::subscriber::with_default(subscriber, || {
+            check_dfs(
+                || {
+                    block_on(async {
+                        let tasks = (1..=2)
+                            .map(|value| {
+                                let in_span = async {
+                                    scheduling_point().await;
+                                    task::yield_now().await;
+                                }
+                                .instrument(tracing::info_span!("in_scope", value));
+                                task::spawn(KEY.scope(value, in_span))
+                            })
+                            .collect::<Vec<_>>();
+                        for task in tasks {
+                            task.await.unwrap();
+                        }
+                    });
+                },
+                None,
+            );
+        });
+
+        let reads = reads.lock().unwrap();
+        for read in reads.iter() {
+            assert_eq!(read.seen, Some(read.expected));
+        }
+        // Shuttle replayed some of the callbacks.
+        assert!(reads.iter().any(|read| read.updating_state));
+        assert!(reads.iter().any(|read| !read.updating_state));
+    }
+
+    /// A `ChildLabelFn` that reads a task-local. Shuttle calls it while it is updating its own
+    /// state, when the task that set it spawns another, and it must see the values of that task's
+    /// scopes, as code that runs on behalf of the task would in tokio.
+    #[test]
+    fn read_from_a_child_label_fn() {
+        use shuttle::current::{get_label_for_task, me, set_label_for_task, ChildLabelFn};
+
+        task_local! {
+            static KEY: u32;
+        }
+
+        /// The value of `KEY` that the `ChildLabelFn` saw when the task was spawned.
+        #[derive(Clone, Debug, PartialEq)]
+        struct SpawnedWith(Option<u32>);
+
+        fn spawn() -> task::JoinHandle<Option<SpawnedWith>> {
+            task::spawn(async { get_label_for_task::<SpawnedWith>(me()) })
+        }
+
+        check_dfs(
+            || {
+                block_on(async {
+                    set_label_for_task(
+                        me(),
+                        ChildLabelFn(Arc::new(|_, labels| {
+                            labels.insert(SpawnedWith(KEY.try_get().ok()));
+                        })),
+                    );
+                    assert_eq!(spawn().await.unwrap(), Some(SpawnedWith(None)));
+                    let in_scope = KEY.scope(1, async { spawn().await.unwrap() }).await;
+                    assert_eq!(in_scope, Some(SpawnedWith(Some(1))));
+                    let in_sync_scope = KEY.sync_scope(2, spawn);
+                    assert_eq!(in_sync_scope.await.unwrap(), Some(SpawnedWith(Some(2))));
+                })
+            },
+            None,
+        );
+    }
+
     /// Scopes nested inside each other in several tasks, with the tasks switched out in the middle
     /// of polls and between them.
     #[test]
