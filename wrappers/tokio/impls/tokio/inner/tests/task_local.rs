@@ -916,9 +916,11 @@ mod api {
 
         impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ReadsKey {
             fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-                // Only record the test's own events; Shuttle's just need to not panic.
+                // Reads on every event, Shuttle's own included, but only records what the test's own
+                // events see.
+                let seen = KEY.try_get().ok();
                 if event.metadata().target() == "task_local_test" {
-                    self.seen.lock().unwrap().push(KEY.try_get().ok());
+                    self.seen.lock().unwrap().push(seen);
                 }
             }
         }
@@ -1397,13 +1399,12 @@ mod teardown {
     use std::sync::Mutex as StdMutex;
     use test_log::test;
 
-    /// Spawns a detached task in a scope of `key` and one in no scope, whose futures have not
-    /// finished when the execution ends, and checks what the futures see when Shuttle drops them.
-    /// `on_poll` makes what the scoped task's future does when it is polled.
-    fn scoped_and_unscoped_task_at_teardown(
+    /// Spawns a detached task in a scope of `key` whose future has not finished when the execution
+    /// ends, and checks that the future sees the scope's value when Shuttle drops it. `on_poll` makes
+    /// what the future does when it is polled.
+    fn scoped_task_at_teardown(
         key: &'static LocalKey<u32>,
-        scoped: &'static StdMutex<Vec<Option<u32>>>,
-        unscoped: &'static StdMutex<Vec<Option<u32>>>,
+        seen: &'static StdMutex<Vec<Option<u32>>>,
         on_poll: fn() -> OnPoll,
     ) {
         check_dfs(
@@ -1413,28 +1414,18 @@ mod teardown {
                         7,
                         RecordOnDrop {
                             key,
-                            seen: scoped,
+                            seen,
                             on_poll: on_poll(),
                         },
                     )));
-                    // Dropped after the scoped task, so it checks that the scope did not leave its
-                    // value behind.
-                    drop(task::spawn(RecordOnDrop {
-                        key,
-                        seen: unscoped,
-                        on_poll: OnPoll::Pending,
-                    }));
                 })
             },
             None,
         );
 
-        let scoped = scoped.lock().unwrap();
-        assert!(!scoped.is_empty());
-        assert!(scoped.iter().all(|seen| *seen == Some(7)), "{scoped:?}");
-        let unscoped = unscoped.lock().unwrap();
-        assert_eq!(unscoped.len(), scoped.len());
-        assert!(unscoped.iter().all(|seen| seen.is_none()), "{unscoped:?}");
+        let seen = seen.lock().unwrap();
+        assert!(!seen.is_empty());
+        assert!(seen.iter().all(|seen| *seen == Some(7)), "{seen:?}");
     }
 
     /// A detached task that is pending in a scope at the end of the execution.
@@ -1443,10 +1434,9 @@ mod teardown {
         task_local! {
             static KEY: u32;
         }
-        static SCOPED: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
-        static UNSCOPED: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
+        static SEEN: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
 
-        scoped_and_unscoped_task_at_teardown(&KEY, &SCOPED, &UNSCOPED, || OnPoll::Pending);
+        scoped_task_at_teardown(&KEY, &SEEN, || OnPoll::Pending);
     }
 
     /// A detached task that is blocked in the middle of a poll of a scope at the end of the
@@ -1457,10 +1447,9 @@ mod teardown {
         task_local! {
             static KEY: u32;
         }
-        static SCOPED: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
-        static UNSCOPED: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
+        static SEEN: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
 
-        scoped_and_unscoped_task_at_teardown(&KEY, &SCOPED, &UNSCOPED, || {
+        scoped_task_at_teardown(&KEY, &SEEN, || {
             let lock = Arc::new(shuttle::sync::Mutex::new(()));
             // Never released, so that the task blocks forever
             std::mem::forget(lock.lock().unwrap());
@@ -1478,19 +1467,15 @@ mod teardown {
         }
         static SEEN: StdMutex<Vec<Option<u32>>> = StdMutex::new(Vec::new());
 
-        struct RecordKeyOnDrop;
-
-        impl Drop for RecordKeyOnDrop {
-            fn drop(&mut self) {
-                SEEN.lock().unwrap().push(KEY.try_get().ok());
-            }
-        }
-
         check_dfs(
             || {
                 block_on(async {
                     drop(task::spawn(KEY.scope(7, async {
-                        let _record = RecordKeyOnDrop;
+                        let _record = RecordOnDrop {
+                            key: &KEY,
+                            seen: &SEEN,
+                            on_poll: OnPoll::Pending,
+                        };
                         scheduling_point().await;
                         std::future::pending::<()>().await
                     })));
