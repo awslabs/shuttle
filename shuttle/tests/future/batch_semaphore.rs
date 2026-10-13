@@ -1239,6 +1239,91 @@ mod load_permits_tests {
     }
 }
 
+/// Tests of `BatchSemaphore::has_waiters`: whether a request waits in the semaphore's queue.
+mod has_waiters_tests {
+    use super::*;
+
+    /// A request counts while it is in the queue. A strictly fair release grants the waiter its
+    /// permits, which takes it out of the queue, while an unfair one wakes it, and it stays in the
+    /// queue until it tries again.
+    #[test_log::test]
+    fn has_waiters_is_whether_a_request_is_queued() {
+        for fairness in [Fairness::StrictlyFair, Fairness::Unfair] {
+            check_dfs(
+                move || {
+                    future::block_on(async move {
+                        let sem = BatchSemaphore::new(1, fairness);
+                        assert!(!sem.has_waiters());
+                        sem.acquire(1).await.unwrap();
+                        let mut waiting = Box::pin(sem.acquire(1));
+                        assert!(futures::poll!(waiting.as_mut()).is_pending());
+                        assert!(sem.has_waiters());
+                        sem.release(1);
+                        assert_eq!(sem.has_waiters(), fairness == Fairness::Unfair);
+                        waiting.await.unwrap();
+                        assert!(!sem.has_waiters());
+                        sem.release(1);
+                    });
+                },
+                None,
+            );
+        }
+    }
+
+    /// The holder of the reservation is not in the queue, and a request that waits behind it is.
+    #[test_log::test]
+    fn the_reservation_holder_does_not_count() {
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let sem = BatchSemaphore::new(2, Fairness::Unfair);
+                    sem.acquire(1).await.unwrap();
+                    let mut reserve = Box::pin(sem.acquire_reserving(1, 2));
+                    assert!(futures::poll!(reserve.as_mut()).is_pending());
+                    assert!(!sem.has_waiters());
+                    let mut waiting = Box::pin(sem.acquire(1));
+                    assert!(futures::poll!(waiting.as_mut()).is_pending());
+                    assert!(sem.has_waiters());
+                    drop(waiting);
+                    drop(reserve);
+                    sem.release(1);
+                });
+            },
+            None,
+        );
+    }
+
+    /// A request whose task has finished without dropping its `Acquire` waits for nobody, so it
+    /// does not count (see `release_to_waiter_of_finished_task`).
+    #[test_log::test]
+    fn a_request_of_a_finished_task_does_not_count() {
+        shuttle::lazy_static! {
+            static ref SEM: BatchSemaphore = BatchSemaphore::new(0, Fairness::StrictlyFair);
+        }
+
+        check_dfs(
+            || {
+                future::block_on(async {
+                    let acquire = Arc::new(Mutex::new(None));
+                    let registrant = future::spawn({
+                        let acquire = Arc::clone(&acquire);
+                        async move {
+                            let mut acq = Box::pin(SEM.acquire(1));
+                            assert!(futures::poll!(acq.as_mut()).is_pending());
+                            assert!(SEM.has_waiters());
+                            *acquire.lock().unwrap() = Some(acq);
+                        }
+                    });
+                    registrant.await.unwrap();
+                    assert!(!SEM.has_waiters());
+                    drop(acquire.lock().unwrap().take());
+                });
+            },
+            None,
+        );
+    }
+}
+
 // This test exercises scenarios to ensure that the BatchSemaphore behaves correctly in the presence
 // of tasks that drop an `Acquire` guard without waiting for the semaphore to become available.
 //

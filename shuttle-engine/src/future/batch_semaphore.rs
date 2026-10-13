@@ -601,6 +601,20 @@ impl BatchSemaphore {
         }
     }
 
+    /// Whether a request waits in the semaphore's queue, without a scheduling point, so that it
+    /// can be read right after [`BatchSemaphore::load_permits`] to see the same instant. Neither a
+    /// request whose task has finished without dropping its [`Acquire`] counts, nor the holder of
+    /// the reservation, which is not in the queue. A request that a release woke counts on an
+    /// unfair semaphore, where it stays in the queue until it tries again.
+    ///
+    /// This models `parking_lot`'s `PARKED_BIT`, which its locks' `bump` methods read. The read is
+    /// not causally after the requests that joined the queue: the semaphore does not keep their
+    /// clocks, so that requests do not pay for them.
+    pub fn has_waiters(&self) -> bool {
+        let state = self.state.borrow();
+        state.waiters.iter().any(|waiter| !is_stale(waiter))
+    }
+
     fn init_object_id(&self) {
         let mut state = self.state.borrow_mut();
         if state.id.is_none() {
