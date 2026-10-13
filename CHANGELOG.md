@@ -1,3 +1,7 @@
+# Unreleased
+
+* `shuttle-tokio`: `Notify::notify_waiters()` no longer discards a permit that `notify_one()` stored. tokio's `notify_waiters()` notifies only the waiters registered when it is called and leaves a stored permit in place, so a later `notified()` takes it and completes at once. Shuttle cleared the permit, so that `notified()` waited forever, and Shuttle reported a deadlock that tokio cannot have.
+
 # tokio wrappers (October 12, 2026)
 
 Published `shuttle-tokio-impl-inner` 0.1.3. The already-published `shuttle-tokio-impl` 0.1.1 and `shuttle-tokio` 1.0.0 both require it as `^0.1.1` and re-export it with a glob, so they pick these changes up without being republished. `shuttle-tokio-impl-inner` now depends on `shuttle-engine` directly, as `^0.1.4`, and requires `shuttle` 0.9.2 or later, the first `shuttle` built on `shuttle-engine`. With 0.9.0 or 0.9.1, `shuttle-engine` would be a second engine that never runs, and `notified()` would panic, so projects on those versions stay on 0.1.2. With `shuttle` 0.9.2 to 0.9.5, upgrading brings `shuttle-engine` 0.1.4 along. The `shuttle` crate is unchanged at 0.9.6.

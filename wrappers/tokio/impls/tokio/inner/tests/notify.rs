@@ -439,12 +439,26 @@ fn notify_register_before_check_no_deadlock() {
 /// only the waiters registered when it is called and leaves the permit in place,
 /// so the later `notified()` takes it and completes at once.
 #[test]
-#[ignore = "Shuttle's notify_waiters clears the stored permit: https://github.com/awslabs/shuttle/issues/384"]
 fn notify_waiters_keeps_stored_permit() {
     check_dfs(|| {
         let notify = Notify::new();
         notify.notify_one();
         notify.notify_waiters();
+        future::block_on(notify.notified());
+    });
+}
+
+/// A waiter that `notify_waiters()` notifies before its first poll completes
+/// without the stored permit, which the next `notified()` then takes. This is
+/// tokio's behavior since 1.51; before, a waiter's first poll took the permit.
+#[test]
+fn notify_waiters_leaves_permit_for_next_waiter() {
+    check_dfs(|| {
+        let notify = Notify::new();
+        notify.notify_one();
+        let first = notify.notified();
+        notify.notify_waiters();
+        future::block_on(first);
         future::block_on(notify.notified());
     });
 }
