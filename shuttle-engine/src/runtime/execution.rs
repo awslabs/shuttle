@@ -894,17 +894,22 @@ impl ExecutionState {
             return false;
         }
 
+        // Only unfinished tasks matter here, so this walks `live_tasks` rather than every task the
+        // execution has ever created: it runs every time a thread exits, so scanning all of them
+        // made a spawn-heavy execution quadratic in the number of threads.
         let mut single_unfinished_attached = false;
         let mut has_unfinished_detached = false;
-        for t in self.tasks.iter() {
-            let unfinished_attached = !t.finished() && !t.detached;
+        for &task_id in &self.live_tasks {
+            let t = &self.tasks[task_id.0];
+            debug_assert!(!t.finished(), "`live_tasks` holds only unfinished tasks");
+            let unfinished_attached = !t.detached;
             if single_unfinished_attached && unfinished_attached {
                 // there are more than one unfinished attached tasks, so one exiting won't truncate
                 return false;
             }
 
             single_unfinished_attached |= unfinished_attached;
-            has_unfinished_detached |= !t.finished() && t.detached;
+            has_unfinished_detached |= t.detached;
         }
         has_unfinished_detached && single_unfinished_attached
     }
