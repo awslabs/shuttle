@@ -187,6 +187,13 @@ mod advanced_duration {
             Duration::Std(std::time::Duration::from_nanos(nanos))
         }
 
+        /// Returns true if this Duration spans no time.
+        pub fn is_zero(&self) -> bool {
+            match self {
+                Duration::Std(d) => d.is_zero(),
+            }
+        }
+
         /// Returns the total number of nanoseconds contained by this Duration.
         pub fn as_nanos(&self) -> u128 {
             match self {
