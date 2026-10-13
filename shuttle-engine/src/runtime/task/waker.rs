@@ -56,5 +56,8 @@ unsafe fn raw_waker_drop(_data: *const ()) {
     // No resources associated with our wakers, so nothing to do on drop
 }
 
-const RAW_WAKER_VTABLE: RawWakerVTable =
+// A `static` rather than a `const`, so that the vtable has one address. `Waker::will_wake` compares
+// the vtable pointers, and each use of a `const` can be a separate copy, so two wakers of the same
+// task could compare different.
+static RAW_WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(raw_waker_clone, raw_waker_wake, raw_waker_wake_by_ref, raw_waker_drop);
