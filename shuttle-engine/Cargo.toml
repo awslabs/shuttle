@@ -37,3 +37,4 @@ vector-clocks = []
 # show causal dependence between tasks, so `annotation` implies `vector-clocks`.
 annotation = ["vector-clocks", "dep:serde", "dep:serde_json", "dep:regex"]
 bench-no-vector-clocks = []
+advanced-time-models = []

@@ -9,6 +9,8 @@
 
 use std::cmp::Ordering;
 use std::future::Future;
+#[cfg(feature = "advanced-time-models")]
+use std::ops::Mul;
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -142,6 +144,296 @@ pub(crate) fn wake_expired_timers(time_model: &RefCell<dyn TimeModel>) {
     }
 }
 
+#[cfg(feature = "advanced-time-models")]
+mod advanced_duration {
+    use super::*;
+
+    /// A Shuttle duration
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+    pub enum Duration {
+        /// A concrete duration value
+        Std(std::time::Duration),
+    }
+
+    impl Default for Duration {
+        fn default() -> Self {
+            Duration::Std(std::time::Duration::ZERO)
+        }
+    }
+
+    impl Duration {
+        /// The maximum duration.
+        pub const MAX: Duration = Duration::Std(std::time::Duration::MAX);
+        /// Zero duration.
+        pub const ZERO: Duration = Duration::Std(std::time::Duration::ZERO);
+
+        /// Creates a new Duration from the specified number of seconds.
+        pub fn from_secs(secs: u64) -> Self {
+            Duration::Std(std::time::Duration::from_secs(secs))
+        }
+
+        /// Creates a new Duration from the specified number of milliseconds.
+        pub fn from_millis(millis: u64) -> Self {
+            Duration::Std(std::time::Duration::from_millis(millis))
+        }
+
+        /// Creates a new Duration from the specified number of microseconds.
+        pub fn from_micros(micros: u64) -> Self {
+            Duration::Std(std::time::Duration::from_micros(micros))
+        }
+
+        /// Creates a new Duration from the specified number of nanoseconds.
+        pub fn from_nanos(nanos: u64) -> Self {
+            Duration::Std(std::time::Duration::from_nanos(nanos))
+        }
+
+        /// Returns the total number of nanoseconds contained by this Duration.
+        pub fn as_nanos(&self) -> u128 {
+            match self {
+                Duration::Std(d) => d.as_nanos(),
+            }
+        }
+
+        /// Returns the total number of microseconds contained by this Duration.
+        pub fn as_micros(&self) -> u128 {
+            self.as_nanos() / 1000
+        }
+
+        /// Returns the total number of milliseconds contained by this Duration.
+        pub fn as_millis(&self) -> u128 {
+            self.as_micros() / 1000
+        }
+
+        ///  Checked Duration addition. Computes self + other, returning None if overflow occurred.
+        pub fn checked_add(&self, other: Duration) -> Option<Self> {
+            match (self, other) {
+                (Duration::Std(a), Duration::Std(b)) => a.checked_add(b).map(Duration::Std),
+            }
+        }
+
+        ///  Checked Duration subtraction. Computes self - other, returning None if other is greater than self.
+        pub fn checked_sub(&self, other: Duration) -> Option<Self> {
+            match (self, other) {
+                (Duration::Std(a), Duration::Std(b)) => a.checked_sub(b).map(Duration::Std),
+            }
+        }
+
+        ///  Checked Duration multiplication. Computes self * other, returning None if overflow occurred.
+        pub fn checked_mul(&self, b: u32) -> Option<Self> {
+            match self {
+                Duration::Std(a) => a.checked_mul(b).map(Duration::Std),
+            }
+        }
+
+        /// Checked Duration division. Computes self / other, returning None if other is zero or overflow occurred.
+        pub fn checked_div(&self, rhs: u32) -> Option<Self> {
+            match self {
+                Duration::Std(a) => a.checked_div(rhs).map(Duration::Std),
+            }
+        }
+
+        /// Saturating Duration addition. Computes self + other, returning Duration::MAX if overflow occurred.
+        pub fn saturating_add(&self, other: Duration) -> Self {
+            match (self, other) {
+                (Duration::Std(a), Duration::Std(b)) => Duration::Std(a.saturating_add(b)),
+            }
+        }
+
+        /// Saturating Duration subtraction. Computes self - other, returning Duration::ZERO if other is greater than self.
+        pub fn saturating_sub(&self, other: Duration) -> Self {
+            match (self, other) {
+                (Duration::Std(a), Duration::Std(b)) => Duration::Std(a.saturating_sub(b)),
+            }
+        }
+
+        /// Saturating Duration multiplication. Computes self * other, returning Duration::MAX if overflow occurred.
+        pub fn saturating_mul(&self, rhs: u32) -> Self {
+            match self {
+                Duration::Std(a) => Duration::Std(a.saturating_mul(rhs)),
+            }
+        }
+
+        /// Multiplies Duration by f32.
+        pub fn mul_f32(&self, rhs: f32) -> Self {
+            match self {
+                Duration::Std(a) => Duration::Std(a.mul_f32(rhs)),
+            }
+        }
+
+        /// Multiplies Duration by f64.
+        pub fn mul_f64(&self, rhs: f64) -> Self {
+            match self {
+                Duration::Std(a) => Duration::Std(a.mul_f64(rhs)),
+            }
+        }
+
+        /// Divides Duration by f32.
+        pub fn div_f32(&self, rhs: f32) -> Self {
+            match self {
+                Duration::Std(a) => Duration::Std(a.div_f32(rhs)),
+            }
+        }
+
+        /// Divides Duration by f64.
+        pub fn div_f64(&self, rhs: f64) -> Self {
+            match self {
+                Duration::Std(a) => Duration::Std(a.div_f64(rhs)),
+            }
+        }
+
+        /// Returns the number of seconds contained by this Duration as f64.
+        pub fn as_secs_f64(&self) -> f64 {
+            match self {
+                Duration::Std(d) => d.as_secs_f64(),
+            }
+        }
+
+        /// Returns the number of seconds contained by this Duration as f32.
+        pub fn as_secs_f32(&self) -> f32 {
+            match self {
+                Duration::Std(d) => d.as_secs_f32(),
+            }
+        }
+
+        /// Returns the total number of whole seconds contained by this Duration.
+        pub fn as_secs(&self) -> u64 {
+            match self {
+                Duration::Std(d) => d.as_secs(),
+            }
+        }
+
+        /// Returns the fractional part of this Duration, in whole milliseconds.
+        pub fn subsec_millis(&self) -> u32 {
+            match self {
+                Duration::Std(d) => d.subsec_millis(),
+            }
+        }
+
+        /// Returns the fractional part of this Duration, in whole microseconds.
+        pub fn subsec_micros(&self) -> u32 {
+            match self {
+                Duration::Std(d) => d.subsec_micros(),
+            }
+        }
+
+        /// Returns the fractional part of this Duration, in nanoseconds.
+        pub fn subsec_nanos(&self) -> u32 {
+            match self {
+                Duration::Std(d) => d.subsec_nanos(),
+            }
+        }
+
+        /// Creates a new Duration from the specified number of whole seconds and additional nanoseconds.
+        pub fn new(secs: u64, nanos: u32) -> Self {
+            Duration::Std(std::time::Duration::new(secs, nanos))
+        }
+
+        /// Creates a new Duration from the specified number of seconds represented as f64.
+        pub fn from_secs_f64(secs: f64) -> Self {
+            Duration::Std(std::time::Duration::from_secs_f64(secs))
+        }
+
+        /// Creates a new Duration from the specified number of seconds represented as f32.
+        pub fn from_secs_f32(secs: f32) -> Self {
+            Duration::Std(std::time::Duration::from_secs_f32(secs))
+        }
+
+        pub(crate) fn unwrap_std(self) -> std::time::Duration {
+            match self {
+                Duration::Std(d) => d,
+            }
+        }
+    }
+
+    impl Ord for Duration {
+        fn cmp(&self, other: &Self) -> Ordering {
+            match (self, other) {
+                (Duration::Std(a), Duration::Std(b)) => a.cmp(b),
+            }
+        }
+    }
+
+    impl PartialOrd for Duration {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Add for Duration {
+        type Output = Duration;
+
+        fn add(self, other: Self) -> Self {
+            self.checked_add(other).unwrap()
+        }
+    }
+
+    impl AddAssign for Duration {
+        fn add_assign(&mut self, other: Self) {
+            *self = self.checked_add(other).unwrap()
+        }
+    }
+
+    impl SubAssign for Duration {
+        fn sub_assign(&mut self, other: Self) {
+            *self = self.checked_sub(other).unwrap()
+        }
+    }
+
+    impl Mul<u32> for Duration {
+        type Output = Duration;
+
+        fn mul(self, other: u32) -> Self {
+            self.checked_mul(other).unwrap()
+        }
+    }
+
+    impl Mul<Duration> for u32 {
+        type Output = Duration;
+
+        fn mul(self, other: Duration) -> Duration {
+            other.checked_mul(self).unwrap()
+        }
+    }
+
+    impl std::ops::Div<u32> for Duration {
+        type Output = Duration;
+
+        fn div(self, rhs: u32) -> Duration {
+            self.checked_div(rhs).unwrap()
+        }
+    }
+
+    impl std::ops::DivAssign<u32> for Duration {
+        fn div_assign(&mut self, rhs: u32) {
+            *self = self.checked_div(rhs).unwrap()
+        }
+    }
+
+    impl From<std::time::Duration> for Duration {
+        fn from(d: std::time::Duration) -> Self {
+            Duration::Std(d)
+        }
+    }
+
+    impl From<Duration> for std::time::Duration {
+        fn from(d: Duration) -> Self {
+            d.unwrap_std()
+        }
+    }
+
+    impl std::ops::Sub for Duration {
+        type Output = Duration;
+
+        fn sub(self, other: Self) -> Self {
+            self.checked_sub(other).unwrap()
+        }
+    }
+}
+
+#[cfg(feature = "advanced-time-models")]
+pub use advanced_duration::Duration;
+
+#[cfg(not(feature = "advanced-time-models"))]
 pub use std::time::Duration;
 
 /// Where the clocks of Shuttle's time models start in every execution. The value is arbitrary but not zero, so that
@@ -156,6 +448,45 @@ pub enum Instant {
     Simulated(std::time::Duration),
 }
 
+#[cfg(feature = "advanced-time-models")]
+impl Instant {
+    /// Returns Some(t) where t is the time self - duration if t can be represented as Instant (which means it’s inside the bounds of the underlying data structure), None otherwise.
+    pub fn checked_sub(&self, duration: Duration) -> Option<Instant> {
+        match self {
+            Instant::Simulated(a) => match duration {
+                Duration::Std(b) => a.checked_sub(b).map(Instant::Simulated),
+            },
+        }
+    }
+
+    /// Returns the amount of time elapsed from another instant to this one, or None if that instant is later than this one.
+    /// Due to monotonicity bugs, even under correct logical ordering of the passed Instants, this method can return None.
+    pub fn checked_duration_since(&self, earlier: Instant) -> Option<Duration> {
+        match (self, earlier) {
+            (Instant::Simulated(a), Instant::Simulated(b)) => a.checked_sub(b).map(Duration::Std),
+        }
+    }
+
+    /// Returns the amount of time elapsed from another instant to this one, or zero duration if that instant is later than
+    /// this one.
+    pub fn saturating_duration_since(&self, earlier: Instant) -> Duration {
+        {
+            self.checked_duration_since(earlier).unwrap_or(Duration::ZERO)
+        }
+    }
+
+    /// Returns Some(t) where t is the time self + duration if t can be represented as Instant (which means it's inside the bounds
+    /// of the underlying data structure), None otherwise.
+    pub fn checked_add(&self, duration: Duration) -> Option<Self> {
+        match self {
+            Instant::Simulated(a) => match duration {
+                Duration::Std(b) => a.checked_add(b).map(Instant::Simulated),
+            },
+        }
+    }
+}
+
+#[cfg(not(feature = "advanced-time-models"))]
 impl Instant {
     /// Returns Some(t) where t is the time self - duration if t can be represented as Instant (which means it’s inside the bounds of the underlying data structure), None otherwise.
     pub fn checked_sub(&self, duration: Duration) -> Option<Instant> {
@@ -232,7 +563,13 @@ impl Instant {
 
     /// Returns t where t is the time self + duration if t can be represented as Instant otherwise it saturates to the maximum time value
     pub fn saturating_add(&self, duration: Duration) -> Self {
-        self.checked_add(duration).unwrap_or(Instant::Simulated(Duration::MAX))
+        match self {
+            // `Instant::Simulated` holds a `std::time::Duration`, which is not the same type as
+            // `Duration` when `advanced-time-models` is on.
+            Instant::Simulated(_) => self
+                .checked_add(duration)
+                .unwrap_or(Instant::Simulated(std::time::Duration::MAX)),
+        }
     }
 }
 
