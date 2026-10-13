@@ -125,7 +125,7 @@ struct Atomic<T> {
     signature: ResourceSignature,
 }
 
-// Safety: Atomic is never actually passed across true threads, only across continuations. The
+// SAFETY: Atomic is never actually passed across true threads, only across continuations. The
 // RefCell<_> type therefore can't be preempted mid-bookkeeping-operation.
 unsafe impl<T: Sync> Sync for Atomic<T> {}
 impl<T: RefUnwindSafe> RefUnwindSafe for Atomic<T> {}

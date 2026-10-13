@@ -21,12 +21,18 @@
 //!
 //! * [`reference_model_covers_parking_lot_under_stress`] runs each `release` scenario of the
 //!   transition table many times, in the same way as the Shuttle harness, with random delays between
-//!   ops. Each result of `parking_lot` (the `try_*` results and the recorded values) must also be a
-//!   result of the model. This tests that the model does not leave out a behavior of `parking_lot`,
-//!   and in particular that it does not need the order in which `parking_lot` wakes tasks (see the
-//!   reference module docs). Set `RWLOCK_PARITY_STRESS_ITERATIONS` to change the number of runs of
-//!   each scenario (default 100). Run with `--nocapture` to see how many of the model's results
-//!   `parking_lot` gave.
+//!   ops. Each scenario runs in two variants: every task's final unlock is plain, or every task's
+//!   final unlock is `unlock_fair`, whose hand-off the model also gives the plain unlock rule (see
+//!   the reference module docs). Each result of `parking_lot` (the `try_*` results and the recorded
+//!   values) must also be a result of the model. This tests that the model does not leave out a
+//!   behavior of `parking_lot`, and in particular that it needs neither the order in which
+//!   `parking_lot` wakes tasks nor the fair hand-off. Set `RWLOCK_PARITY_STRESS_ITERATIONS` to
+//!   change the number of runs of each variant of each scenario (default 100). Run with
+//!   `--nocapture` to see how many of the model's results `parking_lot` gave.
+//!
+//! * [`parking_lot_lets_a_later_writer_overtake_a_parked_one`] shows that `parking_lot` does not
+//!   grant the lock in the order in which writers park: after a plain unlock, a writer that parked
+//!   later can get the lock first.
 //!
 //! # Timing
 //!
@@ -53,6 +59,10 @@
 //!
 //! The stress test does not depend on timing, because each order that `parking_lot` gives must be an
 //! order of the model. Only its watchdog uses a time limit (see [`STUCK`]).
+//!
+//! The overtaking test waits until each writer asks for the lock, and then pauses so that it parks.
+//! A stall there, or a run in which eventual fairness hands the lock to W2, only makes a run show no
+//! overtaking, and the test then runs again.
 
 // Each test crate uses only part of the shared module.
 #[allow(dead_code)]
@@ -554,61 +564,78 @@ fn real_once(programs: &Arc<Vec<Vec<Op>>>, seed: u64) -> RunResult {
     (values, tries)
 }
 
-/// Runs each `release` scenario of the transition table `iterations` times. Adds 1 to `progress`
-/// for each run, and keeps the scenario's name in `current`. Returns the mismatches.
+/// Runs each variant of each `release` scenario of the transition table `iterations` times. Adds 1
+/// to `progress` for each run, and keeps the name of the variant in `current`. Returns the
+/// mismatches.
 fn stress(iterations: u64, progress: &AtomicU64, current: &Mutex<String>) -> Vec<String> {
+    const VARIANTS: [Op; 2] = [Unlock, UnlockFair];
     let started = Instant::now();
     let (mut checked, mut skipped, mut mismatches) = (0u64, 0, Vec::new());
     let (mut model_total, mut model_seen) = (0, 0);
     for &main in TRANSITIONS {
         for &queued in QUEUED {
             for &requested in REQUESTED {
-                let name = format!(
-                    "{} | release | {} | {}",
-                    describe(main),
-                    describe(queued),
-                    describe(requested)
-                );
-                let mut programs = vec![[main, &[Unlock]].concat()];
-                if !queued.is_empty() {
-                    programs.push([queued, &[Unlock]].concat());
-                }
-                programs.push([requested, &[Unlock]].concat());
-                let expected = explore(&programs);
+                let programs = |unlock: Op| {
+                    let mut programs = vec![[main, &[unlock]].concat()];
+                    if !queued.is_empty() {
+                        programs.push([queued, &[unlock]].concat());
+                    }
+                    programs.push([requested, &[unlock]].concat());
+                    programs
+                };
+                // The model gives `unlock_fair` the rule of a plain unlock (see the reference module
+                // docs), so both variants have the results of the plain one.
+                let expected = explore(&programs(Unlock));
                 if expected.deadlock {
                     skipped += 1;
                     continue;
                 }
-                *current.lock().unwrap() = name.clone();
 
-                let programs = Arc::new(programs);
-                let mut values = BTreeSet::new();
-                let mut tries = BTreeSet::new();
-                for i in 0..iterations {
-                    let (v, t) = real_once(&programs, i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ checked);
-                    values.insert(v);
-                    tries.extend(t);
-                    progress.fetch_add(1, Ordering::Relaxed);
+                // The values that `parking_lot` gave in either variant.
+                let mut seen = BTreeSet::new();
+                for (variant, unlock) in VARIANTS.into_iter().enumerate() {
+                    let name = format!(
+                        "{} | release ({}) | {} | {}",
+                        describe(main),
+                        unlock.name(),
+                        describe(queued),
+                        describe(requested)
+                    );
+                    *current.lock().unwrap() = name.clone();
+
+                    let programs = Arc::new(programs(unlock));
+                    let run = checked * VARIANTS.len() as u64 + variant as u64;
+                    let mut values = BTreeSet::new();
+                    let mut tries = BTreeSet::new();
+                    for i in 0..iterations {
+                        let (v, t) = real_once(&programs, i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ run);
+                        values.insert(v);
+                        tries.extend(t);
+                        progress.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    let extra_values: Vec<_> = values.difference(&expected.values).collect();
+                    let extra_tries: Vec<_> = tries.difference(&expected.try_results).collect();
+                    if !extra_values.is_empty() || !extra_tries.is_empty() {
+                        mismatches.push(format!(
+                            "{name}: parking_lot gave values {extra_values:?} and try results \
+                             {extra_tries:?} that the model does not"
+                        ));
+                    }
+                    seen.extend(values);
                 }
 
                 checked += 1;
                 model_total += expected.values.len();
-                model_seen += values.intersection(&expected.values).count();
-                let extra_values: Vec<_> = values.difference(&expected.values).collect();
-                let extra_tries: Vec<_> = tries.difference(&expected.try_results).collect();
-                if !extra_values.is_empty() || !extra_tries.is_empty() {
-                    mismatches.push(format!(
-                        "{name}: parking_lot gave values {extra_values:?} and try results \
-                         {extra_tries:?} that the model does not"
-                    ));
-                }
+                model_seen += seen.intersection(&expected.values).count();
             }
         }
     }
     println!(
-        "stress: {checked} scenarios x {iterations} runs in {:.1?}, {skipped} skipped (the model \
-         deadlocks), {} mismatches; parking_lot gave {model_seen} of the model's {model_total} value \
-         sets",
+        "stress: {checked} scenarios x {} variants x {iterations} runs in {:.1?}, {skipped} skipped \
+         (the model deadlocks), {} mismatches; parking_lot gave {model_seen} of the model's \
+         {model_total} value sets",
+        VARIANTS.len(),
         started.elapsed(),
         mismatches.len()
     );
@@ -659,4 +686,60 @@ fn reference_model_covers_parking_lot_under_stress() {
 fn reference_model_refuses_try_write_behind_two_parked_writers() {
     let writer = vec![Write, Unlock];
     explore(&[writer.clone(), writer.clone(), writer, vec![TryWrite, Unlock]]);
+}
+
+/// `parking_lot` does not grant the lock in the order in which writers ask for it, which is why the
+/// model lets any waiting request win after a plain unlock. (The Shuttle lock hands the lock over on
+/// every unlock instead, see the `raw_rwlock` module docs and #259.) A plain unlock wakes the first
+/// parked writer but leaves the lock free, so a thread that is not parked can take it first
+/// (`lock_exclusive_slow` grabs `WRITER_BIT` "even if there are parked threads"). The woken writer
+/// then finds the lock taken and parks again, behind the writers that parked after it.
+///
+/// W1, W2 and W3 ask for the lock in that order while the main thread holds it, 20 ms apart, so
+/// they park in that order. The main thread held the lock for more than a millisecond, so eventual
+/// fairness makes its unlock a hand-off to W1, and starts a new timer of 0 to 1 ms. W1 unlocks at
+/// once, so unless that timer has already run out, this is a plain unlock: it wakes W2, and W1
+/// locks again before W2 runs. W2 parks again, behind W3, and W1's next unlock hands the lock to
+/// W3. In a run where the timer has run out, W1's first unlock hands the lock to W2 instead, so the
+/// test runs until W3 overtakes W2.
+#[test]
+fn parking_lot_lets_a_later_writer_overtake_a_parked_one() {
+    /// Long enough for a writer that asks for the lock to park.
+    const PARK: Duration = Duration::from_millis(20);
+    const RUNS: usize = 50;
+
+    let mut orders = Vec::new();
+    for _ in 0..RUNS {
+        let lock = Arc::new(RwLock::new(Vec::new()));
+        let held = lock.write();
+        let writer = |name: &'static str, relock: bool| {
+            let lock = Arc::clone(&lock);
+            let (asking, asked) = mpsc::channel();
+            let handle = thread::spawn(move || {
+                asking.send(()).unwrap();
+                lock.write().push(name);
+                if relock {
+                    let mut guard = lock.write();
+                    guard.push(name);
+                    // Gives the woken W2 the time to find the lock taken and park again.
+                    thread::sleep(PARK);
+                }
+            });
+            asked.recv().unwrap();
+            thread::sleep(PARK);
+            handle
+        };
+        let writers = [writer("W1", true), writer("W2", false), writer("W3", false)];
+        drop(held);
+        for handle in writers {
+            handle.join().unwrap();
+        }
+        let order = Arc::into_inner(lock).unwrap().into_inner();
+        let turn = |name| order.iter().position(|&n| n == name).unwrap();
+        if turn("W3") < turn("W2") {
+            return;
+        }
+        orders.push(order);
+    }
+    panic!("W2 got the lock before W3 in all {RUNS} runs: {orders:?}");
 }
