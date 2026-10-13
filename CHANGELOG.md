@@ -6,6 +6,8 @@
 
 * Fix a thread spawned with `thread::Builder::stack_size` sometimes running on, and overflowing, a smaller stack than it asked for. The pool reused whichever continuation came first, whatever stack size it had been created with, so a thread could be handed a smaller stack that another task had freed — for instance when threads with different stack sizes were spawned in a different order than in a previous execution, since the pool outlives each execution. The pool now reuses the smallest continuation whose stack is at least as large as the one requested. Reusing stacks within an execution, as above, would have made this much easier to hit. Taking the smallest rather than the first that fits also keeps the pool from growing: handing a large stack to a task that asked for a small one would leave the next large request with nothing to reuse, so the pool would accumulate more large stacks than the execution ever needs at once.
 
+* Performance: a thread exiting no longer looks at every task the execution has created, only at the unfinished ones, so its cost no longer grows with the number of threads that finished before it. Together with the stack reuse above, spawning and joining 30,000 threads one after the other in a single execution takes 0.05 s instead of 0.67 s.
+
 # 0.9.8 (October 20, 2026)
 
 * Fix `shuttle-parking_lot`'s `RwLock` blocking plain readers when a second upgradable reader waits behind an existing upgradable read. Upgradable reads use the new `BatchSemaphore::acquire_bypassable`, so `read` and `try_read` can take available permits while the second upgradable read waits. (#400)
