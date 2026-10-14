@@ -432,6 +432,7 @@ pub fn switch() {
 /// two polls. Returns true if execution teardown cancelled the task while it was switched out (see
 /// `Continuation::cancel`), in which case the loop drops the future instead of polling it again.
 #[inline]
+#[cfg_attr(feature = "check-scheduling-points", track_caller)]
 pub(crate) fn switch_between_polls() -> bool {
     trace!("switch between polls");
     scheduling_point() == ContinuationInput::Cancel
@@ -446,6 +447,7 @@ pub(crate) fn switch_between_polls() -> bool {
 /// the compiler stops inlining the `ExecutionState::with` inside it, and every scheduling point pays
 /// for the calls.
 #[inline(never)]
+#[cfg_attr(feature = "check-scheduling-points", track_caller)]
 fn scheduling_point() -> ContinuationInput {
     crate::annotations::record_tick();
     if ExecutionState::maybe_yield() {
