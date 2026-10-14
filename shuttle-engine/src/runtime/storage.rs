@@ -10,11 +10,14 @@ pub struct StorageKey(pub usize, pub usize); // (identifier, type)
 /// We remember the insertion order into the storage HashMap so that destruction is deterministic.
 /// Values are Option<_> because we need to be able to incrementally destruct them, as it's valid
 /// for TLS destructors to initialize new TLS slots. When a slot is destructed, its key is removed
-/// from `order` and its value is replaced with None.
+/// from `order` (or `last`) and its value is replaced with None.
 #[derive(Debug)]
 pub struct StorageMap {
     locals: HashMap<StorageKey, Option<Box<dyn Any>>>,
     order: VecDeque<StorageKey>,
+    /// The keys of the slots that are destructed after all of those in `order`, so that the
+    /// destructors of those can still use them.
+    last: VecDeque<StorageKey>,
 }
 
 impl StorageMap {
@@ -22,6 +25,7 @@ impl StorageMap {
         Self {
             locals: HashMap::new(),
             order: VecDeque::new(),
+            last: VecDeque::new(),
         }
     }
 
@@ -38,19 +42,30 @@ impl StorageMap {
     }
 
     pub fn init<T: 'static>(&mut self, key: StorageKey, value: T) {
+        self.insert(key, value);
+        self.order.push_back(key);
+    }
+
+    /// Like `init`, for a slot that is destructed after every slot initialized with `init`.
+    pub fn init_destructed_last<T: 'static>(&mut self, key: StorageKey, value: T) {
+        self.insert(key, value);
+        self.last.push_back(key);
+    }
+
+    fn insert<T: 'static>(&mut self, key: StorageKey, value: T) {
         let result = self.locals.insert(key, Some(Box::new(value)));
         assert!(result.is_none(), "cannot reinitialize a storage slot");
-        self.order.push_back(key);
     }
 
     /// Whether no slot is still initialized.
     pub fn is_empty(&self) -> bool {
-        self.order.is_empty()
+        self.order.is_empty() && self.last.is_empty()
     }
 
-    /// Return ownership of the next still-initialized storage slot.
+    /// Return ownership of the next still-initialized storage slot: the oldest of those that are
+    /// not destructed last, or, once there are none of those, the oldest of the others.
     pub fn pop(&mut self) -> Option<Box<dyn Any>> {
-        let key = self.order.pop_front()?;
+        let key = self.order.pop_front().or_else(|| self.last.pop_front())?;
         let value = self
             .locals
             .get_mut(&key)

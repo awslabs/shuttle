@@ -26,9 +26,12 @@ pub use coop::unconstrained;
 #[deprecated = "Moved to shuttle_tokio_impl_inner::task::coop::Unconstrained"]
 pub use coop::Unconstrained;
 
-// TODO: Implement. Only exists in order to get compilation to pass, should not actually be used.
+mod task_local;
+pub use task_local::LocalKey;
+
+/// Task-related futures.
 pub mod futures {
-    pub use tokio::task::futures::TaskLocalFuture;
+    pub use super::task_local::TaskLocalFuture;
 }
 
 /// Returns the [`Id`] of the currently running task.
@@ -38,8 +41,12 @@ pub fn id() -> Id {
 
 /// Returns the [`Id`] of the currently running task, or `None` if called outside
 /// of a task.
+///
+/// SHUTTLE_CHANGES: It also returns `None` while Shuttle is updating its own state, even in a task,
+/// as in a `tracing` subscriber that handles some of Shuttle's own events. See
+/// `shuttle::current::try_get_current_task`.
 pub fn try_id() -> Option<Id> {
-    shuttle::current::get_current_task()
+    shuttle::current::try_get_current_task()
 }
 
 /// Spawns a future onto the runtime

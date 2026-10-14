@@ -277,15 +277,30 @@ where
     F: Future + 'static,
     F::Output: 'static,
 {
-    /// Clean up thread-local storage, publish the result to the JoinHandle, and wake
-    /// any task waiting on the result.
+    /// Drop the future, clean up thread-local storage, publish the result to the JoinHandle, and
+    /// wake any task waiting on the result.
     fn finish(&mut self, result: Result<F::Output, JoinError>) {
+        // Drop the inner future first, so that its destructors can still use the task's
+        // thread-locals: a future that is ready can still own futures that are not, such as the one
+        // inside a `timeout` that fired.
+        self.future.take();
+        let inner = self.inner.take().expect("a task's result is published once");
+        // Nobody can read the result of a detached task, so drop it now too, as std drops what a
+        // thread returns once its `JoinHandle` is gone.
+        let result = if Arc::strong_count(&inner) > 1 {
+            Some(result)
+        } else {
+            drop(result);
+            None
+        };
+
         // Run thread-local destructors.
         ExecutionState::drop_task_locals();
 
-        let inner = self.inner.take().expect("a task's result is published once");
         let mut lock = inner.lock().unwrap();
-        lock.result = Some(result);
+        if let Some(result) = result {
+            lock.result = Some(result);
+        }
         if let Some(waker) = lock.waker.take() {
             waker.wake();
         }
@@ -331,8 +346,6 @@ where
                 return Poll::Ready(());
             }
 
-            // Drop the inner future first so its destructors can still access TLS.
-            this.future.take();
             this.finish(Err(JoinError::Cancelled));
             return Poll::Ready(());
         }

@@ -109,8 +109,26 @@ pub fn set_name_for_task(task_id: TaskId, task_name: impl Into<TaskName>) -> Opt
 }
 
 /// Gets the `TaskId` of the current task, or `None` if there is no current task.
+///
+/// Panics if called outside of a Shuttle execution, or while Shuttle is updating its own state
+/// (which is when it calls `tracing` subscribers for some of its own events). Use
+/// [`try_get_current_task`] in code that can run in those places.
 pub fn get_current_task() -> Option<TaskId> {
     ExecutionState::with(|s| Some(s.try_current()?.id()))
+}
+
+/// Gets the `TaskId` of the current task, or `None` if there is no current task.
+///
+/// Unlike [`get_current_task`], this never panics, so it is meant for code that can run anywhere,
+/// such as `Drop` handlers and `tracing` subscribers. It returns `None` outside of a Shuttle
+/// execution, and whenever Shuttle is updating its own state, even while a task is running. That
+/// includes the code that Shuttle runs from there: `tracing` subscribers handling some of Shuttle's
+/// own events, `ChildLabelFn`s, and the destructors of labels and tags. Between steps, while
+/// Shuttle picks the next task to run, it returns the task that ran last. While Shuttle tears an
+/// execution down, it returns the task being torn down, and the main thread's while Shuttle drops
+/// statics.
+pub fn try_get_current_task() -> Option<TaskId> {
+    ExecutionState::try_with(|s| Some(s.try_current()?.id())).ok().flatten()
 }
 
 /// Get the `TaskId` of the current task.  Panics if there is no current task.

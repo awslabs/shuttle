@@ -448,6 +448,161 @@ mod thread_local {
         );
     }
 
+    /// A thread's slot for a `DestroyedLastKey` is destroyed after its other thread-locals, even
+    /// when it was created first, so their destructors can still use it. A `LocalKey`'s slot is
+    /// destroyed in creation order, so it is already gone for them.
+    #[test]
+    fn destroyed_last_key() {
+        use std::cell::Cell;
+        use std::marker::PhantomData;
+
+        static DESTROYED_LAST: shuttle_engine::thread_support::DestroyedLastKey<Cell<u32>> =
+            shuttle_engine::thread_support::DestroyedLastKey::new(|| Cell::new(1));
+        static DESTROYED_IN_ORDER: LocalKey<Cell<u32>> = LocalKey {
+            init: || Cell::new(2),
+            _p: PhantomData,
+        };
+        static SEEN: std::sync::Mutex<Vec<(Option<u32>, Option<u32>)>> = std::sync::Mutex::new(Vec::new());
+
+        struct ReadsKeysOnDrop;
+
+        impl Drop for ReadsKeysOnDrop {
+            fn drop(&mut self) {
+                SEEN.lock().unwrap().push((
+                    DESTROYED_LAST.try_with(Cell::get).ok(),
+                    DESTROYED_IN_ORDER.try_with(Cell::get).ok(),
+                ));
+            }
+        }
+
+        shuttle::thread_local! {
+            static READS_KEYS_ON_DROP: RefCell<Option<ReadsKeysOnDrop>> = const { RefCell::new(None) };
+        }
+
+        check_dfs(
+            || {
+                SEEN.lock().unwrap().clear();
+                thread::spawn(|| {
+                    // Both slots are created before the thread-local that reads them when it drops.
+                    DESTROYED_LAST.try_with(|_| ()).unwrap();
+                    DESTROYED_IN_ORDER.with(|_| ());
+                    READS_KEYS_ON_DROP.with(|reads| *reads.borrow_mut() = Some(ReadsKeysOnDrop));
+                })
+                .join()
+                .unwrap();
+                assert_eq!(*SEEN.lock().unwrap(), [(Some(1), None)]);
+            },
+            None,
+        );
+    }
+
+    /// Creating a thread's slot for a key takes two accesses to the execution state, one to find
+    /// that there is no slot and one to create it. A `tracing` subscriber that uses the key on the
+    /// event for the second creates the slot first, and the access that started it uses that slot.
+    #[test]
+    fn slot_created_by_a_subscriber_while_it_is_created() {
+        use std::cell::Cell;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::Layer;
+
+        shuttle::thread_local! {
+            static KEY: Cell<u32> = Cell::new(7);
+        }
+        static ARMED: AtomicBool = AtomicBool::new(false);
+        static EVENTS: AtomicUsize = AtomicUsize::new(0);
+
+        struct UsesKeyOnSecondEvent;
+
+        impl<S: tracing::Subscriber> Layer<S> for UsesKeyOnSecondEvent {
+            fn on_event(&self, _: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+                if ARMED.load(Ordering::SeqCst) && EVENTS.fetch_add(1, Ordering::SeqCst) == 1 {
+                    assert_eq!(KEY.with(Cell::get), 7);
+                }
+            }
+        }
+
+        let subscriber = tracing_subscriber::registry()
+            .with(UsesKeyOnSecondEvent.with_filter(tracing_subscriber::filter::LevelFilter::TRACE));
+        tracing::subscriber::with_default(subscriber, || {
+            check_dfs(
+                || {
+                    thread::spawn(|| {
+                        EVENTS.store(0, Ordering::SeqCst);
+                        ARMED.store(true, Ordering::SeqCst);
+                        let value = KEY.with(Cell::get);
+                        ARMED.store(false, Ordering::SeqCst);
+                        assert_eq!(value, 7);
+                        assert!(EVENTS.load(Ordering::SeqCst) >= 2, "the subscriber never used the key");
+                    })
+                    .join()
+                    .unwrap();
+                },
+                None,
+            );
+        });
+    }
+
+    /// The result of a task that nobody can join any more, a detached future task's output or the
+    /// return value of a thread whose `JoinHandle` is gone, is dropped before the task's
+    /// thread-locals, as std drops a thread's, so its destructor can still use them.
+    #[test]
+    fn unjoinable_result_is_dropped_before_thread_locals() {
+        use shuttle::sync::mpsc;
+        use std::cell::Cell;
+
+        shuttle::thread_local! {
+            static LOCAL: Cell<u32> = const { Cell::new(0) };
+        }
+
+        struct SendsLocalOnDrop(mpsc::Sender<u32>);
+
+        impl Drop for SendsLocalOnDrop {
+            fn drop(&mut self) {
+                self.0.send(LOCAL.with(Cell::get)).unwrap();
+            }
+        }
+
+        check_dfs(
+            || {
+                let (seen_tx, seen_rx) = mpsc::channel();
+                let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+                let (thread_seen_tx, thread_dropped_rx) = (seen_tx.clone(), dropped_rx);
+                std::mem::drop(thread::spawn(move || {
+                    LOCAL.with(|local| local.set(1));
+                    // Only once the `JoinHandle` is gone
+                    thread_dropped_rx.recv().unwrap();
+                    SendsLocalOnDrop(thread_seen_tx)
+                }));
+                dropped_tx.send(()).unwrap();
+                assert_eq!(seen_rx.recv().unwrap(), 1);
+
+                let (dropped_tx, dropped_rx) = mpsc::channel::<()>();
+                std::mem::drop(future::spawn(async move {
+                    LOCAL.with(|local| local.set(2));
+                    dropped_rx.recv().unwrap();
+                    SendsLocalOnDrop(seen_tx)
+                }));
+                dropped_tx.send(()).unwrap();
+                assert_eq!(seen_rx.recv().unwrap(), 2);
+            },
+            None,
+        );
+    }
+
+    /// A `LocalKey` has the same auto traits as `std::thread::LocalKey`, whatever it holds.
+    #[test]
+    fn auto_traits() {
+        use std::cell::Cell;
+        use std::panic::{RefUnwindSafe, UnwindSafe};
+
+        fn send_sync_unwind_safe<T: Send + Sync + UnwindSafe + RefUnwindSafe>() {}
+
+        send_sync_unwind_safe::<LocalKey<RefCell<usize>>>();
+        send_sync_unwind_safe::<std::thread::LocalKey<RefCell<usize>>>();
+        send_sync_unwind_safe::<LocalKey<Rc<Cell<usize>>>>();
+        send_sync_unwind_safe::<std::thread::LocalKey<Rc<Cell<usize>>>>();
+    }
+
     // Like `nested_with` but just testing the const variant of the `thread_local` macro
     #[test]
     fn const_nested_with() {

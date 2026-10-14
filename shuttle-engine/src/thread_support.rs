@@ -24,11 +24,22 @@ pub fn thread_fn<F, T>(
         thread::switch();
     }
 
+    // Nobody can join a thread whose `JoinHandle` is gone, so drop what it returned now, while its
+    // thread-locals are still there for the value's destructors, as std does.
+    let ret = if std::sync::Arc::strong_count(&result) > 1 {
+        Some(ret)
+    } else {
+        drop(ret);
+        None
+    };
+
     tracing::trace!("thread finished, dropping thread locals");
     ExecutionState::drop_task_locals();
     tracing::trace!("done dropping thread locals");
 
-    *result.lock().unwrap() = Some(Ok(ret));
+    if let Some(ret) = ret {
+        *result.lock().unwrap() = Some(Ok(ret));
+    }
     ExecutionState::with(|state| {
         if let Some(waiter) = state.current_mut().take_waiter() {
             state.get_mut(waiter).unblock();
@@ -40,13 +51,44 @@ pub fn thread_fn<F, T>(
 pub struct LocalKey<T: 'static> {
     #[doc(hidden)]
     pub init: fn() -> T,
+    // A `LocalKey` holds no `T` of its own, only the means to reach each thread's, so like
+    // `std::thread::LocalKey` it is `Send`, `Sync` and unwind safe whatever `T` is. `fn() -> T`
+    // gives it all four.
     #[doc(hidden)]
-    pub _p: PhantomData<T>,
+    pub _p: PhantomData<fn() -> T>,
 }
 
-// Safety: `LocalKey` implements thread-local storage; each thread sees its own value of the type T.
-unsafe impl<T> Send for LocalKey<T> {}
-unsafe impl<T> Sync for LocalKey<T> {}
+/// A [`LocalKey`] whose slot is destroyed after all of a thread's other thread-locals when the
+/// thread finishes, so that their destructors can still use it however early it was created.
+/// `shuttle-tokio` uses it for the slots of its task-locals, which in tokio are thread-locals that
+/// outlive every task.
+#[doc(hidden)]
+pub struct DestroyedLastKey<T: 'static> {
+    key: LocalKey<T>,
+}
+
+impl<T: 'static> DestroyedLastKey<T> {
+    /// A key whose slots start out as what `init` returns.
+    pub const fn new(init: fn() -> T) -> Self {
+        Self {
+            key: LocalKey { init, _p: PhantomData },
+        }
+    }
+
+    /// Like [`LocalKey::try_with`].
+    pub fn try_with<F, R>(&'static self, f: F) -> std::result::Result<R, AccessError>
+    where
+        F: FnOnce(&T) -> R,
+    {
+        self.key.try_with_slot(f, true)
+    }
+}
+
+impl<T: 'static> std::fmt::Debug for DestroyedLastKey<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DestroyedLastKey").finish_non_exhaustive()
+    }
+}
 
 impl<T: 'static> std::fmt::Debug for LocalKey<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,12 +119,34 @@ impl<T: 'static> LocalKey<T> {
     where
         F: FnOnce(&T) -> R,
     {
+        self.try_with_slot(f, false)
+    }
+
+    /// `try_with`, creating the slot, if it has to, as one that is destroyed after the thread's other
+    /// slots if `destroyed_last` is set.
+    fn try_with_slot<F, R>(&'static self, f: F, destroyed_last: bool) -> std::result::Result<R, AccessError>
+    where
+        F: FnOnce(&T) -> R,
+    {
         let value = self.get().unwrap_or_else(|| {
             let value = (self.init)();
 
-            ExecutionState::with(move |state| {
-                state.current_mut().init_local(self, value);
+            // `init`, or a `tracing` subscriber of the event that `ExecutionState::with` emits, may
+            // have used this key, and so created the slot, since `get` found none. Keep that slot
+            // then, and drop the new value once the state is no longer borrowed.
+            let unused = ExecutionState::with(move |state| {
+                if state.current().local(self).is_none() {
+                    if destroyed_last {
+                        state.current_mut().init_local_destroyed_last(self, value);
+                    } else {
+                        state.current_mut().init_local(self, value);
+                    }
+                    None
+                } else {
+                    Some(value)
+                }
             });
+            drop(unused);
 
             self.get().unwrap()
         })?;

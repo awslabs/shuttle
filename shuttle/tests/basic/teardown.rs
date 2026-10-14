@@ -95,7 +95,7 @@ fn park(wait: Wait, on_drop: impl FnOnce() + 'static) {
     started_rx.recv().unwrap();
 }
 
-fn park_until_teardown(on_drop: impl FnOnce() + 'static) {
+pub(super) fn park_until_teardown(on_drop: impl FnOnce() + 'static) {
     park(Wait::Parked, on_drop)
 }
 
@@ -563,24 +563,19 @@ fn task_that_catches_the_unwind_of_its_stack_is_unwound_again() {
     assert!(!went_on.load(StdOrdering::SeqCst));
 }
 
-/// A task-local value that a future sets after its task finished is dropped as that task too.
+/// A task-local value that a task sets after it dropped its own ones is dropped as that task too.
+/// A task does so when its `JoinHandle` is dropped while it destroys its thread-locals: the task kept
+/// its output for the handle, so it drops the output only once those are gone, and the output's
+/// destructor sets a task-local value.
 #[test]
 fn task_local_set_after_its_task_finished_is_dropped_as_the_task() {
     shuttle::thread_local! {
         static LATE: std::cell::RefCell<Option<OnDrop<Box<dyn FnOnce()>>>> = const { std::cell::RefCell::new(None) };
+        static WAITS_ON_DROP: std::cell::RefCell<Option<OnDrop<Box<dyn FnOnce()>>>> = const { std::cell::RefCell::new(None) };
     }
 
-    /// A future whose destructor sets a task-local value. The task drops it once it has dropped
-    /// its task-local values.
+    /// The task's output, which sets a task-local value when it is dropped.
     struct SetsLocalOnDrop(Option<Arc<StdAtomicUsize>>);
-
-    impl Future for SetsLocalOnDrop {
-        type Output = ();
-
-        fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
-            std::task::Poll::Ready(())
-        }
-    }
 
     impl Drop for SetsLocalOnDrop {
         fn drop(&mut self) {
@@ -596,7 +591,25 @@ fn task_local_set_after_its_task_finished_is_dropped_as_the_task() {
     }
 
     check_destructors_complete(1, |counter| {
-        future::block_on(future::spawn(SetsLocalOnDrop(Some(counter)))).unwrap();
+        let (in_destructor_tx, in_destructor_rx) = mpsc::channel::<()>();
+        let (handle_dropped_tx, handle_dropped_rx) = mpsc::channel::<()>();
+        let handle = future::spawn(async move {
+            // While the task destroys its thread-locals, waits for the handle to be dropped.
+            let waits: Box<dyn FnOnce()> = Box::new(move || {
+                in_destructor_tx.send(()).unwrap();
+                handle_dropped_rx.recv().unwrap();
+            });
+            WAITS_ON_DROP.with(|waits_on_drop| *waits_on_drop.borrow_mut() = Some(OnDrop(Some(waits))));
+            SetsLocalOnDrop(Some(counter))
+        });
+        let task = handle.abort_handle();
+        in_destructor_rx.recv().unwrap();
+        drop(handle);
+        handle_dropped_tx.send(()).unwrap();
+        // So that teardown finds the task finished, with the value its output set.
+        while !task.is_finished() {
+            thread::yield_now();
+        }
     });
 }
 
