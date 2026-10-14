@@ -18,6 +18,38 @@ use crate::scheduler::serialization::serialize_schedule;
 // When we last persisted a schedule. Used so that we don't persist the same schedule twice.
 thread_local! {
     static SCHEDULE_PERSISTED_AT: Cell<usize> = const { Cell::new(0) };
+    // Whether the running test has a time model other than the default, so that its failures replay only under it.
+    static CUSTOM_TIME_MODEL: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Records whether the running test has a custom time model, for as long as it lives.
+pub(crate) struct CustomTimeModelGuard(bool);
+
+impl CustomTimeModelGuard {
+    pub(crate) fn new(custom: bool) -> Self {
+        Self(CUSTOM_TIME_MODEL.replace(custom))
+    }
+}
+
+impl Drop for CustomTimeModelGuard {
+    fn drop(&mut self) {
+        CUSTOM_TIME_MODEL.set(self.0);
+    }
+}
+
+/// How to replay a schedule printed as a string, and one persisted to a file.
+fn replay_instructions() -> (&'static str, &'static str) {
+    if CUSTOM_TIME_MODEL.get() {
+        (
+            "pass that string and the same time model to `shuttle::replay_with_time_model` to replay the failure",
+            "pass that path and the same time model to `shuttle::replay_from_file_with_time_model` to replay the failure",
+        )
+    } else {
+        (
+            "pass that string to `shuttle::replay` to replay the failure",
+            "pass that path to `shuttle::replay_from_file` to replay the failure",
+        )
+    }
 }
 
 /// Persist (to stderr or to file) a message describing how to replay a failing schedule.
@@ -27,6 +59,7 @@ pub fn persist_failure(config: &Config) {
         return;
     }
 
+    let (replay_string, replay_file) = replay_instructions();
     match &config.failure_persistence {
         FailurePersistence::None => {}
         FailurePersistence::File(directory) => {
@@ -34,20 +67,16 @@ pub fn persist_failure(config: &Config) {
 
             // Try to persist to a file, but fall through to stderr if that fails for some reason
             match persist_failure_to_file(&serialized_schedule, directory.as_ref()) {
-                Ok(path) => eprintln!("failing schedule persisted to file: {}\npass that path to `shuttle::replay_from_file` to replay the failure", path.display()),
+                Ok(path) => eprintln!("failing schedule persisted to file: {}\n{replay_file}", path.display()),
                 Err(e) => {
                     eprintln!("failed to persist schedule to file (error: {e}), falling back to printing the schedule");
-                    eprintln!(
-                        "failing schedule:\n\"\n{serialized_schedule}\n\"\npass that string to `shuttle::replay` to replay the failure"
-                    );
+                    eprintln!("failing schedule:\n\"\n{serialized_schedule}\n\"\n{replay_string}");
                 }
             }
         }
         FailurePersistence::Print => {
             let serialized_schedule = serialize_schedule(&CurrentSchedule::get_schedule());
-            eprintln!(
-                "failing schedule:\n\"\n{serialized_schedule}\n\"\npass that string to `shuttle::replay` to replay the failure"
-            );
+            eprintln!("failing schedule:\n\"\n{serialized_schedule}\n\"\n{replay_string}");
         }
     }
 
@@ -105,4 +134,22 @@ pub fn init_panic_hook(config: Config) {
             original_hook(panic_info);
         }));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_instructions_name_the_functions_for_the_time_model() {
+        assert!(replay_instructions().0.contains("`shuttle::replay`"));
+        assert!(replay_instructions().1.contains("`shuttle::replay_from_file`"));
+        {
+            let _custom = CustomTimeModelGuard::new(true);
+            let (string, file) = replay_instructions();
+            assert!(string.contains("`shuttle::replay_with_time_model`"), "{string}");
+            assert!(file.contains("`shuttle::replay_from_file_with_time_model`"), "{file}");
+        }
+        assert!(replay_instructions().0.contains("`shuttle::replay`"));
+    }
 }

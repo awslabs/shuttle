@@ -1,5 +1,6 @@
 use crate::config::UNGRACEFUL_SHUTDOWN_CONFIG;
 use crate::runtime::execution::ExecutionState;
+use crate::time::step_time_model;
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
@@ -428,6 +429,7 @@ pub fn switch() {
             ContinuationInput::Cancel => unreachable!("only a task that is between polls is cancelled"),
         }
     }
+    step_time_model();
 }
 
 /// Like `switch`, for the loop that polls a future task's future (see `Task::from_future`), between

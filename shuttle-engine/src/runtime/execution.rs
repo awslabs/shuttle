@@ -9,6 +9,7 @@ use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
 use crate::sync_types::{ResourceSignature, ResourceType};
 use crate::thread_support::thread_fn;
+use crate::time::{get_time_model, TimeModel};
 use crate::{backtrace_enabled, Config, MaxSteps, UNGRACEFUL_SHUTDOWN_CONFIG};
 use scoped_tls::scoped_thread_local;
 use smallvec::SmallVec;
@@ -111,6 +112,7 @@ thread_local! {
 /// static variable, but clients get access to it by calling `ExecutionState::with`.
 pub struct Execution {
     scheduler: Rc<RefCell<dyn Scheduler>>,
+    time_model: Rc<RefCell<dyn TimeModel>>,
     initial_schedule: Schedule,
 }
 
@@ -123,9 +125,14 @@ impl std::fmt::Debug for Execution {
 impl Execution {
     /// Construct a new execution that will use the given scheduler. The execution should then be
     /// invoked via its `run` method, which takes as input the closure for task 0.
-    pub fn new(scheduler: Rc<RefCell<dyn Scheduler>>, initial_schedule: Schedule) -> Self {
+    pub fn new(
+        scheduler: Rc<RefCell<dyn Scheduler>>,
+        initial_schedule: Schedule,
+        time_model: Rc<RefCell<dyn TimeModel>>,
+    ) -> Self {
         Self {
             scheduler,
+            time_model,
             initial_schedule,
         }
     }
@@ -166,6 +173,70 @@ enum TeardownFailure {
     Panic(String),
 }
 
+/// While no task is runnable, moves the clock to the next deadline and wakes the timers that expire there, until a
+/// task becomes runnable or no timer is left. A timer doesn't always make a task runnable, since its waker may belong
+/// to a custom executor.
+///
+/// No task is running here, so scheduling points are no-ops while the wakers run (see `FiringTimers`).
+fn wake_sleepers_until_runnable() {
+    let time_model = get_time_model();
+    while !ExecutionState::with(|state| state.any_runnable()) {
+        let expired = {
+            let mut time_model = time_model.borrow_mut();
+            if !time_model.advance_to_next_deadline() {
+                return;
+            }
+            time_model.take_expired()
+        };
+        let _firing = FiringTimers::start();
+        for waker in expired {
+            waker.wake();
+        }
+    }
+}
+
+/// Marks the scheduler as waking timers for as long as it lives. A waker can do anything, such as unparking a thread
+/// or notifying a condition variable, and those operations have scheduling points. With no task running, the
+/// scheduling points must not try to switch away from one.
+struct FiringTimers;
+
+impl FiringTimers {
+    fn start() -> Self {
+        ExecutionState::with(|state| state.firing_timers = true);
+        Self
+    }
+}
+
+impl Drop for FiringTimers {
+    fn drop(&mut self) {
+        ExecutionState::with(|state| state.firing_timers = false);
+    }
+}
+
+/// Runs the scheduler, unless `maybe_yield` already has. If it found no runnable task, the time model gets to wake
+/// sleeping tasks, and the scheduler runs again if that made any of them runnable. Waking a task borrows the
+/// `ExecutionState`, so this can't happen inside `ExecutionState::schedule`.
+fn schedule_waking_sleepers() -> Result<(), StepError> {
+    let nothing_runnable = ExecutionState::with(|state| {
+        state.schedule()?;
+        Ok(state.next_task == ScheduledTask::Finished && !state.any_runnable())
+    })?;
+    if !nothing_runnable {
+        return Ok(());
+    }
+
+    wake_sleepers_until_runnable();
+    ExecutionState::with(|state| {
+        if !state.any_runnable() {
+            return Ok(());
+        }
+        // Take back the decision to finish the execution, which counted as a context switch.
+        state.next_task = ScheduledTask::None;
+        state.context_switches -= 1;
+        state.schedule()
+    })
+}
+
 impl Execution {
     /// Run a function to be tested, taking control of scheduling it and any tasks it might spawn.
     /// This function runs until `f` and all tasks spawned by `f` have terminated, or until the
@@ -174,7 +245,11 @@ impl Execution {
     where
         F: FnOnce() + Send + 'static,
     {
-        let state = RefCell::new(ExecutionState::new(config.clone(), Rc::clone(&self.scheduler)));
+        let state = RefCell::new(ExecutionState::new(
+            config.clone(),
+            Rc::clone(&self.scheduler),
+            Rc::clone(&self.time_model),
+        ));
 
         init_panic_hook(config.clone());
         CurrentSchedule::init(self.initial_schedule.clone());
@@ -358,6 +433,7 @@ impl Execution {
     #[inline]
     fn run_to_completion(&mut self, immediately_return_on_panic: bool) -> Result<(), StepError> {
         loop {
+            schedule_waking_sleepers()?;
             let next_step: Option<Rc<RefCell<PooledContinuation>>> = ExecutionState::with(|state| {
                 state.schedule()?;
                 state.advance_to_next_task();
@@ -506,6 +582,14 @@ pub struct ExecutionState {
     // schedules nothing, and doesn't maintain this: see `tear_down`. It also lets a finished task
     // stand in for a while: see `Task::stand_in`.)
     live_tasks: Vec<TaskId>,
+
+    // Counter for unique timer ids, one per Sleep (each Timeout and Interval has one Sleep)
+    pub(crate) timer_id_counter: u64,
+    // Timers can outlive an execution, but their ids must not refer to timers in a later one.
+    pub(crate) timer_context: Arc<()>,
+    pub(crate) time_model: Rc<RefCell<dyn TimeModel>>,
+    // Set while the scheduler wakes expired timers, when no task is running (see `FiringTimers`).
+    pub(crate) firing_timers: bool,
 }
 
 impl std::fmt::Debug for ExecutionState {
@@ -773,7 +857,7 @@ pub enum ExecutionStateBorrowError {
 }
 
 impl ExecutionState {
-    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>) -> Self {
+    fn new(config: Config, scheduler: Rc<RefCell<dyn Scheduler>>, time_model: Rc<RefCell<dyn TimeModel>>) -> Self {
         let (top_level_dispatch, top_level_dispatch_global_ptr) = tracing::dispatcher::get_default(|dispatch| {
             // While no thread has a scoped default, `get_default` hands out the global default, and
             // nested calls get it too rather than `Dispatch::none()`.
@@ -801,6 +885,10 @@ impl ExecutionState {
             top_level_dispatch_global_ptr,
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
             live_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
+            time_model,
+            timer_id_counter: 0,
+            timer_context: Arc::new(()),
+            firing_timers: false,
         }
     }
 
@@ -1729,6 +1817,12 @@ impl ExecutionState {
     /// its execution.
     pub fn maybe_yield() -> bool {
         let decision = Self::with(|state| {
+            // A waker the scheduler calls while it wakes timers runs outside of any task, so there is no task to
+            // switch away from.
+            if state.firing_timers {
+                return Ok(false);
+            }
+
             if state.teardown.is_some() {
                 return state.maybe_yield_in_teardown();
             }
@@ -2031,6 +2125,11 @@ impl ExecutionState {
     #[track_caller]
     pub fn new_resource_signature(resource_type: ResourceType) -> ResourceSignature {
         ExecutionState::with(|s| s.current_mut().signature.new_resource(resource_type))
+    }
+
+    /// Whether any task is runnable. Only live tasks are checked, as a finished task never runs again.
+    fn any_runnable(&self) -> bool {
+        self.live_tasks.iter().any(|id| self.tasks[id.0].runnable())
     }
 
     pub fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
