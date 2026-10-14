@@ -418,25 +418,41 @@ unsafe impl Send for PooledContinuation {}
 /// operation `Y1`, it suffices to check that `Y1` commutes with all operations `Z` on the same resource,
 /// as operations on other resources should commute trivially.
 #[track_caller]
+#[inline]
 pub fn switch() {
-    crate::annotations::record_tick();
     trace!("switch from {}", Location::caller());
-    if ExecutionState::maybe_yield() {
-        match suspend() {
-            ContinuationInput::Exit => panic!("unexpected exit continuation"),
-            ContinuationInput::Resume => {}
-            ContinuationInput::Cancel => unreachable!("only a task that is between polls is cancelled"),
-        }
+    match scheduling_point() {
+        ContinuationInput::Resume => {}
+        ContinuationInput::Exit => panic!("unexpected exit continuation"),
+        ContinuationInput::Cancel => unreachable!("only a task that is between polls is cancelled"),
     }
 }
 
 /// Like `switch`, for the loop that polls a future task's future (see `Task::from_future`), between
 /// two polls. Returns true if execution teardown cancelled the task while it was switched out (see
 /// `Continuation::cancel`), in which case the loop drops the future instead of polling it again.
+#[inline]
 pub(crate) fn switch_between_polls() -> bool {
-    crate::annotations::record_tick();
     trace!("switch between polls");
-    ExecutionState::maybe_yield() && suspend() == ContinuationInput::Cancel
+    scheduling_point() == ContinuationInput::Cancel
+}
+
+/// The scheduling point that `switch` and `switch_between_polls` share: run the scheduler, and
+/// suspend the current task if it chose another. Returns what the task is resumed with if it was
+/// suspended, and `Resume` if it continues without being suspended.
+///
+/// This is the one copy of `ExecutionState::maybe_yield`, which is inlined here, so that bookkeeping
+/// done at every scheduling point lives in one place. With a copy in each kind of scheduling point,
+/// the compiler stops inlining the `ExecutionState::with` inside it, and every scheduling point pays
+/// for the calls.
+#[inline(never)]
+fn scheduling_point() -> ContinuationInput {
+    crate::annotations::record_tick();
+    if ExecutionState::maybe_yield() {
+        suspend()
+    } else {
+        ContinuationInput::Resume
+    }
 }
 
 /// Suspend the current task's continuation, and return what it is resumed with.
