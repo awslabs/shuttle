@@ -1731,6 +1731,10 @@ impl ExecutionState {
     /// Invoke the scheduler to decide which task to schedule next. Returns true if the chosen task
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
+    ///
+    /// Scheduling points call this through `thread::continuation::scheduling_point`, the one place it
+    /// is inlined into.
+    #[inline(always)]
     pub fn maybe_yield() -> bool {
         let decision = Self::with(|state| {
             if state.teardown.is_some() {
