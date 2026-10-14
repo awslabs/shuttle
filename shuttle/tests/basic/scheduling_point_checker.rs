@@ -2,11 +2,17 @@
 //! when a step accesses two shared resources, at least one of them for writing, with no scheduling
 //! point in between. The checker is on with the `check-scheduling-points` feature.
 
-use shuttle::sync::{ResourceSignature, ResourceType};
+use shuttle::future::batch_semaphore::{Acquire, BatchSemaphore, Fairness};
+use shuttle::future::block_on;
+use shuttle::sync::atomic::{AtomicBool, Ordering};
+use shuttle::sync::{Arc, ResourceSignature, ResourceType};
 use shuttle::{check_dfs, thread};
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::thread::switch;
 use shuttle_engine::AccessKind;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 /// A stand-in for a primitive with its own shared state, which reports its accesses to the checker.
 struct Resource {
@@ -183,6 +189,74 @@ fn accesses_in_different_tasks_pass() {
                 handle.join().unwrap();
             }
             b.write();
+        },
+        None,
+    );
+}
+
+/// A first poll of an `Acquire` of an unfair semaphore that has to block takes no scheduling point
+/// before it blocks, because blocking commutes with every other operation on the semaphore. So it
+/// can share a step with the task's previous operation, here the store.
+#[test]
+fn unfair_acquire_that_blocks_shares_step_with_previous_operation() {
+    check_dfs(
+        || {
+            let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::Unfair));
+            let flag = Arc::new(AtomicBool::new(false));
+            semaphore.acquire_blocking(1).unwrap();
+            let handle = {
+                let semaphore = Arc::clone(&semaphore);
+                let flag = Arc::clone(&flag);
+                thread::spawn(move || {
+                    flag.store(true, Ordering::SeqCst);
+                    semaphore.acquire_blocking(1).unwrap();
+                    semaphore.release(1);
+                })
+            };
+            semaphore.release(1);
+            handle.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// A future that stores to `flag`, and then polls `acquire`, in one poll.
+struct StoreThenAcquire<'a> {
+    flag: &'a AtomicBool,
+    acquire: Pin<Box<Acquire<'a>>>,
+}
+
+impl Future for StoreThenAcquire<'_> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.flag.store(true, Ordering::SeqCst);
+        self.acquire.as_mut().poll(cx).map(|result| result.unwrap())
+    }
+}
+
+/// Once `release` has granted a fair semaphore's permits to a waiter, the poll that finds them is
+/// not an operation on the semaphore: no other operation can take them back. So it can share a
+/// step with the task's previous operation, here the store.
+#[test]
+fn poll_of_granted_acquire_shares_step_with_previous_operation() {
+    check_dfs(
+        || {
+            let semaphore = Arc::new(BatchSemaphore::new(1, Fairness::StrictlyFair));
+            semaphore.acquire_blocking(1).unwrap();
+            let handle = {
+                let semaphore = Arc::clone(&semaphore);
+                thread::spawn(move || {
+                    let flag = AtomicBool::new(false);
+                    block_on(StoreThenAcquire {
+                        flag: &flag,
+                        acquire: Box::pin(semaphore.acquire(1)),
+                    });
+                    semaphore.release(1);
+                })
+            };
+            semaphore.release(1);
+            handle.join().unwrap();
         },
         None,
     );
