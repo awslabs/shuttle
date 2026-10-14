@@ -169,7 +169,7 @@ pub struct LocalKey<T: 'static> {
     // The slot that a scope's value is moved into while the running Shuttle task polls the scope.
     // Every Shuttle task has its own, which Shuttle destroys after the task's other thread-locals.
     #[doc(hidden)]
-    pub task_slot: &'static shuttle::thread::DestroyedLastKey<RefCell<Option<T>>>,
+    pub task_slot: &'static shuttle_engine::thread_support::DestroyedLastKey<RefCell<Option<T>>>,
     // The slot used instead whenever Shuttle has no current task or is updating its own state:
     // outside of a Shuttle test, and while it updates its own state (see the module docs). It is
     // what tokio uses all the time, and is as sound here as it is there, since only one thing runs

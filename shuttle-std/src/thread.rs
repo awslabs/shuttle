@@ -406,7 +406,3 @@ impl Builder {
 }
 
 pub use shuttle_engine::thread_support::{AccessError, LocalKey};
-
-// For `shuttle-tokio`'s task-locals; see `DestroyedLastKey`.
-#[doc(hidden)]
-pub use shuttle_engine::thread_support::DestroyedLastKey;

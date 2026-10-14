@@ -456,8 +456,8 @@ mod thread_local {
         use std::cell::Cell;
         use std::marker::PhantomData;
 
-        static DESTROYED_LAST: shuttle::thread::DestroyedLastKey<Cell<u32>> =
-            shuttle::thread::DestroyedLastKey::new(|| Cell::new(1));
+        static DESTROYED_LAST: shuttle_engine::thread_support::DestroyedLastKey<Cell<u32>> =
+            shuttle_engine::thread_support::DestroyedLastKey::new(|| Cell::new(1));
         static DESTROYED_IN_ORDER: LocalKey<Cell<u32>> = LocalKey {
             init: || Cell::new(2),
             _p: PhantomData,

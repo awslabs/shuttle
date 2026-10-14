@@ -58,10 +58,11 @@ pin-project-lite = "0.2.11"
 regex = "1.10.1"
 # 0.9.7 is the first `shuttle` with `current::try_get_current_task`, which `task_local!` uses. It is
 # also built on `shuttle-engine`, as 0.9.0 and 0.9.1 are not: with those, the `shuttle-engine` below
-# would be a second engine, which never runs, and `Notify::notified` would panic in `switch`.
+# would be a second engine, which never runs, so `Notify::notified` and task-locals would panic.
 shuttle = { version = "0.9.7", path = "../../../../../shuttle" }
 # For `runtime::thread::switch`, a scheduling point that, unlike `shuttle::thread::yield_now`,
-# doesn't wake the current task.
+# doesn't wake the current task, and for `thread_support::DestroyedLastKey`, the thread-local that
+# `task_local!` keeps each task's values in.
 shuttle-engine = { version = "0.1.5", path = "../../../../../shuttle-engine" }
 smallvec = "1.6.1"
 test-log = { version = "0.2.11", default-features = false, features = [
