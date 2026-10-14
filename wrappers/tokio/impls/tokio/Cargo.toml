@@ -74,7 +74,9 @@ windows-sys = ["tokio-orig/windows-sys", "shuttle-tokio-impl-inner/windows-sys"]
 [dependencies]
 cfg-if = "1.0"
 tokio-orig = { package = "tokio", version = "1.43" }
-shuttle-tokio-impl-inner = { version = "0.2.0", path = "./inner" }
+# 0.1.5 is the first inner with its own `task_local!`, which this crate no longer shadows with
+# tokio's.
+shuttle-tokio-impl-inner = { version = "0.1.5", path = "./inner" }
 
 [dev-dependencies]
 shuttle = { version = "0.9", path = "../../../../shuttle" }
