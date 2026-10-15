@@ -1,7 +1,8 @@
 use serde_json::Value;
+use shuttle::annotations::WithName;
 use shuttle::scheduler::{AnnotationScheduler, RoundRobinScheduler};
-use shuttle::sync::Mutex;
-use shuttle::{current, thread, Runner};
+use shuttle::sync::{mpsc, Mutex};
+use shuttle::{current, future, thread, Runner};
 use std::sync::Arc;
 
 /// Two tasks contending on a mutex, so the annotated schedule contains task creation
@@ -163,5 +164,86 @@ fn annotation_records_events() {
         "SemaphoreRelease",
     ] {
         assert!(kinds.contains(expected), "expected a {expected} event, got {kinds:?}");
+    }
+}
+
+/// Events from unfinished tasks' destructors and static destructors carry the task and clock
+/// of the destructor, even though teardown runs without the scheduler.
+#[test]
+fn teardown_annotations_follow_task_and_clock() {
+    type Snapshots = Arc<std::sync::Mutex<Vec<(usize, Vec<u32>, Vec<u32>)>>>;
+
+    struct TraceOnDrop(Snapshots);
+
+    impl Drop for TraceOnDrop {
+        fn drop(&mut self) {
+            let task = usize::from(current::me());
+            let before = current::clock().to_vec();
+            let mutex = Mutex::new(()).with_name(&format!("teardown-{task}"));
+            let guard = mutex.lock().unwrap();
+            let acquired = current::clock().to_vec();
+            drop(guard);
+            self.0.lock().unwrap().push((task, before, acquired));
+        }
+    }
+
+    shuttle::lazy_static! {
+        static ref STATIC: std::sync::Mutex<Option<TraceOnDrop>> = std::sync::Mutex::new(None);
+    }
+
+    let snapshots = Snapshots::default();
+    let observed = snapshots.clone();
+    let schedule = annotated(move || {
+        *STATIC.lock().unwrap() = Some(TraceOnDrop(observed.clone()));
+        for _ in 0..2 {
+            let observed = observed.clone();
+            let (started_tx, started_rx) = mpsc::channel();
+            drop(future::spawn_local(async move {
+                let _trace = TraceOnDrop(observed);
+                started_tx.send(()).unwrap();
+                std::future::pending::<()>().await;
+            }));
+            started_rx.recv().unwrap();
+        }
+    });
+
+    let snapshots = snapshots.lock().unwrap();
+    assert_eq!(
+        snapshots.iter().map(|(task, _, _)| *task).collect::<Vec<_>>(),
+        vec![1, 2, 0],
+        "tasks are torn down in order, then the static runs as the main thread"
+    );
+    let objects = schedule["objects"].as_array().unwrap();
+    let events = schedule["events"].as_array().unwrap();
+    for (task, before, acquired) in snapshots.iter() {
+        let object_id = objects
+            .iter()
+            .position(|object| object["name"] == format!("teardown-{task}"))
+            .expect("the destructor created a named mutex");
+        assert_eq!(objects[object_id]["created_by"], *task);
+        for (kind, clock) in [
+            ("SemaphoreCreated", before),
+            ("SemaphoreAcquireFast", acquired),
+            ("SemaphoreRelease", acquired),
+        ] {
+            let matching = events
+                .iter()
+                .filter(|event| {
+                    let Some(payload) = event[2].get(kind) else {
+                        return false;
+                    };
+                    let id = if kind == "SemaphoreCreated" {
+                        payload.as_u64()
+                    } else {
+                        payload[0].as_u64()
+                    };
+                    id == Some(object_id as u64)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1, "expected one {kind} for task {task}");
+            assert_eq!(matching[0][0], *task, "{kind} has the wrong task");
+            assert_eq!(matching[0][3], serde_json::json!(clock), "{kind} has the wrong clock");
+            assert!(matching[0][4].is_null(), "teardown does not schedule runnable tasks");
+        }
     }
 }
