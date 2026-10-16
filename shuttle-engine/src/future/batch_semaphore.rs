@@ -2,7 +2,7 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::task::{clock::VectorClock, TaskId};
 use crate::runtime::thread;
-use crate::sync_types::{ResourceSignature, ResourceType};
+use crate::sync_types::{AccessKind, ResourceSignature, ResourceType};
 use crate::{backtrace_enabled, current};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -477,7 +477,6 @@ fn unblock_unless_stale(waiter: &Waiter) -> bool {
 pub struct BatchSemaphore {
     state: RefCell<BatchSemaphoreState>,
     fairness: Fairness,
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -571,6 +570,8 @@ impl BatchSemaphore {
     /// holds the semaphore (see [`BatchSemaphore::acquire_reserving`]), this is
     /// zero: the available permits are kept for the holder.
     pub fn available_permits(&self) -> usize {
+        // TODO: Report this read to the scheduling-point checker (see `record_access`) once queries
+        // take a scheduling point before they read the state, which is still open (see #262).
         let state = self.state.borrow();
         state.available()
     }
@@ -591,6 +592,7 @@ impl BatchSemaphore {
 
     /// Closes the semaphore without invoking `thread::switch`
     pub fn close_no_scheduling_point(&self) {
+        self.record_access(AccessKind::Write);
         self.init_object_id();
         let mut state = self.state.borrow_mut();
         if state.closed {
@@ -626,6 +628,8 @@ impl BatchSemaphore {
 
     /// Returns true iff the semaphore is closed.
     pub fn is_closed(&self) -> bool {
+        // TODO: Report this read to the scheduling-point checker (see `record_access`) once queries
+        // take a scheduling point before they read the state, which is still open (see #262).
         let state = self.state.borrow();
         state.closed
     }
@@ -636,6 +640,7 @@ impl BatchSemaphore {
     /// If there aren't enough permits, returns `Err(TryAcquireError::NoPermits)`
     pub fn try_acquire(&self, num_permits: usize) -> Result<(), TryAcquireError> {
         thread::switch();
+        self.record_access(AccessKind::Write);
 
         self.init_object_id();
         let mut state = self.state.borrow_mut();
@@ -853,6 +858,7 @@ impl BatchSemaphore {
         if num_permits == 0 {
             return;
         }
+        self.record_access(AccessKind::Write);
 
         let mut state = self.state.borrow_mut();
 
@@ -957,6 +963,7 @@ impl BatchSemaphore {
         assert!(permits_to_be_held > permits_currently_held);
 
         thread::switch();
+        self.record_access(AccessKind::Write);
 
         self.init_object_id();
         let num_permits = permits_to_be_held - permits_currently_held;
@@ -1260,8 +1267,24 @@ impl Future for Acquire<'_> {
         // Thus we apply the double-yield optimization for *unfair* semaphores only
         let blocking_is_not_commutative = self.semaphore.fairness == Fairness::StrictlyFair;
 
-        if self.never_polled && (will_succeed || blocking_is_not_commutative) {
+        let switched = self.never_polled && (will_succeed || blocking_is_not_commutative);
+        if switched {
             thread::switch();
+        }
+        // The rest of this poll counts as an operation on the semaphore, so we report a write
+        // access to the checker, unless one of two cases exempts it:
+        //
+        //   1. `has_permits()`: the permits were granted by an earlier `release` and are already
+        //      this acquire's. No other operation can take them away, so observing them here is
+        //      not an operation on the shared state.
+        //
+        //   2. A first poll that skipped the scheduling point above (`never_polled && !switched`):
+        //      it only blocks, and by the reasoning above blocking commutes with every other
+        //      operation on the semaphore, so it is not an operation either.
+        //
+        // The `will_succeed` read above does not count: it only decides whether to switch.
+        if !self.has_permits() && (switched || !self.never_polled) {
+            self.semaphore.record_access(AccessKind::Write);
         }
         self.never_polled = false;
 
@@ -1270,7 +1293,7 @@ impl Future for Acquire<'_> {
             self.completed = true;
             trace!("Acquire::poll for {:?} with permits", self);
             Poll::Ready(Ok(()))
-        } else if self.semaphore.is_closed() {
+        } else if self.semaphore.state.borrow().closed {
             assert!(!self.is_queued());
             self.completed = true;
             trace!("Acquire::poll for {:?} with closed", self);
@@ -1417,6 +1440,7 @@ impl Drop for Acquire<'_> {
         trace!("Acquire::drop for {:?}", self);
         if self.is_queued() {
             // If the associated waiter is in the wait list, remove it
+            self.semaphore.record_access(AccessKind::Write);
             let waiter = self
                 .waiter
                 .clone()
@@ -1425,6 +1449,7 @@ impl Drop for Acquire<'_> {
         } else if self.is_reserving() {
             // If the acquire holds the reservation, end it, so that it does not
             // keep the permits from other requests.
+            self.semaphore.record_access(AccessKind::Write);
             let waiter = self
                 .waiter
                 .clone()
@@ -1458,5 +1483,13 @@ impl BatchSemaphore {
     /// Returns a reference to this semaphore's resource signature.
     pub fn signature(&self) -> &ResourceSignature {
         &self.signature
+    }
+
+    /// Report an access to this semaphore's state to the scheduling-point checker (see
+    /// `ExecutionState::record_access`).
+    #[inline(always)]
+    #[track_caller]
+    fn record_access(&self, kind: AccessKind) {
+        ExecutionState::record_access(&self.signature, kind);
     }
 }
