@@ -4,7 +4,6 @@ use shuttle_engine::current;
 use shuttle_engine::future::batch_semaphore::{BatchSemaphore, Fairness};
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::TaskId;
-use shuttle_engine::runtime::thread;
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -55,23 +54,22 @@ impl<T: ?Sized> Mutex<T> {
         trace!(holder=?state.holder, semaphore=?self.semaphore, "waiting to acquire mutex {:p}", self);
         drop(state);
 
-        if !self.semaphore.is_closed() {
-            // Detect deadlock due to re-entrancy.
-            state = self.state.borrow_mut();
-            assert!(
-                match &state.holder {
-                    Some(holder) => *holder != me,
-                    None => true,
-                },
-                "deadlock! task {me:?} tried to acquire a Mutex it already holds"
-            );
-            drop(state);
+        // Detect deadlock due to re-entrancy.
+        state = self.state.borrow_mut();
+        assert!(
+            match &state.holder {
+                Some(holder) => *holder != me,
+                None => true,
+            },
+            "deadlock! task {me:?} tried to acquire a Mutex it already holds"
+        );
+        drop(state);
 
-            self.semaphore.acquire_blocking(1).unwrap();
-        } else {
-            // we always need to allow for a context switch to make the previous event visible for completeness
-            thread::switch();
-        }
+        // The first poll of the acquire is the scheduling point before the lock operation. The
+        // acquire fails only if the semaphore is closed, which happens only if a release ran after
+        // the execution stopped (see `BatchSemaphore::release`). In that case, the lock is taken as
+        // if it were free, and the inner `std::sync::Mutex` reports whether it is poisoned.
+        let _ = self.semaphore.acquire_blocking(1);
 
         state = self.state.borrow_mut();
         assert!(state.holder.is_none());
