@@ -241,12 +241,30 @@ impl PermitsAvailable {
 /// The state that only a [`Fairness::ParkingLot`] semaphore keeps. It is allocated on first use,
 /// so that the semaphores of the other modes do not grow by it, and `const_new` can make one.
 struct ParkingLotState {
-    /// The waiters that a release woke to try again (see `Waiter::woken`).
+    /// The waiters that a release woke to try again, and that have not tried yet (see
+    /// `Waiter::woken`).
+    ///
+    /// A release takes the waiters that it wakes out of the queue, so that the queue holds exactly
+    /// the parked requests, as `parking_lot`'s does, and `has_waiters` is `PARKED_BIT`. The
+    /// eventual-fairness stand-in still needs them: every release and read that passes a woken
+    /// waiter counts as one of its overtakes (`Waiter::overtakes`), and one that has been overtaken
+    /// `Config::parking_lot_fairness_bound` times is let in, oldest request first. So a woken waiter
+    /// stays here until its `Acquire` tries again or is dropped, or its task finishes.
     woken: Vec<Arc<Waiter>>,
     /// The ticket of the next request to park (see `Waiter::ticket`).
     next_ticket: usize,
     /// The join of the clocks of the releases, the reservations given up and the close, which
-    /// [`BatchSemaphore::load_permits`] joins.
+    /// [`BatchSemaphore::load_permits`] joins, so that a read is causally after every event that
+    /// freed the permits it sees, as it is after every acquire (`PermitsAvailable::last_acquire`).
+    ///
+    /// `last_acquire` is not enough for that: a holder releases after it acquires, so a read that
+    /// sees the permits free again would only be after the acquire. A replay up to the read's clock
+    /// (see `ReplayScheduler::set_target_clock`) leaves out the events that are concurrent with that
+    /// clock, so it could leave out the release, and the replayed read would see the permits still
+    /// held and not reproduce the failure. Giving up a reservation and closing the semaphore change
+    /// what a read sees without a release, so they count too. Like the clock of a Shuttle atomic,
+    /// which joins every store, this joins every release, not only those whose permits are still
+    /// free.
     last_release: VectorClock,
     /// The join of the clocks of the changes to the queue: the parks, and the releases, reads and
     /// drops that took waiters out of it. `parking_lot` changes its queue only under the queue's
