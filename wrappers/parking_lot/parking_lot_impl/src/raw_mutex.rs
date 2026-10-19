@@ -14,12 +14,22 @@ use tracing::trace;
 /// The lock is modelled as a [`BatchSemaphore`] with a single permit: acquiring the lock takes the
 /// permit, releasing it returns the permit. All blocking happens through Shuttle's scheduler, so
 /// every lock/unlock is a scheduling point that Shuttle can explore.
+///
+/// The semaphore is a [`Fairness::ParkingLot`] one, which behaves like `parking_lot`'s `Mutex`
+/// (0.12.5, `raw_mutex.rs`). A plain unlock wakes the task that has waited longest and leaves the
+/// lock free, so a task that does not wait, including the one that unlocked, can take it first,
+/// and the woken task parks again, at the back of the queue, if it finds the lock taken. `unlock_fair`
+/// and `bump` hand the lock to the woken task instead. In place of `parking_lot`'s timer, which
+/// makes an unlock fair now and then, a woken task that has been overtaken
+/// [`Config::parking_lot_fairness_bound`](shuttle::Config::parking_lot_fairness_bound) times (2 by
+/// default) is handed the lock, so that no loop of unlocks can starve it. `try_lock`, like
+/// `parking_lot`'s, does not look at waiting tasks.
 #[derive(Debug)]
 pub struct RawMutex {
     semaphore: BatchSemaphore,
 }
 
-// Safety: `RawMutex` guarantees exclusivity because the underlying semaphore has exactly one permit,
+// SAFETY: `RawMutex` guarantees exclusivity because the underlying semaphore has exactly one permit,
 // so at most one context can hold the lock at a time.
 unsafe impl lock_api::RawMutex for RawMutex {
     // A "non-constant" const item is the legacy `lock_api` mechanism for supplying an initial value
@@ -28,7 +38,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
     // semaphore; the semaphore registers with the current Shuttle execution lazily on first use.
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: RawMutex = RawMutex {
-        semaphore: BatchSemaphore::const_new(1, Fairness::StrictlyFair),
+        semaphore: BatchSemaphore::const_new(1, Fairness::ParkingLot),
     };
 
     // Gated by `send_guard`; defined once as `crate::GuardMarker` (see `lib.rs`).
@@ -37,10 +47,15 @@ unsafe impl lock_api::RawMutex for RawMutex {
     fn lock(&self) {
         trace!("acquiring parking_lot mutex {:p}", self);
         self.semaphore.acquire_blocking(1).unwrap_or_else(|_| {
-            // The semaphore is never explicitly closed and we own it exclusively, so a closed
-            // semaphore here can only be observed while unwinding from a panic.
+            // The semaphore is never explicitly closed and we own it exclusively, so only an unlock
+            // made while a task panicked can have closed it, as for the `RwLock` (see "Panics and
+            // stopped executions" in `raw_rwlock.rs`). While a task unwinds, go on without the
+            // lock, so that a destructor that locks can finish.
             if !thread::panicking() {
-                unreachable!()
+                panic!(
+                    "this `Mutex` was closed by an unlock made while a task panicked, as Shuttle \
+                     models lock poisoning, and cannot be locked again"
+                );
             }
         });
         trace!("acquired parking_lot mutex {:p}", self);
@@ -54,13 +69,32 @@ unsafe impl lock_api::RawMutex for RawMutex {
         trace!("releasing parking_lot mutex {:p}", self);
         self.semaphore.release(1);
     }
+
+    /// `parking_lot`: `state & LOCKED_BIT != 0`. A read of the lock state with one scheduling point
+    /// and no effect (see `BatchSemaphore::load_permits`), unlike the `lock_api` default, which
+    /// takes the lock and unlocks it again: a concurrent `try_lock` could fail against that probe,
+    /// which `parking_lot` cannot show. A closed lock refuses every request, so it never looks free.
+    fn is_locked(&self) -> bool {
+        self.semaphore.load_permits() != Some(1)
+    }
 }
 
-// Safety: Shuttle's semaphore is strictly fair, so a plain `release` already hands the permit to the
-// next waiter in FIFO order. Fair unlocking is therefore identical to a normal unlock.
+// SAFETY: a fair unlock releases the same permit as a plain one. Handing it to the task that waits
+// longest, inside the release, only decides who gets the lock next.
 unsafe impl lock_api::RawMutexFair for RawMutex {
     unsafe fn unlock_fair(&self) {
         trace!("fair-releasing parking_lot mutex {:p}", self);
-        self.semaphore.release(1);
+        self.semaphore.release_fair(1);
+    }
+
+    /// `parking_lot` unlocks and locks again only while `PARKED_BIT` is set, that is, while a task
+    /// waits for the lock, and then hands the lock to that task. Otherwise the lock stays held. The
+    /// check is a load of the lock state, with one scheduling point.
+    unsafe fn bump(&self) {
+        if self.semaphore.load_permits().is_some() && self.semaphore.has_waiters() {
+            // SAFETY: the caller holds the lock.
+            unsafe { self.unlock_fair() };
+            lock_api::RawMutex::lock(self);
+        }
     }
 }
