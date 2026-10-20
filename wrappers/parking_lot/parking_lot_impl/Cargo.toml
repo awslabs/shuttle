@@ -39,3 +39,7 @@ shuttle = { path = "../../../shuttle", version = ">=0.9.8, <0.10", features = ["
 # on an unrelated PR. The failure message gives this cause. The weekly `beta` job in
 # `.github/workflows/crons.yml` also runs the test, and opens an issue when it fails.
 parking_lot = "0.12.5"
+# `tests/rwlock_reference_model.rs` reads and changes the park queues of `parking_lot`'s locks
+# directly. That needs the copy of `parking_lot_core` that `parking_lot` uses, which Cargo picks as
+# long as both ask for 0.9.
+parking_lot_core = "0.9.12"

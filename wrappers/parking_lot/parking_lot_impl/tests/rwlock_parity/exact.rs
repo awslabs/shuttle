@@ -42,6 +42,8 @@
 //!   tries every order.
 //! * Timed requests and the `bump` methods, which the programs do not use.
 //!
+//! `rwlock_reference_model` checks this model against the real `parking_lot`: the filter, on
+//! every queue of up to four requests, and the results of programs on OS threads.
 //! `rwlock_exact_parity` checks Shuttle's lock against it.
 //!
 //! # Overtakes, for Shuttle's fairness bound

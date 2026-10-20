@@ -65,7 +65,8 @@
 //! and the tables do not reach the panic. [`super::exact`] is a model of `parking_lot` with its
 //! queue. The test crate `rwlock_exact_parity` checks Shuttle's lock against it on the tables,
 //! where it also checks that the exact model has the outcomes of this explorer, and on programs
-//! whose outcomes depend on the queue, such as the deadlock above.
+//! whose outcomes depend on the queue, such as the deadlock above. `rwlock_reference_model` checks
+//! the exact model against the real `parking_lot` too.
 //!
 //! # Values
 //!

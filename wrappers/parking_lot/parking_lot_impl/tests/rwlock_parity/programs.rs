@@ -1,6 +1,6 @@
-//! The programs on which Shuttle's lock is checked against the exact model (`super::exact`) in
-//! `rwlock_exact_parity`: queue scenarios, in which requests park behind the lock, and random
-//! programs.
+//! The programs on which the exact model (`super::exact`) is checked, against Shuttle in
+//! `rwlock_exact_parity` and against the real `parking_lot` in `rwlock_reference_model`: queue
+//! scenarios, in which requests park behind the lock, and random programs.
 //!
 //! A program has one list of ops for each task, as in the parity tables (see `super::harness`):
 //! task 0 runs its first op, starts the other tasks, and then runs the rest of its ops. Only task 0

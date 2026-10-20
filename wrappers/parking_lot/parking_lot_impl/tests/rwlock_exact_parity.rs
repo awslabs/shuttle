@@ -23,7 +23,8 @@
 //! The model explores every schedule of a program, and the harness runs every schedule of it under
 //! Shuttle's DFS scheduler (see `rwlock_parity::harness`), several programs at a time. Run with
 //! `--nocapture` to see how many programs deadlock, and in how many the fairness bound leaves
-//! outcomes out (see below).
+//! outcomes out (see below). `rwlock_reference_model` checks the model against the real
+//! `parking_lot`.
 //!
 //! # What must match
 //!

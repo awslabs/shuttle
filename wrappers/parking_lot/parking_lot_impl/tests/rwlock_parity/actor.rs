@@ -120,10 +120,20 @@ impl<'a, R: RawLock> Actor<'a, R> {
     /// Runs the task's next op, `op`. For `Signal` and `AwaitSignal`, the caller sends or receives
     /// first (see [`Guard::apply`]).
     pub fn step(&mut self, op: Op) {
+        self.step_with(op, Guard::apply);
+    }
+
+    /// [`Actor::step`], but runs `op` with `apply` in place of [`Guard::apply`], for example with
+    /// timed requests. Returns what `apply` returns besides the guard.
+    pub fn step_with(
+        &mut self,
+        op: Op,
+        apply: impl FnOnce(Guard<'a, R>, &'a RwLock<R, u8>, Op) -> (Guard<'a, R>, Option<bool>),
+    ) -> Option<bool> {
         // The value rule of the reference model: record the value after each lock op that leaves the
         // task holding the lock, then add 1 on getting exclusive access.
         let was_exclusive = matches!(self.guard, Guard::Write(_));
-        let (guard, ok) = std::mem::replace(&mut self.guard, Guard::Nothing).apply(self.lock, op);
+        let (guard, ok) = apply(std::mem::replace(&mut self.guard, Guard::Nothing), self.lock, op);
         self.guard = guard;
         self.tries.extend(ok.map(|ok| (self.pc, ok)));
         if op.is_lock_op() {
@@ -135,5 +145,6 @@ impl<'a, R: RawLock> Actor<'a, R> {
             }
         }
         self.pc += 1;
+        ok
     }
 }
