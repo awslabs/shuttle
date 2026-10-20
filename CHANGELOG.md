@@ -1,3 +1,7 @@
+# Unreleased
+
+* Fix `shuttle-parking_lot`'s `RwLock` blocking plain readers when a second upgradable reader waits behind an existing upgradable read. Upgradable reads use the new `BatchSemaphore::acquire_bypassable`, so `read` and `try_read` can take available permits while the second upgradable read waits.
+
 # 0.9.7 (October 14, 2026)
 
 * Implement `task_local!` in `shuttle-tokio`, with `task::LocalKey` and `task::futures::TaskLocalFuture`. `shuttle-tokio` used to re-export tokio's, which keeps a scope's value in a thread-local that every Shuttle task shares, so tasks saw each other's values. Each task now sees only the values of its own scopes, as in tokio, so a test that read a task-local outside of its own scope, such as in a task spawned from inside one, no longer passes by accident. Requires `shuttle` 0.9.7. (#380)

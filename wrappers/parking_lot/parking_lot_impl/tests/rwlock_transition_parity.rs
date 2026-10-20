@@ -29,40 +29,12 @@ use rwlock_parity::harness::Kind::*;
 use rwlock_parity::harness::{KnownDivergence, QUEUED, REQUESTED, Scenario, TRANSITIONS, check_table, describe};
 use rwlock_parity::reference::Op::{self, *};
 
-/// Each entry is explained by the same cause as the known divergences of `rwlock_admission_parity`:
-/// Shuttle's strictly fair `BatchSemaphore` refuses a plain read while a waiter is queued, and
-/// `parking_lot` refuses a plain read only while `WRITER_BIT` is set.
-///
-/// * `downgrade_to_upgradable`, `hold`: after the downgrade the main task holds an upgradable read.
-///   A queued `write` or `upgradable_read` is at the head of Shuttle's queue, and no request can pass
-///   it (`BatchSemaphoreState` invariant 1), so the plain read waits for ever. `parking_lot` admits
-///   the read at once.
-/// * `downgrade_upgradable` with a queued `upgradable_read`: before the downgrade, the main task
-///   holds an upgradable read and the second task waits for one. This is the admission divergence of
-///   `rwlock_admission_parity`, in its `try_read` form. It happens in both variants, because the
-///   `try_read` can come before the main task unlocks.
-const KNOWN_DIVERGENCES: &[KnownDivergence] = &[
-    KnownDivergence {
-        scenario: "write+downgrade_to_upgradable | hold | upgradable_read | read",
-        kinds: &[FalseDeadlock],
-    },
-    KnownDivergence {
-        scenario: "write+downgrade_to_upgradable | hold | write | read",
-        kinds: &[FalseDeadlock],
-    },
-    KnownDivergence {
-        scenario: "write+downgrade_to_upgradable | hold | upgradable_read+upgrade | read",
-        kinds: &[FalseDeadlock],
-    },
-    KnownDivergence {
-        scenario: "upgradable_read+downgrade_upgradable | release | upgradable_read | try_read",
-        kinds: &[TryResults, ShuttleOnlyValues],
-    },
-    KnownDivergence {
-        scenario: "upgradable_read+downgrade_upgradable | hold | upgradable_read | try_read",
-        kinds: &[TryResults, ShuttleOnlyValues],
-    },
-];
+/// After `downgrade_to_upgradable`, a queued writer still blocks plain readers in Shuttle, as in
+/// `rwlock_admission_parity`. In `parking_lot` the writer has not set `WRITER_BIT`, so readers enter.
+const KNOWN_DIVERGENCES: &[KnownDivergence] = &[KnownDivergence {
+    scenario: "write+downgrade_to_upgradable | hold | write | read",
+    kinds: &[FalseDeadlock],
+}];
 
 #[test]
 fn transition_parity_upgrade() {
