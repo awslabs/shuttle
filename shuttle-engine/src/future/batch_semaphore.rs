@@ -265,10 +265,11 @@ struct BatchSemaphoreState {
 
     // Key invariants:
     //
-    // (1) if `waiters` is nonempty and the head waiter is `H`,
-    // then `H.num_permits > permits_available.available()`.  (In other words,
-    // we are never in a state where there are enough permits available for the
-    // first waiter.  This invariant is ensured by the `drop` handler below.)
+    // (1) On a strictly fair semaphore, every waiter W up to and including the
+    // first non-bypassable waiter (or every waiter if all are bypassable) satisfies
+    // W.num_permits > permits_available.available(). Releases and cancellations
+    // maintain this via `unblock_waiters_from_front`, which skips bypassable
+    // waiters that lack permits instead of stopping at them.
     //
     // (2) W is in waiters iff W.is_queued
     //
