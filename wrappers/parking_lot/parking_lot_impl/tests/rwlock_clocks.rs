@@ -7,7 +7,7 @@
 
 use shuttle::{check_dfs, current, thread};
 use shuttle_parking_lot_impl::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 fn me() -> usize {
@@ -336,6 +336,67 @@ fn failed_try_read_is_after_the_reserving_writer() {
             other.join().unwrap();
         },
         None,
+    );
+}
+
+/// A `try_write` that fails on a free lock, because a writer is parked (`PARKED_BIT`, see
+/// `try_write_fails_on_a_free_lock_while_a_writer_is_parked` in `tests/rwlock_unfair.rs`), is after
+/// the writers that parked: the failure joins the clocks of the changes to the queue, as a load of
+/// `PARKED_BIT` is after the parks that set it. Without these edges,
+/// `ReplayScheduler::set_target_clock` could not replay the failure, because it would leave out the
+/// writers' requests. Two writers park behind the main task's write lock, its unlock wakes only the
+/// one that parked first, and another task's `try_write` then finds the lock free, with the other
+/// writer parked. That task did not unlock, so only the queue can make it after the writers. Both
+/// writers have parked by then, and the test checks one of them, which stores to a Shuttle atomic
+/// first, so that its clock has an event of its own when it asks for the lock (an event of the
+/// other writer too would make DFS explore three times as many schedules, and a Shuttle mutex, as
+/// in the tests above, more). The tasks count the holders of the lock with a `std` atomic, which
+/// each updates with no scheduling point between it and the lock or the unlock.
+#[test]
+fn failed_try_write_is_after_the_parked_writer() {
+    static REFUSED: AtomicBool = AtomicBool::new(false);
+    check_dfs(
+        || {
+            let lock = Arc::new(RwLock::new(()));
+            let holders = Arc::new(AtomicUsize::new(1));
+            let write = lock.write();
+            let writers = [false, true].map(|event| {
+                let (lock, holders) = (Arc::clone(&lock), Arc::clone(&holders));
+                thread::spawn(move || {
+                    if event {
+                        shuttle::sync::atomic::AtomicBool::new(false).store(true, Ordering::SeqCst);
+                    }
+                    let write = lock.write();
+                    holders.fetch_add(1, Ordering::SeqCst);
+                    drop(write);
+                    holders.fetch_sub(1, Ordering::SeqCst);
+                })
+            });
+            let checked_writer = usize::from(writers[1].thread().id());
+            let other = {
+                let (lock, holders) = (Arc::clone(&lock), Arc::clone(&holders));
+                thread::spawn(move || {
+                    if lock.try_write().is_none() && holders.load(Ordering::SeqCst) == 0 {
+                        REFUSED.store(true, Ordering::Relaxed);
+                        assert!(
+                            after(checked_writer),
+                            "a try_write that a parked writer made fail is not after the writers that parked"
+                        );
+                    }
+                })
+            };
+            drop(write);
+            holders.fetch_sub(1, Ordering::SeqCst);
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            other.join().unwrap();
+        },
+        None,
+    );
+    assert!(
+        REFUSED.load(Ordering::Relaxed),
+        "no schedule had a try_write fail on a free lock"
     );
 }
 
