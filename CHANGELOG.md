@@ -1,6 +1,8 @@
-# Unreleased
+# 0.9.8 (October 20, 2026)
 
-* Fix `shuttle-parking_lot`'s `RwLock` blocking plain readers when a second upgradable reader waits behind an existing upgradable read. Upgradable reads use the new `BatchSemaphore::acquire_bypassable`, so `read` and `try_read` can take available permits while the second upgradable read waits.
+* Fix `shuttle-parking_lot`'s `RwLock` blocking plain readers when a second upgradable reader waits behind an existing upgradable read. Upgradable reads use the new `BatchSemaphore::acquire_bypassable`, so `read` and `try_read` can take available permits while the second upgradable read waits. (#400)
+
+* Publish `shuttle-engine` 0.1.6, `shuttle` 0.9.8 and `shuttle-parking_lot-impl` 0.1.3. `shuttle` now requires `shuttle-engine` 0.1.6, and the parking_lot implementation requires `shuttle` 0.9.8 or later, so updating the implementation also brings in the new semaphore API. `shuttle-parking_lot` stays at 0.12.5 and picks up the fix through its existing `^0.1.0` implementation dependency.
 
 # 0.9.7 (October 14, 2026)
 
