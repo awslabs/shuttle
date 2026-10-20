@@ -207,6 +207,12 @@ pub fn check_table(headers: &[&str], scenarios: Vec<Scenario>, known: &[KnownDiv
 /// because each deadlock is a result here, not a failure. Shuttle and the default panic hook still
 /// print some lines to stderr for each deadlock, which `--nocapture` shows.
 pub fn run_shuttle(programs: &[Vec<Op>]) -> Outcome {
+    run_shuttle_with(programs, Config::new())
+}
+
+/// [`run_shuttle`] with `config`, for example with another `parking_lot_fairness_bound`. Failing
+/// schedules are never persisted.
+pub fn run_shuttle_with(programs: &[Vec<Op>], mut config: Config) -> Outcome {
     let try_results = Arc::new(StdMutex::new(BTreeSet::new()));
     let values = Arc::new(StdMutex::new(BTreeSet::new()));
     let overlap = Arc::new(AtomicBool::new(false));
@@ -217,7 +223,6 @@ pub fn run_shuttle(programs: &[Vec<Op>]) -> Outcome {
         let values = Arc::clone(&values);
         let overlap = Arc::clone(&overlap);
         panic::catch_unwind(AssertUnwindSafe(move || {
-            let mut config = Config::new();
             config.failure_persistence = FailurePersistence::None;
             Runner::new(DfsScheduler::new(None, false), config).run(move || {
                 let lock = Arc::new(RwLock::new(0u8));

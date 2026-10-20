@@ -25,43 +25,47 @@
 //! leave. The explorer calls this [`Holding::WriterPending`]. This is how a waiting writer blocks
 //! new readers in `parking_lot`: it takes `WRITER_BIT` before it waits.
 //!
-//! # Why the model does not need the order in which `parking_lot` wakes tasks
+//! # What the explorer shows, and what it cannot
 //!
-//! The explorer lets any task whose rule passes take the next step, in every order. `parking_lot`
-//! parks blocked tasks and wakes them in a fixed order, but that does not remove any of these
-//! orders. A request that `parking_lot` refuses changes no bits except `PARKED_BIT` (the writer
-//! after step 1 is the exception, and the model has it as `WriterPending`). So for any order that the
-//! explorer tries, `parking_lot` can give the same order: the OS delays each blocked thread until the
-//! moment the explorer grants its request. A fair hand-off also grants only requests that pass these
-//! rules. So every order of the explorer is one that `parking_lot` can give. The converse holds for
-//! the programs of the parity tables, but not in general: a task that `parking_lot` parks runs again
-//! only when an unlock wakes it, which is not always when its rule passes. An unlock can leave a
-//! reader parked that an upgradable reader, which takes the lock later, would admit, and then
-//! nothing wakes the reader (`stranded_reader` in `tests/rwlock_unfair.rs`). The explorer has no
-//! queue, so it does not have those states. The test crate `rwlock_reference_model` checks the
-//! rules above against the real `parking_lot`.
+//! The explorer lets any task whose rule passes take the next step, in every order. Each of these
+//! orders is one that `parking_lot` can give. A request that `parking_lot` refuses changes no bits
+//! except `PARKED_BIT` (the writer after step 1 is the exception, and the model has it as
+//! `WriterPending`), and the OS can delay each thread until the moment the explorer grants its
+//! request, so that the thread never parks. A fair hand-off also grants only requests that pass
+//! these rules. So each outcome of the explorer is an outcome of `parking_lot`, and a lock that
+//! does not reach all of them leaves out behavior of `parking_lot`. The test crate
+//! `rwlock_reference_model` checks the rules above against the real `parking_lot`.
 //!
-//! For the same reason, [`Op::UnlockFair`] (`parking_lot`'s `unlock_fair`) has the same rule as
-//! [`Op::Unlock`], although it hands the lock to the parked tasks while a plain unlock lets every
-//! request race. The hand-off grants only requests that pass the rules, so it adds no outcome. And
-//! it removes none: it binds the lock only when some task is parked, no program can observe that a
-//! task is parked, and the OS can delay a thread for any time just before it parks. So any outcome
-//! that a plain unlock reaches, `parking_lot` reaches with the same schedule except that the tasks
-//! the hand-off would favour park only after the requests that overtook them. The stress test of
-//! `rwlock_reference_model` checks this on the real `parking_lot`, and the parity tables check the
-//! other direction: Shuttle's lock wakes waiting requests as `parking_lot` does and hands the lock
-//! over only at a fair unlock or a `bump` (see `Fairness::ParkingLot`), and must still reach every
-//! outcome of the model.
+//! The explorer has no park queue, so it cannot show what the queue does:
 //!
-//! One limit: `try_write` also fails when `PARKED_BIT` is set on a free lock. That needs two or more
-//! parked tasks, one of which the last unlock did not wake. The model ignores `PARKED_BIT`, and it
-//! does not record which tasks a schedule refused before. So [`explore`] panics if a `try_write`
-//! finds a free lock while two or more other tasks can be parked: tasks that have started and whose
-//! next op is a blocking request. This includes tasks that were never refused, so the check can
-//! reject a program that `parking_lot` runs without the problem. It never accepts a program that has
-//! the problem. The parity tables have three tasks. The main task requests the lock only once, before
-//! the other tasks start, and its later ops change the lock that it holds. So at most one other task
-//! can be parked, and the tables do not reach this panic.
+//! * A task that `parking_lot` parks runs again only when an unlock wakes it, which is not always
+//!   when its rule passes. An unlock can leave a reader parked that an upgradable reader, which
+//!   takes the lock later, admits. If the upgradable reader then waits for that reader,
+//!   `parking_lot` deadlocks. The explorer lets the reader in, so it misses this deadlock, and a
+//!   lock that finds it differs from the explorer by a false deadlock.
+//! * [`Op::UnlockFair`] (`parking_lot`'s `unlock_fair`) has the rule of [`Op::Unlock`]. In
+//!   `parking_lot`, `unlock_fair` of a write lock hands the lock to the parked requests that it
+//!   wakes, while a plain unlock lets them race with the other requests. A hand-off grants only
+//!   requests that pass the rules, so it adds no outcome. It removes none of the explorer's either:
+//!   in a schedule of the explorer, no task needs to be parked when the unlock comes, and then the
+//!   unlock hands nothing off. But a hand-off can remove a deadlock that the queue causes, such as
+//!   the one above, which the explorer does not have.
+//! * `try_write` also fails when `PARKED_BIT` is set on a free lock. That needs two or more parked
+//!   tasks, one of which the last unlock did not wake. The explorer ignores `PARKED_BIT`, and it
+//!   does not record which tasks a schedule refused before. So [`explore`] panics if a `try_write`
+//!   finds a free lock while two or more other tasks can be parked: tasks that have started and
+//!   whose next op is a blocking request. This includes tasks that were never refused, so the check
+//!   can reject a program that `parking_lot` runs without the problem. It never accepts a program
+//!   that has the problem.
+//!
+//! So the explorer has exactly the outcomes of `parking_lot` only for programs in which the queue
+//! changes none, such as the programs of the parity tables. They have three tasks, and the main
+//! task requests the lock only once, before the other tasks start; its later ops change the lock
+//! that it holds. So when a `try_write` finds a free lock, at most one other task can be parked,
+//! and the tables do not reach the panic. [`super::exact`] is a model of `parking_lot` with its
+//! queue. The test crate `rwlock_exact_parity` checks Shuttle's lock against it on the tables,
+//! where it also checks that the exact model has the outcomes of this explorer, and on programs
+//! whose outcomes depend on the queue, such as the deadlock above.
 //!
 //! # Values
 //!
@@ -109,8 +113,10 @@ pub enum Op {
     /// Drops the guard that the task holds, if any.
     Unlock,
     /// `unlock_fair` on the guard that the task holds; nothing if the task holds none. In
-    /// `parking_lot` this hands the lock to the parked tasks. The model gives it the rule of
-    /// [`Op::Unlock`]; see the module docs for why that loses nothing.
+    /// `parking_lot` 0.12.5, that of a write guard hands the lock to the parked tasks that it
+    /// wakes, that of an upgradable read guard is a plain unlock, and that of a read guard wakes
+    /// nobody. The explorer gives it the rule of [`Op::Unlock`]; see the module docs for why that
+    /// loses none of its outcomes. [`super::exact`] has the hand-off.
     UnlockFair,
     /// Sends one message on the scenario's channel.
     Signal,
