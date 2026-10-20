@@ -462,3 +462,68 @@ fn notify_waiters_leaves_permit_for_next_waiter() {
         future::block_on(notify.notified());
     });
 }
+
+/// Regression test: `notify_one()` notifies a `Notified`, and the `Notified` is dropped before it
+/// completes. As in tokio, the drop passes the notification on to another waiter. Previously, the
+/// notification was lost, and the other waiter waited forever.
+#[test]
+fn notify_one_to_dropped_waiter_is_passed_on() {
+    check_dfs(|| {
+        future::block_on(async {
+            let notify = Arc::new(Notify::new());
+
+            // `notify_one()` can choose this waiter. It is then dropped before it completes.
+            let mut dropped = Box::pin(notify.notified());
+            assert!(!dropped.as_mut().enable());
+
+            let other = {
+                let notify = notify.clone();
+                future::spawn(async move { notify.notified().await })
+            };
+
+            notify.notify_one();
+            drop(dropped);
+
+            other.await.unwrap();
+        });
+    });
+}
+
+/// A completed `Notified` does not pass its notification on when it is dropped. Passing it on would
+/// store a permit that no `notify_one()` call stored.
+#[test]
+fn notify_one_to_completed_waiter_is_not_passed_on() {
+    check_dfs(|| {
+        future::block_on(async {
+            let notify = Arc::new(Notify::new());
+
+            let mut first = Box::pin(notify.notified());
+            assert!(!first.as_mut().enable());
+            notify.notify_one();
+            first.as_mut().await;
+            drop(first);
+
+            let mut second = Box::pin(notify.notified());
+            assert!(!second.as_mut().enable(), "permit stored by a dropped waiter");
+        });
+    });
+}
+
+/// A `Notified` that `notify_one()` notified, and that is dropped after its execution ended, does
+/// not panic. Outside an execution, the drop does not pass the notification on.
+#[test]
+fn notify_one_to_waiter_dropped_after_execution() {
+    use shuttle_tokio_impl_inner::sync::notify::Notified;
+    use std::pin::Pin;
+
+    static KEPT: Mutex<Option<Pin<Box<Notified<'static>>>>> = Mutex::new(None);
+    check_dfs(|| {
+        let notify: &'static Notify = Box::leak(Box::new(Notify::new()));
+        let mut notified = Box::pin(notify.notified());
+        assert!(!notified.as_mut().enable());
+        notify.notify_one();
+        // Keep the notified `Notified` past the end of the execution.
+        *KEPT.lock().unwrap() = Some(notified);
+    });
+    drop(KEPT.lock().unwrap().take());
+}
