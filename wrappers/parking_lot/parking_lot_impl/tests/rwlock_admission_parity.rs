@@ -31,39 +31,19 @@ use rwlock_parity::harness::{KnownDivergence, QUEUED, REQUESTED, Scenario, check
 use rwlock_parity::reference::Op::{self, *};
 
 /// All the known divergences are in one cell of the block matrix: an upgradable read is held, and a
-/// plain read is requested. `parking_lot` grants the read, because only `WRITER_BIT` blocks a plain
-/// reader, and a task that waits behind an upgradable read does not own `WRITER_BIT`. Shuttle
-/// refuses it, because each lock state is a permit request on one strictly fair `BatchSemaphore`,
-/// and that semaphore refuses every new request while a waiter is queued.
-///
-/// The queued task can be a `write`, an `upgradable_read`, or an `upgradable_read` followed by an
-/// `upgrade`. Each one blocks the reader.
+/// plain read is requested behind a queued writer. `parking_lot` grants the read, because only
+/// `WRITER_BIT` blocks a plain reader, and a writer waiting behind an upgradable read does not own
+/// `WRITER_BIT`. Shuttle refuses it because the semaphore keeps later requests behind the writer.
 ///
 /// With `read` the result is a false deadlock. With `try_read` the result is a false failure, and
 /// the third task then records no value, which no `parking_lot` schedule does.
 const KNOWN_DIVERGENCES: &[KnownDivergence] = &[
-    KnownDivergence {
-        scenario: "upgradable_read | upgradable_read | read",
-        kinds: &[FalseDeadlock],
-    },
-    KnownDivergence {
-        scenario: "upgradable_read | upgradable_read | try_read",
-        kinds: &[TryResults, ShuttleOnlyValues],
-    },
     KnownDivergence {
         scenario: "upgradable_read | write | read",
         kinds: &[FalseDeadlock],
     },
     KnownDivergence {
         scenario: "upgradable_read | write | try_read",
-        kinds: &[TryResults, ShuttleOnlyValues],
-    },
-    KnownDivergence {
-        scenario: "upgradable_read | upgradable_read+upgrade | read",
-        kinds: &[FalseDeadlock],
-    },
-    KnownDivergence {
-        scenario: "upgradable_read | upgradable_read+upgrade | try_read",
         kinds: &[TryResults, ShuttleOnlyValues],
     },
 ];

@@ -28,6 +28,80 @@ fn batch_semaphore_basic() {
     );
 }
 
+#[test]
+fn bypassable_waiter_allows_later_acquires() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let sem = BatchSemaphore::new(1, Fairness::StrictlyFair);
+                let mut large = Box::pin(sem.acquire_bypassable(2));
+                assert!(futures::poll!(large.as_mut()).is_pending());
+
+                sem.acquire(1).await.unwrap();
+                sem.release(1);
+                sem.try_acquire(1).unwrap();
+
+                let mut small = Box::pin(sem.acquire(1));
+                assert!(futures::poll!(small.as_mut()).is_pending());
+                sem.release(1);
+                small.await.unwrap();
+
+                // Once enough permits are released, grant the earlier request.
+                sem.release(2);
+                assert_eq!(sem.try_acquire(1), Err(TryAcquireError::NoPermits));
+                large.await.unwrap();
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn bypassable_waiter_respects_earlier_waiters() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let sem = BatchSemaphore::new(1, Fairness::StrictlyFair);
+                let mut ordinary = Box::pin(sem.acquire(2));
+                assert!(futures::poll!(ordinary.as_mut()).is_pending());
+                let mut bypassable = Box::pin(sem.acquire_bypassable(1));
+                assert!(futures::poll!(bypassable.as_mut()).is_pending());
+
+                sem.release(1);
+                ordinary.await.unwrap();
+                assert!(futures::poll!(bypassable.as_mut()).is_pending());
+                sem.release(1);
+                bypassable.await.unwrap();
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn cancelling_waiter_behind_bypassable_waiter_unblocks_later_acquires() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let sem = BatchSemaphore::new(0, Fairness::StrictlyFair);
+                let mut large = Box::pin(sem.acquire_bypassable(3));
+                assert!(futures::poll!(large.as_mut()).is_pending());
+                let mut ordinary = Box::pin(sem.acquire(2));
+                assert!(futures::poll!(ordinary.as_mut()).is_pending());
+                let mut small = Box::pin(sem.acquire(1));
+                assert!(futures::poll!(small.as_mut()).is_pending());
+
+                sem.release(1);
+                assert!(futures::poll!(small.as_mut()).is_pending());
+                assert_eq!(sem.try_acquire(1), Err(TryAcquireError::NoPermits));
+                drop(ordinary);
+                small.await.unwrap();
+            });
+        },
+        None,
+    );
+}
+
 /// Checks the behavior of an unfair batch semaphore is unfair: if there are
 /// two threads blocked on the same semaphore, releasing permits may unblock
 /// them in any order.

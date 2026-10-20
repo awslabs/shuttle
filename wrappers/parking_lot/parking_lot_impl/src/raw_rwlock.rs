@@ -27,6 +27,9 @@
 //! * An upgradable reader excludes a writer (which needs all the permits) but not plain readers,
 //!   which still have a majority-minus-one permits to share out.
 //!
+//! Upgradable acquires allow later requests to pass while waiting for enough permits. A second
+//! upgradable reader therefore does not block plain readers while the first still holds the lock.
+//!
 //! Modelling every lock state as a permit count on *one* semaphore is what keeps the transitions
 //! between them atomic, mirroring the single atomic bit-twiddle each one is in `parking_lot`. In
 //! particular, taking an upgradable read is one `acquire`, so a task waiting for one holds nothing,
@@ -40,7 +43,7 @@
 //! `ONE_READER | UPGRADABLE_BIT` for `WRITER_BIT` in one atomic step and then waiting for readers to
 //! drain: an upgradable reader's view of the data cannot change underneath it while it upgrades.
 
-use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness};
+use shuttle::future::batch_semaphore::{Acquire, BatchSemaphore, Fairness};
 use std::thread;
 use tracing::trace;
 
@@ -72,8 +75,8 @@ pub struct RawRwLock {
 
 impl RawRwLock {
     #[inline]
-    fn acquire(sem: &BatchSemaphore, permits: usize) {
-        sem.acquire_blocking(permits).unwrap_or_else(|_| {
+    fn acquire(acquire: Acquire<'_>) {
+        shuttle::future::block_on(acquire).unwrap_or_else(|_| {
             // The semaphores are never explicitly closed and are owned exclusively by this lock, so
             // a closed semaphore here can only be observed while unwinding from a panic.
             if !thread::panicking() {
@@ -97,7 +100,7 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
 
     fn lock_shared(&self) {
         trace!("acquiring parking_lot rwlock {:p} (shared)", self);
-        Self::acquire(&self.sem, 1);
+        Self::acquire(self.sem.acquire(1));
         trace!("acquired parking_lot rwlock {:p} (shared)", self);
     }
 
@@ -112,7 +115,7 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
 
     fn lock_exclusive(&self) {
         trace!("acquiring parking_lot rwlock {:p} (exclusive)", self);
-        Self::acquire(&self.sem, MAX_READERS);
+        Self::acquire(self.sem.acquire(MAX_READERS));
         trace!("acquired parking_lot rwlock {:p} (exclusive)", self);
     }
 
@@ -127,7 +130,7 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
 }
 
 // Safety: Shuttle's semaphore is strictly fair, so a plain `release` already hands permits to the
-// next waiter in FIFO order. Fair unlocking is therefore identical to a normal unlock.
+// next eligible waiter in FIFO order. Fair unlocking is therefore identical to a normal unlock.
 unsafe impl lock_api::RawRwLockFair for RawRwLock {
     unsafe fn unlock_shared_fair(&self) {
         self.sem.release(1);
@@ -155,7 +158,7 @@ unsafe impl lock_api::RawRwLockDowngrade for RawRwLock {
 unsafe impl lock_api::RawRwLockUpgrade for RawRwLock {
     fn lock_upgradable(&self) {
         trace!("acquiring parking_lot rwlock {:p} (upgradable)", self);
-        Self::acquire(&self.sem, UPGRADABLE_READER);
+        Self::acquire(self.sem.acquire_bypassable(UPGRADABLE_READER));
         trace!("acquired parking_lot rwlock {:p} (upgradable)", self);
     }
 

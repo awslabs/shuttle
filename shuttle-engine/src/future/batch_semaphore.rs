@@ -36,6 +36,7 @@ struct Waiter {
     /// plain acquire, and the threshold at which it reserves the semaphore for a reserving acquire
     /// (see [`BatchSemaphore::acquire_reserving`]). Only unfair semaphores look at this.
     min_permits: usize,
+    priority: Priority,
     is_queued: AtomicBool,
     has_permits: AtomicBool,
     /// Clock of the task that created this waiter. Note this is *not* refreshed
@@ -53,6 +54,7 @@ impl fmt::Debug for Waiter {
             .field("task_id", &self.task_id())
             .field("num_permits", &self.num_permits)
             .field("min_permits", &self.min_permits)
+            .field("priority", &self.priority)
             .field("is_queued", &self.is_queued)
             .field("has_permits", &self.has_permits)
             .field("waker", &self.waker)
@@ -70,11 +72,12 @@ impl Waiter {
     /// `unblock_waiters_from_front`, and a scheduling point sits between those two
     /// moments. `task_id`, in contrast, tracks the current poller (see
     /// [`Waiter::task_id`]), so it is read here and refreshed on later polls.
-    fn new(num_permits: usize, min_permits: usize, clock: VectorClock) -> Self {
+    fn new(num_permits: usize, min_permits: usize, priority: Priority, clock: VectorClock) -> Self {
         Self {
             task_id: AtomicUsize::new(ExecutionState::me().into()),
             num_permits,
             min_permits,
+            priority,
             is_queued: AtomicBool::new(false),
             has_permits: AtomicBool::new(false),
             clock,
@@ -222,7 +225,7 @@ impl PermitsAvailable {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fairness {
     /// The semaphore is strictly fair, so earlier requesters always get
-    /// priority over later ones.
+    /// priority over later ones, unless they opt into [`BatchSemaphore::acquire_bypassable`].
     StrictlyFair,
 
     /// The semaphore makes no guarantees about fairness. In particular,
@@ -235,9 +238,12 @@ pub enum Fairness {
 /// has no queue order to speak of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Priority {
-    /// The default: queue behind existing waiters, and do not take available
-    /// permits while any waiter is queued.
+    /// The default: queue behind existing waiters, except bypassable waiters
+    /// whose requests cannot be satisfied yet.
     Back,
+
+    /// Queue as with `Back`, but let later requests pass while waiting for enough permits.
+    Bypassable,
 
     /// Overtake every queued waiter: take available permits even when others are
     /// waiting, and if there still aren't enough, queue at the *front*.
@@ -259,10 +265,11 @@ struct BatchSemaphoreState {
 
     // Key invariants:
     //
-    // (1) if `waiters` is nonempty and the head waiter is `H`,
-    // then `H.num_permits > permits_available.available()`.  (In other words,
-    // we are never in a state where there are enough permits available for the
-    // first waiter.  This invariant is ensured by the `drop` handler below.)
+    // (1) On a strictly fair semaphore, every waiter W up to and including the
+    // first non-bypassable waiter (or every waiter if all are bypassable) satisfies
+    // W.num_permits > permits_available.available(). Releases and cancellations
+    // maintain this via `unblock_waiters_from_front`, which skips bypassable
+    // waiters that lack permits instead of stopping at them.
     //
     // (2) W is in waiters iff W.is_queued
     //
@@ -316,10 +323,16 @@ impl BatchSemaphoreState {
             // The available permits are kept for the holder of the reservation,
             // which takes them with `take_permits`.
             Err(TryAcquireError::NoPermits)
-        } else if self.waiters.is_empty() || matches!(fairness, Fairness::Unfair) || priority == Priority::Front {
+        } else if self
+            .waiters
+            .iter()
+            .all(|waiter| waiter.priority == Priority::Bypassable)
+            || matches!(fairness, Fairness::Unfair)
+            || priority == Priority::Front
+        {
             // Permits here can be acquired in one of three scenarios:
-            // - The waiter queue is empty; nobody else is waiting for permits,
-            //   so if there are enough available, immediately succeed.
+            // - The waiter queue is empty or only has bypassable requests,
+            //   so if there are enough permits available, immediately succeed.
             // - The semaphore is operating in an unfair mode; the current
             //   thread is either requesting permits for the first time, or it
             //   was woken and selected by the scheduler. In either case, the
@@ -392,13 +405,14 @@ impl BatchSemaphoreState {
     }
 
     fn unblock_waiters_from_front(&mut self) {
-        while let Some(front) = self.waiters.front() {
+        let mut index = 0;
+        while let Some(front) = self.waiters.get(index) {
             // There is nobody to unblock for a stale waiter (see `is_stale`),
             // so discard it without consuming permits; if the `Acquire` is
             // still alive and some other task polls it, it will re-acquire
             // from the (still available) permits.
             if is_stale(front) {
-                let waiter = self.waiters.pop_front().unwrap();
+                let waiter = self.waiters.remove(index).unwrap();
                 waiter.is_queued.store(false, Ordering::SeqCst);
                 // Preserve the "queued <=> waker registered" invariant asserted
                 // in `Acquire::poll`; waking a finished task's waker is a no-op.
@@ -407,7 +421,7 @@ impl BatchSemaphoreState {
                 continue;
             }
             if front.num_permits <= self.permits_available.available() {
-                let waiter = self.waiters.pop_front().unwrap();
+                let waiter = self.waiters.remove(index).unwrap();
 
                 crate::annotations::record_semaphore_acquire_unblocked(
                     self.id.unwrap(),
@@ -441,6 +455,8 @@ impl BatchSemaphoreState {
                 if let Some(waker) = maybe_waker.take() {
                     waker.wake();
                 }
+            } else if front.priority == Priority::Bypassable {
+                index += 1;
             } else {
                 return;
             }
@@ -712,7 +728,7 @@ impl BatchSemaphore {
             &self.state
         );
         match priority {
-            Priority::Back => state.waiters.push_back(waiter.clone()),
+            Priority::Back | Priority::Bypassable => state.waiters.push_back(waiter.clone()),
             // Overtakes the queue rather than joining its tail. Key invariant (1)
             // still holds: we only get here because the acquire failed, and a
             // `Priority::Front` acquire only fails when there really aren't
@@ -744,9 +760,14 @@ impl BatchSemaphore {
 
         match self.fairness {
             Fairness::StrictlyFair => {
-                if index == 0 {
-                    // If the semaphore is strictly fair, and we removed the first waiter, check if its
-                    // removal unblocks remaining waiters.  This can happen in the following situation:
+                if index == 0
+                    || state
+                        .waiters
+                        .front()
+                        .is_some_and(|w| w.priority == Priority::Bypassable)
+                {
+                    // Removing a waiter can unblock later ones, including when bypassable waiters
+                    // precede it. This can happen in the following situation:
                     // - the semahore has 1 permit available
                     // - there are 2 waiters W1 and W2 where W1 wants 2 permits, and W2 wants 1 permit
                     // - if W1 gives up and drops out, we want to ensure W2 is granted the semaphore
@@ -781,6 +802,19 @@ impl BatchSemaphore {
         // No switch here; switch should be triggered on polling future
         self.init_object_id();
         Acquire::new(self, num_permits, Priority::Back)
+    }
+
+    /// Acquire permits, allowing later requests to pass while this request cannot be satisfied.
+    ///
+    /// On a strictly fair semaphore, this request still waits behind earlier ordinary requests,
+    /// and receives permits in queue order once enough are released. It does not prevent later
+    /// requests from taking permits that it cannot use yet. This lets an upgradable `RwLock`
+    /// reader wait for another upgradable reader without blocking plain readers.
+    ///
+    /// On an unfair semaphore, this is equivalent to [`Self::acquire`].
+    pub fn acquire_bypassable(&self, num_permits: usize) -> Acquire<'_> {
+        self.init_object_id();
+        Acquire::new(self, num_permits, Priority::Bypassable)
     }
 
     /// Acquire the specified number of permits (blocking API)
@@ -1115,7 +1149,12 @@ impl<'a> Acquire<'a> {
         if let Some(waiter) = &self.waiter {
             return Arc::clone(waiter);
         }
-        let waiter = Arc::new(Waiter::new(self.num_permits, self.min_permits(), self.clock.clone()));
+        let waiter = Arc::new(Waiter::new(
+            self.num_permits,
+            self.min_permits(),
+            self.priority,
+            self.clock.clone(),
+        ));
         self.waiter = Some(Arc::clone(&waiter));
         waiter
     }
