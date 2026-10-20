@@ -34,10 +34,21 @@ struct Waiter {
     num_permits: usize,
     /// How many permits must be available for this waiter to make progress: `num_permits` for a
     /// plain acquire, and the threshold at which it reserves the semaphore for a reserving acquire
-    /// (see [`BatchSemaphore::acquire_reserving`]). Only unfair semaphores look at this.
+    /// (see [`BatchSemaphore::acquire_reserving`]). Strictly fair semaphores ignore this.
     min_permits: usize,
     is_queued: AtomicBool,
     has_permits: AtomicBool,
+    /// [`Fairness::ParkingLot`] only: a release took this waiter out of the queue and woke it to
+    /// try again (`parking_lot`'s `TOKEN_NORMAL`). It is in `ParkingLotState::woken` until then.
+    woken: AtomicBool,
+    /// [`Fairness::ParkingLot`] only: the races that it lost, and the releases and reads that
+    /// passed it while it was woken (see `BatchSemaphoreState::forget_stale_woken_and_pass`).
+    overtakes: AtomicUsize,
+    /// [`Fairness::ParkingLot`] only: the order of its first park, from 1 (0 until then).
+    ticket: AtomicUsize,
+    /// [`Fairness::ParkingLot`] only: the stand-in parked it again from another task (see
+    /// `let_starving_woken_waiters_try`), and its `Acquire` has yet to report that park.
+    park_unreported: AtomicBool,
     /// Clock of the task that created this waiter. Note this is *not* refreshed
     /// when `task_id` is: it is only used to seed the causality of the acquired
     /// permits, and keeping the original enqueue clock is conservative (it can
@@ -55,6 +66,10 @@ impl fmt::Debug for Waiter {
             .field("min_permits", &self.min_permits)
             .field("is_queued", &self.is_queued)
             .field("has_permits", &self.has_permits)
+            .field("woken", &self.woken)
+            .field("overtakes", &self.overtakes)
+            .field("ticket", &self.ticket)
+            .field("park_unreported", &self.park_unreported)
             .field("waker", &self.waker)
             .finish()
     }
@@ -77,6 +92,10 @@ impl Waiter {
             min_permits,
             is_queued: AtomicBool::new(false),
             has_permits: AtomicBool::new(false),
+            woken: AtomicBool::new(false),
+            overtakes: AtomicUsize::new(0),
+            ticket: AtomicUsize::new(0),
+            park_unreported: AtomicBool::new(false),
             clock,
             waker: Mutex::new(None),
         }
@@ -109,8 +128,10 @@ struct PermitsAvailable {
     /// deque is lazily initialized; see `const_new`.
     permit_clocks: Option<VecDeque<(usize, VectorClock)>>,
 
-    /// The clock of the last successful acquire event. Used for causal
-    /// dependence in `try_acquire` failures.
+    /// The join of the clocks of the successful acquire events, and of the
+    /// requests that reserved the semaphore (see
+    /// [`BatchSemaphore::acquire_reserving`]). Used for causal dependence in
+    /// `try_acquire` failures and in [`BatchSemaphore::load_permits`].
     last_acquire: VectorClock,
 }
 
@@ -217,9 +238,60 @@ impl PermitsAvailable {
     }
 }
 
+/// The state that only a [`Fairness::ParkingLot`] semaphore keeps. It is allocated on first use,
+/// so that the semaphores of the other modes do not grow by it, and `const_new` can make one.
+struct ParkingLotState {
+    /// The waiters that a release woke to try again, and that have not tried yet (see
+    /// `Waiter::woken`).
+    ///
+    /// A release takes the waiters that it wakes out of the queue, so that the queue holds exactly
+    /// the parked requests, as `parking_lot`'s does, and `has_waiters` is `PARKED_BIT`. The
+    /// eventual-fairness stand-in still needs them: every release and read that passes a woken
+    /// waiter counts as one of its overtakes (`Waiter::overtakes`), and one that has been overtaken
+    /// `Config::parking_lot_fairness_bound` times is let in, oldest request first. So a woken waiter
+    /// stays here until its `Acquire` tries again or is dropped, or its task finishes.
+    woken: Vec<Arc<Waiter>>,
+    /// The ticket of the next request to park (see `Waiter::ticket`).
+    next_ticket: usize,
+    /// The join of the clocks of the releases, the reservations given up and the close, which
+    /// [`BatchSemaphore::load_permits`] joins, so that a read is causally after every event that
+    /// freed the permits it sees, as it is after every acquire (`PermitsAvailable::last_acquire`).
+    ///
+    /// `last_acquire` is not enough for that: a holder releases after it acquires, so a read that
+    /// sees the permits free again would only be after the acquire. A replay up to the read's clock
+    /// (see `ReplayScheduler::set_target_clock`) leaves out the events that are concurrent with that
+    /// clock, so it could leave out the release, and the replayed read would see the permits still
+    /// held and not reproduce the failure. Giving up a reservation and closing the semaphore change
+    /// what a read sees without a release, so they count too. Like the clock of a Shuttle atomic,
+    /// which joins every store, this joins every release, not only those whose permits are still
+    /// free.
+    last_release: VectorClock,
+    /// The join of the clocks of the changes to the queue: the parks, and the releases, reads and
+    /// drops that took waiters out of it. `parking_lot` changes its queue only under the queue's
+    /// lock, so the reads of the queue join this.
+    last_queue_change: VectorClock,
+    /// The join of the clocks of the events that changed the woken waiters or their counts, which
+    /// every release and read joins, so that the stand-in decides after what it counts.
+    last_woken: VectorClock,
+}
+
+// Implement debug in order to not output the `VectorClock`s
+impl fmt::Debug for ParkingLotState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ParkingLotState")
+            .field("woken", &self.woken)
+            .field("next_ticket", &self.next_ticket)
+            .finish()
+    }
+}
+
 /// Fairness mode for the semaphore. Determines which threads are woken when
 /// permits are released.
+///
+/// More modes may be added, so a `match` on a `Fairness` outside of Shuttle needs
+/// a wildcard arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Fairness {
     /// The semaphore is strictly fair, so earlier requesters always get
     /// priority over later ones.
@@ -228,11 +300,64 @@ pub enum Fairness {
     /// The semaphore makes no guarantees about fairness. In particular,
     /// a waiter can be starved by other threads.
     Unfair,
+
+    /// The semaphore behaves like the locks of the `parking_lot` crate, which are unfair, but
+    /// eventually fair:
+    ///
+    /// * A request takes free permits even while others wait. One that cannot parks at the back of
+    ///   a queue, and does not try again until a release wakes it.
+    /// * [`BatchSemaphore::release`] takes the waiters that the free permits let in out of the
+    ///   queue and wakes them, as an unlock of `parking_lot` unparks threads: from the front, it
+    ///   passes over a waiter whose `min_permits` (see [`BatchSemaphore::acquire_reserving`]) are
+    ///   not free, takes one whose are, which uses up its permits, and stops after one that can
+    ///   only reserve the semaphore, or once no permit is left. With one permit, that is the front
+    ///   waiter, as for a `Mutex`. With a permit for each reader of an `RwLock`, a majority for an
+    ///   upgradable reader, and all of them for a writer, which reserves the lock as soon as no
+    ///   other writer or upgradable reader holds it, it is the wake filter of the `RwLock`. The
+    ///   permits stay free, so a woken waiter tries again like a new request, and parks again at
+    ///   the back if it loses. [`BatchSemaphore::release_fair`] hands the permits to those waiters
+    ///   instead, and [`BatchSemaphore::release_without_waking`] wakes none of them.
+    /// * A request can reserve the semaphore (see [`BatchSemaphore::acquire_reserving`]), and an
+    ///   upgrade does (see [`BatchSemaphore::upgrade`]).
+    /// * `parking_lot` makes an unlock fair now and then, on a timer, and an OS soon runs a thread
+    ///   that an unlock woke, while Shuttle's schedulers can starve a runnable task. In their
+    ///   place, a woken request that has been overtaken
+    ///   [`Config::parking_lot_fairness_bound`](crate::Config::parking_lot_fairness_bound) times,
+    ///   by losing the race that a release woke it for, or by a release or a
+    ///   [`BatchSemaphore::load_permits`] before it tried, tries at the next release or read, or at
+    ///   another point that lets waiters in (a reservation given up, the permits that the holder of
+    ///   a reservation leaves free when it takes its own, or a woken [`Acquire`] dropped), oldest
+    ///   request first. While another request holds the reservation, only a read lets it try. It is
+    ///   granted the permits, or the reservation, if its `min_permits` are free and no other
+    ///   request holds the reservation, and parks again at the back otherwise. So no loop of
+    ///   releases or reads can starve a request. For a task that waits in a blocking call, as the
+    ///   locks of `shuttle-parking_lot` do, this is the schedule of `parking_lot` in which the
+    ///   woken thread tries right after the release, so it only leaves schedules out. An async task
+    ///   that keeps a woken [`Acquire`] pending while it waits for something else could not take
+    ///   the permits then, so for it a grant can add an outcome, in which the `Acquire` holds the
+    ///   permits until the task polls it again, and a deadlock that this causes at one bound can
+    ///   disappear at a larger one.
+    ///
+    /// As on a strictly fair semaphore, the order of the parks decides which waiters a release
+    /// wakes, so Shuttle explores every order in which they park. A waiter that a release or a
+    /// read wakes or grants is causally after it, as a thread that an unlock unparks is after the
+    /// unlock.
+    ParkingLot,
+}
+
+/// What a release does to the waiters of a [`Fairness::ParkingLot`] semaphore: wake them
+/// ([`BatchSemaphore::release`]), hand them the permits ([`BatchSemaphore::release_fair`]), or
+/// wake nobody in the queue ([`BatchSemaphore::release_without_waking`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wake {
+    Plain,
+    HandOff,
+    NotQueue,
 }
 
 /// Where an acquire request sits relative to waiters that are already queued on
-/// a [`Fairness::StrictlyFair`] semaphore. Ignored by an unfair semaphore, which
-/// has no queue order to speak of.
+/// a [`Fairness::StrictlyFair`] semaphore. Ignored by the other modes, on which
+/// a request takes free permits regardless of the queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Priority {
     /// The default: queue behind existing waiters, and do not take available
@@ -259,10 +384,11 @@ struct BatchSemaphoreState {
 
     // Key invariants:
     //
-    // (1) if `waiters` is nonempty and the head waiter is `H`,
-    // then `H.num_permits > permits_available.available()`.  (In other words,
-    // we are never in a state where there are enough permits available for the
-    // first waiter.  This invariant is ensured by the `drop` handler below.)
+    // (1) if the semaphore is strictly fair, `waiters` is nonempty and the head
+    // waiter is `H`, then `H.num_permits > permits_available.available()`.  (In
+    // other words, we are never in a state where there are enough permits
+    // available for the first waiter.  This invariant is ensured by the `drop`
+    // handler below.)
     //
     // (2) W is in waiters iff W.is_queued
     //
@@ -270,12 +396,16 @@ struct BatchSemaphoreState {
     // Note: the converse is not true.  We can have !W.has_permits && !W.is_queued
     // when the Acquire is created but not yet polled.
     //
-    // (4) closed ==> waiters.is_empty()
+    // (4) closed ==> waiters.is_empty(), and no waiter is woken
     //
-    // (5) if `reservation` is `Some(R)`, then the semaphore is unfair, and
-    // !R.is_queued && !R.has_permits
+    // (5) if `reservation` is `Some(R)`, then the semaphore is not strictly fair,
+    // and !R.is_queued && !R.has_permits
     //
     // (6) closed ==> reservation.is_none()
+    //
+    // (7) W is in `parking_lot.woken` iff W.woken, and then the semaphore is a
+    // ParkingLot one, and W is neither queued nor granted nor the reservation's.
+    // `parking_lot` is `None` on the other modes.
     waiters: VecDeque<Arc<Waiter>>,
     /// The waiter that holds the semaphore's reservation, if any (see
     /// [`BatchSemaphore::acquire_reserving`]). While it is set, the available
@@ -285,6 +415,8 @@ struct BatchSemaphoreState {
     permits_available: PermitsAvailable,
     // TODO: should there be a clock for the close event?
     closed: bool,
+    /// Allocated by the method of the same name.
+    parking_lot: Option<Box<ParkingLotState>>,
 }
 
 impl BatchSemaphoreState {
@@ -316,7 +448,7 @@ impl BatchSemaphoreState {
             // The available permits are kept for the holder of the reservation,
             // which takes them with `take_permits`.
             Err(TryAcquireError::NoPermits)
-        } else if self.waiters.is_empty() || matches!(fairness, Fairness::Unfair) || priority == Priority::Front {
+        } else if self.waiters.is_empty() || fairness != Fairness::StrictlyFair || priority == Priority::Front {
             // Permits here can be acquired in one of three scenarios:
             // - The waiter queue is empty; nobody else is waiting for permits,
             //   so if there are enough available, immediately succeed.
@@ -446,6 +578,271 @@ impl BatchSemaphoreState {
             }
         }
     }
+
+    /// The state that only a [`Fairness::ParkingLot`] semaphore keeps.
+    fn parking_lot(&mut self) -> &mut ParkingLotState {
+        self.parking_lot.get_or_insert_with(|| {
+            Box::new(ParkingLotState {
+                woken: Vec::new(),
+                next_ticket: 1,
+                last_release: VectorClock::new(),
+                last_queue_change: VectorClock::new(),
+                last_woken: VectorClock::new(),
+            })
+        })
+    }
+
+    /// Take `waiter` out of the woken waiters, if a release woke it, because its `Acquire` tries
+    /// again now, or is dropped. Returns whether it was woken.
+    fn forget_woken(&mut self, waiter: Option<&Arc<Waiter>>) -> bool {
+        let (Some(waiter), Some(parking_lot)) = (waiter, self.parking_lot.as_mut()) else {
+            return false;
+        };
+        if !waiter.woken.swap(false, Ordering::SeqCst) {
+            return false;
+        }
+        let index = parking_lot.woken.iter().position(|w| Arc::ptr_eq(w, waiter));
+        parking_lot.woken.remove(index.expect("a woken waiter is in `woken`"));
+        waiter.waker.lock().unwrap().take();
+        parking_lot.last_woken.update(&current::clock());
+        true
+    }
+
+    /// What a release, a read and the other points that let waiters into a [`Fairness::ParkingLot`]
+    /// semaphore do first: join the changes to the woken waiters, forget those whose task has
+    /// finished, and if `passes`, as a release and a read do, overtake the others (see
+    /// `Waiter::overtakes`).
+    fn forget_stale_woken_and_pass(&mut self, passes: bool) {
+        let parking_lot = self.parking_lot();
+        // The stand-in decides on the woken waiters and their counts, so it is after the events
+        // that changed them, and a replay up to here counts the same. It also decides on the free
+        // permits and the reservation, which it is after only through the events that it took part
+        // in: as for a `try_acquire`, a replay that leaves out a release or an acquire of another
+        // task can decide differently.
+        ExecutionState::with(|s| s.update_clock(&parking_lot.last_woken));
+        parking_lot.woken.retain(|waiter| {
+            let stale = is_stale(waiter);
+            if stale {
+                trace!("dropping stale woken waiter {:?} for finished task", waiter);
+                waiter.woken.store(false, Ordering::SeqCst);
+                waiter.waker.lock().unwrap().take();
+            }
+            !stale
+        });
+        if passes && !parking_lot.woken.is_empty() {
+            for waiter in &parking_lot.woken {
+                waiter.overtakes.fetch_add(1, Ordering::SeqCst);
+            }
+            parking_lot.last_woken.update(&current::clock());
+        }
+    }
+
+    /// What a [`Fairness::ParkingLot`] semaphore does to its waiters once a release has put its
+    /// permits back (`is_release`), and at the other points that let waiters in: a reservation
+    /// given up, a holder that takes its permits and leaves some free, and a woken `Acquire`
+    /// dropped.
+    #[inline(never)]
+    fn wake_parking_lot(&mut self, mut wake: Wake, is_release: bool) {
+        if is_release {
+            // A release changes what `load_permits` reads.
+            let clock = current::clock();
+            self.parking_lot().last_release.update(&clock);
+        }
+        self.forget_stale_woken_and_pass(is_release);
+        if let Some(holder) = &self.reservation {
+            // While a reservation holds the semaphore (`WRITER_BIT`), only its holder can make
+            // progress, once all of its permits are free, as the last reader to leave wakes a
+            // writer that waits for the readers. A stale holder is dropped, as in
+            // `wake_unfair_waiters` (`load_permits` is after that through `last_release` or
+            // `last_woken`), and then the waiters that it kept out are let in, as a writer that
+            // gives up `WRITER_BIT` lets them in, even by a release that wakes nobody in the queue.
+            if !is_stale(holder) {
+                if holder.num_permits <= self.permits_available.available() {
+                    wake_task(holder, false);
+                }
+                return;
+            }
+            trace!("dropping stale reservation {:?} for finished task", holder);
+            self.reservation = None;
+            if wake == Wake::NotQueue {
+                wake = Wake::Plain;
+            }
+        }
+        if wake != Wake::NotQueue && self.waiters.iter().any(|waiter| !is_stale(waiter)) {
+            // The release reads the queue, as an unlock that sees `PARKED_BIT` unparks threads.
+            let parking_lot = self.parking_lot();
+            ExecutionState::with(|s| s.update_clock(&parking_lot.last_queue_change));
+            let unparked = self.take_unpark_set();
+            if !unparked.is_empty() {
+                self.parking_lot().last_queue_change.update(&current::clock());
+            }
+            let woke = wake == Wake::Plain && !unparked.is_empty();
+            for waiter in unparked {
+                if wake == Wake::HandOff {
+                    self.grant_or_reserve(waiter);
+                } else {
+                    // `TOKEN_NORMAL`: the permits stay free, and the waiter tries again like a new
+                    // request. It keeps its waker, for a release that grants it.
+                    trace!("woke waiter {:?} to try again", waiter);
+                    waiter.woken.store(true, Ordering::SeqCst);
+                    wake_task(&waiter, false);
+                    self.parking_lot().woken.push(waiter);
+                }
+            }
+            if woke {
+                self.parking_lot().last_woken.update(&current::clock());
+            }
+        }
+        // As woken threads try after the unlock.
+        self.let_starving_woken_waiters_try();
+    }
+
+    /// The eventual-fairness stand-in (see [`Fairness::ParkingLot`]): each woken waiter that has
+    /// been overtaken `parking_lot_fairness_bound` times tries now, oldest request first. It is
+    /// granted its permits or the reservation if its `min_permits` are free and no other request
+    /// holds the reservation, and otherwise it lost, and parks again at the back, keeping its
+    /// waker. Serving the oldest request first keeps it from losing every grant to requests woken
+    /// before it, and parking it keeps tasks that hand the permits to each other with
+    /// `release_fair` from starving it: a release lets it in in its turn, and grants it.
+    fn let_starving_woken_waiters_try(&mut self) {
+        let bound = ExecutionState::with(|s| s.config.parking_lot_fairness_bound);
+        let woken = &mut self.parking_lot().woken;
+        woken.sort_by_key(|waiter| waiter.ticket.load(Ordering::SeqCst));
+        let starving = woken
+            .extract_if(.., |waiter| waiter.overtakes.load(Ordering::SeqCst) >= bound)
+            .collect::<Vec<_>>();
+        let tried = !starving.is_empty();
+        for waiter in starving {
+            waiter.woken.store(false, Ordering::SeqCst);
+            if self.reservation.is_none() && waiter.min_permits <= self.permits_available.available() {
+                trace!("granting woken waiter {:?}, which was overtaken too often", waiter);
+                self.grant_or_reserve(waiter);
+            } else {
+                trace!("woken waiter {:?}, which was overtaken too often, parks again", waiter);
+                waiter.overtakes.fetch_add(1, Ordering::SeqCst);
+                waiter.park_unreported.store(true, Ordering::SeqCst);
+                assert!(!waiter.is_queued.swap(true, Ordering::SeqCst));
+                self.waiters.push_back(waiter);
+                self.parking_lot().last_queue_change.update(&current::clock());
+            }
+        }
+        if tried {
+            self.parking_lot().last_woken.update(&current::clock());
+        }
+    }
+
+    /// Take the waiters that the free permits let in out of the queue, as `parking_lot`'s
+    /// `unpark_one` (`Mutex`) and the filter of `wake_parked_threads` (`RwLock`) unpark threads.
+    /// From the front, a waiter whose `min_permits` are not free stays (`FilterOp::Skip`). One
+    /// whose are is taken, and uses up its `num_permits`, unless they are not all free: then it
+    /// would reserve the semaphore, as a writer sets `WRITER_BIT` and waits for the readers, and it
+    /// ends the walk, as does one that takes the last free permit (`FilterOp::Stop`). Stale waiters
+    /// are dropped (see `is_stale`).
+    fn take_unpark_set(&mut self) -> Vec<Arc<Waiter>> {
+        let mut free = self.permits_available.available();
+        let mut unparked = Vec::new();
+        let mut skipped = Vec::new();
+        while let Some(waiter) = self.waiters.pop_front() {
+            if is_stale(&waiter) {
+                waiter.is_queued.store(false, Ordering::SeqCst);
+                // As in `unblock_waiters_from_front`.
+                waiter.waker.lock().unwrap().take();
+                trace!("dropping stale waiter {:?} for finished task", waiter);
+            } else if waiter.min_permits > free {
+                skipped.push(waiter);
+            } else {
+                assert!(waiter.is_queued.swap(false, Ordering::SeqCst));
+                // One that would reserve the semaphore leaves no permit for the rest either.
+                free = free.saturating_sub(waiter.num_permits);
+                unparked.push(waiter);
+                if free == 0 {
+                    break;
+                }
+            }
+        }
+        for waiter in skipped.into_iter().rev() {
+            self.waiters.push_front(waiter);
+        }
+        unparked
+    }
+
+    /// Give `waiter`, which is neither queued nor woken, all of its permits if they are free
+    /// (`TOKEN_HANDOFF`), and otherwise the reservation, as `parking_lot` hands a writer
+    /// `WRITER_BIT` while readers hold the lock.
+    fn grant_or_reserve(&mut self, waiter: Arc<Waiter>) {
+        assert!(!waiter.is_queued.load(Ordering::SeqCst));
+        // A request that the permits or the reservation refuse is after this (see `try_acquire`).
+        self.permits_available.last_acquire.update(&current::clock());
+        if waiter.num_permits > self.permits_available.available() {
+            assert!(self.reservation.is_none());
+            trace!("handed the reservation to waiter {:?}", waiter);
+            self.permits_available.last_acquire.update(&waiter.clock);
+            self.reservation = Some(waiter);
+            return;
+        }
+        crate::annotations::record_semaphore_acquire_unblocked(self.id.unwrap(), waiter.task_id(), waiter.num_permits);
+        // As in `unblock_waiters_from_front`.
+        let clock = self
+            .permits_available
+            .acquire(waiter.num_permits, waiter.clock.clone())
+            .unwrap();
+        trace!("granted {:?} permits to waiter {:?}", waiter.num_permits, waiter);
+        assert!(!waiter.has_permits.swap(true, Ordering::SeqCst));
+        ExecutionState::with(|s| {
+            let task = s.get_mut(waiter.task_id());
+            assert!(!task.finished());
+            task.clock.update(&clock);
+        });
+        wake_task(&waiter, true);
+    }
+
+    /// A [`Fairness::ParkingLot`] semaphore closes: the woken waiters are no longer woken, and
+    /// `load_permits` is after the close. Returns the woken waiters.
+    #[cold]
+    fn close_parking_lot(&mut self) -> Vec<Arc<Waiter>> {
+        let parking_lot = self.parking_lot();
+        parking_lot.last_release.update(&current::clock());
+        let woken = std::mem::take(&mut parking_lot.woken);
+        for waiter in &woken {
+            assert!(waiter.woken.swap(false, Ordering::SeqCst));
+        }
+        woken
+    }
+}
+
+/// Wake the task that polled `waiter`'s `Acquire` last, taking the waker out of the waiter if
+/// `take`. A [`Fairness::ParkingLot`] semaphore never blocks a task or puts it to sleep itself: it
+/// wakes the waiters that it lets in with this. The task is causally after the current one, as a
+/// thread is after the unlock that unparks it: the permits that it takes can be those of an older
+/// release, which stayed free while it was parked. A task that sleeps on its own waker, as in
+/// `block_on`, is made runnable directly, as calling the waker would also mark it woken, and keep
+/// it runnable for one more, useless poll.
+fn wake_task(waiter: &Waiter, take: bool) {
+    let mut slot = waiter.waker.lock().unwrap();
+    let waker = if take { slot.take() } else { slot.clone() };
+    drop(slot);
+    let woken = ExecutionState::with(|s| {
+        let waker_clock = s.try_current().map(|task| task.clock.clone());
+        let task = s.get_mut(waiter.task_id());
+        if task.finished() {
+            return true;
+        }
+        if let Some(clock) = &waker_clock {
+            task.clock.update(clock);
+        }
+        match &waker {
+            Some(waker) if task.sleeping() && waker.will_wake(&task.waker()) => {
+                task.unblock();
+                true
+            }
+            Some(_) => false,
+            None => true,
+        }
+    });
+    // Outside of `with`: Shuttle's wakers use the execution state.
+    if let (false, Some(waker)) = (woken, waker) {
+        waker.wake();
+    }
 }
 
 /// Whether `waiter` is stale: the task that registered it has finished, after its `Acquire` future
@@ -530,6 +927,7 @@ impl BatchSemaphore {
             reservation: None,
             permits_available: PermitsAvailable::new(num_permits),
             closed: false,
+            parking_lot: None,
         });
         Self {
             state,
@@ -559,6 +957,7 @@ impl BatchSemaphore {
             reservation: None,
             permits_available: PermitsAvailable::const_new(num_permits),
             closed: false,
+            parking_lot: None,
         });
         Self {
             state,
@@ -573,6 +972,71 @@ impl BatchSemaphore {
     pub fn available_permits(&self) -> usize {
         let state = self.state.borrow();
         state.available()
+    }
+
+    /// Reads the semaphore's state in one scheduling point: `None` if it is closed, and otherwise
+    /// `Some` of the free permits, which are zero while a reservation keeps them (see
+    /// [`BatchSemaphore::available_permits`]).
+    ///
+    /// This models a load of a lock's atomic word, like `parking_lot`'s `is_locked`: the read takes
+    /// and releases nothing, while probing with `try_acquire` and `release` would hold the permits
+    /// across more scheduling points, where other tasks could see a state that the lock never
+    /// shows. The read is causally after the acquires and the reservations before it, as a failed
+    /// `try_acquire` is. On a [`Fairness::ParkingLot`] semaphore, it is also after the releases,
+    /// the reservations given up and the close, so that a replay up to its clock (see
+    /// `ReplayScheduler::set_target_clock`) reads the same state, and it overtakes the woken
+    /// waiters as a release does, so that a task that reads the state until one of them makes
+    /// progress cannot starve it. The other modes do not keep the clocks of their releases, so
+    /// that their releases do not pay for them.
+    pub fn load_permits(&self) -> Option<usize> {
+        thread::switch();
+
+        let mut state = self.state.borrow_mut();
+        if state.parking_lot.is_some() {
+            state.forget_stale_woken_and_pass(true);
+            state.let_starving_woken_waiters_try();
+        }
+        ExecutionState::with(|s| {
+            s.update_clock(&state.permits_available.last_acquire);
+            if let Some(parking_lot) = &state.parking_lot {
+                s.update_clock(&parking_lot.last_release);
+            }
+        });
+        if state.closed {
+            None
+        } else {
+            Some(state.available())
+        }
+    }
+
+    /// Whether a request waits in the semaphore's queue, without a scheduling point, so that it
+    /// can be read right after [`BatchSemaphore::load_permits`] to see the same instant. Neither a
+    /// request whose task has finished without dropping its [`Acquire`] counts, nor the holder of
+    /// the reservation, which is not in the queue. A request that a release woke counts on an
+    /// unfair semaphore, where it stays in the queue until it tries again.
+    ///
+    /// This models `parking_lot`'s `PARKED_BIT`, which its locks' `bump` methods read. On a
+    /// [`Fairness::ParkingLot`] semaphore, it is exactly that bit, and when it is true, it is
+    /// causally after the changes to the queue, as a load of the bit is after the parks and
+    /// unparks that left it set, and after what [`BatchSemaphore::load_permits`] is after, since a
+    /// waiter is parked because of the permits that others hold. The other modes do not keep the
+    /// clocks of their queues, so that their requests do not pay for them.
+    pub fn has_waiters(&self) -> bool {
+        let state = self.state.borrow();
+        let waiting = state.waiters.iter().any(|waiter| !is_stale(waiter));
+        if let (true, Some(parking_lot)) = (waiting, &state.parking_lot) {
+            // Like `is_stale`, don't insist on a running task.
+            let _ = ExecutionState::try_with(|s| {
+                if s.try_current().is_some() {
+                    s.update_clock(&parking_lot.last_queue_change);
+                    // A waiter is parked because of the permits that others hold, so also after
+                    // what `load_permits` is after.
+                    s.update_clock(&state.permits_available.last_acquire);
+                    s.update_clock(&parking_lot.last_release);
+                }
+            });
+        }
+        waiting
     }
 
     fn init_object_id(&self) {
@@ -598,6 +1062,12 @@ impl BatchSemaphore {
         }
         crate::annotations::record_semaphore_closed(state.id.unwrap());
         state.closed = true;
+        // On a ParkingLot semaphore, the woken waiters wait too.
+        let woken = if self.fairness == Fairness::ParkingLot {
+            state.close_parking_lot()
+        } else {
+            Vec::new()
+        };
 
         // Wake up all the waiters, and the holder of the reservation, which waits
         // too.  Since we've marked the state as closed, they will all return
@@ -608,7 +1078,7 @@ impl BatchSemaphore {
             .waiters
             .drain(..)
             .inspect(|waiter| assert!(waiter.is_queued.swap(false, Ordering::SeqCst)));
-        for waiter in queued.chain(holder) {
+        for waiter in queued.chain(woken).chain(holder) {
             trace!(
                 "semaphore {:p} removing and waking up waiter {:?} on close",
                 ptr,
@@ -644,7 +1114,8 @@ impl BatchSemaphore {
             .acquire_permits(num_permits, self.fairness, Priority::Back)
             .inspect_err(|_err| {
                 // Conservatively, the requester causally depends on the
-                // last successful acquire.
+                // last successful acquire, and on the request that holds the
+                // reservation, if one refused it.
                 // TODO: This is not precise, but `try_acquire` causal dependency
                 // TODO: is both hard to define, and is most likely not worth the
                 // TODO: effort. The cases where causality would be tracked
@@ -658,12 +1129,56 @@ impl BatchSemaphore {
                 // TODO: `permits_available`.
                 ExecutionState::with(|s| {
                     s.update_clock(&state.permits_available.last_acquire);
+                    // On a ParkingLot semaphore, also after the releases, as `load_permits` is: the
+                    // holders may hold permits that a release freed.
+                    if let Some(parking_lot) = &state.parking_lot {
+                        s.update_clock(&parking_lot.last_release);
+                    }
                 });
             });
         drop(state);
 
         // If we won the race for permits of an unfair semaphore, re-block
         // other waiting threads that can no longer succeed.
+        if res.is_ok() {
+            self.reblock_if_unfair();
+        }
+
+        crate::annotations::record_semaphore_try_acquire(id, num_permits, res.is_ok());
+
+        res
+    }
+
+    /// As [`BatchSemaphore::try_acquire`], but also fails while a request waits in the queue (see
+    /// [`BatchSemaphore::has_waiters`]), even if the permits are free. The motivating use case is
+    /// `parking_lot`'s `try_write`, a compare-and-swap of the lock word from zero, which fails
+    /// while `PARKED_BIT` is set. On a [`Fairness::ParkingLot`] semaphore, a failure is also
+    /// causally after the changes to the queue, as for `has_waiters`, and after the releases, as
+    /// [`BatchSemaphore::load_permits`] is.
+    pub fn try_acquire_without_overtaking(&self, num_permits: usize) -> Result<(), TryAcquireError> {
+        thread::switch();
+
+        self.init_object_id();
+        let mut state = self.state.borrow_mut();
+        let id = state.id.unwrap();
+        let res = if state.closed {
+            Err(TryAcquireError::Closed)
+        } else if state.waiters.iter().any(|waiter| !is_stale(waiter)) {
+            Err(TryAcquireError::NoPermits)
+        } else {
+            state.acquire_permits(num_permits, self.fairness, Priority::Back)
+        };
+        if res.is_err() {
+            ExecutionState::with(|s| {
+                s.update_clock(&state.permits_available.last_acquire);
+                if let Some(parking_lot) = &state.parking_lot {
+                    s.update_clock(&parking_lot.last_queue_change);
+                    s.update_clock(&parking_lot.last_release);
+                }
+            });
+        }
+        drop(state);
+
         if res.is_ok() {
             self.reblock_if_unfair();
         }
@@ -722,6 +1237,17 @@ impl BatchSemaphore {
 
         assert!(!waiter.has_permits.load(Ordering::SeqCst));
         assert!(!waiter.is_queued.swap(true, Ordering::SeqCst));
+
+        if self.fairness == Fairness::ParkingLot {
+            // The `Acquire` reports this park itself (see `Waiter::park_unreported`).
+            let parking_lot = state.parking_lot();
+            parking_lot.last_queue_change.update(&current::clock());
+            if waiter.ticket.load(Ordering::SeqCst) == 0 {
+                waiter.ticket.store(parking_lot.next_ticket, Ordering::SeqCst);
+                parking_lot.next_ticket += 1;
+            }
+            waiter.park_unreported.store(false, Ordering::SeqCst);
+        }
     }
 
     fn remove_waiter(&self, waiter: &Arc<Waiter>) {
@@ -754,6 +1280,11 @@ impl BatchSemaphore {
                 }
             }
             Fairness::Unfair => {}
+            // A parked `parking_lot` thread whose timed lock times out unparks nobody either.
+            Fairness::ParkingLot => {
+                let clock = current::clock();
+                state.parking_lot().last_queue_change.update(&clock);
+            }
         }
     }
 
@@ -767,12 +1298,21 @@ impl BatchSemaphore {
 
         assert!(state.is_reserved_by(waiter));
         state.reservation = None;
+        if self.fairness == Fairness::ParkingLot {
+            // It changes what `load_permits` reads.
+            state.parking_lot().last_release.update(&current::clock());
+        }
 
         // Wake the waiters that can now take the permits, unless `release`
         // wouldn't either (see `ExecutionState::should_stop`).
         let can_wake = ExecutionState::try_with(|s| !s.stops(std::thread::panicking())).unwrap_or(false);
         if can_wake {
-            state.wake_unfair_waiters();
+            match self.fairness {
+                Fairness::Unfair => state.wake_unfair_waiters(),
+                // As a writer that gives up `WRITER_BIT` unparks threads, without a hand-off.
+                Fairness::ParkingLot => state.wake_parking_lot(Wake::Plain, false),
+                Fairness::StrictlyFair => unreachable!("a strictly fair semaphore has no reservations"),
+            }
         }
     }
 
@@ -790,7 +1330,7 @@ impl BatchSemaphore {
 
     /// Acquire `num_permits` permits, and reserve the semaphore for this request
     /// as soon as at least `min_permits` permits are available (async API). Only
-    /// an unfair semaphore supports this.
+    /// an unfair or a [`Fairness::ParkingLot`] semaphore supports this.
     ///
     /// Until `min_permits` permits are available, the request waits like one
     /// from [`BatchSemaphore::acquire`]: it holds nothing and stops no other
@@ -810,15 +1350,19 @@ impl BatchSemaphore {
     /// At most one request can hold the reservation. Another reserving request
     /// waits like any other until the reservation ends.
     ///
+    /// On a [`Fairness::ParkingLot`] semaphore, a parked reserving request is
+    /// woken and tries again like any other, and a
+    /// [`BatchSemaphore::release_fair`] that lets it in hands it the
+    /// reservation, as `parking_lot` hands a writer `WRITER_BIT`.
+    ///
     /// # Panics
     ///
     /// Panics if the semaphore is strictly fair (its queue already keeps the
     /// permits for its first waiter), if `num_permits` is zero, or if
     /// `min_permits > num_permits`.
     pub fn acquire_reserving(&self, min_permits: usize, num_permits: usize) -> Acquire<'_> {
-        assert_eq!(
-            self.fairness,
-            Fairness::Unfair,
+        assert!(
+            self.fairness != Fairness::StrictlyFair,
             "only an unfair semaphore supports reservations"
         );
         assert!(num_permits > 0);
@@ -828,27 +1372,54 @@ impl BatchSemaphore {
         Acquire::new_reserving(self, num_permits, min_permits)
     }
 
-    /// Release `num_permits` back to the Semaphore
+    /// Release `num_permits` back to the Semaphore. On a [`Fairness::ParkingLot`] semaphore, this
+    /// wakes the waiters that the permits let in, as `parking_lot`'s plain unlocks do.
     pub fn release(&self, num_permits: usize) {
+        self.release_with(num_permits, Wake::Plain);
+    }
+
+    /// [`BatchSemaphore::release`], but on a [`Fairness::ParkingLot`] semaphore, hand the permits
+    /// to the waiters that they let in, inside the release, and the reservation to one that they
+    /// let reserve but not take all of its permits, as the `unlock_fair` of `parking_lot`'s
+    /// `MutexGuard` and `RwLockWriteGuard`, and the `bump` of those and of
+    /// `RwLockUpgradableReadGuard`, do. In `parking_lot` 0.12.5,
+    /// `RwLockUpgradableReadGuard::unlock_fair` is a plain unlock, a `release`, and the fair unlock
+    /// and `bump` of `RwLockReadGuard` are a [`BatchSemaphore::release_without_waking`].
+    pub fn release_fair(&self, num_permits: usize) {
+        self.release_with(num_permits, Wake::HandOff);
+    }
+
+    /// [`BatchSemaphore::release`], but on a [`Fairness::ParkingLot`] semaphore, wake no waiter in
+    /// the queue, as `parking_lot`'s `unlock_shared` wakes only a writer that waits for the readers
+    /// to leave: this wakes the holder of the reservation once all of its permits are free. If the
+    /// holder's task has finished, it drops the reservation and wakes the queue as `release` does,
+    /// and while no request holds the reservation, it lets a woken waiter that has been overtaken
+    /// `parking_lot_fairness_bound` times try, like any release (see [`Fairness::ParkingLot`]).
+    pub fn release_without_waking(&self, num_permits: usize) {
+        self.release_with(num_permits, Wake::NotQueue);
+    }
+
+    #[inline]
+    fn release_with(&self, num_permits: usize, wake: Wake) {
         // Execution teardown can unwind a task's stack from this scheduling point, which is often in
         // a destructor that releases a lock (see `ExecutionState::tear_down`). The permits must not
         // be lost then, as destructors that run later can need them.
-        struct ReleaseOnUnwind<'a>(&'a BatchSemaphore, usize);
+        struct ReleaseOnUnwind<'a>(&'a BatchSemaphore, usize, Wake);
         impl Drop for ReleaseOnUnwind<'_> {
             fn drop(&mut self) {
-                self.0.release_no_scheduling_point(self.1);
+                self.0.release_no_scheduling_point(self.1, self.2);
             }
         }
-        let release_on_unwind = ReleaseOnUnwind(self, num_permits);
+        let release_on_unwind = ReleaseOnUnwind(self, num_permits, wake);
         thread::switch();
         std::mem::forget(release_on_unwind);
 
-        self.release_no_scheduling_point(num_permits);
+        self.release_no_scheduling_point(num_permits, wake);
     }
 
-    /// `release` without its scheduling point.
+    /// `release_with` without its scheduling point.
     #[inline]
-    fn release_no_scheduling_point(&self, num_permits: usize) {
+    fn release_no_scheduling_point(&self, num_permits: usize, wake: Wake) {
         self.init_object_id();
         if num_permits == 0 {
             return;
@@ -872,6 +1443,11 @@ impl BatchSemaphore {
             state.waiters.clear();
             state.reservation = None;
             state.closed = true;
+            if self.fairness == Fairness::ParkingLot {
+                for waiter in state.close_parking_lot() {
+                    waiter.waker.lock().unwrap().take();
+                }
+            }
             return;
         }
 
@@ -899,6 +1475,11 @@ impl BatchSemaphore {
                 // there are enough permits available, then let them race
                 state.wake_unfair_waiters();
             }
+            Fairness::ParkingLot => {
+                // in a ParkingLot mode, we will wake the waiters that the permits
+                // let in, or hand the permits to them, as `wake` says
+                state.wake_parking_lot(wake, true);
+            }
         }
         drop(state);
     }
@@ -925,10 +1506,11 @@ impl BatchSemaphore {
     /// soon as they release. The returned future must be driven to completion; if it is dropped
     /// first, the caller still holds `permits_currently_held`.
     ///
-    /// An unfair semaphore has no queue to overtake, so there the upgrade reserves the semaphore
-    /// instead (see [`BatchSemaphore::acquire_reserving`]), at once unless another request holds
-    /// the reservation. From then on, no other request can take a permit, so the upgrade again
-    /// waits only for the tasks that hold permits, and nothing can overtake it.
+    /// An unfair or a [`Fairness::ParkingLot`] semaphore lets requests overtake its queue anyway,
+    /// so there the upgrade reserves the semaphore instead (see
+    /// [`BatchSemaphore::acquire_reserving`]), at once unless another request holds the
+    /// reservation. From then on, no other request can take a permit, so the upgrade again waits
+    /// only for the tasks that hold permits, and nothing can overtake it.
     ///
     /// At most one `upgrade` may be in flight on a semaphore at a time. Two concurrent upgraders
     /// could each be waiting for permits the other holds, which no queue discipline can resolve.
@@ -942,7 +1524,7 @@ impl BatchSemaphore {
         let num_permits = permits_to_be_held - permits_currently_held;
         match self.fairness {
             Fairness::StrictlyFair => Acquire::new(self, num_permits, Priority::Front),
-            Fairness::Unfair => Acquire::new_reserving(self, num_permits, 0),
+            Fairness::Unfair | Fairness::ParkingLot => Acquire::new_reserving(self, num_permits, 0),
         }
     }
 
@@ -969,6 +1551,9 @@ impl BatchSemaphore {
                 // see the equivalent reasoning in `try_acquire`.
                 ExecutionState::with(|s| {
                     s.update_clock(&state.permits_available.last_acquire);
+                    if let Some(parking_lot) = &state.parking_lot {
+                        s.update_clock(&parking_lot.last_release);
+                    }
                 });
             });
         drop(state);
@@ -1101,6 +1686,32 @@ impl<'a> Acquire<'a> {
         }
     }
 
+    /// Did a release of a [`Fairness::ParkingLot`] semaphore wake this acquire to try again, which
+    /// it has not done yet (see `Waiter::woken`)?
+    fn is_woken(&self) -> bool {
+        self.waiter
+            .as_ref()
+            .is_some_and(|waiter| waiter.woken.load(Ordering::SeqCst))
+    }
+
+    /// Take this acquire's waiter, parked on a [`Fairness::ParkingLot`] semaphore by a task that
+    /// has finished (see `is_stale`), out of the queue, as a `parking_lot` thread whose timed lock
+    /// times out leaves it, so that the task that polls it now tries like a new request: it waited
+    /// for nobody, so a release may have passed it over. Returns whether it was stale.
+    fn leave_queue_if_stale(&self) -> bool {
+        let waiter = self
+            .waiter
+            .as_ref()
+            .expect("a queued acquire must have an allocated waiter");
+        if !is_stale(waiter) {
+            return false;
+        }
+        trace!("taking stale waiter {:?} out of the queue for its new poller", waiter);
+        self.semaphore.remove_waiter(waiter);
+        waiter.waker.lock().unwrap().take();
+        true
+    }
+
     fn grant_permits(&mut self) {
         match &self.waiter {
             Some(waiter) => waiter.has_permits.store(true, Ordering::SeqCst),
@@ -1122,8 +1733,8 @@ impl<'a> Acquire<'a> {
 
     /// The part of `poll` for a reserving acquire (see
     /// [`BatchSemaphore::acquire_reserving`]), once `poll` knows that it has no
-    /// permits yet and that the semaphore is open. Only an unfair semaphore has
-    /// reserving acquires.
+    /// permits yet and that the semaphore is open. A strictly fair semaphore has
+    /// no reserving acquires.
     fn poll_reserving(&mut self, min_permits: usize, cx: &mut Context<'_>) -> Poll<Result<(), AcquireError>> {
         let semaphore = self.semaphore;
         let is_queued = self.is_queued();
@@ -1136,6 +1747,7 @@ impl<'a> Acquire<'a> {
         let mut state = semaphore.state.borrow_mut();
         let id = state.id.unwrap();
         let available = state.permits_available.available();
+        let was_woken = semaphore.fairness == Fairness::ParkingLot && state.forget_woken(self.waiter.as_ref());
 
         if is_reserving {
             if available < self.num_permits {
@@ -1151,8 +1763,13 @@ impl<'a> Acquire<'a> {
             // The reservation kept the permits for us, so take them.
             state.reservation = None;
             state.take_permits(self.num_permits).unwrap();
-            // Let the waiters race for any permits that are left.
-            state.wake_unfair_waiters();
+            if semaphore.fairness != Fairness::ParkingLot {
+                // Let the waiters race for any permits that are left.
+                state.wake_unfair_waiters();
+            } else if state.permits_available.available() > 0 {
+                // Wake the waiters that the permits that are left let in.
+                state.wake_parking_lot(Wake::Plain, false);
+            }
             drop(state);
 
             let waiter = self
@@ -1173,6 +1790,10 @@ impl<'a> Acquire<'a> {
             let waiter = self.waiter_for_blocking();
             *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
             waiter.set_task_id(ExecutionState::me());
+            if was_woken {
+                // It lost the race that a release woke it for (see `Waiter::overtakes`).
+                waiter.overtakes.fetch_add(1, Ordering::SeqCst);
+            }
             if !is_queued {
                 crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
                 semaphore.enqueue_waiter(&waiter, Priority::Back);
@@ -1192,6 +1813,8 @@ impl<'a> Acquire<'a> {
                     .expect("a queued acquire must have an allocated waiter");
                 crate::annotations::record_semaphore_acquire_unblocked(id, waiter.task_id(), self.num_permits);
                 semaphore.remove_waiter(&waiter);
+            } else if was_woken {
+                crate::annotations::record_semaphore_acquire_unblocked(id, ExecutionState::me(), self.num_permits);
             } else {
                 crate::annotations::record_semaphore_acquire_fast(id, self.num_permits);
             }
@@ -1212,7 +1835,11 @@ impl<'a> Acquire<'a> {
         } else {
             crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
         }
-        semaphore.state.borrow_mut().reservation = Some(waiter);
+        let mut state = semaphore.state.borrow_mut();
+        // A request that the reservation refuses is after this one (see `try_acquire`).
+        state.permits_available.last_acquire.update(&current::clock());
+        state.reservation = Some(waiter);
+        drop(state);
         trace!("Acquire::poll for {:?} that reserved the semaphore", self);
         // No waiter can take a permit now.
         semaphore.reblock_if_unfair();
@@ -1247,6 +1874,8 @@ impl Future for Acquire<'_> {
         // *do not commute* because in one ordering the queue will be [T1 T2] and in the other ordering [T2 T1].
         // Thus we cannot apply the double-yield optimization for fair semaphores.
         //
+        // ParkingLot Semaphores: the same holds, as a release wakes waiters from the front of the queue.
+        //
         // Unfair Semaphores: blocking adds the current task to an *unordered set* of waiters. To check if the
         // double-yield is valid we check if each operation (Z) on the semaphore commutes with a blocking acquire (Y1):
         //
@@ -1258,13 +1887,17 @@ impl Future for Acquire<'_> {
         //       commutes, release operations also commute in this case.
         //
         // Thus we apply the double-yield optimization for *unfair* semaphores only
-        let blocking_is_not_commutative = self.semaphore.fairness == Fairness::StrictlyFair;
+        let blocking_is_not_commutative = self.semaphore.fairness != Fairness::Unfair;
 
         if self.never_polled && (will_succeed || blocking_is_not_commutative) {
             thread::switch();
         }
         self.never_polled = false;
 
+        // Takes a waiter that a finished task parked out of the queue (see `leave_queue_if_stale`).
+        // A queued waiter has no permits, and its semaphore is open (invariants (3) and (4)).
+        let parked =
+            self.semaphore.fairness == Fairness::ParkingLot && self.is_queued() && !self.leave_queue_if_stale();
         let out = if self.has_permits() {
             assert!(!self.is_queued());
             self.completed = true;
@@ -1275,6 +1908,19 @@ impl Future for Acquire<'_> {
             self.completed = true;
             trace!("Acquire::poll for {:?} with closed", self);
             Poll::Ready(Err(AcquireError::closed()))
+        } else if parked {
+            // A parked waiter does not try: a release that lets it in takes it out of the queue,
+            // and grants or wakes it. As on a fair semaphore, follow the current poller.
+            trace!("Acquire::poll for parked {:?}", self);
+            let waiter = self.waiter.as_ref().unwrap();
+            debug_assert!(waiter.waker.lock().unwrap().is_some());
+            *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
+            waiter.set_task_id(ExecutionState::me());
+            if waiter.park_unreported.swap(false, Ordering::SeqCst) {
+                let id = self.semaphore.state.borrow().id.unwrap();
+                crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
+            }
+            Poll::Pending
         } else if let Some(min_permits) = self.reserve_at {
             self.poll_reserving(min_permits, cx)
         } else {
@@ -1282,13 +1928,14 @@ impl Future for Acquire<'_> {
             trace!("Acquire::poll for {:?}; is queued: {is_queued:?}", self);
 
             // Sanity check: there should be a waker if the waiter is in
-            // the queue. Also true for unfair semaphores, which wake by ref.
+            // the queue. Also true for unfair semaphores, which wake by ref,
+            // and for woken waiters, which keep theirs.
             //
             // `debug_assert` rather than `assert`: this takes a `std::sync::Mutex`
             // on every poll, including the uncontended fast path, purely to check
             // an internal invariant.
             debug_assert_eq!(
-                is_queued,
+                is_queued || self.is_woken(),
                 self.waiter
                     .as_ref()
                     .is_some_and(|waiter| waiter.waker.lock().unwrap().is_some())
@@ -1319,6 +1966,8 @@ impl Future for Acquire<'_> {
                 // written this way to mirror the cases described above
                 (Fairness::Unfair, false) | (Fairness::StrictlyFair, false) | (Fairness::Unfair, true) => true,
                 (Fairness::StrictlyFair, true) => false,
+                // A woken waiter tries like a new one, and a parked one is polled above.
+                (Fairness::ParkingLot, _) => true,
             };
 
             if try_to_acquire {
@@ -1327,6 +1976,8 @@ impl Future for Acquire<'_> {
                 // clock, as this thread will be blocked below.
                 let mut state = self.semaphore.state.borrow_mut();
                 let id = state.id.unwrap();
+                let was_woken =
+                    self.semaphore.fairness == Fairness::ParkingLot && state.forget_woken(self.waiter.as_ref());
                 let acquire_result = state.acquire_permits(self.num_permits, self.semaphore.fairness, self.priority);
                 drop(state);
 
@@ -1343,6 +1994,9 @@ impl Future for Acquire<'_> {
                                 waiter.num_permits,
                             );
                             self.semaphore.remove_waiter(&waiter);
+                        } else if was_woken {
+                            let me = ExecutionState::me();
+                            crate::annotations::record_semaphore_acquire_unblocked(id, me, self.num_permits);
                         } else {
                             crate::annotations::record_semaphore_acquire_fast(id, self.num_permits);
                         }
@@ -1371,6 +2025,10 @@ impl Future for Acquire<'_> {
                         // may have been created by a different task.
                         waiter.set_task_id(ExecutionState::me());
 
+                        if was_woken {
+                            // It lost the race that a release woke it for.
+                            waiter.overtakes.fetch_add(1, Ordering::SeqCst);
+                        }
                         if !is_queued {
                             crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
                             // `enqueue_waiter` sets `is_queued` itself.
@@ -1435,6 +2093,16 @@ impl Drop for Acquire<'_> {
             // fire for an acquire that got its permits without ever allocating a
             // waiter, otherwise the semaphore leaks permits.
             self.semaphore.release(self.num_permits);
+        } else if self.semaphore.fairness == Fairness::ParkingLot && self.is_woken() {
+            // If a release woke the acquire to try again, and it never did, wake
+            // the waiters that the free permits let in in its place, unless
+            // `release` wouldn't either (see `ExecutionState::should_stop`).
+            trace!("passing on the wake of {:?}", self);
+            let mut state = self.semaphore.state.borrow_mut();
+            assert!(state.forget_woken(self.waiter.as_ref()));
+            if ExecutionState::try_with(|s| !s.stops(std::thread::panicking())).unwrap_or(false) {
+                state.wake_parking_lot(Wake::Plain, false);
+            }
         }
     }
 }
@@ -1458,5 +2126,169 @@ impl BatchSemaphore {
     /// Returns a reference to this semaphore's resource signature.
     pub fn signature(&self) -> &ResourceSignature {
         &self.signature
+    }
+}
+
+#[cfg(test)]
+mod parking_lot_filter_tests {
+    //! `take_unpark_set` takes exactly the waiters that `parking_lot` 0.12.5's unlocks unpark: the
+    //! filter of `RawRwLock::wake_parked_threads`, which this copies line by line, for every queue
+    //! of up to 8 parked requests and every release that unparks threads, and `unpark_one` of
+    //! `RawMutex`. A reader of the `RwLock` takes one permit, an upgradable reader a majority, and
+    //! a writer all of them, reserving the semaphore once no other writer or upgradable reader
+    //! holds it.
+    use super::*;
+
+    const N: usize = 1 << 30;
+    const UPGRADABLE: usize = N / 2 + 1;
+    const WRITER_RESERVES_AT: usize = N - UPGRADABLE + 1;
+
+    // `parking_lot`'s state bits, and the tokens that its requests park with.
+    const UPGRADABLE_BIT: usize = 0b0100;
+    const WRITER_BIT: usize = 0b1000;
+    const ONE_READER: usize = 0b10000;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Request {
+        Read,
+        UpgradableRead,
+        Write,
+    }
+
+    /// `wake_parked_threads`' filter, from `parking_lot`'s initial state `state`: which requests
+    /// of `queue` it unparks.
+    fn parking_lot_filter(queue: &[Request], mut state: usize) -> Vec<bool> {
+        let mut unparked = vec![false; queue.len()];
+        for (i, request) in queue.iter().enumerate() {
+            let token = match request {
+                Request::Read => ONE_READER,
+                Request::UpgradableRead => ONE_READER | UPGRADABLE_BIT,
+                Request::Write => WRITER_BIT,
+            };
+            if state & WRITER_BIT != 0 {
+                break; // FilterOp::Stop
+            }
+            if token & (UPGRADABLE_BIT | WRITER_BIT) != 0 && state & UPGRADABLE_BIT != 0 {
+                continue; // FilterOp::Skip
+            }
+            state += token;
+            unparked[i] = true;
+        }
+        unparked
+    }
+
+    /// The waiters of `take_unpark_set` for a queue of `(min_permits, num_permits)` with
+    /// `available` free permits: which ones it takes.
+    fn shuttle_filter(queue: &[(usize, usize)], available: usize) -> Vec<bool> {
+        let waiters = queue
+            .iter()
+            .map(|&(min_permits, num_permits)| {
+                Arc::new(Waiter {
+                    task_id: AtomicUsize::new(0),
+                    num_permits,
+                    min_permits,
+                    is_queued: AtomicBool::new(true),
+                    has_permits: AtomicBool::new(false),
+                    woken: AtomicBool::new(false),
+                    overtakes: AtomicUsize::new(0),
+                    ticket: AtomicUsize::new(0),
+                    park_unreported: AtomicBool::new(false),
+                    clock: VectorClock::new(),
+                    waker: Mutex::new(None),
+                })
+            })
+            .collect::<Vec<_>>();
+        let semaphore = BatchSemaphore::const_new(available, Fairness::ParkingLot);
+        let mut state = semaphore.state.borrow_mut();
+        state.waiters.extend(waiters.iter().cloned());
+        let unparked = state.take_unpark_set();
+        let taken = waiters
+            .iter()
+            .map(|waiter| unparked.iter().any(|w| Arc::ptr_eq(w, waiter)))
+            .collect::<Vec<_>>();
+        // The rest stay in the queue, in order.
+        let stayed = waiters.iter().zip(&taken).filter(|(_, &taken)| !taken);
+        assert!(stayed
+            .map(|(waiter, _)| Arc::as_ptr(waiter))
+            .eq(state.waiters.iter().map(Arc::as_ptr)));
+        taken
+    }
+
+    fn permits(request: Request) -> (usize, usize) {
+        match request {
+            Request::Read => (1, 1),
+            Request::UpgradableRead => (UPGRADABLE, UPGRADABLE),
+            Request::Write => (WRITER_RESERVES_AT, N),
+        }
+    }
+
+    /// Every queue of up to `max_len` requests.
+    fn queues(max_len: usize) -> Vec<Vec<Request>> {
+        let mut all = vec![vec![]];
+        let mut longest = vec![vec![]];
+        for _ in 0..max_len {
+            longest = longest
+                .iter()
+                .flat_map(|queue: &Vec<Request>| {
+                    [Request::Read, Request::UpgradableRead, Request::Write].map(|request| {
+                        let mut queue = queue.clone();
+                        queue.push(request);
+                        queue
+                    })
+                })
+                .collect();
+            all.extend(longest.iter().cloned());
+        }
+        all
+    }
+
+    #[test]
+    fn rwlock_wake_sets_match_parking_lot() {
+        // Each release that unparks threads: `parking_lot`'s initial filter state, and the permits
+        // that are free after it in Shuttle, while `readers` readers keep holding the lock.
+        let mut releases = vec![
+            ("unlock_exclusive", 0, 0, N),
+            ("downgrade", 0, ONE_READER, N - 1),
+            (
+                "downgrade_to_upgradable",
+                0,
+                ONE_READER | UPGRADABLE_BIT,
+                N - UPGRADABLE,
+            ),
+        ];
+        for readers in 0..4 {
+            releases.extend([
+                ("unlock_upgradable", readers, 0, N - readers),
+                ("downgrade_upgradable", readers, ONE_READER, N - 1 - readers),
+                ("a writer that waits for the readers times out", readers, 0, N - readers),
+                (
+                    "an upgrade that waits for the readers times out",
+                    readers,
+                    ONE_READER | UPGRADABLE_BIT,
+                    N - UPGRADABLE - readers,
+                ),
+            ]);
+        }
+        let mut checked = 0;
+        for queue in queues(8) {
+            let shape = queue.iter().map(|&request| permits(request)).collect::<Vec<_>>();
+            for &(release, readers, state, available) in &releases {
+                assert_eq!(
+                    shuttle_filter(&shape, available),
+                    parking_lot_filter(&queue, state),
+                    "{release} with {readers} readers staying, queue {queue:?}"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 186_979);
+    }
+
+    #[test]
+    fn mutex_wakes_the_head_only() {
+        for len in 0..8 {
+            let unparked = shuttle_filter(&vec![(1, 1); len], 1);
+            assert_eq!(unparked, (0..len).map(|i| i == 0).collect::<Vec<_>>());
+        }
     }
 }

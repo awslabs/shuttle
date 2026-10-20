@@ -47,6 +47,23 @@ pub struct Config {
 
     /// The config to define how to handle ungraceful shutdowns, ie. when the test panics.
     pub ungraceful_shutdown_config: UngracefulShutdownConfig,
+
+    /// How often other requests can overtake a woken request of a
+    /// [`Fairness::ParkingLot`](crate::future::batch_semaphore::Fairness::ParkingLot) semaphore,
+    /// such as a lock of `shuttle-parking_lot`, before it tries at the next release or read (only
+    /// at a read while another request holds the reservation), as its thread would have by then:
+    /// this stands in for the eventual fairness of `parking_lot`, as a Shuttle scheduler can keep a
+    /// runnable task from running forever. For tasks that wait in blocking calls, as the locks of
+    /// `shuttle-parking_lot` do, a larger bound explores more of the schedules in which woken
+    /// requests lose, at the cost of more schedules: about twice as many per step of the bound for
+    /// a loop that takes and releases a lock that another task waits for. For an async task that
+    /// keeps a woken `Acquire` pending, a grant holds the permits until the task polls it again, so
+    /// a deadlock found at one bound can disappear at a larger one (see `Fairness::ParkingLot`).
+    /// At 0, every release grants the requests that it wakes, so a `Mutex` has the schedules of a
+    /// strictly fair one.
+    ///
+    /// The default is 2.
+    pub parking_lot_fairness_bound: usize,
 }
 
 std::thread_local! {
@@ -143,6 +160,7 @@ impl Config {
             silence_warnings: false,
             record_steps_in_span: false,
             ungraceful_shutdown_config: UngracefulShutdownConfig::default(),
+            parking_lot_fairness_bound: 2,
         }
     }
 }
