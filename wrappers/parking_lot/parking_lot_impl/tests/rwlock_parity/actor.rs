@@ -4,17 +4,25 @@
 
 use super::reference::Op::{self, *};
 use super::reference::{Holding, add_one};
-use lock_api::{RawRwLockUpgradeDowngrade, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard, RwLockWriteGuard};
+use lock_api::{
+    RawRwLockFair, RawRwLockUpgradeDowngrade, RawRwLockUpgradeFair, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard,
+    RwLockWriteGuard,
+};
+
+/// The raw-lock abilities that the programs use: upgrades, downgrades, and fair unlocks. Both
+/// Shuttle's `RawRwLock` and `parking_lot`'s have them all.
+pub trait RawLock: RawRwLockUpgradeDowngrade + RawRwLockFair + RawRwLockUpgradeFair {}
+impl<R: RawRwLockUpgradeDowngrade + RawRwLockFair + RawRwLockUpgradeFair> RawLock for R {}
 
 /// The guard that a task holds.
-pub enum Guard<'a, R: RawRwLockUpgradeDowngrade> {
+pub enum Guard<'a, R: RawLock> {
     Nothing,
     Read(RwLockReadGuard<'a, R, u8>),
     Upgradable(RwLockUpgradableReadGuard<'a, R, u8>),
     Write(RwLockWriteGuard<'a, R, u8>),
 }
 
-impl<'a, R: RawRwLockUpgradeDowngrade> Guard<'a, R> {
+impl<'a, R: RawLock> Guard<'a, R> {
     /// The result of a `try_*` op: the new guard, and whether the op succeeded.
     pub fn tried<G>(g: Option<G>, wrap: fn(G) -> Self) -> (Self, Option<bool>) {
         match g {
@@ -46,6 +54,19 @@ impl<'a, R: RawRwLockUpgradeDowngrade> Guard<'a, R> {
             }
             (DowngradeUpgradable, Guard::Upgradable(g)) => (Guard::Read(RwLockUpgradableReadGuard::downgrade(g)), None),
             (Unlock, _) => (Guard::Nothing, None),
+            (UnlockFair, Guard::Read(g)) => {
+                RwLockReadGuard::unlock_fair(g);
+                (Guard::Nothing, None)
+            }
+            (UnlockFair, Guard::Upgradable(g)) => {
+                RwLockUpgradableReadGuard::unlock_fair(g);
+                (Guard::Nothing, None)
+            }
+            (UnlockFair, Guard::Write(g)) => {
+                RwLockWriteGuard::unlock_fair(g);
+                (Guard::Nothing, None)
+            }
+            (UnlockFair, Guard::Nothing) => (Guard::Nothing, None),
             (Signal | AwaitSignal, guard) => (guard, None),
             (op, _) => panic!("invalid program: {} with the wrong guard", op.name()),
         }
@@ -64,7 +85,7 @@ impl<'a, R: RawRwLockUpgradeDowngrade> Guard<'a, R> {
 
 /// Runs one task's program on a real lock, and records values and `try_*` results with the same
 /// rules as the reference model.
-pub struct Actor<'a, R: RawRwLockUpgradeDowngrade> {
+pub struct Actor<'a, R: RawLock> {
     lock: &'a RwLock<R, u8>,
     guard: Guard<'a, R>,
     /// The index of the next op in the task's program.
@@ -75,7 +96,7 @@ pub struct Actor<'a, R: RawRwLockUpgradeDowngrade> {
     pub tries: Vec<(usize, bool)>,
 }
 
-impl<'a, R: RawRwLockUpgradeDowngrade> Actor<'a, R> {
+impl<'a, R: RawLock> Actor<'a, R> {
     pub fn new(lock: &'a RwLock<R, u8>) -> Self {
         Self {
             lock,
@@ -99,10 +120,20 @@ impl<'a, R: RawRwLockUpgradeDowngrade> Actor<'a, R> {
     /// Runs the task's next op, `op`. For `Signal` and `AwaitSignal`, the caller sends or receives
     /// first (see [`Guard::apply`]).
     pub fn step(&mut self, op: Op) {
+        self.step_with(op, Guard::apply);
+    }
+
+    /// [`Actor::step`], but runs `op` with `apply` in place of [`Guard::apply`], for example with
+    /// timed requests. Returns what `apply` returns besides the guard.
+    pub fn step_with(
+        &mut self,
+        op: Op,
+        apply: impl FnOnce(Guard<'a, R>, &'a RwLock<R, u8>, Op) -> (Guard<'a, R>, Option<bool>),
+    ) -> Option<bool> {
         // The value rule of the reference model: record the value after each lock op that leaves the
         // task holding the lock, then add 1 on getting exclusive access.
         let was_exclusive = matches!(self.guard, Guard::Write(_));
-        let (guard, ok) = std::mem::replace(&mut self.guard, Guard::Nothing).apply(self.lock, op);
+        let (guard, ok) = apply(std::mem::replace(&mut self.guard, Guard::Nothing), self.lock, op);
         self.guard = guard;
         self.tries.extend(ok.map(|ok| (self.pc, ok)));
         if op.is_lock_op() {
@@ -114,5 +145,6 @@ impl<'a, R: RawRwLockUpgradeDowngrade> Actor<'a, R> {
             }
         }
         self.pc += 1;
+        ok
     }
 }

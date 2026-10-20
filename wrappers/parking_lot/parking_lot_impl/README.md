@@ -9,7 +9,18 @@ directly, depend on `shuttle-parking_lot` instead.
 Like the real `parking_lot` crate, these implementations are layered on top of the
 [`lock_api`](https://crates.io/crates/lock_api) crate. This crate supplies Shuttle-backed *raw*
 locks (`RawMutex` and `RawRwLock`, built on Shuttle's `BatchSemaphore`) that implement the relevant
-`lock_api` raw traits; the user-facing `Mutex`/`RwLock`, their guards, the mapped guards, and the
+`lock_api` raw traits. `RawRwLock` matches each new request against the free permits of its
+semaphore, on which a writer and an upgrade reserve the lock, as `parking_lot`'s `WRITER_BIT` does,
+so it grants and refuses the same requests as `parking_lot` (with the exceptions in Limitations).
+Both locks unlock as `parking_lot`'s do (Shuttle's `Fairness::ParkingLot`): a plain unlock wakes
+the threads that `parking_lot` would unpark and leaves the lock free, so that another thread can
+take it first, and a woken thread that finds it taken parks again at the back of the queue.
+`unlock_fair` and the `bump` methods hand the lock to the woken threads instead. In place of
+`parking_lot`'s timer, which makes an unlock fair now and then, a woken thread that has been
+overtaken `Config::parking_lot_fairness_bound` times (2 by default) is handed the lock, so that no
+loop of unlocks can starve it. `is_locked`/`is_locked_exclusive` read the
+lock state with no effect, like `parking_lot`'s loads of the lock word. Both locks record vector
+clocks and Shuttle Explorer events. The user-facing `Mutex`/`RwLock`, their guards, the mapped guards, and the
 `Arc`-based guards are the generic `lock_api` types specialised to those raw locks. As a result the
 `Mutex`/`RwLock` surface — including `lock_arc`/`read_arc`/`write_arc`, upgradable reads, and
 downgrading — matches `parking_lot`, and the `lock_api` raw types are re-exported so code that names
@@ -22,6 +33,24 @@ Shuttle's `parking_lot` functionality currently covers the `Mutex` and `RwLock` 
 their guards, including the `Arc`-based and mapped guards). Other `parking_lot` types (for example
 `ReentrantMutex` and `Condvar`), the `*Timed` lock APIs, and recursive read locks
 (`RwLock::read_recursive`) are not yet provided. As in `parking_lot`, guards are `!Send` by default
-and become `Send` (when the data allows) under the `send_guard` feature. If your project needs
-functionality which is not currently supported, please file an issue or, better yet, open a PR to
-contribute the functionality.
+and become `Send` (when the data allows) under the `send_guard` feature.
+
+The fairness bound stands in for `parking_lot`'s timer, so Shuttle explores only the schedules in
+which a woken thread is overtaken at most that many times in a row. A deadlock that needs more is
+found only with a larger `Config::parking_lot_fairness_bound`, for example a reader that stays
+parked behind a writer that two or more unlocks pass before an upgradable reader takes the lock. A
+larger bound also explores more schedules, and a bound of 0 hands the lock over at every unlock, so
+that the locks are fair, as they were before they modelled `parking_lot`'s unfair unlocks
+([#259](https://github.com/awslabs/shuttle/issues/259)). As for every Shuttle lock, a scheduler can
+also keep a task from running before it asks for the lock at all.
+
+An unlock that a task makes while it panics closes the lock for the rest of the execution, as
+Shuttle models lock poisoning, also if the task catches the panic. After that, `try_lock` and the
+other `try_*` methods fail, `is_locked` is true, and a blocking lock panics, except while a task is
+unwinding: then it returns without the lock, so that destructors can finish. Tasks share one OS
+thread, so this also happens in a task that runs while another one is suspended in the middle of
+unwinding, which can then get a guard while another task holds the lock. `parking_lot`'s locks are
+not poisoned.
+
+If your project needs functionality which is not currently supported, please file an issue or,
+better yet, open a PR to contribute the functionality.

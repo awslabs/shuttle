@@ -25,44 +25,12 @@
 #[allow(dead_code)]
 mod rwlock_parity;
 
-use rwlock_parity::harness::Kind::*;
 use rwlock_parity::harness::{KnownDivergence, QUEUED, REQUESTED, Scenario, TRANSITIONS, check_table, describe};
 use rwlock_parity::reference::Op::{self, *};
 
-/// Each entry is explained by the same cause as the known divergences of `rwlock_admission_parity`:
-/// Shuttle's strictly fair `BatchSemaphore` refuses a plain read while a waiter is queued, and
-/// `parking_lot` refuses a plain read only while `WRITER_BIT` is set.
-///
-/// * `downgrade_to_upgradable`, `hold`: after the downgrade the main task holds an upgradable read.
-///   A queued `write` or `upgradable_read` is at the head of Shuttle's queue, and no request can pass
-///   it (`BatchSemaphoreState` invariant 1), so the plain read waits for ever. `parking_lot` admits
-///   the read at once.
-/// * `downgrade_upgradable` with a queued `upgradable_read`: before the downgrade, the main task
-///   holds an upgradable read and the second task waits for one. This is the admission divergence of
-///   `rwlock_admission_parity`, in its `try_read` form. It happens in both variants, because the
-///   `try_read` can come before the main task unlocks.
-const KNOWN_DIVERGENCES: &[KnownDivergence] = &[
-    KnownDivergence {
-        scenario: "write+downgrade_to_upgradable | hold | upgradable_read | read",
-        kinds: &[FalseDeadlock],
-    },
-    KnownDivergence {
-        scenario: "write+downgrade_to_upgradable | hold | write | read",
-        kinds: &[FalseDeadlock],
-    },
-    KnownDivergence {
-        scenario: "write+downgrade_to_upgradable | hold | upgradable_read+upgrade | read",
-        kinds: &[FalseDeadlock],
-    },
-    KnownDivergence {
-        scenario: "upgradable_read+downgrade_upgradable | release | upgradable_read | try_read",
-        kinds: &[TryResults, ShuttleOnlyValues],
-    },
-    KnownDivergence {
-        scenario: "upgradable_read+downgrade_upgradable | hold | upgradable_read | try_read",
-        kinds: &[TryResults, ShuttleOnlyValues],
-    },
-];
+/// The scenarios where the Shuttle model is known to be wrong, with the reason for each. There are
+/// none: Shuttle matches the reference model in every scenario of this table.
+const KNOWN_DIVERGENCES: &[KnownDivergence] = &[];
 
 #[test]
 fn transition_parity_upgrade() {

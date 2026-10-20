@@ -76,6 +76,12 @@ jobs:
         uses: taiki-e/install-action@nextest
       - name: cargo nextest
         run: cargo nextest run --release --workspace
+        # Checks `shuttle-parking_lot`'s `RwLock` against the exact model of `parking_lot` on more
+        # random programs than a PR does, including programs of four tasks, which take Shuttle up to
+        # a minute each (see `wrappers/parking_lot/parking_lot_impl/tests/rwlock_exact_parity.rs`).
+        env:
+          RWLOCK_EXACT_PARITY_PROGRAMS: 120
+          RWLOCK_EXACT_PARITY_FOUR_TASK_PROGRAMS: 30
       - name: cargo test --doc
         run: cargo test --release --doc --workspace
       # Requires v1.3.0 or newer: earlier releases declare `runs.using: node20`,
