@@ -6124,4 +6124,140 @@ mod parking_lot_tests {
             "expected panic"
         );
     }
+
+    /// A failed `try_acquire_without_overtaking` (a `try_write`) is causally after the release that
+    /// freed the permit its holder took, as `load_permits` is, and not only after the holder's
+    /// acquire: a replay up to its clock must not leave out task A's release, or task B, which
+    /// takes A's permit, parks instead, and the replay ends before the failure.
+    #[test_log::test]
+    fn failed_try_acquire_without_overtaking_is_after_the_release_the_holder_took() {
+        static FAILURE_CLOCK: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+        static B_HOLDS: AtomicBool = AtomicBool::new(false);
+
+        fn holder_took_a_released_permit() {
+            B_HOLDS.store(false, Ordering::SeqCst);
+            let s = Arc::new(sem(1));
+            let a = {
+                let s = Arc::clone(&s);
+                thread::spawn(move || {
+                    s.acquire_blocking(1).unwrap();
+                    s.release(1);
+                })
+            };
+            let b = {
+                let s = Arc::clone(&s);
+                thread::spawn(move || {
+                    s.acquire_blocking(1).unwrap();
+                    B_HOLDS.store(true, Ordering::SeqCst);
+                    thread::yield_now();
+                    B_HOLDS.store(false, Ordering::SeqCst);
+                    s.release(1);
+                })
+            };
+            match s.try_acquire_without_overtaking(1) {
+                Ok(()) => s.release(1),
+                Err(_) if B_HOLDS.load(Ordering::SeqCst) => {
+                    *FAILURE_CLOCK.lock().unwrap() = current::clock().to_vec();
+                    panic!("expected panic");
+                }
+                Err(_) => {}
+            }
+            a.join().unwrap();
+            b.join().unwrap();
+        }
+
+        assert_eq!(
+            replay_up_to_the_failure_clock(holder_took_a_released_permit, &FAILURE_CLOCK),
+            "expected panic"
+        );
+    }
+
+    /// As `failed_try_acquire_without_overtaking_is_after_the_release_the_holder_took`, for
+    /// `try_acquire` (a `Mutex::try_lock`).
+    #[test_log::test]
+    fn failed_try_acquire_is_after_the_release_the_holder_took() {
+        static FAILURE_CLOCK: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+        static B_HOLDS: AtomicBool = AtomicBool::new(false);
+
+        fn holder_took_a_released_permit() {
+            B_HOLDS.store(false, Ordering::SeqCst);
+            let s = Arc::new(sem(1));
+            let a = {
+                let s = Arc::clone(&s);
+                thread::spawn(move || {
+                    s.acquire_blocking(1).unwrap();
+                    s.release(1);
+                })
+            };
+            let b = {
+                let s = Arc::clone(&s);
+                thread::spawn(move || {
+                    s.acquire_blocking(1).unwrap();
+                    B_HOLDS.store(true, Ordering::SeqCst);
+                    thread::yield_now();
+                    B_HOLDS.store(false, Ordering::SeqCst);
+                    s.release(1);
+                })
+            };
+            match s.try_acquire(1) {
+                Ok(()) => s.release(1),
+                Err(_) if B_HOLDS.load(Ordering::SeqCst) => {
+                    *FAILURE_CLOCK.lock().unwrap() = current::clock().to_vec();
+                    panic!("expected panic");
+                }
+                Err(_) => {}
+            }
+            a.join().unwrap();
+            b.join().unwrap();
+        }
+
+        assert_eq!(
+            replay_up_to_the_failure_clock(holder_took_a_released_permit, &FAILURE_CLOCK),
+            "expected panic"
+        );
+    }
+
+    /// `has_waiters` read on its own, not right after `load_permits`, is causally after the acquire
+    /// that made the waiter park, and not only after the park: a replay up to its clock must not
+    /// leave out the holder's acquire, or the waiter takes the permit instead of parking, and the
+    /// replay ends before the failure. The holder makes an event of its own first, so that its
+    /// acquire is not already in the waiter's past.
+    #[test_log::test]
+    fn has_waiters_is_after_the_holder_of_the_permits() {
+        static FAILURE_CLOCK: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+        fn waiter_parked_behind_another_task() {
+            let s = Arc::new(sem(1));
+            let holder = {
+                let s = Arc::clone(&s);
+                thread::spawn(move || {
+                    // An event of this task first, as for a task that did something before.
+                    BatchSemaphore::new(0, Fairness::Unfair).release(1);
+                    if s.try_acquire(1).is_ok() {
+                        thread::yield_now();
+                        s.release(1);
+                    }
+                })
+            };
+            let waiter = {
+                let s = Arc::clone(&s);
+                thread::spawn(move || {
+                    s.acquire_blocking(1).unwrap();
+                    s.release(1);
+                })
+            };
+            thread::yield_now();
+            if s.has_waiters() {
+                *FAILURE_CLOCK.lock().unwrap() = current::clock().to_vec();
+                panic!("expected panic");
+            }
+            holder.join().unwrap();
+            waiter.join().unwrap();
+        }
+
+        assert_eq!(
+            replay_up_to_the_failure_clock(waiter_parked_behind_another_task, &FAILURE_CLOCK),
+            "expected panic"
+        );
+    }
 }

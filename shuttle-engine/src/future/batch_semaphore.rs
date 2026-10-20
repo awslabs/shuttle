@@ -1018,8 +1018,9 @@ impl BatchSemaphore {
     /// This models `parking_lot`'s `PARKED_BIT`, which its locks' `bump` methods read. On a
     /// [`Fairness::ParkingLot`] semaphore, it is exactly that bit, and when it is true, it is
     /// causally after the changes to the queue, as a load of the bit is after the parks and
-    /// unparks that left it set. The other modes do not keep the clocks of their queues, so that
-    /// their requests do not pay for them.
+    /// unparks that left it set, and after what [`BatchSemaphore::load_permits`] is after, since a
+    /// waiter is parked because of the permits that others hold. The other modes do not keep the
+    /// clocks of their queues, so that their requests do not pay for them.
     pub fn has_waiters(&self) -> bool {
         let state = self.state.borrow();
         let waiting = state.waiters.iter().any(|waiter| !is_stale(waiter));
@@ -1028,6 +1029,10 @@ impl BatchSemaphore {
             let _ = ExecutionState::try_with(|s| {
                 if s.try_current().is_some() {
                     s.update_clock(&parking_lot.last_queue_change);
+                    // A waiter is parked because of the permits that others hold, so also after
+                    // what `load_permits` is after.
+                    s.update_clock(&state.permits_available.last_acquire);
+                    s.update_clock(&parking_lot.last_release);
                 }
             });
         }
@@ -1124,6 +1129,11 @@ impl BatchSemaphore {
                 // TODO: `permits_available`.
                 ExecutionState::with(|s| {
                     s.update_clock(&state.permits_available.last_acquire);
+                    // On a ParkingLot semaphore, also after the releases, as `load_permits` is: the
+                    // holders may hold permits that a release freed.
+                    if let Some(parking_lot) = &state.parking_lot {
+                        s.update_clock(&parking_lot.last_release);
+                    }
                 });
             });
         drop(state);
@@ -1143,7 +1153,8 @@ impl BatchSemaphore {
     /// [`BatchSemaphore::has_waiters`]), even if the permits are free. The motivating use case is
     /// `parking_lot`'s `try_write`, a compare-and-swap of the lock word from zero, which fails
     /// while `PARKED_BIT` is set. On a [`Fairness::ParkingLot`] semaphore, a failure is also
-    /// causally after the changes to the queue, as for `has_waiters`.
+    /// causally after the changes to the queue, as for `has_waiters`, and after the releases, as
+    /// [`BatchSemaphore::load_permits`] is.
     pub fn try_acquire_without_overtaking(&self, num_permits: usize) -> Result<(), TryAcquireError> {
         thread::switch();
 
@@ -1162,6 +1173,7 @@ impl BatchSemaphore {
                 s.update_clock(&state.permits_available.last_acquire);
                 if let Some(parking_lot) = &state.parking_lot {
                     s.update_clock(&parking_lot.last_queue_change);
+                    s.update_clock(&parking_lot.last_release);
                 }
             });
         }
@@ -1539,6 +1551,9 @@ impl BatchSemaphore {
                 // see the equivalent reasoning in `try_acquire`.
                 ExecutionState::with(|s| {
                     s.update_clock(&state.permits_available.last_acquire);
+                    if let Some(parking_lot) = &state.parking_lot {
+                        s.update_clock(&parking_lot.last_release);
+                    }
                 });
             });
         drop(state);
