@@ -1,3 +1,8 @@
+# 0.1.3 (Oct 20, 2026)
+
+* Fix `RwLock` blocking plain readers when a second upgradable reader waits behind an existing upgradable read. `read` and `try_read` can now take available permits while the second upgradable read waits. (#400)
+* Require `shuttle` 0.9.8 or later, which provides `BatchSemaphore::acquire_bypassable`.
+
 # 0.1.2 (Sep 21, 2026)
 
 * Make `RwLock` upgrades atomic: a writer blocked when `RwLockUpgradableReadGuard::upgrade` starts can no longer be granted the lock part-way through it, so the value an upgradable reader read cannot change across its own upgrade. `try_upgrade` no longer fails spuriously when a writer is merely queued, and `downgrade_to_upgradable` no longer deadlocks against a task waiting to take an upgradable read. The lock is now modelled as permit counts on a single semaphore (shared 1, upgradable a strict majority, exclusive all), so every transition between the three states is atomic. (#351)
