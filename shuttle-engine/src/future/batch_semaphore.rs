@@ -770,8 +770,7 @@ impl BatchSemaphore {
 
         // Wake the waiters that can now take the permits, unless `release`
         // wouldn't either (see `ExecutionState::should_stop`).
-        let can_wake = ExecutionState::try_with(|s| !s.stops(std::thread::panicking())).unwrap_or(false);
-        if can_wake {
+        if !ExecutionState::should_stop() {
             state.wake_unfair_waiters();
         }
     }
@@ -862,10 +861,9 @@ impl BatchSemaphore {
         // ordinary release, because the panic may be caught and the execution may continue.
         // Shuttle's `Mutex` and `RwLock` record poisoning in their inner `std::sync::Mutex` and
         // `std::sync::RwLock`. If the execution has stopped, or its state is borrowed, the waiters
-        // cannot be unblocked. In that case, the release adds the permits, clears the waiter queue,
-        // and closes the semaphore.
-        let stopped = ExecutionState::try_with(|s| s.stops(false)).unwrap_or(true);
-        if stopped {
+        // cannot be unblocked (see `ExecutionState::should_stop`). In that case, the release adds
+        // the permits, clears the waiter queue, and closes the semaphore.
+        if ExecutionState::should_stop() {
             state.permits_available.release(num_permits, VectorClock::new());
             for waiter in &state.waiters {
                 waiter.is_queued.swap(false, Ordering::SeqCst);

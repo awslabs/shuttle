@@ -1889,34 +1889,28 @@ impl ExecutionState {
         });
     }
 
-    /// Check whether Shuttle's own `Drop` handlers should skip their bookkeeping, and early exit,
-    /// because the execution has stopped, and so is being abandoned (see `tear_down`).
+    /// Check whether Shuttle's own `Drop` handlers should skip their bookkeeping, and early exit.
+    /// They skip it if the execution has stopped or failed, and so is being abandoned (see
+    /// `tear_down`), and if there is no execution state to update: outside an execution (e.g., a
+    /// value that outlives its test), or while Shuttle holds its own state borrowed.
     ///
-    /// We also stop if we are currently panicking (e.g., perhaps we're unwinding the stack for a
-    /// panic triggered while someone held a Mutex, and so are executing the Drop handler for
-    /// MutexGuard). This avoids calling back into the scheduler during a panic, because the state
-    /// may be poisoned or otherwise invalid.
+    /// A task that unwinds a panic does its bookkeeping, because the panic may be caught and the
+    /// execution may continue. For example, a channel's `Sender` that is dropped during a caught
+    /// panic disconnects the channel, so that its receiver does not wait forever.
     ///
-    /// While a finished execution is torn down, though, destructors run as in a running execution,
-    /// also while a panic unwinds: teardown doesn't call the scheduler. A failed execution is
-    /// abandoned like a stopped one.
+    /// While a finished execution is torn down, destructors run as in a running execution: teardown
+    /// doesn't call the scheduler.
     pub fn should_stop() -> bool {
-        if std::thread::panicking() {
-            // The state may be borrowed, so don't insist on it.
-            return Self::try_with(|s| s.stops(true)).unwrap_or(true);
-        }
-        Self::with(|s| s.stops(false))
+        Self::try_with(|s| s.is_abandoned()).unwrap_or(true)
     }
 
-    /// `should_stop`, given whether the current task is panicking.
-    pub(crate) fn stops(&self, panicking: bool) -> bool {
+    /// Whether the execution has stopped or failed, and so is being abandoned (see `tear_down`).
+    pub(crate) fn is_abandoned(&self) -> bool {
         match &self.teardown {
             Some(teardown) => teardown.kind.abandons(),
             None => {
-                panicking || {
-                    assert_ne!(self.current_task, ScheduledTask::Finished);
-                    self.current_task == ScheduledTask::Stopped
-                }
+                assert_ne!(self.current_task, ScheduledTask::Finished);
+                self.current_task == ScheduledTask::Stopped
             }
         }
     }

@@ -207,3 +207,25 @@ fn into_inner_of_poisoned_lock() {
         None,
     )
 }
+
+/// The holder task drops the only `Sender` of a channel while it unwinds a caught panic. The main
+/// task, which waits to receive, sees the channel disconnect. Previously, a drop during a panic
+/// skipped its bookkeeping, so the receiver waited forever.
+#[test]
+fn receiver_sees_sender_dropped_during_panic() {
+    check_dfs(
+        || {
+            let (tx, rx) = shuttle::sync::mpsc::channel::<()>();
+            let holder = thread::spawn(move || {
+                catch_unwind(AssertUnwindSafe(move || {
+                    let _tx = tx;
+                    panic!("expected");
+                }))
+                .unwrap_err();
+            });
+            assert!(rx.recv().is_err());
+            holder.join().unwrap();
+        },
+        None,
+    )
+}
