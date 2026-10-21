@@ -310,16 +310,16 @@ fn notify_mpmc_deadlock() {
 }
 
 // Regression test: `notify_one` must not panic when the `Notified` future is
-// dropped after the waiter's flag is set to NOTIFIED but before the internal
+// dropped after the waiter's flag is set to `NotifiedOne` but before the internal
 // oneshot send completes.
 //
 // The race:
-//   1. Spawned task polls `notified()`, enabling its waiter (flag = ENABLED).
+//   1. Spawned task polls `notified()`, enabling its waiter (flag = `Enabled`).
 //   2. `handle.abort()` wakes the task so it is runnable for cancellation.
-//   3. `notify_one()` finds the ENABLED waiter, removes it, sets flag = NOTIFIED,
+//   3. `notify_one()` finds the `Enabled` waiter, removes it, sets flag = `NotifiedOne`,
 //      then calls `tx.send()` which yields before the actual send.
 //   4. At that yield the DFS scheduler runs the aborted task, dropping the
-//      `Notified` future (and its oneshot receiver) while flag is already NOTIFIED.
+//      `Notified` future (and its oneshot receiver) while flag is already `NotifiedOne`.
 //   5. The send resumes and returns `Err` — `let _ =` handles it; `.unwrap()` panics.
 #[test]
 fn notify_one_drop_notified_before_send() {
@@ -333,14 +333,14 @@ fn notify_one_drop_notified_before_send() {
             });
 
             // Let the spawned task poll its Notified future, transitioning
-            // the waiter from INIT to ENABLED.
+            // the waiter from `Init` to `Enabled`.
             shuttle::future::yield_now().await;
 
             // Abort the task — this wakes it so it is runnable for
             // cancellation at the next scheduling point.
             handle.abort();
 
-            // notify_one sets flag = NOTIFIED then yields inside tx.send().
+            // notify_one sets flag = `NotifiedOne` then yields inside tx.send().
             // The DFS scheduler may run the aborted task at that yield,
             // dropping the receiver before the send completes.
             notify.notify_one();
