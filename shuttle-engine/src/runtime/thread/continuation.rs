@@ -430,6 +430,40 @@ pub fn switch() {
     }
 }
 
+/// A scheduling point at the first poll of a future. A future that reads shared state when it is
+/// polled calls [`FirstPollSwitch::switch`] at the start of `poll`, before the first read.
+///
+/// The first poll runs in the same step as the polling task's previous operation, so it needs a
+/// scheduling point of its own. A later poll runs after a wake-up, at the start of a new step. That
+/// step begins at the scheduling point between two polls of a future task (see
+/// `Task::from_future`) or in `block_on`. This does not hold if the task polls the future again in
+/// the same poll as other futures that access shared state (e.g., in a `select!`).
+/// `FirstPollSwitch` does not cover that case.
+#[derive(Debug, Default)]
+pub struct FirstPollSwitch {
+    polled: bool,
+}
+
+impl FirstPollSwitch {
+    /// A `FirstPollSwitch` for a future that hasn't been polled yet.
+    pub const fn new() -> Self {
+        Self { polled: false }
+    }
+
+    /// Switches if this is the first call, and does nothing on later calls. Returns whether it was
+    /// the first call.
+    #[track_caller]
+    #[inline]
+    pub fn switch(&mut self) -> bool {
+        if self.polled {
+            return false;
+        }
+        self.polled = true;
+        switch();
+        true
+    }
+}
+
 /// Like `switch`, for the loop that polls a future task's future (see `Task::from_future`), between
 /// two polls. Returns true if execution teardown cancelled the task while it was switched out (see
 /// `Continuation::cancel`), in which case the loop drops the future instead of polling it again.

@@ -7,6 +7,7 @@ mod condvar;
 mod config;
 mod dfs;
 mod execution;
+mod first_poll_switch;
 mod labels;
 mod lazy_static;
 mod metrics;
