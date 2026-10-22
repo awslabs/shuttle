@@ -6,6 +6,7 @@
 use crate::sync::oneshot;
 use pin_project::{pin_project, pinned_drop};
 use shuttle::rand::{rngs::ThreadRng, thread_rng, Rng};
+use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::thread;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -55,14 +56,61 @@ impl NotifyState {
     }
 }
 
-// Encode worker state in usize
-const INIT: usize = 0; // not yet polled or enabled
-const ENABLED: usize = 1; // enabled but not notified
-const NOTIFIED: usize = 2; // notified
+/// The state of a waiter, which its `Notified` and its entry in the waiter queue share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+enum WaiterState {
+    /// Not yet polled or enabled
+    Init = 0,
+    /// Polled or enabled, but not notified
+    Enabled = 1,
+    /// Notified by `notify_one`
+    NotifiedOne = 2,
+    /// Notified by `notify_waiters`
+    NotifiedAll = 3,
+}
+
+impl WaiterState {
+    fn is_notified(self) -> bool {
+        matches!(self, WaiterState::NotifiedOne | WaiterState::NotifiedAll)
+    }
+}
+
+/// A `WaiterState` in a std atomic, so that it can be read without the lock of the waiter queue
+#[derive(Debug)]
+struct WaiterFlag(AtomicUsize);
+
+impl WaiterFlag {
+    fn new(state: WaiterState) -> Self {
+        Self(AtomicUsize::new(state as usize))
+    }
+
+    fn decode(value: usize) -> WaiterState {
+        match value {
+            0 => WaiterState::Init,
+            1 => WaiterState::Enabled,
+            2 => WaiterState::NotifiedOne,
+            3 => WaiterState::NotifiedAll,
+            _ => unreachable!("invalid waiter state {value}"),
+        }
+    }
+
+    fn load(&self) -> WaiterState {
+        Self::decode(self.0.load(Ordering::SeqCst))
+    }
+
+    fn store(&self, state: WaiterState) {
+        self.0.store(state as usize, Ordering::SeqCst);
+    }
+
+    fn swap(&self, state: WaiterState) -> WaiterState {
+        Self::decode(self.0.swap(state as usize, Ordering::SeqCst))
+    }
+}
 
 #[derive(Debug)]
 struct Waiter {
-    flag: Arc<AtomicUsize>,
+    flag: Arc<WaiterFlag>,
     id: usize,
     tx: oneshot::Sender<()>,
 }
@@ -75,12 +123,14 @@ struct Waiter {
 #[pin_project(PinnedDrop)]
 pub struct Notified<'a> {
     id: usize, // unique id for this waiter
-    flag: Arc<AtomicUsize>,
+    flag: Arc<WaiterFlag>,
     /// The `Notify` being received on.
     notify: &'a Notify,
     // oneshot being awaited on
     #[pin]
     rx: oneshot::Receiver<()>,
+    // Whether the future has returned `Ready` (or `enable` has returned true)
+    done: bool,
 }
 
 unsafe impl Send for Notified<'_> {}
@@ -107,7 +157,7 @@ impl Notify {
         let mut state = self.state.lock().unwrap();
         let id = state.next_id;
         state.next_id += 1;
-        let flag = Arc::new(AtomicUsize::new(INIT));
+        let flag = Arc::new(WaiterFlag::new(WaiterState::Init));
         let waiter = Waiter {
             flag: flag.clone(),
             id,
@@ -126,6 +176,7 @@ impl Notify {
             flag,
             notify: self,
             rx,
+            done: false,
         }
     }
 
@@ -140,9 +191,9 @@ impl Notify {
         // Need to choose a waiter that is Pending
         let mut pending = Vec::with_capacity(state.waiters.len());
         for w in &state.waiters {
-            let flag = w.flag.load(Ordering::SeqCst);
-            assert!(flag == INIT || flag == ENABLED);
-            if flag == ENABLED {
+            let flag = w.flag.load();
+            assert!(matches!(flag, WaiterState::Init | WaiterState::Enabled));
+            if flag == WaiterState::Enabled {
                 pending.push(w.id);
             }
         }
@@ -160,9 +211,9 @@ impl Notify {
             drop(state);
             trace!("notify_one for {:?} waking waiter {:?}", self, waiter.id);
             // Must set flag before notifying waiter.
-            // The send may fail if the Notified future is dropped between the flag store
-            // and the send (the flag is already NOTIFIED, so the future already completed).
-            waiter.flag.store(NOTIFIED, Ordering::SeqCst);
+            // The send fails if the `Notified` is dropped between the flag store and the send.
+            // The flag is then `NotifiedOne`, so the drop passes the notification on.
+            waiter.flag.store(WaiterState::NotifiedOne);
             let _ = waiter.tx.send(());
         }
     }
@@ -190,8 +241,8 @@ impl Notify {
         // cleared.
         for w in &waiters {
             // Must set flag before notifying waiter
-            let flag = w.flag.swap(NOTIFIED, Ordering::SeqCst);
-            assert!(flag == INIT || flag == ENABLED);
+            let flag = w.flag.swap(WaiterState::NotifiedAll);
+            assert!(matches!(flag, WaiterState::Init | WaiterState::Enabled));
         }
         for w in waiters {
             let _ = w.tx.send(()); // Note this may fail if the waiter has dropped
@@ -237,24 +288,27 @@ impl Notified<'_> {
         self.poll_inner()
     }
 
-    fn poll_inner(&self) -> bool {
-        let flag = self.flag.load(Ordering::SeqCst);
-        if flag == NOTIFIED {
+    fn poll_inner(self: Pin<&mut Self>) -> bool {
+        let this = self.project();
+        let flag = this.flag.load();
+        if flag.is_notified() {
+            *this.done = true;
             return true;
         }
-        if flag == INIT {
+        if flag == WaiterState::Init {
             // Not yet polled or enabled, so mark it enabled
-            self.flag.store(ENABLED, Ordering::SeqCst);
+            this.flag.store(WaiterState::Enabled);
         }
-        let mut state = self.notify.state.lock().unwrap();
+        let mut state = this.notify.state.lock().unwrap();
         if std::mem::replace(&mut state.pending, false) {
-            trace!("waiter {} in state {:?} consuming permit", self.id, flag);
+            trace!("waiter {} in state {:?} consuming permit", this.id, flag);
             // We just consumed a permit, so mark this future ready and remove
             // the waiter
-            let waiter = state.remove_waiter(self.id);
+            let waiter = state.remove_waiter(*this.id);
             drop(state);
-            waiter.flag.store(NOTIFIED, Ordering::SeqCst);
+            waiter.flag.store(WaiterState::NotifiedOne);
             waiter.tx.send(()).unwrap();
+            *this.done = true;
             true
         } else {
             false
@@ -265,15 +319,18 @@ impl Notified<'_> {
 impl Future for Notified<'_> {
     type Output = ();
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let enabled = self.poll_inner();
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let enabled = self.as_mut().poll_inner();
         if enabled {
             Poll::Ready(())
         } else {
             let mut this = self.project();
             match this.rx.as_mut().poll(cx) {
                 Poll::Pending => Poll::Pending,
-                Poll::Ready(_) => Poll::Ready(()),
+                Poll::Ready(_) => {
+                    *this.done = true;
+                    Poll::Ready(())
+                }
             }
         }
     }
@@ -282,16 +339,30 @@ impl Future for Notified<'_> {
 #[pinned_drop]
 impl PinnedDrop for Notified<'_> {
     fn drop(self: Pin<&mut Self>) {
-        trace!(
-            "dropping waiter {:?} with flag {:?}",
-            self.id,
-            self.flag.load(Ordering::SeqCst)
-        );
-        // We're using std::sync::Atomics here, so no context switching will happen here
-        if self.flag.load(Ordering::SeqCst) != NOTIFIED {
-            // If the waiter hasn't been notified, remove it from the waiter queue
-            let mut state = self.notify.state.lock().unwrap();
-            let _ = state.remove_waiter(self.id);
+        trace!("dropping waiter {:?} with flag {:?}", self.id, self.flag.load());
+        if self.done {
+            return;
+        }
+        match self.flag.load() {
+            // Not notified: remove the waiter from the waiter queue. The flag is a std atomic and
+            // the queue is behind a std mutex, so no context switch happens here.
+            WaiterState::Init | WaiterState::Enabled => {
+                let mut state = self.notify.state.lock().unwrap();
+                let _ = state.remove_waiter(self.id);
+            }
+            // Notified by `notify_one`, but not completed. As in tokio, pass the notification on to
+            // another waiter, so that it is not lost. `notify_one` sends on the oneshot of the
+            // waiter it picks, and the send takes a scheduling point, so this can context switch.
+            // Skip this outside an execution (a `Notified` that outlives its test), while the task
+            // panics, or after the execution stops (see `ExecutionState::should_stop`).
+            WaiterState::NotifiedOne => {
+                if ExecutionState::try_with(|_| ()).is_ok() && !ExecutionState::should_stop() {
+                    self.notify.notify_one();
+                }
+            }
+            // Notified by `notify_waiters`, but not completed. As in tokio, the notification is not
+            // passed on.
+            WaiterState::NotifiedAll => {}
         }
     }
 }

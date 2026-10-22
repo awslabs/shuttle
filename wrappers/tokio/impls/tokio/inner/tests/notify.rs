@@ -310,16 +310,16 @@ fn notify_mpmc_deadlock() {
 }
 
 // Regression test: `notify_one` must not panic when the `Notified` future is
-// dropped after the waiter's flag is set to NOTIFIED but before the internal
+// dropped after the waiter's flag is set to `NotifiedOne` but before the internal
 // oneshot send completes.
 //
 // The race:
-//   1. Spawned task polls `notified()`, enabling its waiter (flag = ENABLED).
+//   1. Spawned task polls `notified()`, enabling its waiter (flag = `Enabled`).
 //   2. `handle.abort()` wakes the task so it is runnable for cancellation.
-//   3. `notify_one()` finds the ENABLED waiter, removes it, sets flag = NOTIFIED,
+//   3. `notify_one()` finds the `Enabled` waiter, removes it, sets flag = `NotifiedOne`,
 //      then calls `tx.send()` which yields before the actual send.
 //   4. At that yield the DFS scheduler runs the aborted task, dropping the
-//      `Notified` future (and its oneshot receiver) while flag is already NOTIFIED.
+//      `Notified` future (and its oneshot receiver) while flag is already `NotifiedOne`.
 //   5. The send resumes and returns `Err` — `let _ =` handles it; `.unwrap()` panics.
 #[test]
 fn notify_one_drop_notified_before_send() {
@@ -333,14 +333,14 @@ fn notify_one_drop_notified_before_send() {
             });
 
             // Let the spawned task poll its Notified future, transitioning
-            // the waiter from INIT to ENABLED.
+            // the waiter from `Init` to `Enabled`.
             shuttle::future::yield_now().await;
 
             // Abort the task — this wakes it so it is runnable for
             // cancellation at the next scheduling point.
             handle.abort();
 
-            // notify_one sets flag = NOTIFIED then yields inside tx.send().
+            // notify_one sets flag = `NotifiedOne` then yields inside tx.send().
             // The DFS scheduler may run the aborted task at that yield,
             // dropping the receiver before the send completes.
             notify.notify_one();
@@ -461,4 +461,69 @@ fn notify_waiters_leaves_permit_for_next_waiter() {
         future::block_on(first);
         future::block_on(notify.notified());
     });
+}
+
+/// Regression test: `notify_one()` notifies a `Notified`, and the `Notified` is dropped before it
+/// completes. As in tokio, the drop passes the notification on to another waiter. Previously, the
+/// notification was lost, and the other waiter waited forever.
+#[test]
+fn notify_one_to_dropped_waiter_is_passed_on() {
+    check_dfs(|| {
+        future::block_on(async {
+            let notify = Arc::new(Notify::new());
+
+            // `notify_one()` can choose this waiter. It is then dropped before it completes.
+            let mut dropped = Box::pin(notify.notified());
+            assert!(!dropped.as_mut().enable());
+
+            let other = {
+                let notify = notify.clone();
+                future::spawn(async move { notify.notified().await })
+            };
+
+            notify.notify_one();
+            drop(dropped);
+
+            other.await.unwrap();
+        });
+    });
+}
+
+/// A completed `Notified` does not pass its notification on when it is dropped. Passing it on would
+/// store a permit that no `notify_one()` call stored.
+#[test]
+fn notify_one_to_completed_waiter_is_not_passed_on() {
+    check_dfs(|| {
+        future::block_on(async {
+            let notify = Arc::new(Notify::new());
+
+            let mut first = Box::pin(notify.notified());
+            assert!(!first.as_mut().enable());
+            notify.notify_one();
+            first.as_mut().await;
+            drop(first);
+
+            let mut second = Box::pin(notify.notified());
+            assert!(!second.as_mut().enable(), "permit stored by a dropped waiter");
+        });
+    });
+}
+
+/// A `Notified` that `notify_one()` notified, and that is dropped after its execution ended, does
+/// not panic. Outside an execution, the drop does not pass the notification on.
+#[test]
+fn notify_one_to_waiter_dropped_after_execution() {
+    use shuttle_tokio_impl_inner::sync::notify::Notified;
+    use std::pin::Pin;
+
+    static KEPT: Mutex<Option<Pin<Box<Notified<'static>>>>> = Mutex::new(None);
+    check_dfs(|| {
+        let notify: &'static Notify = Box::leak(Box::new(Notify::new()));
+        let mut notified = Box::pin(notify.notified());
+        assert!(!notified.as_mut().enable());
+        notify.notify_one();
+        // Keep the notified `Notified` past the end of the execution.
+        *KEPT.lock().unwrap() = Some(notified);
+    });
+    drop(KEPT.lock().unwrap().take());
 }
