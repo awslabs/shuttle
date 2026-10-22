@@ -156,11 +156,8 @@ fn notify_mpmc_channel() {
             let tx2 = tx1.clone();
             let rx1 = tx1.clone();
             let rx2 = tx1.clone();
-            future::spawn(async move {
+            let s1 = future::spawn(async move {
                 tx1.send(1);
-            });
-            future::spawn(async move {
-                tx2.send(2);
             });
             let r1 = future::spawn(async move {
                 let x = rx1.recv().await;
@@ -170,6 +167,11 @@ fn notify_mpmc_channel() {
                 let x = rx2.recv().await;
                 counter2.fetch_add(x, Ordering::SeqCst);
             });
+            // The second send runs on this task, as in `notify_mpmc_channel_2_test`. This task
+            // would otherwise only join. A spawned task for the send would multiply the
+            // interleavings without adding concurrency.
+            tx2.send(2);
+            s1.await.unwrap();
             r1.await.unwrap();
             r2.await.unwrap();
             assert_eq!(counter.load(Ordering::SeqCst), 3);
@@ -241,8 +243,8 @@ fn notify_mpmc_channel_2_test(do_enable: bool) {
                     return msg;
                 }
 
-                // Force context switch before the future is polled
-                shuttle::future::yield_now().await;
+                // No `yield_now` before the first poll: the first poll takes a scheduling point
+                // itself.
 
                 // Wait for a call to `notify_one`.
                 //
@@ -463,6 +465,38 @@ fn notify_waiters_leaves_permit_for_next_waiter() {
     });
 }
 
+/// Regression test: Shuttle must be able to schedule another task between a notifier's previous
+/// operation and its `notify_one()`.
+///
+/// The test program wrongly assumes that once it sees `ready`, the notifier has already called
+/// `notify_one()`, so that a permit is stored. That fails when the waiter runs between the
+/// notifier's store and its `notify_one()`, which Shuttle only explores if `notify_one()` takes a
+/// scheduling point first.
+#[test]
+#[should_panic(expected = "no permit yet")]
+fn notify_one_after_store_is_a_separate_step() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        let waiter = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                let notified = std::pin::pin!(notify.notified());
+                if ready.load(Ordering::SeqCst) {
+                    // BUG (in this test program): assumes `notify_one()` has already run.
+                    assert!(notified.enable(), "no permit yet");
+                }
+            })
+        };
+
+        ready.store(true, Ordering::SeqCst);
+        notify.notify_one();
+
+        waiter.join().unwrap();
+    });
+}
+
 /// Regression test: `notify_one()` notifies a `Notified`, and the `Notified` is dropped before it
 /// completes. As in tokio, the drop passes the notification on to another waiter. Previously, the
 /// notification was lost, and the other waiter waited forever.
@@ -526,4 +560,69 @@ fn notify_one_to_waiter_dropped_after_execution() {
         *KEPT.lock().unwrap() = Some(notified);
     });
     drop(KEPT.lock().unwrap().take());
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a notifier's previous
+/// operation and its `notify_waiters()`.
+///
+/// The test program wrongly assumes that once it sees `ready`, the notifier has already called
+/// `notify_waiters()`, which notifies the registered waiter. That fails when the waiter runs between
+/// the notifier's store and its `notify_waiters()`, which Shuttle only explores if
+/// `notify_waiters()` takes a scheduling point first.
+#[test]
+#[should_panic(expected = "not notified yet")]
+fn notify_waiters_after_store_is_a_separate_step() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+        // Registered before the notifier runs, so `notify_waiters()` notifies it.
+        let notified = Box::pin(notify.notified());
+
+        let notifier = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                ready.store(true, Ordering::SeqCst);
+                notify.notify_waiters();
+            })
+        };
+
+        let mut notified = notified;
+        if ready.load(Ordering::SeqCst) {
+            // BUG (in this test program): assumes `notify_waiters()` has already run.
+            assert!(notified.as_mut().enable(), "not notified yet");
+        }
+
+        notifier.join().unwrap();
+    });
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a waiter's previous
+/// operation and the first `enable()` (or poll) of its `Notified`.
+///
+/// The test program wrongly assumes that the notifier can't notify the waiter between the waiter's
+/// store and its `enable()`. That fails when the notifier runs between the two, which Shuttle only
+/// explores if the first `enable()` takes a scheduling point.
+#[test]
+#[should_panic(expected = "notified between the store and enable")]
+fn first_enable_after_store_is_a_separate_step() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        let notifier = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                if ready.load(Ordering::SeqCst) {
+                    notify.notify_waiters();
+                }
+            })
+        };
+
+        let mut notified = Box::pin(notify.notified());
+        ready.store(true, Ordering::SeqCst);
+        // BUG (in this test program): assumes the notifier can't run before `enable()`.
+        assert!(!notified.as_mut().enable(), "notified between the store and enable");
+
+        notifier.join().unwrap();
+    });
 }
