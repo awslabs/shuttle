@@ -2,7 +2,6 @@ use crate::sync::{ResourceSignature, ResourceType};
 use shuttle_engine::future::batch_semaphore::{BatchSemaphore, Fairness};
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::{TaskId, TaskSet};
-use shuttle_engine::runtime::thread;
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
 use std::ops::{Deref, DerefMut};
@@ -202,24 +201,23 @@ impl<T: ?Sized> RwLock<T> {
         );
         drop(state);
 
-        if !self.semaphore.is_closed() {
-            // Detect deadlock due to re-entrancy.
-            state = self.state.borrow_mut();
-            assert!(
-                match &state.holder {
-                    RwLockHolder::Write(writer) => *writer != me,
-                    RwLockHolder::Read(readers) => !readers.contains(me),
-                    RwLockHolder::None => true,
-                },
-                "deadlock! task {me:?} tried to acquire a RwLock it already holds"
-            );
-            drop(state);
+        // Detect deadlock due to re-entrancy.
+        state = self.state.borrow_mut();
+        assert!(
+            match &state.holder {
+                RwLockHolder::Write(writer) => *writer != me,
+                RwLockHolder::Read(readers) => !readers.contains(me),
+                RwLockHolder::None => true,
+            },
+            "deadlock! task {me:?} tried to acquire a RwLock it already holds"
+        );
+        drop(state);
 
-            self.semaphore.acquire_blocking(typ.num_permits()).unwrap();
-        } else {
-            // we always need to allow for a context switch to make the previous event visible for completeness
-            thread::switch();
-        }
+        // The first poll of the acquire is the scheduling point before the lock operation. The
+        // acquire fails only if the semaphore is closed, which happens only if a release ran after
+        // the execution stopped (see `BatchSemaphore::release`). In that case, the lock is taken as
+        // if it were free, and the inner `std::sync::RwLock` reports whether it is poisoned.
+        let _ = self.semaphore.acquire_blocking(typ.num_permits());
 
         state = self.state.borrow_mut();
         match (typ, &mut state.holder) {
