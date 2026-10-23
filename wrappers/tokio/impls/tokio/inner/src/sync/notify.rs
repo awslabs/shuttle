@@ -7,7 +7,7 @@ use crate::sync::oneshot;
 use pin_project::{pin_project, pinned_drop};
 use shuttle::rand::{rngs::ThreadRng, thread_rng, Rng};
 use shuttle_engine::runtime::execution::ExecutionState;
-use shuttle_engine::runtime::thread;
+use shuttle_engine::runtime::thread::{self, FirstPollSwitch};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -129,6 +129,8 @@ pub struct Notified<'a> {
     // oneshot being awaited on
     #[pin]
     rx: oneshot::Receiver<()>,
+    // Scheduling point at the first poll or `enable`, before it reads the waiter's flag
+    first_poll: FirstPollSwitch,
     // Whether the future has returned `Ready` (or `enable` has returned true)
     done: bool,
 }
@@ -176,6 +178,7 @@ impl Notify {
             flag,
             notify: self,
             rx,
+            first_poll: FirstPollSwitch::new(),
             done: false,
         }
     }
@@ -187,6 +190,16 @@ impl Notify {
     /// [`notified().await`] will complete immediately consuming the permit made
     /// available by this call to `notify_one()`.
     pub fn notify_one(&self) {
+        // Scheduling point precedes the notification, so that another task can run between the
+        // notifier's previous operation (e.g., setting the condition it notifies about) and the
+        // notification.
+        thread::switch();
+        self.notify_one_no_scheduling_point();
+    }
+
+    /// `notify_one` without its scheduling point, for the drop of a `Notified`, which needs none
+    /// (see the `PinnedDrop` implementation of `Notified`).
+    fn notify_one_no_scheduling_point(&self) {
         let mut state = self.state.lock().unwrap();
         // Need to choose a waiter that is Pending
         let mut pending = Vec::with_capacity(state.waiters.len());
@@ -226,6 +239,8 @@ impl Notify {
     /// already registered waiters. Registering for notification is done by
     /// acquiring an instance of the `Notified` future via calling `notified()`.
     pub fn notify_waiters(&self) {
+        // Scheduling point precedes the notification, as in `notify_one`.
+        thread::switch();
         let mut state = self.state.lock().unwrap();
         // Notify all waiters, including those not yet enabled
         let waiters = std::mem::take(&mut state.waiters);
@@ -290,6 +305,9 @@ impl Notified<'_> {
 
     fn poll_inner(self: Pin<&mut Self>) -> bool {
         let this = self.project();
+        // Only the first poll takes a scheduling point. A later poll follows a wake-up, so it
+        // starts a step of its own.
+        this.first_poll.switch();
         let flag = this.flag.load();
         if flag.is_notified() {
             *this.done = true;
@@ -343,6 +361,11 @@ impl PinnedDrop for Notified<'_> {
         if self.done {
             return;
         }
+        // No scheduling point here. The drop of a waiter that hasn't completed commutes with the
+        // other operations on the `Notify`, because the drop passes a `notify_one` notification of
+        // the waiter on (see below). Whether the drop runs before or after another task's
+        // `notify_one` or `notify_waiters`, the same waiters are notified, or the same permit is
+        // stored.
         match self.flag.load() {
             // Not notified: remove the waiter from the waiter queue. The flag is a std atomic and
             // the queue is behind a std mutex, so no context switch happens here.
@@ -353,11 +376,12 @@ impl PinnedDrop for Notified<'_> {
             // Notified by `notify_one`, but not completed. As in tokio, pass the notification on to
             // another waiter, so that it is not lost. `notify_one` sends on the oneshot of the
             // waiter it picks, and the send takes a scheduling point, so this can context switch.
-            // Skip this outside an execution (a `Notified` that outlives its test), while the task
-            // panics, or after the execution stops (see `ExecutionState::should_stop`).
+            // The drop passes the notification on also while the task unwinds a panic, because the
+            // panic may be caught. It skips this outside an execution (a `Notified` that outlives
+            // its test) and after the execution stops (see `ExecutionState::should_stop`).
             WaiterState::NotifiedOne => {
-                if ExecutionState::try_with(|_| ()).is_ok() && !ExecutionState::should_stop() {
-                    self.notify.notify_one();
+                if !ExecutionState::should_stop() {
+                    self.notify.notify_one_no_scheduling_point();
                 }
             }
             // Notified by `notify_waiters`, but not completed. As in tokio, the notification is not
