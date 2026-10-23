@@ -3,7 +3,7 @@
 /// `Notify` provides a basic mechanism to notify a single task of an event.
 /// `Notify` itself does not carry any data. Instead, it is to be used to signal
 /// another task to perform an operation.
-use crate::sync::oneshot;
+use futures::channel::oneshot;
 use pin_project::{pin_project, pinned_drop};
 use shuttle::rand::{rngs::ThreadRng, thread_rng, Rng};
 use shuttle_engine::runtime::execution::ExecutionState;
@@ -126,7 +126,8 @@ pub struct Notified<'a> {
     flag: Arc<WaiterFlag>,
     /// The `Notify` being received on.
     notify: &'a Notify,
-    // oneshot being awaited on
+    // oneshot that wakes the waiter. It's the `futures` oneshot, without the scheduling points of
+    // this crate's `oneshot`.
     #[pin]
     rx: oneshot::Receiver<()>,
     // Whether the last call was a `poll` that returned `Pending`. The next poll then runs after a
@@ -249,10 +250,8 @@ impl Notify {
         // take it.
         drop(state);
         // Since we have removed all the waiters, we need to clear all the
-        // flags first, before waking any of them.  This is because sending
-        // a oneshot to wake a waiter will admit context switches, and we
-        // could invoke the drop handler for a waiter whose flag has not been
-        // cleared.
+        // flags first, before waking any of them, so that the drop handler of
+        // a woken waiter sees its flag cleared.
         for w in &waiters {
             // Must set flag before notifying waiter
             let flag = w.flag.swap(WaiterState::NotifiedAll);
