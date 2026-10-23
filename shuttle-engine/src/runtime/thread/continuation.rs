@@ -4,7 +4,7 @@ use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::panic::Location;
@@ -26,6 +26,8 @@ pub struct Continuation {
     function: ContinuationFunction,
     state: ContinuationState,
     pub yielder: *const Yielder<ContinuationInput, ContinuationOutput>,
+    // The stack size this continuation was created with. Its stack is at least this large.
+    stack_size: usize,
 }
 
 impl std::fmt::Debug for Continuation {
@@ -127,6 +129,7 @@ impl Continuation {
             coroutine,
             yielder,
             function,
+            stack_size,
             state: ContinuationState::NotReady,
         }
     }
@@ -290,8 +293,45 @@ impl Drop for Continuation {
 /// them back out again. This amortizes the cost of allocating continuations, which involve
 /// allocating new stacks (`mmap`), `mprotect`, etc.
 pub struct ContinuationPool {
-    // invariant: if c is in this queue, c.reusable() == true
-    continuations: Rc<RefCell<VecDeque<Continuation>>>,
+    continuations: Rc<RefCell<ReusableContinuations>>,
+}
+
+/// The continuations in a `ContinuationPool`, by the stack size each was created with, so that
+/// finding the smallest one that is large enough for a request is a lookup among the distinct stack
+/// sizes, of which there are rarely more than a few, rather than a scan of the whole pool. The pool
+/// can hold many continuations: an execution that had many tasks alive at once leaves all of their
+/// continuations in it, for the next execution to reuse.
+#[derive(Default)]
+struct ReusableContinuations {
+    // invariant: every continuation in here is reusable, is listed under its own `stack_size`, and
+    // no list is empty
+    by_stack_size: BTreeMap<usize, Vec<Continuation>>,
+}
+
+impl ReusableContinuations {
+    fn push(&mut self, continuation: Continuation) {
+        debug_assert!(continuation.reusable());
+        self.by_stack_size
+            .entry(continuation.stack_size)
+            .or_default()
+            .push(continuation);
+    }
+
+    /// Take a continuation whose stack is at least `stack_size`, choosing the smallest such stack.
+    fn take(&mut self, stack_size: usize) -> Option<Continuation> {
+        let (&size, continuations) = self.by_stack_size.range_mut(stack_size..).next()?;
+        // The one returned last, whose stack is the likeliest to still be in cache.
+        let continuation = continuations.pop();
+        if continuations.is_empty() {
+            self.by_stack_size.remove(&size);
+        }
+        continuation
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.by_stack_size.values().map(Vec::len).sum()
+    }
 }
 
 impl std::fmt::Debug for ContinuationPool {
@@ -303,7 +343,7 @@ impl std::fmt::Debug for ContinuationPool {
 impl ContinuationPool {
     pub fn new() -> Self {
         Self {
-            continuations: Rc::new(RefCell::new(VecDeque::new())),
+            continuations: Rc::new(RefCell::new(ReusableContinuations::default())),
         }
     }
 
@@ -312,18 +352,24 @@ impl ContinuationPool {
         CONTINUATION_POOL.with(|p| p.acquire_inner(stack_size))
     }
 
+    /// The number of continuations waiting in the pool to be reused.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.continuations.borrow().len()
+    }
+
     fn acquire_inner(&self, stack_size: usize) -> PooledContinuation {
-        // TODO add a check to ensure that if we recycled a continuation, its
-        // TODO allocated stack size is at least the requested `stack_size`
-        let continuation = self
-            .continuations
-            .borrow_mut()
-            .pop_front()
-            .unwrap_or_else(move || Continuation::new(stack_size));
+        // The pool holds the continuation of every task that has finished, whatever stack size it
+        // asked for, so only a continuation whose stack is large enough can be reused. Of those,
+        // reuse the smallest: handing a large stack to a task that asked for a small one would
+        // leave the next large request with nothing to reuse, so the pool would end up holding more
+        // large stacks than the execution ever needs at once.
+        let recycled = self.continuations.borrow_mut().take(stack_size);
+        let continuation = recycled.unwrap_or_else(move || Continuation::new(stack_size));
 
         PooledContinuation {
             continuation: Some(continuation),
-            queue: self.continuations.clone(),
+            pool: self.continuations.clone(),
         }
     }
 }
@@ -332,14 +378,14 @@ impl ContinuationPool {
 /// when dropped, but only if it's reusable.
 pub struct PooledContinuation {
     continuation: Option<Continuation>,
-    queue: Rc<RefCell<VecDeque<Continuation>>>,
+    pool: Rc<RefCell<ReusableContinuations>>,
 }
 
 impl Drop for PooledContinuation {
     fn drop(&mut self) {
         let mut c = self.continuation.take().unwrap();
         if c.reusable() {
-            self.queue.borrow_mut().push_back(c);
+            self.pool.borrow_mut().push(c);
         } else if matches!(c.state, ContinuationState::Initialized) {
             // A continuation which has been initialized but not run cannot be immediately reused.
             // This is because arguments and captures may already have been moved into the function,
@@ -355,7 +401,7 @@ impl Drop for PooledContinuation {
                 drop(c.function.0.replace(None));
                 c.state = ContinuationState::NotReady;
             }
-            self.queue.borrow_mut().push_back(c);
+            self.pool.borrow_mut().push(c);
         }
     }
 }
@@ -475,7 +521,7 @@ mod tests {
 
         drop(c);
         assert_eq!(
-            pool.continuations.borrow().len(),
+            pool.len(),
             1,
             "continuation should be reusable because the function finished"
         );
@@ -495,7 +541,7 @@ mod tests {
 
         drop(c);
         assert_eq!(
-            pool.continuations.borrow().len(),
+            pool.len(),
             0,
             "continuation should not be reusable because the function wasn't finished"
         );
@@ -505,5 +551,106 @@ mod tests {
         // Check that it's safe for a continuation to outlive the pool
         drop(pool);
         drop(c);
+    }
+
+    /// Acquire a continuation and run it to completion, so that dropping it pools it.
+    fn run_to_completion(pool: &ContinuationPool, stack_size: usize) -> PooledContinuation {
+        let mut c = pool.acquire_inner(stack_size);
+        c.initialize(Box::new(|| {}));
+        assert!(c.resume(), "the function has only one step");
+        c
+    }
+
+    /// Run a continuation to completion and return it to the pool.
+    fn run_and_recycle(pool: &ContinuationPool, stack_size: usize) {
+        drop(run_to_completion(pool, stack_size));
+    }
+
+    const SMALL_STACK: usize = 0x8000;
+    const LARGE_STACK: usize = 0x80000;
+
+    #[test]
+    fn recycled_continuation_has_a_large_enough_stack() {
+        let pool = ContinuationPool::new();
+
+        run_and_recycle(&pool, SMALL_STACK);
+        assert_eq!(pool.len(), 1);
+
+        // The pooled continuation's stack is too small for this request, so it must not be reused.
+        let c = pool.acquire_inner(LARGE_STACK);
+        assert!(c.stack_size >= LARGE_STACK);
+        assert_eq!(pool.len(), 1, "the small continuation should stay in the pool");
+        drop(c);
+        assert_eq!(pool.len(), 2);
+
+        // Either pooled continuation is large enough for a small request.
+        let c = pool.acquire_inner(SMALL_STACK);
+        assert!(c.stack_size >= SMALL_STACK);
+        assert_eq!(pool.len(), 1);
+    }
+
+    /// A small request must not take a large pooled stack while a small one is also there: the next
+    /// large request would then find nothing to reuse and allocate another large stack, so the pool
+    /// would grow past what the execution needs at once.
+    #[test]
+    fn recycled_continuation_is_the_smallest_that_fits() {
+        let pool = ContinuationPool::new();
+
+        // Both at once, so that two continuations exist, then pool the large one ahead of the small
+        // one: the order a large-stacked task that finishes first leaves behind.
+        let large = run_to_completion(&pool, LARGE_STACK);
+        let small = run_to_completion(&pool, SMALL_STACK);
+        drop(large);
+        drop(small);
+        assert_eq!(pool.len(), 2);
+
+        let small = pool.acquire_inner(SMALL_STACK);
+        assert!(
+            small.stack_size < LARGE_STACK,
+            "a small request should not take the large pooled stack"
+        );
+
+        // So the large stack is still there for a large request, and no new stack is allocated.
+        let large = pool.acquire_inner(LARGE_STACK);
+        assert!(large.stack_size >= LARGE_STACK);
+        assert_eq!(pool.len(), 0, "both requests should have come from the pool");
+
+        drop(small);
+        drop(large);
+        assert_eq!(
+            pool.len(),
+            2,
+            "the pool should hold no more stacks than it started with"
+        );
+    }
+
+    /// Once the smallest stack size that fits runs out, requests move on to the next size up, and a
+    /// new continuation is only created when no pooled stack is large enough.
+    #[test]
+    fn recycled_continuations_move_up_a_size_when_one_runs_out() {
+        const MEDIUM_STACK: usize = 0x20000;
+        const REQUEST: usize = SMALL_STACK + 1;
+
+        let pool = ContinuationPool::new();
+
+        // Two of each size, all at once so that six continuations exist.
+        let held = [SMALL_STACK, MEDIUM_STACK, LARGE_STACK]
+            .repeat(2)
+            .into_iter()
+            .map(|stack_size| run_to_completion(&pool, stack_size))
+            .collect::<Vec<_>>();
+        drop(held);
+        assert_eq!(pool.len(), 6);
+
+        // The small stacks are too small for these requests.
+        let reused = (0..4).map(|_| pool.acquire_inner(REQUEST)).collect::<Vec<_>>();
+        assert_eq!(
+            reused.iter().map(|c| c.stack_size).collect::<Vec<_>>(),
+            [MEDIUM_STACK, MEDIUM_STACK, LARGE_STACK, LARGE_STACK]
+        );
+
+        let new = pool.acquire_inner(REQUEST);
+        assert_eq!(new.stack_size, REQUEST, "no pooled stack is left that is large enough");
+        assert_eq!(pool.len(), 2, "the small stacks should still be in the pool");
     }
 }
