@@ -1,8 +1,9 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use shuttle::scheduler::{PctScheduler, RandomScheduler, RoundRobinScheduler, Scheduler};
 use shuttle::sync::atomic::{AtomicUsize, Ordering};
 use shuttle::{future, thread, Runner};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const NARROW_TASKS: u32 = 5;
 const WIDE_TASKS: u32 = 100;
@@ -116,5 +117,41 @@ pub fn create_sync_benchmark(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, create_async_benchmark, create_sync_benchmark);
+/// Measure scheduling after short-lived tasks have finished. Creating those tasks is setup,
+/// so only the yields by the remaining task contribute to the reported duration.
+pub fn yield_after_finished_tasks_benchmark(c: &mut Criterion) {
+    const YIELDS: u64 = 100_000;
+    let mut g = c.benchmark_group("yield after finished tasks");
+    g.throughput(Throughput::Elements(YIELDS));
+    for finished in [0, 1_000, 4_000] {
+        g.bench_with_input(BenchmarkId::from_parameter(finished), &finished, |b, &finished| {
+            b.iter_custom(|iterations| {
+                let elapsed = Arc::new(std::sync::Mutex::new(Duration::ZERO));
+                for _ in 0..iterations {
+                    let elapsed = elapsed.clone();
+                    Runner::new(RoundRobinScheduler::new(1), Default::default()).run(move || {
+                        for _ in 0..finished {
+                            thread::spawn(|| {}).join().unwrap();
+                        }
+                        let start = Instant::now();
+                        for _ in 0..YIELDS {
+                            thread::yield_now();
+                        }
+                        let duration = start.elapsed();
+                        *elapsed.lock().unwrap() += duration;
+                    });
+                }
+                let duration = *elapsed.lock().unwrap();
+                duration
+            });
+        });
+    }
+}
+
+criterion_group!(
+    benches,
+    create_async_benchmark,
+    create_sync_benchmark,
+    yield_after_finished_tasks_benchmark
+);
 criterion_main!(benches);
