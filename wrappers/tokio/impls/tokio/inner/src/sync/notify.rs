@@ -376,10 +376,11 @@ impl PinnedDrop for Notified<'_> {
             // Notified by `notify_one`, but not completed. As in tokio, pass the notification on to
             // another waiter, so that it is not lost. `notify_one` sends on the oneshot of the
             // waiter it picks, and the send takes a scheduling point, so this can context switch.
-            // Skip this outside an execution (a `Notified` that outlives its test), while the task
-            // panics, or after the execution stops (see `ExecutionState::should_stop`).
+            // The drop passes the notification on also while the task unwinds a panic, because the
+            // panic may be caught. It skips this outside an execution (a `Notified` that outlives
+            // its test) and after the execution stops (see `ExecutionState::should_stop`).
             WaiterState::NotifiedOne => {
-                if ExecutionState::try_with(|_| ()).is_ok() && !ExecutionState::should_stop() {
+                if !ExecutionState::should_stop() {
                     self.notify.notify_one_no_scheduling_point();
                 }
             }

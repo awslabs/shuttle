@@ -626,3 +626,24 @@ fn first_enable_after_store_is_a_separate_step() {
         notifier.join().unwrap();
     });
 }
+
+/// A `Notified` that `notify_one()` notified, and that is dropped while its task unwinds a caught
+/// panic, passes the notification on. Here no other waiter is left, so the notification is stored as
+/// a permit, and the next `notified()` completes.
+#[test]
+fn notify_one_to_waiter_dropped_during_panic_is_passed_on() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        {
+            let notify = notify.clone();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let mut notified = Box::pin(notify.notified());
+                assert!(!notified.as_mut().enable());
+                notify.notify_one();
+                panic!("expected");
+            }))
+            .unwrap_err();
+        }
+        future::block_on(notify.notified());
+    });
+}
