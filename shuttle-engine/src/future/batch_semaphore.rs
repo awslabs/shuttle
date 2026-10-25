@@ -879,9 +879,11 @@ impl BatchSemaphore {
         self.release_no_scheduling_point(num_permits);
     }
 
-    /// `release` without its scheduling point.
+    /// `release` without its scheduling point, for a caller that has taken one already, before an
+    /// operation that the release is part of. For example, a channel's send pushes its message and
+    /// then releases a permit for the receiver, as one step after one scheduling point.
     #[inline]
-    fn release_no_scheduling_point(&self, num_permits: usize) {
+    pub fn release_no_scheduling_point(&self, num_permits: usize) {
         self.init_object_id();
         if num_permits == 0 {
             return;
