@@ -5,6 +5,7 @@ use shuttle::future::{
     self,
     batch_semaphore::{Acquire, BatchSemaphore, Fairness, TryAcquireError},
 };
+use shuttle_engine::runtime::thread;
 use smallvec::SmallVec;
 use std::fmt::{self, Debug};
 use std::future::Future;
@@ -93,6 +94,20 @@ impl<T> Channel<T> {
             state.messages.len()
         );
 
+        Ok(())
+    }
+
+    // Send a message on the channel, and release a permit for it to the receiver, as one step after
+    // one scheduling point. Callers must hold capacity for the message (see `send`).
+    //
+    // The push and the release are one operation: a receiver that sees the message in `len` can also
+    // receive it. So the release takes no scheduling point of its own. If the push fails because the
+    // channel is closed, there is no message, and so no permit to release.
+    fn send_and_notify(&self, message: T) -> Result<(), SendError<T>> {
+        // Scheduling point precedes the visible send operation
+        thread::switch();
+        self.send(message)?;
+        self.recv_semaphore.release_no_scheduling_point(1);
         Ok(())
     }
 
@@ -405,10 +420,7 @@ impl<T> SenderInternal<T> {
             }
         }
 
-        self.chan.send(message)?;
-        self.chan.recv_semaphore.release(1);
-
-        Ok(())
+        self.chan.send_and_notify(message)
     }
 
     /// Completes when the receiver has dropped.
@@ -421,11 +433,10 @@ impl<T> SenderInternal<T> {
         match self.chan.send_semaphore.try_acquire(1) {
             Err(TryAcquireError::Closed) => Err(TrySendError::Closed(message)),
             Err(TryAcquireError::NoPermits) => Err(TrySendError::Full(message)),
-            Ok(()) => {
-                self.chan.send(message)?;
-                self.chan.recv_semaphore.release(1);
-                Ok(())
-            }
+            Ok(()) => self
+                .chan
+                .send_and_notify(message)
+                .map_err(|SendError(message)| TrySendError::Closed(message)),
         }
     }
 
@@ -814,9 +825,7 @@ impl<T> Permit<'_, T> {
         // Unlike `Sender::send` this returns `()`, so a channel that closed after the permit was
         // handed out simply drops the value. The capacity is not returned: a closed channel has no
         // capacity to hand out, and nothing is waiting for it.
-        if chan.send(value).is_ok() {
-            chan.recv_semaphore.release(1);
-        }
+        let _ = chan.send_and_notify(value);
     }
 }
 
@@ -854,9 +863,7 @@ impl<T> OwnedPermit<T> {
         let chan = self.chan.take().expect(PERMIT_ALREADY_USED);
 
         // See `Permit::send` for why the error is swallowed.
-        if chan.send(value).is_ok() {
-            chan.recv_semaphore.release(1);
-        }
+        let _ = chan.send_and_notify(value);
 
         Sender {
             inner: SenderInternal { chan },

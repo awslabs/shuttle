@@ -1252,3 +1252,143 @@ fn mpsc_owned_permit_same_channel() {
         None,
     );
 }
+
+/// Regression test: a message that `len()` reports can be received. Previously, each send pushed
+/// the message, and released the receiver's permit for it only after a scheduling point. A
+/// receiver that ran at that scheduling point saw the message in `len()`, but `try_recv()` returned
+/// `Empty`.
+fn len_reports_only_receivable_messages(send: fn(mpsc::Sender<usize>)) {
+    check_dfs(
+        move || {
+            let (tx, mut rx) = mpsc::channel(1);
+            let receiver = shuttle::thread::spawn(move || {
+                if rx.len() == 1 {
+                    assert_matches!(rx.try_recv(), Ok(1), "a message in len() can't be received");
+                }
+                // Keep the channel open until the test joins this task.
+                rx
+            });
+            send(tx);
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
+
+#[test]
+fn len_reports_only_receivable_messages_send() {
+    len_reports_only_receivable_messages(|tx| future::block_on(tx.send(1)).unwrap());
+}
+
+#[test]
+fn len_reports_only_receivable_messages_try_send() {
+    len_reports_only_receivable_messages(|tx| tx.try_send(1).unwrap());
+}
+
+#[test]
+fn len_reports_only_receivable_messages_permit_send() {
+    len_reports_only_receivable_messages(|tx| future::block_on(tx.reserve()).unwrap().send(1));
+}
+
+#[test]
+fn len_reports_only_receivable_messages_owned_permit_send() {
+    len_reports_only_receivable_messages(|tx| {
+        future::block_on(tx.reserve_owned()).unwrap().send(1);
+    });
+}
+
+#[test]
+fn len_reports_only_receivable_messages_unbounded_send() {
+    check_dfs(
+        || {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let receiver = shuttle::thread::spawn(move || {
+                if rx.len() == 1 {
+                    assert_matches!(rx.try_recv(), Ok(1), "a message in len() can't be received");
+                }
+                // Keep the channel open until the test joins this task.
+                rx
+            });
+            tx.send(1).unwrap();
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Spawns a task that, if it sees `ready`, asserts that the channel holds one message. `len` reads
+/// the channel's length from `rx`. The task returns `rx`, so that the channel stays open until the
+/// test joins it.
+fn assert_sent_if_ready<R: Send + 'static>(
+    ready: &Arc<shuttle::sync::atomic::AtomicBool>,
+    rx: R,
+    len: fn(&R) -> usize,
+) -> shuttle::thread::JoinHandle<R> {
+    let ready = ready.clone();
+    shuttle::thread::spawn(move || {
+        if ready.load(Ordering::SeqCst) {
+            // BUG (in this test program): assumes the send has already happened.
+            assert_eq!(len(&rx), 1, "not sent yet");
+        }
+        rx
+    })
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a sender's previous
+/// operation and an `UnboundedSender::send()`.
+///
+/// The test program wrongly assumes that once it sees `ready`, the sender has already sent. That
+/// fails when the receiver runs between the sender's store and its send, which Shuttle only
+/// explores if the send takes a scheduling point first. (A bounded `send` or a `try_send` acquires
+/// capacity first, which takes a scheduling point.)
+#[test]
+#[should_panic(expected = "not sent yet")]
+fn unbounded_send_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = mpsc::unbounded_channel();
+            let receiver = assert_sent_if_ready(&ready, rx, |rx| rx.len());
+            ready.store(true, Ordering::SeqCst);
+            tx.send(()).unwrap();
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Regression test: as `unbounded_send_after_store_is_a_separate_step`, for `Permit::send()`.
+#[test]
+#[should_panic(expected = "not sent yet")]
+fn permit_send_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = mpsc::channel(1);
+            let receiver = assert_sent_if_ready(&ready, rx, |rx| rx.len());
+            let permit = future::block_on(tx.reserve()).unwrap();
+            ready.store(true, Ordering::SeqCst);
+            permit.send(());
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Regression test: as `unbounded_send_after_store_is_a_separate_step`, for `OwnedPermit::send()`.
+#[test]
+#[should_panic(expected = "not sent yet")]
+fn owned_permit_send_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = mpsc::channel(1);
+            let receiver = assert_sent_if_ready(&ready, rx, |rx| rx.len());
+            let permit = future::block_on(tx.reserve_owned()).unwrap();
+            ready.store(true, Ordering::SeqCst);
+            permit.send(());
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
