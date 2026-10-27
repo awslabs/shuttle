@@ -165,6 +165,11 @@ impl AtomicBool {
         self.inner.try_update(order, order, |old| Some(old ^ val)).unwrap()
     }
 
+    /// Logical "not" with the current value. Returns the previous value.
+    pub fn fetch_not(&self, order: Ordering) -> bool {
+        self.fetch_xor(true, order)
+    }
+
     /// Load the atomic value directly without triggering any Shuttle context switches.
     ///
     /// # Safety

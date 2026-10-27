@@ -424,6 +424,48 @@ mod bool {
         assert!(observed_values.contains(&Ok(false)));
         assert!(observed_values.contains(&Err(true)));
     }
+
+    #[test]
+    fn fetch_not() {
+        let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let observed_values_clone = observed_values.clone();
+
+        check_dfs(
+            move || {
+                let x = Arc::new(AtomicBool::new(false));
+
+                let thd1 = {
+                    let x = x.clone();
+                    thread::spawn(move || {
+                        let val = x.fetch_not(Ordering::SeqCst);
+                        assert_eq!(me(), 1);
+                        val
+                    })
+                };
+
+                let val = x.fetch_not(Ordering::SeqCst);
+                assert_eq!(me(), 0);
+                check_clock(|i, c| {
+                    (c > 0)
+                        == match val {
+                            false => i == 0,          // thd1 hasn't executed
+                            true => i == 0 || i == 1, // thd1 must have executed
+                        }
+                });
+
+                let thd1_val = thd1.join().unwrap();
+
+                // The two `not`s cancel out, so neither was lost
+                let x = Arc::try_unwrap(x).unwrap().into_inner();
+                assert!(!x);
+                observed_values_clone.lock().unwrap().insert((val, thd1_val));
+            },
+            None,
+        );
+
+        let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
+        assert_eq!(observed_values, HashSet::from([(false, true), (true, false)]));
+    }
 }
 
 mod ptr {
