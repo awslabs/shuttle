@@ -559,6 +559,34 @@ fn atomics_futures() {
     )
 }
 
+// Check that `fetch_update`, the older name of `try_update`, still works
+#[test]
+fn fetch_update_alias() {
+    check_dfs(
+        move || {
+            let int = AtomicUsize::new(1);
+            assert_eq!(
+                int.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(x + 1)),
+                Ok(1)
+            );
+            assert_eq!(int.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| None), Err(2));
+
+            let b = AtomicBool::new(false);
+            assert_eq!(
+                b.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(!x)),
+                Ok(false)
+            );
+            assert!(b.load(Ordering::SeqCst));
+
+            let mut x = 0usize;
+            let ptr = AtomicPtr::new(std::ptr::null_mut());
+            let res = ptr.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(&mut x as *mut _));
+            assert_eq!(res, Ok(std::ptr::null_mut()));
+        },
+        None,
+    )
+}
+
 // Check that `update` does not lose writes from another thread _while `f` itself runs_.
 fn check_update_retries<U>(update_fn: U)
 where
@@ -596,6 +624,14 @@ where
     // `f` runs twice when the other thread writes `x` while `f` runs, and once otherwise
     let observed_calls = Arc::try_unwrap(observed_calls).unwrap().into_inner().unwrap();
     assert_eq!(observed_calls, HashSet::from([1, 2]));
+}
+
+#[test]
+fn try_update_retries() {
+    check_update_retries(|x, f| {
+        x.try_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(f(v)))
+            .unwrap();
+    });
 }
 
 #[test]

@@ -63,15 +63,12 @@ macro_rules! atomic_int {
             /// Fetches the value, and applies a function to it that returns an optional new value.
             /// Returns a `Result` of `Ok(previous_value)` if the function returned `Some(_)`, else
             /// `Err(previous_value)`.
-            pub fn fetch_update<F>(
+            pub fn try_update(
                 &self,
                 set_order: Ordering,
                 fetch_order: Ordering,
-                mut f: F,
-            ) -> Result<$int_type, $int_type>
-            where
-                F: FnMut($int_type) -> Option<$int_type>,
-            {
+                mut f: impl FnMut($int_type) -> Option<$int_type>,
+            ) -> Result<$int_type, $int_type> {
                 let mut prev = self.load(fetch_order);
                 while let Some(next) = f(prev) {
                     match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
@@ -80,6 +77,22 @@ macro_rules! atomic_int {
                     }
                 }
                 Err(prev)
+            }
+
+            /// Fetches the value, and applies a function to it that returns an optional new value.
+            ///
+            /// Since Rust 1.95 this is an alias for [`try_update`](Self::try_update). Deprecated
+            /// since Rust 1.99.
+            pub fn fetch_update<F>(
+                &self,
+                set_order: Ordering,
+                fetch_order: Ordering,
+                f: F,
+            ) -> Result<$int_type, $int_type>
+            where
+                F: FnMut($int_type) -> Option<$int_type>,
+            {
+                self.try_update(set_order, fetch_order, f)
             }
 
             /// Stores a value into the atomic integer if the current value is the same as the
