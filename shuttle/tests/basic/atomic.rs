@@ -558,3 +558,50 @@ fn atomics_futures() {
         None,
     )
 }
+
+// Check that `update` does not lose writes from another thread _while `f` itself runs_.
+fn check_update_retries<U>(update_fn: U)
+where
+    U: Fn(&AtomicUsize, &mut dyn FnMut(usize) -> usize) + Send + Sync + 'static,
+{
+    let observed_calls = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    let observed_calls_clone = observed_calls.clone();
+
+    check_dfs(
+        move || {
+            let x = Arc::new(AtomicUsize::new(0));
+            let y = AtomicUsize::new(0);
+
+            let thd = {
+                let x = x.clone();
+                thread::spawn(move || {
+                    x.fetch_add(1, Ordering::SeqCst);
+                })
+            };
+
+            let mut calls = 0;
+            update_fn(&x, &mut |v| {
+                calls += 1;
+                y.load(Ordering::SeqCst);
+                v + 1
+            });
+            thd.join().unwrap();
+
+            assert_eq!(x.load(Ordering::SeqCst), 2);
+            observed_calls_clone.lock().unwrap().insert(calls);
+        },
+        None,
+    );
+
+    // `f` runs twice when the other thread writes `x` while `f` runs, and once otherwise
+    let observed_calls = Arc::try_unwrap(observed_calls).unwrap().into_inner().unwrap();
+    assert_eq!(observed_calls, HashSet::from([1, 2]));
+}
+
+#[test]
+fn fetch_update_retries() {
+    check_update_retries(|x, f| {
+        x.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(f(v)))
+            .unwrap();
+    });
+}
