@@ -63,6 +63,26 @@ macro_rules! atomic_int {
             /// Fetches the value, and applies a function to it that returns an optional new value.
             /// Returns a `Result` of `Ok(previous_value)` if the function returned `Some(_)`, else
             /// `Err(previous_value)`.
+            pub fn try_update(
+                &self,
+                set_order: Ordering,
+                fetch_order: Ordering,
+                mut f: impl FnMut($int_type) -> Option<$int_type>,
+            ) -> Result<$int_type, $int_type> {
+                let mut prev = self.load(fetch_order);
+                while let Some(next) = f(prev) {
+                    match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
+                        x @ Ok(_) => return x,
+                        Err(next_prev) => prev = next_prev,
+                    }
+                }
+                Err(prev)
+            }
+
+            /// Fetches the value, and applies a function to it that returns an optional new value.
+            ///
+            /// Since Rust 1.95 this is an alias for [`try_update`](Self::try_update). Deprecated
+            /// since Rust 1.99.
             pub fn fetch_update<F>(
                 &self,
                 set_order: Ordering,
@@ -72,7 +92,24 @@ macro_rules! atomic_int {
             where
                 F: FnMut($int_type) -> Option<$int_type>,
             {
-                self.inner.fetch_update(set_order, fetch_order, f)
+                self.try_update(set_order, fetch_order, f)
+            }
+
+            /// Fetches the value, applies a function to it that returns a new value, and stores the
+            /// new value. Returns the previous value.
+            pub fn update(
+                &self,
+                set_order: Ordering,
+                fetch_order: Ordering,
+                mut f: impl FnMut($int_type) -> $int_type,
+            ) -> $int_type {
+                let mut prev = self.load(fetch_order);
+                loop {
+                    match self.compare_exchange_weak(prev, f(prev), set_order, fetch_order) {
+                        Ok(x) => break x,
+                        Err(next_prev) => prev = next_prev,
+                    }
+                }
             }
 
             /// Stores a value into the atomic integer if the current value is the same as the
@@ -101,7 +138,8 @@ macro_rules! atomic_int {
                 success: Ordering,
                 failure: Ordering,
             ) -> Result<$int_type, $int_type> {
-                self.fetch_update(success, failure, |val| (val == current).then(|| new))
+                self.inner
+                    .try_update(success, failure, |val| (val == current).then(|| new))
             }
 
             /// Stores a value into the atomic integer if the current value is the same as the
@@ -126,7 +164,8 @@ macro_rules! atomic_int {
             ///
             /// This operation wraps around on overflow.
             pub fn fetch_add(&self, val: $int_type, order: Ordering) -> $int_type {
-                self.fetch_update(order, order, |old| Some(old.wrapping_add(val)))
+                self.inner
+                    .try_update(order, order, |old| Some(old.wrapping_add(val)))
                     .unwrap()
             }
 
@@ -134,38 +173,51 @@ macro_rules! atomic_int {
             ///
             /// This operation wraps around on overflow.
             pub fn fetch_sub(&self, val: $int_type, order: Ordering) -> $int_type {
-                self.fetch_update(order, order, |old| Some(old.wrapping_sub(val)))
+                self.inner
+                    .try_update(order, order, |old| Some(old.wrapping_sub(val)))
                     .unwrap()
             }
 
             /// Bitwise "and" with the current value. Returns the previous value.
             pub fn fetch_and(&self, val: $int_type, order: Ordering) -> $int_type {
-                self.fetch_update(order, order, |old| Some(old & val)).unwrap()
+                self.inner
+                    .try_update(order, order, |old| Some(old & val))
+                    .unwrap()
             }
 
             /// Bitwise "nand" with the current value. Returns the previous value.
             pub fn fetch_nand(&self, val: $int_type, order: Ordering) -> $int_type {
-                self.fetch_update(order, order, |old| Some(!(old & val))).unwrap()
+                self.inner
+                    .try_update(order, order, |old| Some(!(old & val)))
+                    .unwrap()
             }
 
             /// Bitwise "or" with the current value. Returns the previous value.
             pub fn fetch_or(&self, val: $int_type, order: Ordering) -> $int_type {
-                self.fetch_update(order, order, |old| Some(old | val)).unwrap()
+                self.inner
+                    .try_update(order, order, |old| Some(old | val))
+                    .unwrap()
             }
 
             /// Bitwise "xor" with the current value. Returns the previous value.
             pub fn fetch_xor(&self, val: $int_type, order: Ordering) -> $int_type {
-                self.fetch_update(order, order, |old| Some(old ^ val)).unwrap()
+                self.inner
+                    .try_update(order, order, |old| Some(old ^ val))
+                    .unwrap()
             }
 
             /// Maximum with the current value. Returns the previous value.
             pub fn fetch_max(&self, val: $int_type, order: Ordering) -> $int_type {
-                self.fetch_update(order, order, |old| Some(old.max(val))).unwrap()
+                self.inner
+                    .try_update(order, order, |old| Some(old.max(val)))
+                    .unwrap()
             }
 
             /// Minimum with the current value. Returns the previous value.
             pub fn fetch_min(&self, val: $int_type, order: Ordering) -> $int_type {
-                self.fetch_update(order, order, |old| Some(old.min(val))).unwrap()
+                self.inner
+                    .try_update(order, order, |old| Some(old.min(val)))
+                    .unwrap()
             }
 
             /// Load the atomic value directly without triggering any Shuttle context switches.

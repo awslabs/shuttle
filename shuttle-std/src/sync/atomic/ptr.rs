@@ -66,11 +66,43 @@ impl<T> AtomicPtr<T> {
     /// Fetches the value, and applies a function to it that returns an optional new value.
     /// Returns a `Result` of `Ok(previous_value)` if the function returned `Some(_)`, else
     /// `Err(previous_value)`.
+    pub fn try_update(
+        &self,
+        set_order: Ordering,
+        fetch_order: Ordering,
+        mut f: impl FnMut(*mut T) -> Option<*mut T>,
+    ) -> Result<*mut T, *mut T> {
+        let mut prev = self.load(fetch_order);
+        while let Some(next) = f(prev) {
+            match self.compare_exchange_weak(prev, next, set_order, fetch_order) {
+                x @ Ok(_) => return x,
+                Err(next_prev) => prev = next_prev,
+            }
+        }
+        Err(prev)
+    }
+
+    /// Fetches the value, and applies a function to it that returns an optional new value.
+    ///
+    /// Since Rust 1.95 this is an alias for [`try_update`](Self::try_update). Deprecated since
+    /// Rust 1.99.
     pub fn fetch_update<F>(&self, set_order: Ordering, fetch_order: Ordering, f: F) -> Result<*mut T, *mut T>
     where
         F: FnMut(*mut T) -> Option<*mut T>,
     {
-        self.inner.fetch_update(set_order, fetch_order, f)
+        self.try_update(set_order, fetch_order, f)
+    }
+
+    /// Fetches the value, applies a function to it that returns a new value, and stores the new
+    /// value. Returns the previous value.
+    pub fn update(&self, set_order: Ordering, fetch_order: Ordering, mut f: impl FnMut(*mut T) -> *mut T) -> *mut T {
+        let mut prev = self.load(fetch_order);
+        loop {
+            match self.compare_exchange_weak(prev, f(prev), set_order, fetch_order) {
+                Ok(x) => break x,
+                Err(next_prev) => prev = next_prev,
+            }
+        }
     }
 
     /// Stores a value into the atomic pointer if the current value is the same as the
@@ -96,7 +128,8 @@ impl<T> AtomicPtr<T> {
         success: Ordering,
         failure: Ordering,
     ) -> Result<*mut T, *mut T> {
-        self.fetch_update(success, failure, |val| (val == current).then_some(new))
+        self.inner
+            .try_update(success, failure, |val| (val == current).then_some(new))
     }
 
     /// Stores a value into the atomic pointer if the current value is the same as the

@@ -193,7 +193,7 @@ macro_rules! int_tests {
             }
 
             #[test]
-            fn fetch_update() {
+            fn try_update() {
                 let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
                 let observed_values_clone = observed_values.clone();
 
@@ -218,7 +218,7 @@ macro_rules! int_tests {
                         };
 
                         let val = x
-                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(x + 5))
+                            .try_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(x + 5))
                             .unwrap();
 
                         assert_eq!(me(), 0);
@@ -348,7 +348,7 @@ mod bool {
     use test_log::test;
 
     #[test]
-    fn fetch_update() {
+    fn try_update() {
         let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
         let observed_values_clone = observed_values.clone();
 
@@ -364,9 +364,7 @@ mod bool {
                     })
                 };
 
-                let val = x
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(!x))
-                    .unwrap();
+                let val = x.try_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(!x)).unwrap();
                 assert_eq!(me(), 0);
                 check_clock(|i, c| {
                     (c > 0)
@@ -433,7 +431,7 @@ mod ptr {
     use test_log::test;
 
     #[test]
-    fn fetch_update() {
+    fn try_update() {
         let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
         let observed_values_clone = observed_values.clone();
 
@@ -453,7 +451,7 @@ mod ptr {
                 };
 
                 let val = ptr
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(x_ptr))
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(x_ptr))
                     .unwrap();
                 check_clock(|i, c| (c > 0) == if val == x_ptr { i == 0 } else { i == 0 || i == 1 });
 
@@ -557,4 +555,127 @@ fn atomics_futures() {
         },
         None,
     )
+}
+
+// Check that `fetch_update`, the older name of `try_update`, still works
+#[test]
+fn fetch_update_alias() {
+    check_dfs(
+        move || {
+            let int = AtomicUsize::new(1);
+            assert_eq!(
+                int.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(x + 1)),
+                Ok(1)
+            );
+            assert_eq!(int.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| None), Err(2));
+
+            let b = AtomicBool::new(false);
+            assert_eq!(
+                b.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(!x)),
+                Ok(false)
+            );
+            assert!(b.load(Ordering::SeqCst));
+
+            let mut x = 0usize;
+            let ptr = AtomicPtr::new(std::ptr::null_mut());
+            let res = ptr.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(&mut x as *mut _));
+            assert_eq!(res, Ok(std::ptr::null_mut()));
+        },
+        None,
+    )
+}
+
+// Check that `update` stores the new value, and that concurrent updates are not lost
+#[test]
+fn update() {
+    check_dfs(
+        move || {
+            let int = Arc::new(AtomicUsize::new(1));
+            let thd = {
+                let int = int.clone();
+                thread::spawn(move || int.update(Ordering::SeqCst, Ordering::SeqCst, |x| x * 2))
+            };
+            let prev = int.update(Ordering::SeqCst, Ordering::SeqCst, |x| x + 1);
+            let thd_prev = thd.join().unwrap();
+            // Neither update is lost: the result is (1 + 1) * 2 or 1 * 2 + 1
+            match int.load(Ordering::SeqCst) {
+                4 => assert_eq!((prev, thd_prev), (1, 2)),
+                3 => assert_eq!((prev, thd_prev), (2, 1)),
+                v => panic!("unexpected value {v}"),
+            }
+
+            let b = AtomicBool::new(false);
+            assert!(!b.update(Ordering::SeqCst, Ordering::SeqCst, |x| !x));
+            assert!(b.load(Ordering::SeqCst));
+
+            let mut x = 0usize;
+            let ptr = AtomicPtr::new(std::ptr::null_mut());
+            let prev = ptr.update(Ordering::SeqCst, Ordering::SeqCst, |_| &mut x as *mut _);
+            assert_eq!(prev, std::ptr::null_mut());
+            assert_eq!(ptr.load(Ordering::SeqCst), &mut x as *mut _);
+        },
+        None,
+    )
+}
+
+// Check that `update` does not lose writes from another thread _while `f` itself runs_.
+fn check_update_retries<U>(update_fn: U)
+where
+    U: Fn(&AtomicUsize, &mut dyn FnMut(usize) -> usize) + Send + Sync + 'static,
+{
+    let observed_calls = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    let observed_calls_clone = observed_calls.clone();
+
+    check_dfs(
+        move || {
+            let x = Arc::new(AtomicUsize::new(0));
+            let y = AtomicUsize::new(0);
+
+            let thd = {
+                let x = x.clone();
+                thread::spawn(move || {
+                    x.fetch_add(1, Ordering::SeqCst);
+                })
+            };
+
+            let mut calls = 0;
+            update_fn(&x, &mut |v| {
+                calls += 1;
+                y.load(Ordering::SeqCst);
+                v + 1
+            });
+            thd.join().unwrap();
+
+            assert_eq!(x.load(Ordering::SeqCst), 2);
+            observed_calls_clone.lock().unwrap().insert(calls);
+        },
+        None,
+    );
+
+    // `f` runs twice when the other thread writes `x` while `f` runs, and once otherwise
+    let observed_calls = Arc::try_unwrap(observed_calls).unwrap().into_inner().unwrap();
+    assert_eq!(observed_calls, HashSet::from([1, 2]));
+}
+
+#[test]
+fn try_update_retries() {
+    check_update_retries(|x, f| {
+        x.try_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(f(v)))
+            .unwrap();
+    });
+}
+
+#[test]
+fn fetch_update_retries() {
+    check_update_retries(|x, f| {
+        x.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(f(v)))
+            .unwrap();
+    });
+}
+
+#[test]
+fn update_retries() {
+    check_update_retries(|x, f| {
+        x.update(Ordering::SeqCst, Ordering::SeqCst, f);
+    });
 }

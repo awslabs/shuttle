@@ -427,8 +427,8 @@ fn clock_threads_pct() {
 }
 
 #[test]
-fn clock_fetch_update() {
-    // Ensure that when a fetch_update fails, the caller does not inherit the clock from the register.
+fn clock_try_update() {
+    // Ensure that when a try_update fails, the caller does not inherit the clock from the register.
     check_dfs(
         || {
             let n = Arc::new(AtomicU32::new(0));
@@ -436,12 +436,12 @@ fn clock_fetch_update() {
             {
                 let n = Arc::clone(&n);
                 thread::spawn(move || {
-                    let _ = n.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| None);
+                    let _ = n.try_update(Ordering::SeqCst, Ordering::SeqCst, |_| None);
                 });
             }
 
             let _ = n.load(Ordering::SeqCst);
-            // Note that we are using check_dfs, so there are executions where the fetch_update happens before this
+            // Note that we are using check_dfs, so there are executions where the try_update happens before this
             // load.  But the load above never causally depends on the spawned thread's clock, since it never managed to
             // store a value into the register.
             check_clock(|i, c| (c > 0) == (i == 0));
