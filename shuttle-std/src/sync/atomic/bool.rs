@@ -88,6 +88,18 @@ impl AtomicBool {
         self.try_update(set_order, fetch_order, f)
     }
 
+    /// Fetches the value, applies a function to it that returns a new value, and stores the new
+    /// value. Returns the previous value.
+    pub fn update(&self, set_order: Ordering, fetch_order: Ordering, mut f: impl FnMut(bool) -> bool) -> bool {
+        let mut prev = self.load(fetch_order);
+        loop {
+            match self.compare_exchange_weak(prev, f(prev), set_order, fetch_order) {
+                Ok(x) => break x,
+                Err(next_prev) => prev = next_prev,
+            }
+        }
+    }
+
     /// Stores a value into the atomic boolean if the current value is the same as the
     /// `current` value.
     #[deprecated(since = "0.0.6", note = "Use `compare_exchange` or `compare_exchange_weak` instead")]

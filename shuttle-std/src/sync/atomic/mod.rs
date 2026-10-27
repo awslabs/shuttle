@@ -198,9 +198,9 @@ impl<T: Copy + Eq> Atomic<T> {
         // in the error case, there is no store, so the register does not inherit the clock of the caller
         //
         // NOTE: this is implemented as a single atomic step, so `f` must be pure. We can guarantee
-        // that internally, but not for user-provided callbacks. The public `try_update` method runs
-        // user callbacks, so it loops over `load` and `compare_exchange_weak` instead, just like
-        // `std`.
+        // that internally, but not for user-provided callbacks. The public `try_update` and
+        // `update` methods run user callbacks, so they loop over `load` and `compare_exchange_weak`
+        // instead, just like `std`.
         thread::switch();
         self.exhale_clock(); // for the load()
         let current = *self.inner.borrow();

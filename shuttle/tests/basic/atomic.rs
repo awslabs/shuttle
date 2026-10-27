@@ -585,6 +585,39 @@ fn fetch_update_alias() {
     )
 }
 
+// Check that `update` stores the new value, and that concurrent updates are not lost
+#[test]
+fn update() {
+    check_dfs(
+        move || {
+            let int = Arc::new(AtomicUsize::new(1));
+            let thd = {
+                let int = int.clone();
+                thread::spawn(move || int.update(Ordering::SeqCst, Ordering::SeqCst, |x| x * 2))
+            };
+            let prev = int.update(Ordering::SeqCst, Ordering::SeqCst, |x| x + 1);
+            let thd_prev = thd.join().unwrap();
+            // Neither update is lost: the result is (1 + 1) * 2 or 1 * 2 + 1
+            match int.load(Ordering::SeqCst) {
+                4 => assert_eq!((prev, thd_prev), (1, 2)),
+                3 => assert_eq!((prev, thd_prev), (2, 1)),
+                v => panic!("unexpected value {v}"),
+            }
+
+            let b = AtomicBool::new(false);
+            assert!(!b.update(Ordering::SeqCst, Ordering::SeqCst, |x| !x));
+            assert!(b.load(Ordering::SeqCst));
+
+            let mut x = 0usize;
+            let ptr = AtomicPtr::new(std::ptr::null_mut());
+            let prev = ptr.update(Ordering::SeqCst, Ordering::SeqCst, |_| &mut x as *mut _);
+            assert_eq!(prev, std::ptr::null_mut());
+            assert_eq!(ptr.load(Ordering::SeqCst), &mut x as *mut _);
+        },
+        None,
+    )
+}
+
 // Check that `update` does not lose writes from another thread _while `f` itself runs_.
 fn check_update_retries<U>(update_fn: U)
 where
@@ -637,5 +670,12 @@ fn fetch_update_retries() {
     check_update_retries(|x, f| {
         x.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| Some(f(v)))
             .unwrap();
+    });
+}
+
+#[test]
+fn update_retries() {
+    check_update_retries(|x, f| {
+        x.update(Ordering::SeqCst, Ordering::SeqCst, f);
     });
 }

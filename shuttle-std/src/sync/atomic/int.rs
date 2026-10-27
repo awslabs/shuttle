@@ -95,6 +95,23 @@ macro_rules! atomic_int {
                 self.try_update(set_order, fetch_order, f)
             }
 
+            /// Fetches the value, applies a function to it that returns a new value, and stores the
+            /// new value. Returns the previous value.
+            pub fn update(
+                &self,
+                set_order: Ordering,
+                fetch_order: Ordering,
+                mut f: impl FnMut($int_type) -> $int_type,
+            ) -> $int_type {
+                let mut prev = self.load(fetch_order);
+                loop {
+                    match self.compare_exchange_weak(prev, f(prev), set_order, fetch_order) {
+                        Ok(x) => break x,
+                        Err(next_prev) => prev = next_prev,
+                    }
+                }
+            }
+
             /// Stores a value into the atomic integer if the current value is the same as the
             /// `current` value.
             #[deprecated(
