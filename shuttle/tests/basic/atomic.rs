@@ -193,7 +193,7 @@ macro_rules! int_tests {
             }
 
             #[test]
-            fn fetch_update() {
+            fn try_update() {
                 let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
                 let observed_values_clone = observed_values.clone();
 
@@ -218,7 +218,7 @@ macro_rules! int_tests {
                         };
 
                         let val = x
-                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(x + 5))
+                            .try_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(x + 5))
                             .unwrap();
 
                         assert_eq!(me(), 0);
@@ -348,7 +348,7 @@ mod bool {
     use test_log::test;
 
     #[test]
-    fn fetch_update() {
+    fn try_update() {
         let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
         let observed_values_clone = observed_values.clone();
 
@@ -364,9 +364,7 @@ mod bool {
                     })
                 };
 
-                let val = x
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(!x))
-                    .unwrap();
+                let val = x.try_update(Ordering::SeqCst, Ordering::SeqCst, |x| Some(!x)).unwrap();
                 assert_eq!(me(), 0);
                 check_clock(|i, c| {
                     (c > 0)
@@ -433,7 +431,7 @@ mod ptr {
     use test_log::test;
 
     #[test]
-    fn fetch_update() {
+    fn try_update() {
         let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
         let observed_values_clone = observed_values.clone();
 
@@ -453,7 +451,7 @@ mod ptr {
                 };
 
                 let val = ptr
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(x_ptr))
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |_| Some(x_ptr))
                     .unwrap();
                 check_clock(|i, c| (c > 0) == if val == x_ptr { i == 0 } else { i == 0 || i == 1 });
 

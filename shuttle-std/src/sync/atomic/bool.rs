@@ -112,7 +112,7 @@ impl AtomicBool {
         failure: Ordering,
     ) -> Result<bool, bool> {
         self.inner
-            .fetch_update(success, failure, |val| (val == current).then_some(new))
+            .try_update(success, failure, |val| (val == current).then_some(new))
     }
 
     /// Stores a value into the atomic boolean if the current value is the same as the
@@ -135,22 +135,22 @@ impl AtomicBool {
 
     /// Logical "and" with the current value. Returns the previous value.
     pub fn fetch_and(&self, val: bool, order: Ordering) -> bool {
-        self.inner.fetch_update(order, order, |old| Some(old & val)).unwrap()
+        self.inner.try_update(order, order, |old| Some(old & val)).unwrap()
     }
 
     /// Logical "nand" with the current value. Returns the previous value.
     pub fn fetch_nand(&self, val: bool, order: Ordering) -> bool {
-        self.inner.fetch_update(order, order, |old| Some(!(old & val))).unwrap()
+        self.inner.try_update(order, order, |old| Some(!(old & val))).unwrap()
     }
 
     /// Logical "or" with the current value. Returns the previous value.
     pub fn fetch_or(&self, val: bool, order: Ordering) -> bool {
-        self.inner.fetch_update(order, order, |old| Some(old | val)).unwrap()
+        self.inner.try_update(order, order, |old| Some(old | val)).unwrap()
     }
 
     /// Logical "xor" with the current value. Returns the previous value.
     pub fn fetch_xor(&self, val: bool, order: Ordering) -> bool {
-        self.inner.fetch_update(order, order, |old| Some(old ^ val)).unwrap()
+        self.inner.try_update(order, order, |old| Some(old ^ val)).unwrap()
     }
 
     /// Load the atomic value directly without triggering any Shuttle context switches.

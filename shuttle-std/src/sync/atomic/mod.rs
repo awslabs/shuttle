@@ -115,7 +115,7 @@ pub fn fence(order: Ordering) {
 pub use std::sync::atomic::compiler_fence;
 
 /// Base type for atomic implementations. This type handles generating the right interleavings for
-/// all atomics. The interesting stuff is in `load`, `store`, `swap`, and `fetch_update`; all other
+/// all atomics. The interesting stuff is in `load`, `store`, `swap`, and `try_update`; all other
 /// atomic operations are implemented in terms of those four primitives.
 #[derive(Debug)]
 struct Atomic<T> {
@@ -187,14 +187,14 @@ impl<T: Copy + Eq> Atomic<T> {
         val
     }
 
-    fn fetch_update<F>(&self, set_order: Ordering, fetch_order: Ordering, mut f: F) -> Result<T, T>
+    fn try_update<F>(&self, set_order: Ordering, fetch_order: Ordering, mut f: F) -> Result<T, T>
     where
         F: FnMut(T) -> Option<T>,
     {
         maybe_warn_about_ordering(set_order);
         maybe_warn_about_ordering(fetch_order);
 
-        // fetch_update behaves like (ignoring error): { let x = load() ; store(f(x)); x }
+        // try_update behaves like (ignoring error): { let x = load() ; store(f(x)); x }
         // in the error case, there is no store, so the register does not inherit the clock of the caller
         //
         // NOTE: this is implemented as a single atomic step, so `f` must be pure. We can guarantee
