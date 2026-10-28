@@ -26,6 +26,12 @@ impl<T> std::fmt::Debug for AtomicPtr<T> {
     }
 }
 
+impl<T> std::fmt::Pointer for AtomicPtr<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        std::fmt::Pointer::fmt(unsafe { &self.raw_load() }, f)
+    }
+}
+
 // Atomic operations make it safe to Send + Sync this shared raw pointer (establishing the safety of
 // *using* the raw pointer is still up to the caller)
 unsafe impl<T> Send for AtomicPtr<T> {}
@@ -148,6 +154,64 @@ impl<T> AtomicPtr<T> {
         failure: Ordering,
     ) -> Result<*mut T, *mut T> {
         self.compare_exchange(current, new, success, failure)
+    }
+
+    /// Offsets the pointer's address by adding `val` (in units of `T`). Returns the previous
+    /// pointer.
+    ///
+    /// This operation wraps around on overflow, like `<*mut T>::wrapping_add`.
+    pub fn fetch_ptr_add(&self, val: usize, order: Ordering) -> *mut T {
+        self.fetch_byte_add(val.wrapping_mul(std::mem::size_of::<T>()), order)
+    }
+
+    /// Offsets the pointer's address by subtracting `val` (in units of `T`). Returns the previous
+    /// pointer.
+    ///
+    /// This operation wraps around on overflow, like `<*mut T>::wrapping_sub`.
+    pub fn fetch_ptr_sub(&self, val: usize, order: Ordering) -> *mut T {
+        self.fetch_byte_sub(val.wrapping_mul(std::mem::size_of::<T>()), order)
+    }
+
+    /// Offsets the pointer's address by adding `val` bytes. Returns the previous pointer.
+    ///
+    /// This operation wraps around on overflow, like `<*mut T>::wrapping_byte_add`.
+    pub fn fetch_byte_add(&self, val: usize, order: Ordering) -> *mut T {
+        self.inner
+            .try_update(order, order, |old| Some(old.wrapping_byte_add(val)))
+            .unwrap()
+    }
+
+    /// Offsets the pointer's address by subtracting `val` bytes. Returns the previous pointer.
+    ///
+    /// This operation wraps around on overflow, like `<*mut T>::wrapping_byte_sub`.
+    pub fn fetch_byte_sub(&self, val: usize, order: Ordering) -> *mut T {
+        self.inner
+            .try_update(order, order, |old| Some(old.wrapping_byte_sub(val)))
+            .unwrap()
+    }
+
+    /// Bitwise "or" of the pointer's address with `val`, keeping the pointer's provenance.
+    /// Returns the previous pointer.
+    pub fn fetch_or(&self, val: usize, order: Ordering) -> *mut T {
+        self.inner
+            .try_update(order, order, |old| Some(old.map_addr(|addr| addr | val)))
+            .unwrap()
+    }
+
+    /// Bitwise "and" of the pointer's address with `val`, keeping the pointer's provenance.
+    /// Returns the previous pointer.
+    pub fn fetch_and(&self, val: usize, order: Ordering) -> *mut T {
+        self.inner
+            .try_update(order, order, |old| Some(old.map_addr(|addr| addr & val)))
+            .unwrap()
+    }
+
+    /// Bitwise "xor" of the pointer's address with `val`, keeping the pointer's provenance.
+    /// Returns the previous pointer.
+    pub fn fetch_xor(&self, val: usize, order: Ordering) -> *mut T {
+        self.inner
+            .try_update(order, order, |old| Some(old.map_addr(|addr| addr ^ val)))
+            .unwrap()
     }
 
     /// Load the atomic value directly without triggering any Shuttle context switches.

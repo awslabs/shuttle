@@ -424,6 +424,48 @@ mod bool {
         assert!(observed_values.contains(&Ok(false)));
         assert!(observed_values.contains(&Err(true)));
     }
+
+    #[test]
+    fn fetch_not() {
+        let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let observed_values_clone = observed_values.clone();
+
+        check_dfs(
+            move || {
+                let x = Arc::new(AtomicBool::new(false));
+
+                let thd1 = {
+                    let x = x.clone();
+                    thread::spawn(move || {
+                        let val = x.fetch_not(Ordering::SeqCst);
+                        assert_eq!(me(), 1);
+                        val
+                    })
+                };
+
+                let val = x.fetch_not(Ordering::SeqCst);
+                assert_eq!(me(), 0);
+                check_clock(|i, c| {
+                    (c > 0)
+                        == match val {
+                            false => i == 0,          // thd1 hasn't executed
+                            true => i == 0 || i == 1, // thd1 must have executed
+                        }
+                });
+
+                let thd1_val = thd1.join().unwrap();
+
+                // The two `not`s cancel out, so neither was lost
+                let x = Arc::try_unwrap(x).unwrap().into_inner();
+                assert!(!x);
+                observed_values_clone.lock().unwrap().insert((val, thd1_val));
+            },
+            None,
+        );
+
+        let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
+        assert_eq!(observed_values, HashSet::from([(false, true), (true, false)]));
+    }
 }
 
 mod ptr {
@@ -507,6 +549,81 @@ mod ptr {
 
         let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
         assert_eq!(observed_values.len(), 2);
+    }
+
+    #[test]
+    fn fetch_ptr_add() {
+        let observed_values = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let observed_values_clone = observed_values.clone();
+
+        check_dfs(
+            move || {
+                let mut array = [0usize; 3];
+                let base = array.as_mut_ptr();
+                let ptr = Arc::new(AtomicPtr::new(base));
+
+                let thd1 = {
+                    let ptr = ptr.clone();
+                    thread::spawn(move || {
+                        ptr.fetch_byte_add(std::mem::size_of::<usize>(), Ordering::SeqCst);
+                        assert_eq!(me(), 1);
+                    })
+                };
+
+                let val = ptr.fetch_ptr_add(1, Ordering::SeqCst);
+                check_clock(|i, c| (c > 0) == if val == base { i == 0 } else { i == 0 || i == 1 });
+
+                thd1.join().unwrap();
+
+                // Neither add is lost
+                let ptr = Arc::try_unwrap(ptr).unwrap().into_inner();
+                assert_eq!(ptr, base.wrapping_add(2));
+                observed_values_clone.lock().unwrap().insert(val == base);
+            },
+            None,
+        );
+
+        let observed_values = Arc::try_unwrap(observed_values).unwrap().into_inner().unwrap();
+        assert_eq!(observed_values.len(), 2);
+    }
+
+    #[test]
+    fn fetch_ptr_ops() {
+        check_dfs(
+            || {
+                let mut array = [0u64; 3];
+                let base = array.as_mut_ptr();
+                let ptr = AtomicPtr::new(base);
+
+                assert_eq!(ptr.fetch_ptr_add(2, Ordering::SeqCst), base);
+                assert_eq!(ptr.fetch_ptr_sub(1, Ordering::SeqCst), base.wrapping_add(2));
+                assert_eq!(ptr.fetch_byte_add(8, Ordering::SeqCst), base.wrapping_add(1));
+                assert_eq!(ptr.fetch_byte_sub(16, Ordering::SeqCst), base.wrapping_add(2));
+                assert_eq!(ptr.load(Ordering::SeqCst), base);
+
+                // Tag the pointer's low bit, which is unused since `u64` is at least 4-byte aligned.
+                // Run each op with the bit both clear and set, to tell the ops apart.
+                assert_eq!(ptr.fetch_or(1, Ordering::SeqCst), base); // sets
+                assert_eq!(ptr.fetch_or(1, Ordering::SeqCst).addr(), base.addr() | 1); // no-op
+                assert_eq!(ptr.fetch_xor(1, Ordering::SeqCst).addr(), base.addr() | 1); // clears
+                assert_eq!(ptr.fetch_xor(1, Ordering::SeqCst), base); // sets
+                assert_eq!(ptr.fetch_and(!1, Ordering::SeqCst).addr(), base.addr() | 1); // clears
+                assert_eq!(ptr.fetch_and(!1, Ordering::SeqCst), base); // no-op
+                assert_eq!(ptr.load(Ordering::SeqCst), base);
+            },
+            None,
+        );
+    }
+
+    #[test]
+    fn fmt() {
+        let mut x = 0usize;
+        let x_ptr = &mut x as *mut usize;
+        let ptr = AtomicPtr::new(x_ptr);
+
+        assert_eq!(format!("{:?}", ptr), format!("{:?}", x_ptr));
+        assert_eq!(format!("{:p}", ptr), format!("{:p}", x_ptr));
+        assert_eq!(format!("{:#p}", ptr), format!("{:#p}", x_ptr));
     }
 }
 
