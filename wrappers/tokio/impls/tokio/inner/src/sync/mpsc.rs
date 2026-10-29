@@ -5,7 +5,7 @@ use shuttle::future::{
     self,
     batch_semaphore::{Acquire, BatchSemaphore, Fairness, TryAcquireError},
 };
-use shuttle_engine::runtime::thread;
+use shuttle_engine::runtime::{execution::ExecutionState, thread};
 use smallvec::SmallVec;
 use std::fmt::{self, Debug};
 use std::future::Future;
@@ -168,11 +168,7 @@ impl<T> Channel<T> {
     }
 
     fn drop_sender(&self) {
-        // Note that we deliberately limit how long we are holding the lock both here and below.
-        // We have to do this because `BatchSemaphore::close` is a scheduling point. If we were to hold
-        // the Mutex across a scheduling point, then we run the risk of trying to reacquire the lock,
-        // deadlocking on ourself.
-        let known_senders = {
+        {
             let mut state = self.state.try_lock().unwrap();
             trace!(
                 "dropping sender for channel {:p} at count {:?}",
@@ -181,25 +177,39 @@ impl<T> Channel<T> {
             );
 
             assert!(state.known_senders > 0);
-            state.known_senders -= 1;
-            state.known_senders
+            // Other senders remain, so no other task can see this drop.
+            if state.known_senders > 1 {
+                state.known_senders -= 1;
+                return;
+            }
+        }
+
+        // The last sender: the receiver sees the count drop to zero, so take the scheduling point
+        // before it, and then drop the count and close the channel in one step, as tokio does. No
+        // other sender is left to change the count at the scheduling point.
+        if !ExecutionState::should_stop() {
+            thread::switch();
+        }
+
+        let no_messages_in_channel = {
+            let mut state = self.state.try_lock().unwrap();
+            state.known_senders = 0;
+            state.messages.is_empty()
         };
 
-        if known_senders == 0 {
-            self.close();
+        trace!(
+            "closing sending semaphore {:p} for channel {:p}",
+            self.send_semaphore,
+            self
+        );
+        self.send_semaphore.close_no_scheduling_point();
 
-            let no_messages_in_channel = {
-                let state = self.state.try_lock().unwrap();
-                state.messages.is_empty()
-            };
-
-            // If there are messages, then the `recv_semaphore` will remain open until the last message is `recv`d.
-            if no_messages_in_channel {
-                trace!("closing semaphore {:p} on last sender drop", self.recv_semaphore);
-                // See invariant above; when the last sender leaves an empty channel, it
-                // closes the recv_semaphore
-                self.recv_semaphore.close_no_scheduling_point();
-            }
+        // If there are messages, then the `recv_semaphore` will remain open until the last message is `recv`d.
+        if no_messages_in_channel {
+            trace!("closing semaphore {:p} on last sender drop", self.recv_semaphore);
+            // See invariant above; when the last sender leaves an empty channel, it
+            // closes the recv_semaphore
+            self.recv_semaphore.close_no_scheduling_point();
         }
     }
 

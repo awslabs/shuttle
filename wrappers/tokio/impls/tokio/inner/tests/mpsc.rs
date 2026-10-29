@@ -1392,3 +1392,98 @@ fn owned_permit_send_after_store_is_a_separate_step() {
         None,
     );
 }
+
+/// Regression test: Shuttle must be able to schedule another task between a sender's previous
+/// operation and the drop of the last sender.
+///
+/// The test program wrongly assumes that once it sees `ready`, the last sender has been dropped, so
+/// that the channel is disconnected once the receiver has taken the message in it. That fails when
+/// the receiver runs between the sender's store and the drop, which Shuttle only explores if the
+/// drop takes a scheduling point first. Previously, the drop decremented the count of senders
+/// before its first scheduling point, and the receiver checks that count when it takes a message.
+#[test]
+#[should_panic(expected = "last sender not dropped yet")]
+fn last_sender_drop_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            tx.send(()).unwrap();
+            let receiver = {
+                let ready = ready.clone();
+                shuttle::thread::spawn(move || {
+                    if ready.load(Ordering::SeqCst) {
+                        assert_eq!(rx.try_recv(), Ok(()));
+                        // BUG (in this test program): assumes the last sender has been dropped.
+                        assert_eq!(
+                            rx.try_recv(),
+                            Err(TryRecvError::Disconnected),
+                            "last sender not dropped yet"
+                        );
+                    }
+                })
+            };
+            ready.store(true, Ordering::SeqCst);
+            drop(tx);
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Once `recv` returns `None`, `is_closed` returns `true`. Previously, the drop of the last sender
+/// set the count of senders to zero before the scheduling point of its close, and a receiver that
+/// took the last message there closed its own side while the channel was still open.
+#[test]
+fn recv_none_implies_closed() {
+    check_dfs(
+        || {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            tx.send(()).unwrap();
+            let receiver = shuttle::thread::spawn(move || {
+                while rx.blocking_recv().is_some() {}
+                assert!(rx.is_closed());
+            });
+            drop(tx);
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// A last `Sender` that is dropped after its execution ended doesn't panic.
+#[test]
+fn last_sender_dropped_after_execution() {
+    static KEPT: std::sync::Mutex<Option<mpsc::Sender<()>>> = std::sync::Mutex::new(None);
+    check_dfs(
+        || {
+            let (tx, rx) = mpsc::channel(1);
+            drop(rx);
+            // Keep the sender past the end of the execution.
+            *KEPT.lock().unwrap() = Some(tx);
+        },
+        None,
+    );
+    drop(KEPT.lock().unwrap().take());
+}
+
+/// A last `Sender` that is dropped while its task unwinds a caught panic disconnects the channel,
+/// so that the receiver doesn't wait forever.
+#[test]
+fn last_sender_dropped_during_caught_panic_disconnects() {
+    check_dfs(
+        || {
+            let (tx, mut rx) = mpsc::channel::<()>(1);
+            let handle = shuttle::thread::spawn(move || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    let _tx = tx;
+                    panic!("expected");
+                }))
+                .unwrap_err();
+            });
+            assert_eq!(rx.blocking_recv(), None);
+            handle.join().unwrap();
+        },
+        None,
+    );
+}
