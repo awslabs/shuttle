@@ -1,17 +1,21 @@
 use shuttle::future;
-use shuttle_tokio_impl_inner::sync::notify::Notify;
-use std::collections::VecDeque;
+use shuttle::rand::Rng;
+use shuttle::scheduler::DfsScheduler;
+use shuttle_tokio_impl_inner::sync::notify::{Notified, Notify};
+use std::collections::{HashSet, VecDeque};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
 };
+use std::task::{Context, Waker};
 use test_log::test;
 
 fn check_dfs<F>(f: F)
 where
     F: Fn() + Send + Sync + 'static,
 {
-    use shuttle::scheduler::DfsScheduler;
     let mut config = shuttle::Config::default();
     config.max_steps = shuttle::MaxSteps::FailAfter(1_000);
 
@@ -87,96 +91,6 @@ fn notify_mpsc_channel() {
     });
 }
 
-#[test]
-fn notify_mpmc_channel() {
-    // Example from the tokio docs for Notify
-    // A multi-producer, multi-consumer channel
-
-    struct Channel<T> {
-        messages: Mutex<VecDeque<T>>,
-        notify_on_sent: Notify,
-    }
-
-    impl<T> Channel<T> {
-        fn new() -> Self {
-            Self {
-                messages: Mutex::new(VecDeque::new()),
-                notify_on_sent: Notify::new(),
-            }
-        }
-
-        pub fn send(&self, msg: T) {
-            let mut locked_queue = self.messages.lock().unwrap();
-            locked_queue.push_back(msg);
-            drop(locked_queue);
-
-            // Send a notification to one of the calls currently
-            // waiting in a call to `recv`.
-            self.notify_on_sent.notify_one();
-        }
-
-        pub fn try_recv(&self) -> Option<T> {
-            let mut locked_queue = self.messages.lock().unwrap();
-            locked_queue.pop_front()
-        }
-
-        pub async fn recv(&self) -> T {
-            let mut future = self.notify_on_sent.notified();
-            let mut future = unsafe { std::pin::Pin::new_unchecked(&mut future) };
-
-            loop {
-                // Make sure that no wakeup is lost if we get
-                // `None` from `try_recv`.
-                future.as_mut().enable();
-
-                if let Some(msg) = self.try_recv() {
-                    return msg;
-                }
-
-                // Wait for a call to `notify_one`.
-                //
-                // This uses `.as_mut()` to avoid consuming the future,
-                // which lets us call `Pin::set` below.
-                future.as_mut().await;
-
-                // Reset the future in case another call to
-                // `try_recv` got the message before us.
-                future.set(self.notify_on_sent.notified());
-            }
-        }
-    }
-
-    check_dfs(|| {
-        future::block_on(async {
-            let counter = Arc::new(AtomicUsize::new(0));
-            let counter1 = counter.clone();
-            let counter2 = counter.clone();
-
-            let tx1 = Arc::new(Channel::new());
-            let tx2 = tx1.clone();
-            let rx1 = tx1.clone();
-            let rx2 = tx1.clone();
-            future::spawn(async move {
-                tx1.send(1);
-            });
-            future::spawn(async move {
-                tx2.send(2);
-            });
-            let r1 = future::spawn(async move {
-                let x = rx1.recv().await;
-                counter1.fetch_add(x, Ordering::SeqCst);
-            });
-            let r2 = future::spawn(async move {
-                let x = rx2.recv().await;
-                counter2.fetch_add(x, Ordering::SeqCst);
-            });
-            r1.await.unwrap();
-            r2.await.unwrap();
-            assert_eq!(counter.load(Ordering::SeqCst), 3);
-        });
-    });
-}
-
 fn notify_mpmc_channel_2_test(do_enable: bool) {
     // Example from the tokio docs
 
@@ -241,8 +155,7 @@ fn notify_mpmc_channel_2_test(do_enable: bool) {
                     return msg;
                 }
 
-                // Force context switch before the future is polled
-                shuttle::future::yield_now().await;
+                // No `yield_now` here: the poll below takes a scheduling point.
 
                 // Wait for a call to `notify_one`.
                 //
@@ -275,20 +188,15 @@ fn notify_mpmc_channel_2_test(do_enable: bool) {
                 counter1.fetch_add(x, Ordering::SeqCst);
             }));
             h.push(future::spawn(async move {
-                let x = rx2.recv().await;
-                counter2.fetch_add(x, Ordering::SeqCst);
-            }));
-            h.push(future::spawn(async move {
                 tx1.send(1);
             }));
+            h.push(future::spawn(async move {
+                tx2.send(2);
+            }));
 
-            // The second send runs on this task rather than in a spawned one. This task has to
-            // exist regardless and would otherwise do nothing but join, so spawning a fourth task
-            // for it only adds a schedulable entity that multiplies the interleaving space without
-            // adding any concurrency to the channel. Joining sequentially rather than with
-            // `join_all` is likewise cheaper for the same reason. Together these keep the search
-            // exhaustive while cutting it from 666,570 interleavings to a small fraction.
-            tx2.send(2);
+            // The second receive runs on this task, which would otherwise only join the others.
+            let x = rx2.recv().await;
+            counter2.fetch_add(x, Ordering::SeqCst);
 
             for handle in h {
                 handle.await.unwrap();
@@ -463,6 +371,38 @@ fn notify_waiters_leaves_permit_for_next_waiter() {
     });
 }
 
+/// Regression test: Shuttle must be able to schedule another task between a notifier's previous
+/// operation and its `notify_one()`.
+///
+/// The test program wrongly assumes that once it sees `ready`, the notifier has already called
+/// `notify_one()`, so that a permit is stored. That fails when the waiter runs between the
+/// notifier's store and its `notify_one()`, which Shuttle only explores if `notify_one()` takes a
+/// scheduling point first.
+#[test]
+#[should_panic(expected = "no permit yet")]
+fn notify_one_after_store_is_a_separate_step() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        let waiter = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                let notified = std::pin::pin!(notify.notified());
+                if ready.load(Ordering::SeqCst) {
+                    // BUG (in this test program): assumes `notify_one()` has already run.
+                    assert!(notified.enable(), "no permit yet");
+                }
+            })
+        };
+
+        ready.store(true, Ordering::SeqCst);
+        notify.notify_one();
+
+        waiter.join().unwrap();
+    });
+}
+
 /// Regression test: `notify_one()` notifies a `Notified`, and the `Notified` is dropped before it
 /// completes. As in tokio, the drop passes the notification on to another waiter. Previously, the
 /// notification was lost, and the other waiter waited forever.
@@ -547,4 +487,372 @@ fn notify_one_to_waiter_dropped_during_panic_is_passed_on() {
         }
         future::block_on(notify.notified());
     });
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a notifier's previous
+/// operation and its `notify_waiters()`.
+///
+/// The test program wrongly assumes that once it sees `ready`, the notifier has already called
+/// `notify_waiters()`, which notifies the registered waiter. That fails when the waiter runs between
+/// the notifier's store and its `notify_waiters()`, which Shuttle only explores if
+/// `notify_waiters()` takes a scheduling point first.
+#[test]
+#[should_panic(expected = "not notified yet")]
+fn notify_waiters_after_store_is_a_separate_step() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+        // Registered before the notifier runs, so `notify_waiters()` notifies it.
+        let notified = Box::pin(notify.notified());
+
+        let notifier = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                ready.store(true, Ordering::SeqCst);
+                notify.notify_waiters();
+            })
+        };
+
+        let mut notified = notified;
+        if ready.load(Ordering::SeqCst) {
+            // BUG (in this test program): assumes `notify_waiters()` has already run.
+            assert!(notified.as_mut().enable(), "not notified yet");
+        }
+
+        notifier.join().unwrap();
+    });
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a waiter's previous
+/// operation and the first `enable()` (or poll) of its `Notified`.
+///
+/// The test program wrongly assumes that the notifier can't notify the waiter between the waiter's
+/// store and its `enable()`. That fails when the notifier runs between the two, which Shuttle only
+/// explores if the first `enable()` takes a scheduling point.
+#[test]
+#[should_panic(expected = "notified between the store and enable")]
+fn first_enable_after_store_is_a_separate_step() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        let notifier = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                if ready.load(Ordering::SeqCst) {
+                    notify.notify_waiters();
+                }
+            })
+        };
+
+        let mut notified = Box::pin(notify.notified());
+        ready.store(true, Ordering::SeqCst);
+        // BUG (in this test program): assumes the notifier can't run before `enable()`.
+        assert!(!notified.as_mut().enable(), "notified between the store and enable");
+
+        notifier.join().unwrap();
+    });
+}
+
+/// Regression test: Shuttle must be able to schedule another task between two `enable()` calls on
+/// the same `Notified`. `enable()` registers no waker, so the second call doesn't follow a wake-up.
+///
+/// The test program wrongly assumes that no notification arrives between the two calls. That fails
+/// when the notifier runs between them, which Shuttle only explores if the second `enable()` takes a
+/// scheduling point.
+#[test]
+#[should_panic(expected = "notified between the two enables")]
+fn notified_between_two_enables() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let notifier = {
+            let notify = notify.clone();
+            shuttle::thread::spawn(move || notify.notify_one())
+        };
+
+        let mut notified = Box::pin(notify.notified());
+        let first = notified.as_mut().enable();
+        let second = notified.as_mut().enable();
+        // BUG (in this test program): assumes no notification arrives between the two calls.
+        assert!(first || !second, "notified between the two enables");
+
+        notifier.join().unwrap();
+    });
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a task's previous
+/// operation and the drop of a `Notified` that `notify_one()` notified, which passes the
+/// notification on.
+///
+/// The test program wrongly assumes that once it sees `ready`, the drop has already passed the
+/// notification on, so that a permit is stored. That fails when the waiter runs between the store
+/// and the drop, which Shuttle only explores if the drop takes a scheduling point first.
+#[test]
+#[should_panic(expected = "no permit yet")]
+fn drop_of_notified_one_after_store_is_a_separate_step() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        // Notified by `notify_one()`, but not completed.
+        let mut dropped = Box::pin(notify.notified());
+        assert!(!dropped.as_mut().enable());
+        notify.notify_one();
+
+        let waiter = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                let notified = std::pin::pin!(notify.notified());
+                if ready.load(Ordering::SeqCst) {
+                    // BUG (in this test program): assumes the drop has already passed the
+                    // notification on.
+                    assert!(notified.enable(), "no permit yet");
+                }
+            })
+        };
+
+        ready.store(true, Ordering::SeqCst);
+        drop(dropped);
+
+        waiter.join().unwrap();
+    });
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a waiter's previous
+/// operation and a poll of its `Notified` that follows `enable()`. `enable()` registers no waker, so
+/// that poll doesn't follow a wake-up.
+///
+/// The test program wrongly assumes that the notifier can't notify the waiter between the waiter's
+/// store and its poll. That fails when the notifier runs between the two, which Shuttle only
+/// explores if the poll takes a scheduling point.
+#[test]
+#[should_panic(expected = "notified between the store and the poll")]
+fn poll_after_enable_and_store_is_a_separate_step() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        let notifier = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                if ready.load(Ordering::SeqCst) {
+                    notify.notify_one();
+                }
+            })
+        };
+
+        let mut notified = Box::pin(notify.notified());
+        assert!(!notified.as_mut().enable());
+        ready.store(true, Ordering::SeqCst);
+        let mut cx = Context::from_waker(Waker::noop());
+        // BUG (in this test program): assumes the notifier can't run before the poll.
+        assert!(
+            notified.as_mut().poll(&mut cx).is_pending(),
+            "notified between the store and the poll"
+        );
+
+        notifier.join().unwrap();
+    });
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a task's previous
+/// operation and the drop of a `Notified` that no `notify_one` or `notify_waiters` notified.
+///
+/// The test program wrongly assumes that once it sees `ready`, the dropped waiter is gone, so that
+/// `notify_one()` stores a permit for the next `enable()`. That fails when the notifier runs between
+/// the store and the drop: `notify_one()` then notifies the dropped waiter, and the drop passes the
+/// notification on only later. Shuttle only explores this if the drop takes a scheduling point
+/// first.
+#[test]
+#[should_panic(expected = "no permit yet")]
+fn drop_of_unnotified_waiter_after_store_is_a_separate_step() {
+    check_dfs(|| {
+        let notify = Arc::new(Notify::new());
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        let notifier = {
+            let (notify, ready) = (notify.clone(), ready.clone());
+            shuttle::thread::spawn(move || {
+                let mut next = Box::pin(notify.notified());
+                if ready.load(Ordering::SeqCst) {
+                    notify.notify_one();
+                    // BUG (in this test program): assumes the dropped waiter is gone.
+                    assert!(next.as_mut().enable(), "no permit yet");
+                }
+            })
+        };
+
+        let mut dropped = Box::pin(notify.notified());
+        assert!(!dropped.as_mut().enable());
+        ready.store(true, Ordering::SeqCst);
+        drop(dropped);
+
+        notifier.join().unwrap();
+    });
+}
+
+/// The state of a waiter when the test starts.
+#[derive(Clone, Copy, Debug)]
+enum Start {
+    /// Registered with `notified()`, but neither enabled nor polled.
+    Registered,
+    /// Enabled with `enable()`.
+    Enabled,
+    /// Polled once, with a waker. The poll returned `Pending`.
+    Polled,
+}
+
+/// An operation of the operating thread in `yield_before_drop_finds_no_new_outcome`.
+#[derive(Clone, Copy, Debug)]
+enum Op {
+    NotifyOne,
+    NotifyWaiters,
+    /// `enable()` on the first waiter that the operating thread holds, if it holds one.
+    EnableFirst,
+    /// A new waiter, registered with `notified()`.
+    Register,
+}
+
+fn start_waiter(notify: &'static Notify, start: Start) -> Pin<Box<Notified<'static>>> {
+    let mut waiter = Box::pin(notify.notified());
+    match start {
+        Start::Registered => {}
+        Start::Enabled => assert!(!waiter.as_mut().enable()),
+        Start::Polled => {
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(waiter.as_mut().poll(&mut cx).is_pending());
+        }
+    }
+    waiter
+}
+
+/// What the operating thread read from `ready` before and after its operations, what each of its
+/// `enable()` calls returned, how many of its waiters are ready at the end, and whether a permit is
+/// stored at the end.
+type Outcome = (bool, bool, Vec<bool>, usize, bool);
+
+/// The outcomes that Shuttle finds for one scenario.
+fn outcomes(
+    dropped: Start,
+    others: &'static [Start],
+    ops: &'static [Op],
+    shift: usize,
+    yield_before_drop: bool,
+) -> HashSet<Outcome> {
+    let seen = Arc::new(Mutex::new(HashSet::new()));
+    let seen_in_test = seen.clone();
+    let runner = shuttle::Runner::new(DfsScheduler::new(None, true), shuttle::Config::default());
+    runner.run(move || {
+        // DFS gives every execution the same random data. Drawing `shift` values first changes
+        // the random data that `notify_one` uses.
+        for _ in 0..shift {
+            let _: u64 = shuttle::rand::thread_rng().gen();
+        }
+        // Leaked, so that the waiters can move to other threads.
+        let notify: &'static Notify = Box::leak(Box::new(Notify::new()));
+        let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+
+        let waiter = start_waiter(notify, dropped);
+        let held: Vec<_> = others.iter().map(|&start| start_waiter(notify, start)).collect();
+
+        let dropping = {
+            let ready = ready.clone();
+            shuttle::thread::spawn(move || {
+                ready.store(true, Ordering::SeqCst);
+                if yield_before_drop {
+                    shuttle::thread::yield_now();
+                }
+                drop(waiter);
+            })
+        };
+        let operating = {
+            let ready = ready.clone();
+            shuttle::thread::spawn(move || {
+                let mut held = held;
+                let mut enabled = vec![];
+                let before = ready.load(Ordering::SeqCst);
+                for op in ops {
+                    match op {
+                        Op::NotifyOne => notify.notify_one(),
+                        Op::NotifyWaiters => notify.notify_waiters(),
+                        Op::EnableFirst => {
+                            if let Some(waiter) = held.first_mut() {
+                                enabled.push(waiter.as_mut().enable());
+                            }
+                        }
+                        Op::Register => held.push(Box::pin(notify.notified())),
+                    }
+                }
+                let after = ready.load(Ordering::SeqCst);
+                (before, after, enabled, held)
+            })
+        };
+
+        dropping.join().unwrap();
+        let (before, after, enabled, mut held) = operating.join().unwrap();
+        let ready_count = held
+            .iter_mut()
+            .map(|waiter| waiter.as_mut().enable())
+            .filter(|&ready| ready)
+            .count();
+        let permit = Box::pin(notify.notified()).as_mut().enable();
+        seen_in_test
+            .lock()
+            .unwrap()
+            .insert((before, after, enabled, ready_count, permit));
+    });
+    Arc::try_unwrap(seen).unwrap().into_inner().unwrap()
+}
+
+/// A `yield_now()` right before the drop of a `Notified` lets Shuttle find no new outcome. This
+/// holds if the drop's own scheduling point precedes every access that the drop makes.
+///
+/// Each scenario has two threads. The dropping thread stores `true` in `ready`, and then drops a
+/// waiter that no `notify_one` or `notify_waiters` notified. The operating thread reads `ready`, runs
+/// one or two operations on the same `Notify`, and reads `ready` again. The test runs each scenario
+/// with DFS twice, once with a `yield_now()` between the store and the drop. Both runs must find the
+/// same outcomes.
+///
+/// The scenarios cover each start state of the dropped waiter, zero to two other waiters in each
+/// start state, and each sequence of one or two operations.
+///
+/// `notify_one` picks a waiter at random, and DFS doesn't explore that choice. So an outcome counts
+/// the ready waiters, and doesn't name them. Each run also repeats with 8 different random data
+/// streams.
+#[test]
+fn yield_before_drop_finds_no_new_outcome() {
+    const STARTS: [Start; 3] = [Start::Registered, Start::Enabled, Start::Polled];
+    const OPS: [Op; 4] = [Op::NotifyOne, Op::NotifyWaiters, Op::EnableFirst, Op::Register];
+    const SHIFTS: usize = 8;
+
+    let mut others: Vec<Vec<Start>> = vec![vec![]];
+    others.extend(STARTS.iter().map(|&start| vec![start]));
+    others.extend(STARTS.iter().flat_map(|&a| STARTS.iter().map(move |&b| vec![a, b])));
+    let mut op_sequences: Vec<Vec<Op>> = OPS.iter().map(|&op| vec![op]).collect();
+    op_sequences.extend(OPS.iter().flat_map(|&a| OPS.iter().map(move |&b| vec![a, b])));
+
+    let mut differences = vec![];
+    for dropped in STARTS {
+        for others in &others {
+            let others: &'static [Start] = Box::leak(others.clone().into_boxed_slice());
+            for ops in &op_sequences {
+                let ops: &'static [Op] = Box::leak(ops.clone().into_boxed_slice());
+                let mut without = HashSet::new();
+                let mut with = HashSet::new();
+                for shift in 0..SHIFTS {
+                    without.extend(outcomes(dropped, others, ops, shift, false));
+                    with.extend(outcomes(dropped, others, ops, shift, true));
+                }
+                if without != with {
+                    differences.push(format!(
+                        "dropped {dropped:?}, others {others:?}, ops {ops:?}: only without the \
+                        scheduling point {:?}, only with it {:?}",
+                        without.difference(&with).collect::<Vec<_>>(),
+                        with.difference(&without).collect::<Vec<_>>()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
