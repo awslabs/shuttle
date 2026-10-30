@@ -7,7 +7,7 @@ use crate::runtime::task::{ChildLabelFn, ParkedDefault, Task, TaskId, TaskName, 
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
-use crate::sync_types::{ResourceSignature, ResourceType};
+use crate::sync_types::{AccessKind, ResourceSignature, ResourceType};
 use crate::thread_support::thread_fn;
 use crate::{backtrace_enabled, Config, MaxSteps, UNGRACEFUL_SHUTDOWN_CONFIG};
 use scoped_tls::scoped_thread_local;
@@ -506,6 +506,10 @@ pub struct ExecutionState {
     // schedules nothing, and doesn't maintain this: see `tear_down`. It also lets a finished task
     // stand in for a while: see `Task::stand_in`.)
     live_tasks: Vec<TaskId>,
+
+    // The accesses to shared resources that the current step has made (see `record_access`).
+    #[cfg(feature = "check-scheduling-points")]
+    step_accesses: super::step_check::StepAccesses,
 }
 
 impl std::fmt::Debug for ExecutionState {
@@ -801,6 +805,8 @@ impl ExecutionState {
             top_level_dispatch_global_ptr,
             runnable_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
             live_tasks: Vec::with_capacity(DEFAULT_INLINE_TASKS),
+            #[cfg(feature = "check-scheduling-points")]
+            step_accesses: Default::default(),
         }
     }
 
@@ -1731,10 +1737,21 @@ impl ExecutionState {
     /// Invoke the scheduler to decide which task to schedule next. Returns true if the chosen task
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
+    ///
+    /// Scheduling points call this through `thread::continuation::scheduling_point`, the one place it
+    /// is inlined into.
+    #[inline(always)]
+    #[cfg_attr(feature = "check-scheduling-points", track_caller)]
     pub fn maybe_yield() -> bool {
+        #[cfg(feature = "check-scheduling-points")]
+        let caller = Location::caller();
         let decision = Self::with(|state| {
             if state.teardown.is_some() {
                 return state.maybe_yield_in_teardown();
+            }
+            #[cfg(feature = "check-scheduling-points")]
+            if let Some(me) = state.current_task.id() {
+                state.step_accesses.scheduling_point(me, caller);
             }
 
             if std::thread::panicking() {
@@ -1879,6 +1896,69 @@ impl ExecutionState {
             MaxSteps::ContinueAfter(max_steps) => Some(max_steps.max(DEFAULT_MAX_STEPS)),
             MaxSteps::None => None,
         }
+    }
+
+    /// Report that the current task is about to access the shared resource `resource`, for the
+    /// scheduling-point checker. Shuttle primitives call this for every access to their shared state
+    /// that other tasks can observe.
+    ///
+    /// With the `check-scheduling-points` feature, the test fails if the current step (the code the
+    /// task runs between two scheduling points) accesses two or more distinct resources, and at least
+    /// one of the accesses is a write: no execution runs another task between the accesses, so
+    /// Shuttle misses the interleavings that would. Accesses in [`ExecutionState::atomic_step`] count
+    /// as one. Without the feature, this does nothing.
+    ///
+    /// Resources are identified by the address of `resource`, which must be the signature that the
+    /// resource holds, not a copy of it.
+    #[inline(always)]
+    #[track_caller]
+    pub fn record_access(resource: &ResourceSignature, kind: AccessKind) {
+        #[cfg(feature = "check-scheduling-points")]
+        Self::check_access(resource, kind, Location::caller());
+        #[cfg(not(feature = "check-scheduling-points"))]
+        let _ = (resource, kind);
+    }
+
+    #[cfg(feature = "check-scheduling-points")]
+    #[inline(never)]
+    fn check_access(resource: &ResourceSignature, kind: AccessKind, location: &'static Location<'static>) {
+        let violation = Self::try_with(|state| {
+            // Execution teardown schedules nothing, so there are no interleavings to miss, and a
+            // panicking task is already failing the test.
+            if state.teardown.is_some() || std::thread::panicking() {
+                return None;
+            }
+            let me = state.current_task.id()?;
+            let step = state.context_switches;
+            state.step_accesses.record(step, me, resource, kind, location)
+        });
+        // Panic outside of `Self::with`, so the panic hook can name the task.
+        if let Ok(Some(violation)) = violation {
+            panic!("{violation}");
+        }
+    }
+
+    /// Run `f` as a single step for the scheduling-point checker (see
+    /// [`ExecutionState::record_access`]): the accesses that `f` reports count as one operation, and
+    /// don't fail the test however many resources they access. `f` must not reach a scheduling point.
+    ///
+    /// Each use needs a comment that says why the operations in `f` form one atomic step.
+    #[inline(always)]
+    pub fn atomic_step<T>(f: impl FnOnce() -> T) -> T {
+        #[cfg(feature = "check-scheduling-points")]
+        {
+            struct Exit;
+            impl Drop for Exit {
+                fn drop(&mut self) {
+                    let _ = ExecutionState::try_with(|state| state.step_accesses.exit_atomic_step());
+                }
+            }
+            let entered = Self::try_with(|state| state.step_accesses.enter_atomic_step()).is_ok();
+            let _exit = entered.then_some(Exit);
+            f()
+        }
+        #[cfg(not(feature = "check-scheduling-points"))]
+        f()
     }
 
     /// Tell the scheduler that the next context switch is an explicit yield requested by the
