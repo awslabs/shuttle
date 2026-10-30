@@ -5,6 +5,7 @@ use shuttle::future::{
     self,
     batch_semaphore::{Acquire, BatchSemaphore, Fairness, TryAcquireError},
 };
+use shuttle_engine::runtime::{execution::ExecutionState, thread};
 use smallvec::SmallVec;
 use std::fmt::{self, Debug};
 use std::future::Future;
@@ -96,6 +97,20 @@ impl<T> Channel<T> {
         Ok(())
     }
 
+    // Send a message on the channel, and release a permit for it to the receiver, as one step after
+    // one scheduling point. Callers must hold capacity for the message (see `send`).
+    //
+    // The push and the release are one operation: a receiver that sees the message in `len` can also
+    // receive it. So the release takes no scheduling point of its own. If the push fails because the
+    // channel is closed, there is no message, and so no permit to release.
+    fn send_and_notify(&self, message: T) -> Result<(), SendError<T>> {
+        // Scheduling point precedes the visible send operation
+        thread::switch();
+        self.send(message)?;
+        self.recv_semaphore.release_no_scheduling_point(1);
+        Ok(())
+    }
+
     // Receive a message from the channel if one is available
     fn recv(&self) -> Option<T> {
         let mut state = self.state.try_lock().unwrap();
@@ -153,11 +168,7 @@ impl<T> Channel<T> {
     }
 
     fn drop_sender(&self) {
-        // Note that we deliberately limit how long we are holding the lock both here and below.
-        // We have to do this because `BatchSemaphore::close` is a scheduling point. If we were to hold
-        // the Mutex across a scheduling point, then we run the risk of trying to reacquire the lock,
-        // deadlocking on ourself.
-        let known_senders = {
+        {
             let mut state = self.state.try_lock().unwrap();
             trace!(
                 "dropping sender for channel {:p} at count {:?}",
@@ -166,25 +177,39 @@ impl<T> Channel<T> {
             );
 
             assert!(state.known_senders > 0);
-            state.known_senders -= 1;
-            state.known_senders
+            // Other senders remain, so no other task can see this drop.
+            if state.known_senders > 1 {
+                state.known_senders -= 1;
+                return;
+            }
+        }
+
+        // The last sender: the receiver sees the count drop to zero, so take the scheduling point
+        // before it, and then drop the count and close the channel in one step, as tokio does. No
+        // other sender is left to change the count at the scheduling point.
+        if !ExecutionState::should_stop() {
+            thread::switch();
+        }
+
+        let no_messages_in_channel = {
+            let mut state = self.state.try_lock().unwrap();
+            state.known_senders = 0;
+            state.messages.is_empty()
         };
 
-        if known_senders == 0 {
-            self.close();
+        trace!(
+            "closing sending semaphore {:p} for channel {:p}",
+            self.send_semaphore,
+            self
+        );
+        self.send_semaphore.close_no_scheduling_point();
 
-            let no_messages_in_channel = {
-                let state = self.state.try_lock().unwrap();
-                state.messages.is_empty()
-            };
-
-            // If there are messages, then the `recv_semaphore` will remain open until the last message is `recv`d.
-            if no_messages_in_channel {
-                trace!("closing semaphore {:p} on last sender drop", self.recv_semaphore);
-                // See invariant above; when the last sender leaves an empty channel, it
-                // closes the recv_semaphore
-                self.recv_semaphore.close_no_scheduling_point();
-            }
+        // If there are messages, then the `recv_semaphore` will remain open until the last message is `recv`d.
+        if no_messages_in_channel {
+            trace!("closing semaphore {:p} on last sender drop", self.recv_semaphore);
+            // See invariant above; when the last sender leaves an empty channel, it
+            // closes the recv_semaphore
+            self.recv_semaphore.close_no_scheduling_point();
         }
     }
 
@@ -405,10 +430,7 @@ impl<T> SenderInternal<T> {
             }
         }
 
-        self.chan.send(message)?;
-        self.chan.recv_semaphore.release(1);
-
-        Ok(())
+        self.chan.send_and_notify(message)
     }
 
     /// Completes when the receiver has dropped.
@@ -421,11 +443,10 @@ impl<T> SenderInternal<T> {
         match self.chan.send_semaphore.try_acquire(1) {
             Err(TryAcquireError::Closed) => Err(TrySendError::Closed(message)),
             Err(TryAcquireError::NoPermits) => Err(TrySendError::Full(message)),
-            Ok(()) => {
-                self.chan.send(message)?;
-                self.chan.recv_semaphore.release(1);
-                Ok(())
-            }
+            Ok(()) => self
+                .chan
+                .send_and_notify(message)
+                .map_err(|SendError(message)| TrySendError::Closed(message)),
         }
     }
 
@@ -814,9 +835,7 @@ impl<T> Permit<'_, T> {
         // Unlike `Sender::send` this returns `()`, so a channel that closed after the permit was
         // handed out simply drops the value. The capacity is not returned: a closed channel has no
         // capacity to hand out, and nothing is waiting for it.
-        if chan.send(value).is_ok() {
-            chan.recv_semaphore.release(1);
-        }
+        let _ = chan.send_and_notify(value);
     }
 }
 
@@ -854,9 +873,7 @@ impl<T> OwnedPermit<T> {
         let chan = self.chan.take().expect(PERMIT_ALREADY_USED);
 
         // See `Permit::send` for why the error is swallowed.
-        if chan.send(value).is_ok() {
-            chan.recv_semaphore.release(1);
-        }
+        let _ = chan.send_and_notify(value);
 
         Sender {
             inner: SenderInternal { chan },
