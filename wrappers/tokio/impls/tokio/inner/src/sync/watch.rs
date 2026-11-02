@@ -604,8 +604,6 @@ async fn changed_impl<T>(shared: &Shared<T>, version: &mut Version) -> Result<()
         // the notification request is dropped.
         let notified = shared.notify_rx.notified();
 
-        // Scheduling point precedes the visible read of the state
-        thread::switch();
         if let Some(ret) = maybe_changed(shared, version) {
             return ret;
         }
@@ -893,14 +891,9 @@ impl<T> Sender<T> {
     /// }
     /// ```
     pub async fn closed(&self) {
-        // Scheduling point precedes the first read of the receiver count, at the first poll of
-        // this future
-        thread::switch();
-        while self.receiver_count() > 0 {
+        loop {
             let notified = self.shared.notify_tx.notified();
 
-            // Scheduling point precedes the visible read of the receiver count
-            thread::switch();
             if self.receiver_count() == 0 {
                 return;
             }
