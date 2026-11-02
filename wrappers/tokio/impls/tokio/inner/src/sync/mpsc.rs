@@ -5,7 +5,7 @@ use shuttle::future::{
     self,
     batch_semaphore::{Acquire, BatchSemaphore, Fairness, TryAcquireError},
 };
-use shuttle_engine::runtime::{execution::ExecutionState, thread};
+use shuttle_engine::runtime::thread;
 use smallvec::SmallVec;
 use std::fmt::{self, Debug};
 use std::future::Future;
@@ -187,9 +187,7 @@ impl<T> Channel<T> {
         // The last sender: the receiver sees the count drop to zero, so take the scheduling point
         // before it, and then drop the count and close the channel in one step, as tokio does. No
         // other sender is left to change the count at the scheduling point.
-        if !ExecutionState::should_stop() {
-            thread::switch();
-        }
+        thread::switch_if_not_stopping();
 
         let no_messages_in_channel = {
             let mut state = self.state.try_lock().unwrap();

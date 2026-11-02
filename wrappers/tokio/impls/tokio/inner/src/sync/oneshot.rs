@@ -4,7 +4,6 @@
 
 use futures::channel::oneshot;
 use shuttle::future;
-use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::thread;
 use std::future::Future;
 use std::pin::Pin;
@@ -135,14 +134,10 @@ impl<T> Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        // Scheduling point precedes the visible close of the channel by a `Sender` that didn't
-        // send. The drop skips it outside of an execution (a `Sender` that outlives its test), and
-        // after the execution stops (see `ExecutionState::should_stop`).
+        // Scheduling point precedes the visible close of the channel by a `Sender` that didn't send
         if let Some(inner) = &self.inner {
             trace!("dropping oneshot sender {:p} without sending", inner);
-            if !ExecutionState::should_stop() {
-                thread::switch();
-            }
+            thread::switch_if_not_stopping();
         }
     }
 }
@@ -177,12 +172,8 @@ impl<T> Receiver<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         tracing::trace!("dropping oneshot receiver {:p}", self);
-        // Scheduling point precedes the visible close of the channel. The drop skips it outside of
-        // an execution (a `Receiver` that outlives its test), and after the execution stops (see
-        // `ExecutionState::should_stop`).
-        if !ExecutionState::should_stop() {
-            thread::switch();
-        }
+        // Scheduling point precedes the visible close of the channel
+        thread::switch_if_not_stopping();
     }
 }
 

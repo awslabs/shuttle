@@ -365,13 +365,8 @@ impl PinnedDrop for Notified<'_> {
         if self.done {
             return;
         }
-        // Scheduling point precedes the read of the waiter's flag. The drop skips it outside of an
-        // execution (a `Notified` that outlives its test), and after the execution stops (see
-        // `ExecutionState::should_stop`).
-        let stop = ExecutionState::should_stop();
-        if !stop {
-            thread::switch();
-        }
+        // Scheduling point precedes the read of the waiter's flag
+        thread::switch_if_not_stopping();
         match self.flag.load() {
             // Not notified: remove the waiter from the waiter queue.
             WaiterState::Init | WaiterState::Enabled => {
@@ -380,9 +375,10 @@ impl PinnedDrop for Notified<'_> {
             }
             // Notified by `notify_one`, but not completed. As in tokio, pass the notification on to
             // another waiter, so that it is not lost. The drop passes the notification on also while
-            // the task unwinds a panic, because the panic may be caught.
+            // the task unwinds a panic, because the panic may be caught. It skips this outside of an
+            // execution and after the execution stops (see `ExecutionState::should_stop`).
             WaiterState::NotifiedOne => {
-                if !stop {
+                if !ExecutionState::should_stop() {
                     self.notify.notify_one_no_scheduling_point();
                 }
             }
