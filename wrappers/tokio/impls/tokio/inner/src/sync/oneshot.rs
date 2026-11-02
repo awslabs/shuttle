@@ -21,8 +21,8 @@ pub struct Sender<T> {
 #[derive(Debug)]
 pub struct Receiver<T> {
     inner: oneshot::Receiver<T>,
-    // True after a `poll` that returned `Pending`. The next poll then runs after a wake-up, at the
-    // start of a step, so it takes no scheduling point.
+    // Whether the last call was a `poll` that returned `Pending`. The next poll then runs after a
+    // wake-up, at the start of a step, so it takes no scheduling point.
     poll_pending: bool,
 }
 
@@ -183,7 +183,7 @@ impl<T> Future for Receiver<T> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         trace!("polling oneshot receiver {:p}", &self.inner);
         // Scheduling point precedes the read of the channel's state, except after a wake-up
-        if !std::mem::take(&mut self.poll_pending) {
+        if !self.poll_pending {
             thread::switch();
         }
         let poll_result = Pin::new(&mut self.inner).poll(cx).map_err(|_| RecvError(()));
