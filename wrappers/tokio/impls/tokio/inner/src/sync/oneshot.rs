@@ -4,17 +4,28 @@
 
 use futures::channel::oneshot;
 use shuttle::future;
+use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::thread;
 use std::future::Future;
-use std::pin::{pin, Pin};
+use std::pin::Pin;
 use std::task::{Context, Poll};
 use tracing::trace;
 
 /// Sends a value to the associated [`Receiver`].
 #[derive(Debug)]
-pub struct Sender<T>(oneshot::Sender<T>);
+pub struct Sender<T> {
+    // `None` once `send` has taken it
+    inner: Option<oneshot::Sender<T>>,
+}
 
+/// Receives a value from the associated [`Sender`].
 #[derive(Debug)]
-pub struct Receiver<T>(oneshot::Receiver<T>);
+pub struct Receiver<T> {
+    inner: oneshot::Receiver<T>,
+    // True after a `poll` that returned `Pending`. The next poll then runs after a wake-up, at the
+    // start of a step, so it takes no scheduling point.
+    poll_pending: bool,
+}
 
 pub mod error {
     //! Oneshot error types.
@@ -63,29 +74,50 @@ use self::error::{RecvError, TryRecvError};
 /// tasks.
 pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
     let (tx, rx) = oneshot::channel();
-    (Sender(tx), Receiver(rx))
+    (
+        Sender { inner: Some(tx) },
+        Receiver {
+            inner: rx,
+            poll_pending: false,
+        },
+    )
 }
 
 impl<T> Sender<T> {
+    fn inner(&mut self) -> &mut oneshot::Sender<T> {
+        self.inner
+            .as_mut()
+            .expect("only `send` takes the inner sender, and it consumes `self`")
+    }
+
     /// Attempts to send a value on this channel, returning it back if it could
     /// not be sent.
-    pub fn send(self, t: T) -> Result<(), T> {
-        trace!("Sending message on oneshot {:p}", &self.0);
+    pub fn send(mut self, t: T) -> Result<(), T> {
+        let inner = self
+            .inner
+            .take()
+            .expect("only `send` takes the inner sender, and it consumes `self`");
+        trace!("Sending message on oneshot {:p}", &inner);
         // Scheduling point precedes the visible send operation
         shuttle::thread::yield_now();
-        self.0.send(t)
+        inner.send(t)
     }
 
     /// Waits for the associated [`Receiver`] handle to close.
     pub async fn closed(&mut self) {
-        trace!("sender closing oneshot {:p}", &self.0);
-        self.0.cancellation().await;
-        shuttle::future::yield_now().await;
+        trace!("sender waiting for oneshot {:p} to close", self.inner());
+        // Scheduling point precedes the first read of the channel's state, at the first poll of
+        // this future
+        thread::switch();
+        self.inner().cancellation().await;
     }
 
     /// Returns `true` if the associated [`Receiver`] handle has been dropped.
     pub fn is_closed(&self) -> bool {
-        self.0.is_canceled()
+        self.inner
+            .as_ref()
+            .expect("only `send` takes the inner sender, and it consumes `self`")
+            .is_canceled()
     }
 
     /// Checks whether the oneshot channel has been closed, and if not, schedules the
@@ -95,7 +127,23 @@ impl<T> Sender<T> {
     /// Note that on multiple calls to poll, only the `Waker` from the `Context` passed
     /// to the most recent call will be scheduled to receive a wakeup.
     pub fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        self.0.poll_canceled(cx)
+        // Scheduling point precedes the read of the channel's state, on every call
+        thread::switch();
+        self.inner().poll_canceled(cx)
+    }
+}
+
+impl<T> Drop for Sender<T> {
+    fn drop(&mut self) {
+        // Scheduling point precedes the visible close of the channel by a `Sender` that didn't
+        // send. The drop skips it outside of an execution (a `Sender` that outlives its test), and
+        // after the execution stops (see `ExecutionState::should_stop`).
+        if let Some(inner) = &self.inner {
+            trace!("dropping oneshot sender {:p} without sending", inner);
+            if !ExecutionState::should_stop() {
+                thread::switch();
+            }
+        }
     }
 }
 
@@ -104,14 +152,16 @@ impl<T> Receiver<T> {
     pub fn close(&mut self) {
         // Scheduling point precedes the visible close operation
         shuttle::thread::yield_now();
-        self.0.close();
+        self.poll_pending = false;
+        self.inner.close();
     }
 
     /// Attempts to receive a value.
     pub fn try_recv(&mut self) -> Result<T, TryRecvError> {
         // Scheduling point precedes the visible receive operation
         shuttle::thread::yield_now();
-        match self.0.try_recv() {
+        self.poll_pending = false;
+        match self.inner.try_recv() {
             Ok(Some(v)) => Ok(v),
             Ok(None) => Err(TryRecvError::Empty),
             Err(_) => Err(TryRecvError::Closed),
@@ -127,6 +177,12 @@ impl<T> Receiver<T> {
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         tracing::trace!("dropping oneshot receiver {:p}", self);
+        // Scheduling point precedes the visible close of the channel. The drop skips it outside of
+        // an execution (a `Receiver` that outlives its test), and after the execution stops (see
+        // `ExecutionState::should_stop`).
+        if !ExecutionState::should_stop() {
+            thread::switch();
+        }
     }
 }
 
@@ -134,13 +190,13 @@ impl<T> Future for Receiver<T> {
     type Output = Result<T, RecvError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let receiver = pin!(&mut self.0);
-        trace!("polling oneshot receiver {:p}", receiver);
-        let poll_result = receiver.poll(cx).map_err(|_| RecvError(()));
-        if poll_result.is_ready() {
-            // Force a yield
-            shuttle::thread::yield_now();
+        trace!("polling oneshot receiver {:p}", &self.inner);
+        // Scheduling point precedes the read of the channel's state, except after a wake-up
+        if !std::mem::take(&mut self.poll_pending) {
+            thread::switch();
         }
+        let poll_result = Pin::new(&mut self.inner).poll(cx).map_err(|_| RecvError(()));
+        self.poll_pending = poll_result.is_pending();
         poll_result
     }
 }
