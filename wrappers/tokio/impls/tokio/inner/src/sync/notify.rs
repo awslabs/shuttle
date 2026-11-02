@@ -129,6 +129,9 @@ pub struct Notified<'a> {
     // oneshot being awaited on
     #[pin]
     rx: oneshot::Receiver<()>,
+    // Whether the last call was a `poll` that returned `Pending`. The next poll then runs after a
+    // wake-up, at the start of a step, so it takes no scheduling point.
+    poll_pending: bool,
     // Whether the future has returned `Ready` (or `enable` has returned true)
     done: bool,
 }
@@ -176,6 +179,7 @@ impl Notify {
             flag,
             notify: self,
             rx,
+            poll_pending: false,
             done: false,
         }
     }
@@ -187,6 +191,14 @@ impl Notify {
     /// [`notified().await`] will complete immediately consuming the permit made
     /// available by this call to `notify_one()`.
     pub fn notify_one(&self) {
+        // Scheduling point precedes the visible notification
+        thread::switch();
+        self.notify_one_no_scheduling_point();
+    }
+
+    /// `notify_one` without its scheduling point. The drop of a `Notified` calls this after its own
+    /// scheduling point.
+    fn notify_one_no_scheduling_point(&self) {
         let mut state = self.state.lock().unwrap();
         // Need to choose a waiter that is Pending
         let mut pending = Vec::with_capacity(state.waiters.len());
@@ -226,6 +238,8 @@ impl Notify {
     /// already registered waiters. Registering for notification is done by
     /// acquiring an instance of the `Notified` future via calling `notified()`.
     pub fn notify_waiters(&self) {
+        // Scheduling point precedes the visible notification
+        thread::switch();
         let mut state = self.state.lock().unwrap();
         // Notify all waiters, including those not yet enabled
         let waiters = std::mem::take(&mut state.waiters);
@@ -284,7 +298,11 @@ impl Notified<'_> {
     ///
     /// If this method returns true, any future calls to poll on the same future
     /// will immediately return `Poll::Ready`.
-    pub fn enable(self: Pin<&mut Self>) -> bool {
+    pub fn enable(mut self: Pin<&mut Self>) -> bool {
+        // Scheduling point precedes the read of the waiter's flag. `enable` registers no waker, so
+        // it never follows a wake-up.
+        thread::switch();
+        *self.as_mut().project().poll_pending = false;
         self.poll_inner()
     }
 
@@ -320,11 +338,14 @@ impl Future for Notified<'_> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let enabled = self.as_mut().poll_inner();
-        if enabled {
+        // Scheduling point precedes the read of the waiter's flag, except after a wake-up
+        if !*self.as_mut().project().poll_pending {
+            thread::switch();
+        }
+        let poll = if self.as_mut().poll_inner() {
             Poll::Ready(())
         } else {
-            let mut this = self.project();
+            let mut this = self.as_mut().project();
             match this.rx.as_mut().poll(cx) {
                 Poll::Pending => Poll::Pending,
                 Poll::Ready(_) => {
@@ -332,7 +353,9 @@ impl Future for Notified<'_> {
                     Poll::Ready(())
                 }
             }
-        }
+        };
+        *self.project().poll_pending = poll.is_pending();
+        poll
     }
 }
 
@@ -343,21 +366,25 @@ impl PinnedDrop for Notified<'_> {
         if self.done {
             return;
         }
+        // Scheduling point precedes the read of the waiter's flag. The drop skips it outside of an
+        // execution (a `Notified` that outlives its test), and after the execution stops (see
+        // `ExecutionState::should_stop`).
+        let stop = ExecutionState::should_stop();
+        if !stop {
+            thread::switch();
+        }
         match self.flag.load() {
-            // Not notified: remove the waiter from the waiter queue. The flag is a std atomic and
-            // the queue is behind a std mutex, so no context switch happens here.
+            // Not notified: remove the waiter from the waiter queue.
             WaiterState::Init | WaiterState::Enabled => {
                 let mut state = self.notify.state.lock().unwrap();
                 let _ = state.remove_waiter(self.id);
             }
             // Notified by `notify_one`, but not completed. As in tokio, pass the notification on to
-            // another waiter, so that it is not lost. `notify_one` sends on the oneshot of the
-            // waiter it picks, and the send takes a scheduling point, so this can context switch.
-            // Skip this outside an execution (a `Notified` that outlives its test), while the task
-            // panics, or after the execution stops (see `ExecutionState::should_stop`).
+            // another waiter, so that it is not lost. The drop passes the notification on also while
+            // the task unwinds a panic, because the panic may be caught.
             WaiterState::NotifiedOne => {
-                if ExecutionState::try_with(|_| ()).is_ok() && !ExecutionState::should_stop() {
-                    self.notify.notify_one();
+                if !stop {
+                    self.notify.notify_one_no_scheduling_point();
                 }
             }
             // Notified by `notify_waiters`, but not completed. As in tokio, the notification is not
