@@ -57,7 +57,6 @@
 
 use crate::sync::notify::Notify;
 use crate::sync::{RwLock, RwLockReadGuard};
-use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::thread;
 use std::mem;
 use std::ops;
@@ -631,11 +630,9 @@ impl<T> Drop for Receiver<T> {
             self,
             self.shared.ref_count_rx.load(Ordering::SeqCst)
         );
-        // Scheduling point precedes the visible close of the channel by the last `Receiver`. The
-        // drop skips it outside of an execution (a `Receiver` that outlives its test), and after
-        // the execution stops (see `ExecutionState::should_stop`).
-        if self.shared.ref_count_rx.load(Ordering::SeqCst) == 1 && !ExecutionState::should_stop() {
-            thread::switch();
+        // Scheduling point precedes the visible close of the channel by the last `Receiver`
+        if self.shared.ref_count_rx.load(Ordering::SeqCst) == 1 {
+            thread::switch_if_not_stopping();
         }
         if 1 == self.shared.ref_count_rx.fetch_sub(1, Ordering::SeqCst) {
             // This is the last `Receiver` handle, tasks waiting on `Sender::closed()`
@@ -1006,11 +1003,9 @@ impl<T> Clone for Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        // Scheduling point precedes the visible close of the channel by the last `Sender`. The drop
-        // skips it outside of an execution (a `Sender` that outlives its test), and after the
-        // execution stops (see `ExecutionState::should_stop`).
-        if self.shared.ref_count_tx.load(Ordering::SeqCst) == 1 && !ExecutionState::should_stop() {
-            thread::switch();
+        // Scheduling point precedes the visible close of the channel by the last `Sender`
+        if self.shared.ref_count_tx.load(Ordering::SeqCst) == 1 {
+            thread::switch_if_not_stopping();
         }
         if 1 == self.shared.ref_count_tx.fetch_sub(1, Ordering::SeqCst) {
             self.shared.state.set_closed();
