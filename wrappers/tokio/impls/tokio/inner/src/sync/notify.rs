@@ -129,8 +129,8 @@ pub struct Notified<'a> {
     // oneshot being awaited on
     #[pin]
     rx: oneshot::Receiver<()>,
-    // True after a `poll` that returned `Pending`. The next poll then runs after a wake-up, at the
-    // start of a step, so it takes no scheduling point.
+    // Whether the last call was a `poll` that returned `Pending`. The next poll then runs after a
+    // wake-up, at the start of a step, so it takes no scheduling point.
     poll_pending: bool,
     // Whether the future has returned `Ready` (or `enable` has returned true)
     done: bool,
@@ -299,17 +299,15 @@ impl Notified<'_> {
     /// If this method returns true, any future calls to poll on the same future
     /// will immediately return `Poll::Ready`.
     pub fn enable(mut self: Pin<&mut Self>) -> bool {
-        // `enable` registers no waker, so it always takes a scheduling point.
+        // Scheduling point precedes the read of the waiter's flag. `enable` registers no waker, so
+        // it never follows a wake-up.
+        thread::switch();
         *self.as_mut().project().poll_pending = false;
         self.poll_inner()
     }
 
     fn poll_inner(self: Pin<&mut Self>) -> bool {
         let this = self.project();
-        // Scheduling point precedes the read of the waiter's flag, except after a wake-up
-        if !std::mem::take(this.poll_pending) {
-            thread::switch();
-        }
         let flag = this.flag.load();
         if flag.is_notified() {
             *this.done = true;
@@ -340,22 +338,24 @@ impl Future for Notified<'_> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let enabled = self.as_mut().poll_inner();
-        if enabled {
+        // Scheduling point precedes the read of the waiter's flag, except after a wake-up
+        if !*self.as_mut().project().poll_pending {
+            thread::switch();
+        }
+        let poll = if self.as_mut().poll_inner() {
             Poll::Ready(())
         } else {
-            let mut this = self.project();
+            let mut this = self.as_mut().project();
             match this.rx.as_mut().poll(cx) {
-                Poll::Pending => {
-                    *this.poll_pending = true;
-                    Poll::Pending
-                }
+                Poll::Pending => Poll::Pending,
                 Poll::Ready(_) => {
                     *this.done = true;
                     Poll::Ready(())
                 }
             }
-        }
+        };
+        *self.project().poll_pending = poll.is_pending();
+        poll
     }
 }
 
