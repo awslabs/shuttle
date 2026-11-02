@@ -430,6 +430,18 @@ pub fn switch() {
     }
 }
 
+/// Like `switch`, but does nothing where the current task can't switch: outside of an execution, while
+/// Shuttle holds its own state, and after the execution stops (see `ExecutionState::should_stop`).
+/// It is for the `Drop` implementations of primitives, which can run in all of these places, for
+/// example when a value outlives its test.
+#[track_caller]
+#[inline]
+pub fn switch_if_not_stopping() {
+    if !ExecutionState::should_stop() {
+        switch();
+    }
+}
+
 /// Like `switch`, for the loop that polls a future task's future (see `Task::from_future`), between
 /// two polls. Returns true if execution teardown cancelled the task while it was switched out (see
 /// `Continuation::cancel`), in which case the loop drops the future instead of polling it again.

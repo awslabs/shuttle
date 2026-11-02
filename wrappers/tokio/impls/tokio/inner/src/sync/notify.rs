@@ -3,7 +3,7 @@
 /// `Notify` provides a basic mechanism to notify a single task of an event.
 /// `Notify` itself does not carry any data. Instead, it is to be used to signal
 /// another task to perform an operation.
-use crate::sync::oneshot;
+use futures::channel::oneshot;
 use pin_project::{pin_project, pinned_drop};
 use shuttle::rand::{rngs::ThreadRng, thread_rng, Rng};
 use shuttle_engine::runtime::execution::ExecutionState;
@@ -126,7 +126,8 @@ pub struct Notified<'a> {
     flag: Arc<WaiterFlag>,
     /// The `Notify` being received on.
     notify: &'a Notify,
-    // oneshot being awaited on
+    // oneshot that wakes the waiter. It's the `futures` oneshot, without the scheduling points of
+    // this crate's `oneshot`.
     #[pin]
     rx: oneshot::Receiver<()>,
     // Whether the last call was a `poll` that returned `Pending`. The next poll then runs after a
@@ -249,10 +250,8 @@ impl Notify {
         // take it.
         drop(state);
         // Since we have removed all the waiters, we need to clear all the
-        // flags first, before waking any of them.  This is because sending
-        // a oneshot to wake a waiter will admit context switches, and we
-        // could invoke the drop handler for a waiter whose flag has not been
-        // cleared.
+        // flags first, before waking any of them, so that the drop handler of
+        // a woken waiter sees its flag cleared.
         for w in &waiters {
             // Must set flag before notifying waiter
             let flag = w.flag.swap(WaiterState::NotifiedAll);
@@ -366,13 +365,8 @@ impl PinnedDrop for Notified<'_> {
         if self.done {
             return;
         }
-        // Scheduling point precedes the read of the waiter's flag. The drop skips it outside of an
-        // execution (a `Notified` that outlives its test), and after the execution stops (see
-        // `ExecutionState::should_stop`).
-        let stop = ExecutionState::should_stop();
-        if !stop {
-            thread::switch();
-        }
+        // Scheduling point precedes the read of the waiter's flag
+        thread::switch_if_not_stopping();
         match self.flag.load() {
             // Not notified: remove the waiter from the waiter queue.
             WaiterState::Init | WaiterState::Enabled => {
@@ -381,9 +375,10 @@ impl PinnedDrop for Notified<'_> {
             }
             // Notified by `notify_one`, but not completed. As in tokio, pass the notification on to
             // another waiter, so that it is not lost. The drop passes the notification on also while
-            // the task unwinds a panic, because the panic may be caught.
+            // the task unwinds a panic, because the panic may be caught. It skips this outside of an
+            // execution and after the execution stops (see `ExecutionState::should_stop`).
             WaiterState::NotifiedOne => {
-                if !stop {
+                if !ExecutionState::should_stop() {
                     self.notify.notify_one_no_scheduling_point();
                 }
             }

@@ -91,6 +91,96 @@ fn notify_mpsc_channel() {
     });
 }
 
+#[test]
+fn notify_mpmc_channel() {
+    // Example from the tokio docs for Notify
+    // A multi-producer, multi-consumer channel
+
+    struct Channel<T> {
+        messages: Mutex<VecDeque<T>>,
+        notify_on_sent: Notify,
+    }
+
+    impl<T> Channel<T> {
+        fn new() -> Self {
+            Self {
+                messages: Mutex::new(VecDeque::new()),
+                notify_on_sent: Notify::new(),
+            }
+        }
+
+        pub fn send(&self, msg: T) {
+            let mut locked_queue = self.messages.lock().unwrap();
+            locked_queue.push_back(msg);
+            drop(locked_queue);
+
+            // Send a notification to one of the calls currently
+            // waiting in a call to `recv`.
+            self.notify_on_sent.notify_one();
+        }
+
+        pub fn try_recv(&self) -> Option<T> {
+            let mut locked_queue = self.messages.lock().unwrap();
+            locked_queue.pop_front()
+        }
+
+        pub async fn recv(&self) -> T {
+            let mut future = self.notify_on_sent.notified();
+            let mut future = unsafe { std::pin::Pin::new_unchecked(&mut future) };
+
+            loop {
+                // Make sure that no wakeup is lost if we get
+                // `None` from `try_recv`.
+                future.as_mut().enable();
+
+                if let Some(msg) = self.try_recv() {
+                    return msg;
+                }
+
+                // Wait for a call to `notify_one`.
+                //
+                // This uses `.as_mut()` to avoid consuming the future,
+                // which lets us call `Pin::set` below.
+                future.as_mut().await;
+
+                // Reset the future in case another call to
+                // `try_recv` got the message before us.
+                future.set(self.notify_on_sent.notified());
+            }
+        }
+    }
+
+    check_dfs(|| {
+        future::block_on(async {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let counter1 = counter.clone();
+            let counter2 = counter.clone();
+
+            let tx1 = Arc::new(Channel::new());
+            let tx2 = tx1.clone();
+            let rx1 = tx1.clone();
+            let rx2 = tx1.clone();
+            let s1 = future::spawn(async move {
+                tx1.send(1);
+            });
+            let s2 = future::spawn(async move {
+                tx2.send(2);
+            });
+            let r1 = future::spawn(async move {
+                let x = rx1.recv().await;
+                counter1.fetch_add(x, Ordering::SeqCst);
+            });
+            // The second receive runs on this task, which would otherwise only join the others.
+            let x = rx2.recv().await;
+            counter2.fetch_add(x, Ordering::SeqCst);
+            s1.await.unwrap();
+            s2.await.unwrap();
+            r1.await.unwrap();
+            assert_eq!(counter.load(Ordering::SeqCst), 3);
+        });
+    });
+}
+
 fn notify_mpmc_channel_2_test(do_enable: bool) {
     // Example from the tokio docs
 
