@@ -1,6 +1,7 @@
 use shuttle::{check_dfs, check_random, future};
 use shuttle_tokio_impl_inner::sync::watch;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use test_log::test;
 
@@ -152,6 +153,131 @@ fn wait_for_returns_correct_value() {
             assert_eq!(stopped_at.unwrap(), returned);
 
             jh.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a sender's previous
+/// operation and its `send()`.
+///
+/// The test program wrongly assumes that the receiver can't be dropped between the sender's store
+/// and its `send()`. That fails when the receiver's task runs between the two, which Shuttle only
+/// explores if `send()` takes a scheduling point before it reads the receiver count.
+#[test]
+#[should_panic(expected = "closed between the store and send()")]
+fn send_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = watch::channel(0);
+            let receiver = {
+                let ready = ready.clone();
+                shuttle::thread::spawn(move || if ready.load(Ordering::SeqCst) { None } else { Some(rx) })
+            };
+
+            ready.store(true, Ordering::SeqCst);
+            // BUG (in this test program): assumes the receiver can't be dropped before `send()`.
+            assert!(tx.send(1).is_ok(), "closed between the store and send()");
+
+            drop(receiver.join().unwrap());
+        },
+        None,
+    );
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a sender's previous
+/// operation and its `subscribe()`, which can reopen a closed channel.
+///
+/// The test program wrongly assumes that once it sees `ready`, the new receiver exists, so that a
+/// `send()` succeeds. That fails when the other sender runs between the store and `subscribe()`,
+/// which Shuttle only explores if `subscribe()` takes a scheduling point first.
+#[test]
+#[should_panic(expected = "subscribe() not done yet")]
+fn subscribe_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = watch::channel(0);
+            drop(rx);
+            let other = {
+                let (tx, ready) = (tx.clone(), ready.clone());
+                shuttle::thread::spawn(move || {
+                    if ready.load(Ordering::SeqCst) {
+                        // BUG (in this test program): assumes `subscribe()` has already run.
+                        assert!(tx.send(1).is_ok(), "subscribe() not done yet");
+                    }
+                })
+            };
+
+            ready.store(true, Ordering::SeqCst);
+            let _rx = tx.subscribe();
+
+            other.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a sender's previous
+/// operation and the drop of the last `Sender`, which closes the channel.
+///
+/// The test program wrongly assumes that once it sees `ready`, the channel is closed. That fails
+/// when the receiver runs between the store and the drop, which Shuttle only explores if the drop
+/// takes a scheduling point first.
+#[test]
+#[should_panic(expected = "sender not dropped yet")]
+fn last_sender_drop_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = watch::channel(0);
+            let receiver = {
+                let ready = ready.clone();
+                shuttle::thread::spawn(move || {
+                    if ready.load(Ordering::SeqCst) {
+                        // BUG (in this test program): assumes the sender has already been dropped.
+                        assert!(rx.has_changed().is_err(), "sender not dropped yet");
+                    }
+                })
+            };
+
+            ready.store(true, Ordering::SeqCst);
+            drop(tx);
+
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a receiver's previous
+/// operation and the drop of the last `Receiver`, which closes the channel.
+///
+/// The test program wrongly assumes that once it sees `ready`, the channel is closed, so that
+/// `send()` fails. That fails when the sender runs between the store and the drop, which Shuttle
+/// only explores if the drop takes a scheduling point first.
+#[test]
+#[should_panic(expected = "receiver not dropped yet")]
+fn last_receiver_drop_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = watch::channel(0);
+            let sender = {
+                let ready = ready.clone();
+                shuttle::thread::spawn(move || {
+                    if ready.load(Ordering::SeqCst) {
+                        // BUG (in this test program): assumes the receiver has already been dropped.
+                        assert!(tx.send(1).is_err(), "receiver not dropped yet");
+                    }
+                })
+            };
+
+            ready.store(true, Ordering::SeqCst);
+            drop(rx);
+
+            sender.join().unwrap();
         },
         None,
     );

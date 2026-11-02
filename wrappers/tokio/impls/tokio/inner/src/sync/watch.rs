@@ -57,6 +57,8 @@
 
 use crate::sync::notify::Notify;
 use crate::sync::{RwLock, RwLockReadGuard};
+use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::thread;
 use std::mem;
 use std::ops;
 use std::panic;
@@ -602,6 +604,8 @@ async fn changed_impl<T>(shared: &Shared<T>, version: &mut Version) -> Result<()
         // the notification request is dropped.
         let notified = shared.notify_rx.notified();
 
+        // Scheduling point precedes the visible read of the state
+        thread::switch();
         if let Some(ret) = maybe_changed(shared, version) {
             return ret;
         }
@@ -629,6 +633,12 @@ impl<T> Drop for Receiver<T> {
             self,
             self.shared.ref_count_rx.load(Ordering::SeqCst)
         );
+        // Scheduling point precedes the visible close of the channel by the last `Receiver`. The
+        // drop skips it outside of an execution (a `Receiver` that outlives its test), and after
+        // the execution stops (see `ExecutionState::should_stop`).
+        if self.shared.ref_count_rx.load(Ordering::SeqCst) == 1 && !ExecutionState::should_stop() {
+            thread::switch();
+        }
         if 1 == self.shared.ref_count_rx.fetch_sub(1, Ordering::SeqCst) {
             // This is the last `Receiver` handle, tasks waiting on `Sender::closed()`
             self.shared.notify_tx.notify_waiters();
@@ -642,6 +652,8 @@ impl<T> Sender<T> {
     /// This method fails if the channel has been closed, which happens when
     /// every receiver has been dropped.
     pub fn send(&self, value: T) -> Result<(), error::SendError<T>> {
+        // Scheduling point precedes the visible read of the receiver count
+        thread::switch();
         tracing::trace!(
             "watch {:p} send value with receiver count {:?}",
             &self.shared,
@@ -881,9 +893,14 @@ impl<T> Sender<T> {
     /// }
     /// ```
     pub async fn closed(&self) {
+        // Scheduling point precedes the first read of the receiver count, at the first poll of
+        // this future
+        thread::switch();
         while self.receiver_count() > 0 {
             let notified = self.shared.notify_tx.notified();
 
+            // Scheduling point precedes the visible read of the receiver count
+            thread::switch();
             if self.receiver_count() == 0 {
                 return;
             }
@@ -950,6 +967,8 @@ impl<T> Sender<T> {
     /// }
     /// ```
     pub fn subscribe(&self) -> Receiver<T> {
+        // Scheduling point precedes the visible read of the state and the new receiver
+        thread::switch();
         let shared = self.shared.clone();
         let version = shared.state.load().version();
 
@@ -994,6 +1013,12 @@ impl<T> Clone for Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
+        // Scheduling point precedes the visible close of the channel by the last `Sender`. The drop
+        // skips it outside of an execution (a `Sender` that outlives its test), and after the
+        // execution stops (see `ExecutionState::should_stop`).
+        if self.shared.ref_count_tx.load(Ordering::SeqCst) == 1 && !ExecutionState::should_stop() {
+            thread::switch();
+        }
         if 1 == self.shared.ref_count_tx.fetch_sub(1, Ordering::SeqCst) {
             self.shared.state.set_closed();
             self.shared.notify_rx.notify_waiters();
