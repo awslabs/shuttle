@@ -80,3 +80,21 @@ jobs:
       - name: cargo doc
         run: cargo doc --no-deps
 
+  # Catch anything that would make a crate unpublishable -- missing metadata, a
+  # file the packaged crate needs but doesn't include, a version requirement on a
+  # sibling crate that no longer matches -- while it is still a PR comment rather
+  # than a half-finished release.
+  #
+  # `--all` checks every crate rather than only the ones bumped on this PR, and
+  # `--no-verify` skips rebuilding each crate from its tarball, which the Publish
+  # workflow does before it uploads.
+  publish-dry-run:
+    name: Publish dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update stable
+      - name: cargo publish --dry-run
+        run: python3 scripts/publish.py --all --dry-run --no-verify
+
