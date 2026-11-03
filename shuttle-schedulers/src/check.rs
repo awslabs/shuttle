@@ -1,3 +1,4 @@
+use shuttle_engine::time::TimeModel;
 use shuttle_engine::{Config, Runner};
 
 #[cfg(feature = "annotation")]
@@ -117,6 +118,33 @@ where
 {
     let scheduler = ReplayScheduler::new_from_file(path).expect("could not load schedule from file");
     let runner = Runner::new(scheduler, Default::default());
+    runner.run(f);
+}
+
+/// Run the given function according to a given encoded schedule under the given time model, to replay a failure of a
+/// test that ran under that time model (see [`Runner::new_with_time_model`]). A schedule replays only under the same
+/// time model, configured the same way, as the run that produced it.
+///
+/// This function allows deterministic replay of a failing schedule, as long as `f` contains no
+/// non-determinism other than that introduced by scheduling.
+pub fn replay_with_time_model<F>(f: F, encoded_schedule: &str, time_model: impl TimeModel + 'static)
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    let scheduler = ReplayScheduler::new_from_encoded(encoded_schedule);
+    let runner = Runner::new_with_time_model(scheduler, time_model, Default::default());
+    runner.run(f);
+}
+
+/// Run the given function according to a schedule saved in the given file under the given time model, to replay a
+/// failure of a test that ran under that time model. See [`replay_with_time_model`].
+pub fn replay_from_file_with_time_model<F, P>(f: F, path: P, time_model: impl TimeModel + 'static)
+where
+    F: Fn() + Send + Sync + 'static,
+    P: AsRef<std::path::Path>,
+{
+    let scheduler = ReplayScheduler::new_from_file(path).expect("could not load schedule from file");
+    let runner = Runner::new_with_time_model(scheduler, time_model, Default::default());
     runner.run(f);
 }
 

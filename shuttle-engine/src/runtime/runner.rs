@@ -1,9 +1,11 @@
 use crate::config::Config;
 use crate::runtime::execution::Execution;
+use crate::runtime::failure::CustomTimeModelGuard;
 use crate::runtime::task::{Task, TaskId};
 use crate::runtime::thread::continuation::{ContinuationPool, CONTINUATION_POOL};
 use crate::scheduler::metrics::MetricsScheduler;
 use crate::scheduler::{Schedule, Scheduler};
+use crate::time::{DefaultTimeModel, TimeModel};
 use std::cell::RefCell;
 use std::fmt;
 use std::panic::{self, Location};
@@ -55,16 +57,32 @@ impl Drop for ResetSpanOnDrop {
 #[derive(Debug)]
 pub struct Runner<S: ?Sized + Scheduler> {
     scheduler: Rc<RefCell<MetricsScheduler<S>>>,
+    time_model: Rc<RefCell<dyn TimeModel>>,
+    // Whether the time model was given, so that failures are replayed with it.
+    custom_time_model: bool,
     config: Config,
 }
 
 impl<S: Scheduler + 'static> Runner<S> {
-    /// Construct a new `Runner` that will use the given `Scheduler` to control the test.
+    /// Construct a new `Runner` that will use the given `Scheduler` to control the test, under Shuttle's default time
+    /// model. Under it, `thread::sleep` is a single scheduling point, as it was before Shuttle modelled time, and moves
+    /// the clock forward to the sleep's deadline once the thread continues. The timers of async sleeps, timeouts and
+    /// intervals fire when the clock reaches them or when no task can run. See [`crate::time`].
     pub fn new(scheduler: S, config: Config) -> Self {
-        let metrics_scheduler = MetricsScheduler::new(scheduler);
-
         Self {
-            scheduler: Rc::new(RefCell::new(metrics_scheduler)),
+            custom_time_model: false,
+            ..Self::new_with_time_model(scheduler, DefaultTimeModel::new(), config)
+        }
+    }
+
+    /// Construct a new `Runner` that will use the given `Scheduler` to control the test, and the given `TimeModel` to
+    /// control time. Its failures replay only under the same time model, configured the same way; see
+    /// `shuttle::replay_with_time_model`.
+    pub fn new_with_time_model(scheduler: S, time_model: impl TimeModel + 'static, config: Config) -> Self {
+        Self {
+            scheduler: Rc::new(RefCell::new(MetricsScheduler::new(scheduler))),
+            time_model: Rc::new(RefCell::new(time_model)),
+            custom_time_model: true,
             config,
         }
     }
@@ -77,6 +95,7 @@ impl<S: Scheduler + 'static> Runner<S> {
         F: Fn() + Send + Sync + 'static,
     {
         let _span_drop_guard = ResetSpanOnDrop::new();
+        let _custom_time_model = CustomTimeModelGuard::new(self.custom_time_model);
         // Share continuations across executions to avoid reallocating them
         // TODO it would be a lot nicer if this were a more generic "context" thing that we passed
         // TODO around explicitly rather than being a thread local
@@ -96,8 +115,9 @@ impl<S: Scheduler + 'static> Runner<S> {
                     None => break,
                     Some(s) => s,
                 };
+                self.time_model.borrow_mut().new_execution();
 
-                let execution = Execution::new(self.scheduler.clone(), schedule);
+                let execution = Execution::new(self.scheduler.clone(), schedule, self.time_model.clone());
                 let f = Arc::clone(&f);
 
                 // This is a slightly lazy way to ensure that everything outside of the "execution" span gets
@@ -123,7 +143,6 @@ pub struct PortfolioRunner {
     stop_on_first_failure: bool,
     config: Config,
 }
-
 impl PortfolioRunner {
     /// Construct a new `PortfolioRunner` with no schedulers. If `stop_on_first_failure` is true,
     /// all schedulers will be terminated as soon as any fails; if false, they will keep running
