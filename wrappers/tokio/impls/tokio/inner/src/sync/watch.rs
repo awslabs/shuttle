@@ -57,6 +57,7 @@
 
 use crate::sync::notify::Notify;
 use crate::sync::{RwLock, RwLockReadGuard};
+use shuttle_engine::runtime::thread;
 use std::mem;
 use std::ops;
 use std::panic;
@@ -629,6 +630,10 @@ impl<T> Drop for Receiver<T> {
             self,
             self.shared.ref_count_rx.load(Ordering::SeqCst)
         );
+        // Scheduling point precedes the visible close of the channel by the last `Receiver`
+        if self.shared.ref_count_rx.load(Ordering::SeqCst) == 1 {
+            thread::switch_if_not_stopping();
+        }
         if 1 == self.shared.ref_count_rx.fetch_sub(1, Ordering::SeqCst) {
             // This is the last `Receiver` handle, tasks waiting on `Sender::closed()`
             self.shared.notify_tx.notify_waiters();
@@ -642,6 +647,8 @@ impl<T> Sender<T> {
     /// This method fails if the channel has been closed, which happens when
     /// every receiver has been dropped.
     pub fn send(&self, value: T) -> Result<(), error::SendError<T>> {
+        // Scheduling point precedes the visible read of the receiver count
+        thread::switch();
         tracing::trace!(
             "watch {:p} send value with receiver count {:?}",
             &self.shared,
@@ -881,7 +888,7 @@ impl<T> Sender<T> {
     /// }
     /// ```
     pub async fn closed(&self) {
-        while self.receiver_count() > 0 {
+        loop {
             let notified = self.shared.notify_tx.notified();
 
             if self.receiver_count() == 0 {
@@ -950,6 +957,8 @@ impl<T> Sender<T> {
     /// }
     /// ```
     pub fn subscribe(&self) -> Receiver<T> {
+        // Scheduling point precedes the visible read of the state and the new receiver
+        thread::switch();
         let shared = self.shared.clone();
         let version = shared.state.load().version();
 
@@ -994,6 +1003,10 @@ impl<T> Clone for Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
+        // Scheduling point precedes the visible close of the channel by the last `Sender`
+        if self.shared.ref_count_tx.load(Ordering::SeqCst) == 1 {
+            thread::switch_if_not_stopping();
+        }
         if 1 == self.shared.ref_count_tx.fetch_sub(1, Ordering::SeqCst) {
             self.shared.state.set_closed();
             self.shared.notify_rx.notify_waiters();
