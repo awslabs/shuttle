@@ -1455,6 +1455,10 @@ impl Future for Acquire<'_> {
 impl Drop for Acquire<'_> {
     fn drop(&mut self) {
         trace!("Acquire::drop for {:?}", self);
+        // Scheduling point precedes the visible removal of the waiter, or the end of the reservation
+        if self.is_queued() || self.is_reserving() {
+            thread::switch_if_not_stopping();
+        }
         if self.is_queued() {
             // If the associated waiter is in the wait list, remove it
             let waiter = self

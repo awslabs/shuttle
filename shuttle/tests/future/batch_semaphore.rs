@@ -1306,3 +1306,78 @@ mod early_acquire_drop_tests {
 
     sem_tests!(fair, Fairness::StrictlyFair);
 }
+
+/// Regression test: Shuttle must be able to schedule another task between a task's previous
+/// operation and the drop of its queued `Acquire`.
+///
+/// The test program wrongly assumes that once it sees `ready`, the queued `Acquire` is gone, so
+/// that a release leaves both permits available. That fails when the other task releases between
+/// the store and the drop, because the release then grants both permits to the queued `Acquire`.
+/// Shuttle only explores this if the drop takes a scheduling point first.
+#[test]
+#[should_panic(expected = "queued acquire not dropped yet")]
+fn drop_of_queued_acquire_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let sem = Arc::new(BatchSemaphore::new(1, Fairness::StrictlyFair));
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let releaser = {
+                let sem = sem.clone();
+                let ready = ready.clone();
+                thread::spawn(move || {
+                    let seen = ready.load(Ordering::SeqCst);
+                    sem.release(1);
+                    (seen, sem.available_permits())
+                })
+            };
+            future::block_on(async {
+                let mut acquire = Box::pin(sem.acquire(2));
+                if futures::poll!(acquire.as_mut()).is_ready() {
+                    sem.release(2);
+                }
+                ready.store(true, Ordering::SeqCst);
+                drop(acquire);
+            });
+            let (seen, available) = releaser.join().unwrap();
+            // BUG (in this test program): assumes that once `ready` is set, the acquire is gone.
+            assert!(!seen || available == 2, "queued acquire not dropped yet");
+        },
+        None,
+    );
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a task's previous
+/// operation and the drop of its `Acquire` that holds the reservation.
+///
+/// The test program wrongly assumes that once it sees `ready`, the reservation has ended, so that
+/// a `try_acquire` of the free permit succeeds. That fails when the other task runs between the
+/// store and the drop. Shuttle only explores this if the drop takes a scheduling point first.
+#[test]
+#[should_panic(expected = "reservation not ended yet")]
+fn drop_of_reserving_acquire_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let sem = Arc::new(BatchSemaphore::new(2, Fairness::Unfair));
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            sem.try_acquire(1).unwrap();
+            let other = {
+                let sem = sem.clone();
+                let ready = ready.clone();
+                thread::spawn(move || {
+                    let seen = ready.load(Ordering::SeqCst);
+                    (seen, sem.try_acquire(1).is_ok())
+                })
+            };
+            future::block_on(async {
+                let mut reserve = Box::pin(sem.acquire_reserving(1, 2));
+                assert!(futures::poll!(reserve.as_mut()).is_pending());
+                ready.store(true, Ordering::SeqCst);
+                drop(reserve);
+            });
+            let (seen, acquired) = other.join().unwrap();
+            // BUG (in this test program): assumes that once `ready` is set, the reservation has ended.
+            assert!(!seen || acquired, "reservation not ended yet");
+        },
+        None,
+    );
+}
