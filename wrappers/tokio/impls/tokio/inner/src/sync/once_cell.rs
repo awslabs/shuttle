@@ -1,6 +1,7 @@
 // This file is 99% copy-paste from tokio and Loom.
 // This means that it should be a true model, but it uses `shuttle_tokio::sync::Semaphore`s instead of `tokio::sync::Semaphore`s.
 use super::{Semaphore, SemaphorePermit, TryAcquireError};
+use shuttle_engine::runtime::thread;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
@@ -279,6 +280,8 @@ impl<T> OnceCell<T> {
                     // dropped.
                     let value = f().await;
 
+                    // Scheduling point precedes the visible store of the value
+                    thread::switch();
                     self.set_value(value, permit)
                 }
                 Err(_) => {
@@ -328,7 +331,11 @@ impl<T> OnceCell<T> {
                     let value = f().await;
 
                     match value {
-                        Ok(value) => Ok(self.set_value(value, permit)),
+                        Ok(value) => {
+                            // Scheduling point precedes the visible store of the value
+                            thread::switch();
+                            Ok(self.set_value(value, permit))
+                        }
                         Err(e) => Err(e),
                     }
                 }
