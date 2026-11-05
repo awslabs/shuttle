@@ -1,6 +1,6 @@
 [package]
 name = "shuttle-tokio-impl-inner"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 license = "MIT"
 description = "Internal implementation of the `tokio` crate for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-tokio`."
@@ -62,8 +62,9 @@ regex = "1.10.1"
 shuttle = { version = "0.9.7", path = "../../../../../shuttle" }
 # For `runtime::thread::switch`, a scheduling point that, unlike `shuttle::thread::yield_now`,
 # doesn't wake the current task, and for `thread_support::DestroyedLastKey`, the thread-local that
-# `task_local!` keeps each task's values in.
-shuttle-engine = { version = "0.1.5", path = "../../../../../shuttle-engine" }
+# `task_local!` keeps each task's values in. 0.1.8 is the first with `thread::switch_if_not_stopping`
+# and a public `BatchSemaphore::release_no_scheduling_point`, which the sync primitives use.
+shuttle-engine = { version = "0.1.8", path = "../../../../../shuttle-engine" }
 smallvec = "1.6.1"
 test-log = { version = "0.2.11", default-features = false, features = [
     "trace",
