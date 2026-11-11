@@ -16,13 +16,16 @@
 // type. The exceptions are methods which somehow interact with the random
 // state, where we need to choose our deterministic hasher state.
 
-use serde::{Deserialize, Serialize};
+use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Borrow;
 use std::collections::HashMap as StdHashMap;
 use std::collections::HashSet as StdHashSet;
+use std::fmt;
 use std::hash::Hash;
 use std::hash::RandomState;
 use std::iter::Extend;
+use std::marker::PhantomData;
 use std::ops::{BitAnd, BitOr, BitXor, Deref, DerefMut, Index, Sub};
 use std::panic::UnwindSafe;
 
@@ -54,7 +57,38 @@ const DETERMINISTIC_RANDOM_STATE: RandomState = unsafe { std::mem::transmute((0u
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "K: Eq + Serialize, V: Serialize"))]
 #[serde(bound(deserialize = "K: Eq + Hash + Deserialize<'de>, V: Deserialize<'de>"))]
-pub struct HashMap<K, V>(StdHashMap<K, V, RandomState>);
+pub struct HashMap<K, V>(#[serde(deserialize_with = "deserialize_hashmap")] StdHashMap<K, V, RandomState>);
+
+fn deserialize_hashmap<'de, D, K, V>(deserializer: D) -> Result<StdHashMap<K, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    K: Eq + Hash + Deserialize<'de>,
+    V: Deserialize<'de>,
+{
+    struct MapVisitor<K, V>(PhantomData<(K, V)>);
+
+    impl<'de, K, V> Visitor<'de> for MapVisitor<K, V>
+    where
+        K: Eq + Hash + Deserialize<'de>,
+        V: Deserialize<'de>,
+    {
+        type Value = StdHashMap<K, V>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a map")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut map = HashMap::new();
+            while let Some((key, value)) = access.next_entry()? {
+                map.insert(key, value);
+            }
+            Ok(map.0)
+        }
+    }
+
+    deserializer.deserialize_map(MapVisitor(PhantomData))
+}
 
 impl<K, V> HashMap<K, V> {
     pub fn new() -> Self {
@@ -181,7 +215,33 @@ impl<K: UnwindSafe, V: UnwindSafe> UnwindSafe for HashMap<K, V> {}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "T: Eq + Serialize"))]
 #[serde(bound(deserialize = "T: Eq + Hash + Deserialize<'de>"))]
-pub struct HashSet<T>(StdHashSet<T, RandomState>);
+pub struct HashSet<T>(#[serde(deserialize_with = "deserialize_hashset")] StdHashSet<T, RandomState>);
+
+fn deserialize_hashset<'de, D, T>(deserializer: D) -> Result<StdHashSet<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Eq + Hash + Deserialize<'de>,
+{
+    struct SetVisitor<T>(PhantomData<T>);
+
+    impl<'de, T: Eq + Hash + Deserialize<'de>> Visitor<'de> for SetVisitor<T> {
+        type Value = StdHashSet<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a sequence")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut set = HashSet::new();
+            while let Some(value) = access.next_element()? {
+                set.insert(value);
+            }
+            Ok(set.0)
+        }
+    }
+
+    deserializer.deserialize_seq(SetVisitor(PhantomData))
+}
 
 impl<T> HashSet<T> {
     pub fn new() -> Self {
@@ -415,6 +475,41 @@ mod test {
     fn test_deterministic_hashset() {
         use super::HashSet;
         test_hashset!(HashSet);
+    }
+
+    #[test]
+    fn test_deserialize_hashmap_iteration() {
+        let deserialize = || {
+            let entries = (0..64).map(|key| (key, key));
+            let deserializer = serde::de::value::MapDeserializer::<_, serde::de::value::Error>::new(entries);
+            let deserializer =
+                serde::de::value::SeqDeserializer::<_, serde::de::value::Error>::new(std::iter::once(deserializer));
+            HashMap::<u32, u32>::deserialize(deserializer)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let expected = deserialize();
+        for _ in 0..8 {
+            assert_eq!(deserialize(), expected);
+        }
+    }
+
+    #[test]
+    fn test_deserialize_hashset_iteration() {
+        let deserialize = || {
+            let deserializer = serde::de::value::SeqDeserializer::<_, serde::de::value::Error>::new(0..64);
+            let deserializer =
+                serde::de::value::SeqDeserializer::<_, serde::de::value::Error>::new(std::iter::once(deserializer));
+            HashSet::<u32>::deserialize(deserializer)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let expected = deserialize();
+        for _ in 0..8 {
+            assert_eq!(deserialize(), expected);
+        }
     }
 
     #[test]
