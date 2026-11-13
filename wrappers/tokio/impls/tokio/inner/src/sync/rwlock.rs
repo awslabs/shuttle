@@ -433,6 +433,13 @@ pub struct OwnedRwLockReadGuard<T: ?Sized, U: ?Sized = T> {
     _p: PhantomData<T>,
 }
 
+impl<T: ?Sized, U: ?Sized> OwnedRwLockReadGuard<T, U> {
+    /// Returns a reference to the original `Arc<RwLock>`.
+    pub fn rwlock(this: &Self) -> &Arc<RwLock<T>> {
+        &this.lock
+    }
+}
+
 impl<T: ?Sized, U: ?Sized> ops::Deref for OwnedRwLockReadGuard<T, U> {
     type Target = U;
 
@@ -558,6 +565,11 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
             data,
             _p: PhantomData,
         }
+    }
+
+    /// Returns a reference to the original `Arc<RwLock>`.
+    pub fn rwlock(this: &Self) -> &Arc<RwLock<T>> {
+        &this.lock
     }
 }
 
