@@ -1,7 +1,7 @@
 use shuttle::scheduler::{DfsScheduler, RandomScheduler};
 use shuttle::sync::OnceLock;
 use shuttle::thread::ThreadId;
-use shuttle::{check_dfs, check_pct, check_uncontrolled_nondeterminism, current, thread, Runner};
+use shuttle::{check_dfs, check_pct, check_random, check_uncontrolled_nondeterminism, current, thread, Runner};
 use std::collections::HashSet;
 use std::panic;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -393,4 +393,184 @@ fn shared_static() {
     // The cell should be initialized exactly once per execution, otherwise the tests are
     // incorrectly sharing it
     assert_eq!(total_executions, INITIALIZERS.load(Ordering::SeqCst));
+}
+
+// `wait` on a cell that has a value returns at once and takes no scheduling point; on an empty
+// cell it blocks, and the switch away from the waiting thread is its one scheduling point.
+#[test]
+fn wait_context_switches() {
+    check_dfs(
+        || {
+            let cell = OnceLock::new();
+            cell.set(1).unwrap();
+            let before = current::context_switches();
+            assert_eq!(cell.wait(), &1);
+            assert_eq!(current::context_switches(), before);
+        },
+        None,
+    );
+
+    check_dfs(
+        || {
+            let cell = Arc::new(OnceLock::new());
+            let setter = {
+                let cell = Arc::clone(&cell);
+                thread::spawn(move || cell.set(1).unwrap())
+            };
+            // The spawned thread does not run until this one reaches a scheduling point, so the
+            // cell is still empty.
+            let before = current::context_switches();
+            assert_eq!(cell.wait(), &1);
+            assert!(current::context_switches() > before);
+            setter.join().unwrap();
+        },
+        None,
+    );
+}
+
+// A waiter sees the value whichever thread sets it and whenever it does so, and DFS reaches both
+// the schedule in which the waiter has to block and the one in which the value is already there.
+#[test]
+fn wait_blocks_until_set() {
+    let blocked = Arc::new(Mutex::new(HashSet::new()));
+    let blocked_clone = Arc::clone(&blocked);
+    check_dfs(
+        move || {
+            let cell = Arc::new(OnceLock::new());
+            let setter = {
+                let cell = Arc::clone(&cell);
+                thread::spawn(move || cell.set(2).unwrap())
+            };
+            thread::yield_now();
+            let was_empty = cell.get().is_none();
+            assert_eq!(cell.wait(), &2);
+            blocked_clone.lock().unwrap().insert(was_empty);
+            setter.join().unwrap();
+        },
+        None,
+    );
+    assert_eq!(*blocked.lock().unwrap(), HashSet::from([false, true]));
+}
+
+// Every waiter is woken, and each one takes causality from the thread that set the value.
+#[test]
+fn wait_wakes_every_waiter() {
+    fn wait_test() {
+        let cell = Arc::new(OnceLock::new());
+        let waiters = (0..3)
+            .map(|_| {
+                let cell = Arc::clone(&cell);
+                thread::spawn(move || {
+                    let setter: &usize = cell.wait();
+                    // The setter's clock entry is part of ours now.
+                    assert!(current::clock().get(*setter) > 0);
+                })
+            })
+            .collect::<Vec<_>>();
+        let setter = {
+            let cell = Arc::clone(&cell);
+            thread::spawn(move || cell.set(usize::from(thread::current().id())).unwrap())
+        };
+        for waiter in waiters {
+            waiter.join().unwrap();
+        }
+        setter.join().unwrap();
+    }
+
+    check_dfs(wait_test, Some(20_000));
+    check_pct(wait_test, 1_000, 3);
+}
+
+// An initializer that panics or fails leaves the waiters waiting, as std's `wait` ignores the
+// poisoning; they wake when an initializer succeeds.
+#[test]
+fn wait_ignores_failed_initializers() {
+    check_dfs(
+        || {
+            let cell = Arc::new(OnceLock::new());
+            let waiter = {
+                let cell = Arc::clone(&cell);
+                thread::spawn(move || *cell.wait())
+            };
+
+            let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                cell.get_or_init(|| panic!("expected panic"));
+            }));
+            assert!(result.is_err());
+            assert_eq!(cell.get_or_try_init(|| Err::<usize, _>(())), Err(()));
+            assert_eq!(cell.get(), None);
+
+            cell.set(3).unwrap();
+            assert_eq!(waiter.join().unwrap(), 3);
+        },
+        None,
+    );
+}
+
+// A thread waiting for a cell that nothing initializes is a deadlock, where std blocks forever.
+#[test]
+#[should_panic(expected = "deadlock")]
+fn wait_without_initializer_deadlocks() {
+    check_dfs(
+        || {
+            let cell = OnceLock::<usize>::new();
+            cell.wait();
+        },
+        None,
+    );
+}
+
+// A thread that is still waiting when the execution ends is unwound by its teardown, and stops
+// waiting, so that a destructor that initializes the cell afterwards finds no one to wake.
+#[test]
+fn wait_unwound_by_teardown() {
+    use std::sync::atomic::AtomicBool;
+
+    static CELL: OnceLock<usize> = OnceLock::new();
+    static WAITING: AtomicBool = AtomicBool::new(false);
+    static UNWOUND_WHILE_WAITING: AtomicUsize = AtomicUsize::new(0);
+
+    struct SetOnDrop;
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            let _ = CELL.set(4);
+        }
+    }
+
+    struct CountUnwinding;
+    impl Drop for CountUnwinding {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                UNWOUND_WHILE_WAITING.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    UNWOUND_WHILE_WAITING.store(0, Ordering::SeqCst);
+    check_random(
+        || {
+            WAITING.store(false, Ordering::SeqCst);
+            // A detached task, blocked when the main thread finishes, which it does without
+            // initializing the cell.
+            drop(shuttle::future::spawn(async {
+                let _count = CountUnwinding;
+                WAITING.store(true, Ordering::SeqCst);
+                CELL.wait();
+            }));
+            while !WAITING.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
+            // A detached task that is still running when the main thread finishes, in the middle
+            // of a poll. Teardown unwinds its stack after the waiter's, and the destructor
+            // initializes the cell then.
+            drop(shuttle::future::spawn(async {
+                let _set_on_drop = SetOnDrop;
+                loop {
+                    thread::yield_now();
+                }
+            }));
+        },
+        20,
+    );
+    assert_eq!(UNWOUND_WHILE_WAITING.load(Ordering::SeqCst), 20);
 }
