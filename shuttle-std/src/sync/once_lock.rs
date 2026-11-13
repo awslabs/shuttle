@@ -2,6 +2,8 @@ use crate::sync::{Mutex, ResourceSignature, ResourceType};
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::storage::StorageKey;
 use shuttle_engine::runtime::task::clock::VectorClock;
+use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::thread;
 use std::cell::{Cell, RefCell};
 use std::convert::Infallible;
 use std::fmt::Debug;
@@ -32,8 +34,7 @@ static NEXT_ID: StdAtomicUsize = StdAtomicUsize::new(1);
 /// * A value is dropped when the execution ends, not when the cell is dropped, so a `OnceLock`
 ///   that goes out of scope part way through an execution keeps its value until the end of it.
 ///
-/// [`OnceLock::wait`](std::sync::OnceLock::wait), which blocks until the cell has a value, and the
-/// `Clone`, `From<T>`, `PartialEq` and `Eq` impls are not modelled yet.
+/// The `Clone`, `From<T>`, `PartialEq` and `Eq` impls are not modelled yet.
 ///
 /// [`shuttle::lazy_static!`]: https://docs.rs/shuttle/*/shuttle/macro.lazy_static.html
 pub struct OnceLock<T> {
@@ -66,6 +67,18 @@ impl<T: 'static> OnceLock<T> {
     /// scheduling point.
     pub fn get_mut(&mut self) -> Option<&mut T> {
         self.core.get_mut()
+    }
+
+    /// Blocks the current task until the cell is initialized, then returns a reference to its
+    /// value.
+    ///
+    /// On a cell that already has a value this returns at once and is not a scheduling point. On
+    /// an empty one the task blocks, which is a scheduling point, and wakes when another task
+    /// stores a value. An initializer that panics or fails does not wake it, as in std, which
+    /// ignores the poisoning here: the task keeps waiting for one that succeeds. If no task is left
+    /// that could initialize the cell, Shuttle reports a deadlock, where std blocks forever.
+    pub fn wait(&self) -> &T {
+        self.core.wait()
     }
 
     /// Sets the contents of this cell to `value`.
@@ -197,6 +210,8 @@ struct CellState<T> {
     /// The clock of the task that initialized the value, so that a read which skips the lock still
     /// establishes causality with the initializer, as [`Once`](crate::sync::Once) does.
     clock: RefCell<VectorClock>,
+    /// The tasks blocked in [`OnceCore::wait`], which [`OnceCore::publish`] wakes.
+    waiters: RefCell<Vec<TaskId>>,
 }
 
 /// What a cell does when an initializer left it poisoned.
@@ -272,6 +287,7 @@ impl<T: 'static> OnceCore<T> {
                 lock: RefCell::new(Rc::new(Mutex::new_internal((), self.signature.clone()))),
                 poisoned: Cell::new(false),
                 clock: RefCell::new(VectorClock::new()),
+                waiters: RefCell::new(Vec::new()),
             };
             execution.init_storage::<_, CellState<T>>(self, state);
         }
@@ -404,8 +420,49 @@ impl<T: 'static> OnceCore<T> {
         self.get_mut().expect("initialized just above")
     }
 
-    /// Stores `value` in the cell, together with the current task's clock, and returns a reference
-    /// to it.
+    /// Blocks the current task until the cell has a value, and returns it.
+    ///
+    /// Not a scheduling point if the cell has a value. Otherwise the task blocks until
+    /// [`Self::publish`] wakes it, and the switch away from it is the scheduling point.
+    pub(super) fn wait(&self) -> &T {
+        loop {
+            // Takes causality from the initializer, as any other read does.
+            if let Some(value) = self.get() {
+                return value;
+            }
+
+            let me = ExecutionState::me();
+            let state = ExecutionState::with(|execution| {
+                let state = self.init_state(execution);
+                // Safety: see `get`.
+                unsafe { &*state }.waiters.borrow_mut().push(me);
+                execution.current_mut().block(false);
+                state
+            });
+
+            // If execution teardown unwinds the task from the switch below (see
+            // `ExecutionState::tear_down`), the task stops waiting, so that a destructor that
+            // initializes the cell later does not wake a task that has finished. The state stays at
+            // its address until teardown drops the execution's storage, which it does after it has
+            // unwound the tasks.
+            struct StopWaitingOnUnwind<T>(*const CellState<T>, TaskId);
+            impl<T> Drop for StopWaitingOnUnwind<T> {
+                fn drop(&mut self) {
+                    // Safety: see above.
+                    let waiters = &unsafe { &*self.0 }.waiters;
+                    waiters.borrow_mut().retain(|waiter| *waiter != self.1);
+                }
+            }
+            let stop_waiting_on_unwind = StopWaitingOnUnwind(state, me);
+
+            trace!("waiting for cell {:p} to be initialized", self);
+            thread::switch();
+            std::mem::forget(stop_waiting_on_unwind);
+        }
+    }
+
+    /// Stores `value` in the cell, together with the current task's clock, wakes the tasks waiting
+    /// for it, and returns a reference to it.
     ///
     /// The caller must hold the cell's lock, or a `&mut` borrow of it, and must have found the cell
     /// empty.
@@ -426,6 +483,15 @@ impl<T: 'static> OnceCore<T> {
             }
             state.poisoned.set(false);
             *state.clock.borrow_mut() = clock;
+            // Waking a task is not a scheduling point: the woken tasks run when the scheduler picks
+            // them, and read the value and its clock then. A task that teardown has finished
+            // already is not waiting any more (see `wait`), but skip any such task all the same.
+            for waiter in state.waiters.borrow_mut().drain(..) {
+                let task = execution.get_mut(waiter);
+                if !task.finished() {
+                    task.unblock();
+                }
+            }
             // Safety: see `get`.
             unsafe { &*state.value.as_ptr() }
                 .as_ref()
@@ -442,6 +508,8 @@ impl<T: 'static> OnceCore<T> {
             // Safety: see `get_mut`.
             let state = unsafe { &*state };
             let value = state.value.borrow_mut().take()?;
+            // No task can be waiting: it would hold a shared borrow of the cell.
+            debug_assert!(state.waiters.borrow().is_empty());
             // The rest of the cell goes back to how it starts an execution, so that the next
             // initializer runs and does not find the old lock's poisoning. std's `take` replaces
             // its `Once` for the same reason.
