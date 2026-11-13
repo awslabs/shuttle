@@ -17,6 +17,7 @@ mod once;
 mod panic;
 mod pct;
 mod portfolio;
+mod pos;
 mod replay;
 mod resource_signatures;
 mod rwlock;
