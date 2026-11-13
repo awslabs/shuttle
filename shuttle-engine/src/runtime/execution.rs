@@ -2141,6 +2141,27 @@ impl ExecutionState {
         })
     }
 
+    /// Like `next_u64`, but return `None` if the scheduler does not provide random data (see
+    /// `Scheduler::try_next_u64`), where `next_u64` fails the execution. A `None` adds nothing to
+    /// the schedule, and a value is a random step of it, as one from `next_u64` is.
+    ///
+    /// During execution teardown this returns a value whatever the scheduler, from the same
+    /// generator as `next_u64` (see `Teardown::rng`), which doesn't involve the scheduler, so that
+    /// a replay of the execution makes the same choice.
+    #[inline]
+    pub fn try_next_u64() -> Option<u64> {
+        Self::with(|state| {
+            if let Some(teardown) = &mut state.teardown {
+                return Some(teardown.next_u64());
+            }
+            let next = state.scheduler.borrow_mut().try_next_u64();
+            if next.is_some() {
+                CurrentSchedule::push_random();
+            }
+            next
+        })
+    }
+
     pub fn current(&self) -> &Task {
         self.get(self.current_task.id().expect("there is no current task"))
     }

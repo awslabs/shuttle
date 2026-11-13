@@ -139,4 +139,14 @@ impl Scheduler for ReplayScheduler {
             }
         }
     }
+
+    fn try_next_u64(&mut self) -> Option<u64> {
+        // The schedule has a random step wherever its execution got a value, and none where that
+        // execution's scheduler refused to provide one (see `Scheduler::try_next_u64`), so the next
+        // step says which of the two happened here.
+        match self.schedule.steps.get(self.steps) {
+            Some(ScheduleStep::Random) => Some(self.next_u64()),
+            _ => None,
+        }
+    }
 }
