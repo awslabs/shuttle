@@ -1,5 +1,6 @@
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::thread;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 
 /// Cooperatively gives up a timeslice to the Shuttle scheduler.
@@ -128,7 +129,7 @@ impl<T: 'static> LocalKey<T> {
     where
         F: FnOnce(&T) -> R,
     {
-        let value = self.get().unwrap_or_else(|| {
+        let value = self.slot().unwrap_or_else(|| {
             let value = (self.init)();
 
             // `init`, or a `tracing` subscriber of the event that `ExecutionState::with` emits, may
@@ -148,13 +149,50 @@ impl<T: 'static> LocalKey<T> {
             });
             drop(unused);
 
-            self.get().unwrap()
+            self.slot().unwrap()
         })?;
 
         Ok(f(value))
     }
 
-    fn get(&'static self) -> Option<std::result::Result<&'static T, AccessError>> {
+    /// Writes `value` into this key's slot, creating the slot with it when the task has none, and
+    /// runs `f` on the slot. Unlike [`with`](LocalKey::with), this does not run the key's
+    /// initializer. `f` gets `value` back when there already was a slot, which is how
+    /// [`LocalKey::<Cell<T>>::set`](LocalKey::set) writes it into the slot that is there.
+    ///
+    /// This is std's `LocalKey::initialize_with`, which std's `set` is built on.
+    fn initialize_with<F, R>(&'static self, value: T, f: F) -> R
+    where
+        F: FnOnce(Option<T>, &T) -> R,
+    {
+        if let Some(slot) = self.slot() {
+            return f(Some(value), Self::unwrap_slot(slot));
+        }
+
+        // As in `try_with_slot`: a `tracing` subscriber of the event that `ExecutionState::with`
+        // emits may have created the slot since `slot` found none. Keep that slot then, and hand
+        // the unused value to `f`.
+        let unused = ExecutionState::with(move |state| {
+            if state.current().local(self).is_none() {
+                state.current_mut().init_local(self, value);
+                None
+            } else {
+                Some(value)
+            }
+        });
+
+        let slot = Self::unwrap_slot(self.slot().expect("the slot exists now"));
+        f(unused, slot)
+    }
+
+    fn unwrap_slot(slot: std::result::Result<&'static T, AccessError>) -> &'static T {
+        slot.expect(
+            "cannot access a Thread Local Storage value \
+            during or after destruction",
+        )
+    }
+
+    fn slot(&'static self) -> Option<std::result::Result<&'static T, AccessError>> {
         // Safety: see the usage below
         unsafe fn extend_lt<'b, T>(t: &'_ T) -> &'b T {
             std::mem::transmute(t)
@@ -169,6 +207,120 @@ impl<T: 'static> LocalKey<T> {
                 Some(Err(AccessError))
             }
         })
+    }
+}
+
+impl<T: 'static> LocalKey<Cell<T>> {
+    /// Sets or initializes the contained value.
+    ///
+    /// Unlike the other methods, this will *not* run the lazy initializer of the thread local.
+    /// Instead, it will be directly initialized with the given value if it wasn't initialized yet.
+    pub fn set(&'static self, value: T) {
+        self.initialize_with(Cell::new(value), |value, cell| {
+            if let Some(value) = value {
+                // The slot was already there, so the cell this made was not used. Write what it
+                // holds into the slot instead.
+                cell.set(value.into_inner());
+            }
+        });
+    }
+
+    /// Returns a copy of the contained value.
+    ///
+    /// This will lazily initialize the value if this task has not referenced this key yet.
+    pub fn get(&'static self) -> T
+    where
+        T: Copy,
+    {
+        self.with(Cell::get)
+    }
+
+    /// Takes the contained value, leaving `Default::default()` in its place.
+    ///
+    /// This will lazily initialize the value if this task has not referenced this key yet.
+    pub fn take(&'static self) -> T
+    where
+        T: Default,
+    {
+        self.with(Cell::take)
+    }
+
+    /// Replaces the contained value, returning the old value.
+    ///
+    /// This will lazily initialize the value if this task has not referenced this key yet.
+    pub fn replace(&'static self, value: T) -> T {
+        self.with(|cell| cell.replace(value))
+    }
+}
+
+impl<T: 'static> LocalKey<RefCell<T>> {
+    /// Acquires a reference to the contained value.
+    ///
+    /// This will lazily initialize the value if this task has not referenced this key yet.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is currently mutably borrowed.
+    pub fn with_borrow<F, R>(&'static self, f: F) -> R
+    where
+        F: FnOnce(&T) -> R,
+    {
+        self.with(|cell| f(&cell.borrow()))
+    }
+
+    /// Acquires a mutable reference to the contained value.
+    ///
+    /// This will lazily initialize the value if this task has not referenced this key yet.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is currently borrowed.
+    pub fn with_borrow_mut<F, R>(&'static self, f: F) -> R
+    where
+        F: FnOnce(&mut T) -> R,
+    {
+        self.with(|cell| f(&mut cell.borrow_mut()))
+    }
+
+    /// Sets or initializes the contained value.
+    ///
+    /// Unlike the other methods, this will *not* run the lazy initializer of the thread local.
+    /// Instead, it will be directly initialized with the given value if it wasn't initialized yet.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is currently borrowed.
+    pub fn set(&'static self, value: T) {
+        self.initialize_with(RefCell::new(value), |value, cell| {
+            if let Some(value) = value {
+                // The slot was already there, so the cell this made was not used. Write what it
+                // holds into the slot instead.
+                *cell.borrow_mut() = value.into_inner();
+            }
+        });
+    }
+
+    /// Takes the contained value, leaving `Default::default()` in its place.
+    ///
+    /// This will lazily initialize the value if this task has not referenced this key yet.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is currently borrowed.
+    pub fn take(&'static self) -> T
+    where
+        T: Default,
+    {
+        self.with(RefCell::take)
+    }
+
+    /// Replaces the contained value, returning the old value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the value is currently borrowed.
+    pub fn replace(&'static self, value: T) -> T {
+        self.with(|cell| cell.replace(value))
     }
 }
 
