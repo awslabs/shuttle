@@ -1,7 +1,7 @@
 //! Shuttle's implementation of [`std::thread`].
 
 use shuttle_engine::runtime::execution::ExecutionState;
-use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::task::{Event, EventKind, TaskId};
 use shuttle_engine::runtime::thread;
 use std::marker::PhantomData;
 use std::panic::Location;
@@ -42,8 +42,9 @@ impl Thread {
     }
 
     /// Atomically makes the handle's token available if it is not already.
+    #[track_caller]
     pub fn unpark(&self) {
-        thread::switch();
+        thread::switch_with(Event::on_task(EventKind::Unpark, self.id.task_id));
 
         ExecutionState::with(|s| {
             s.get_mut(self.id.task_id).unpark();
@@ -99,7 +100,7 @@ impl<'scope> Scope<'scope, '_> {
                 let ret = f();
 
                 if ExecutionState::with(|s| s.exit_current_truncates_execution()) {
-                    thread::switch();
+                    thread::switch_with(Event::on_task(EventKind::Exit, ExecutionState::me()));
                 }
 
                 finished.store(true, Ordering::Relaxed);
@@ -129,6 +130,7 @@ impl<'scope> Scope<'scope, '_> {
 ///
 /// The function passed to `scope` will be provided a [`Scope`] object,
 /// through which scoped threads can be [spawned][`Scope::spawn`].
+#[track_caller]
 pub fn scope<'env, F, T>(f: F) -> T
 where
     F: for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T,
@@ -145,7 +147,7 @@ where
     if scope.num_running_threads.load(Ordering::Relaxed) != 0 {
         tracing::info!("thread blocked, waiting for completion of scoped threads");
         ExecutionState::with(|s| s.current_mut().block(false));
-        thread::switch();
+        thread::switch_with(Event::untargeted(EventKind::Join));
     }
 
     ret
@@ -265,11 +267,12 @@ unsafe impl<T> Sync for JoinHandle<T> {}
 
 impl<T> JoinHandle<T> {
     /// Waits for the associated thread to finish.
+    #[track_caller]
     pub fn join(self) -> Result<T> {
         let is_finished = ExecutionState::with(|state| state.get(self.task_id).finished());
         // If the joinee task is finished then the joiner will not block
         if is_finished {
-            thread::switch();
+            thread::switch_with(Event::on_task(EventKind::Join, self.task_id));
         }
 
         let should_block = ExecutionState::with(|state| {
@@ -284,7 +287,7 @@ impl<T> JoinHandle<T> {
         });
 
         if should_block {
-            thread::switch();
+            thread::switch_with(Event::on_task(EventKind::Join, self.task_id));
         }
 
         // Waiting thread inherits the clock of the finished thread
@@ -313,17 +316,19 @@ impl<T> JoinHandle<T> {
 ///
 /// Some Shuttle schedulers use this as a hint to deprioritize the current thread in order for other
 /// threads to make progress (e.g., in a spin loop).
+#[track_caller]
 pub fn yield_now() {
     let waker = ExecutionState::with(|state| state.current().waker());
     waker.wake_by_ref();
     ExecutionState::request_yield();
-    thread::switch();
+    thread::switch_with(Event::untargeted(EventKind::Yield));
 }
 
 /// Puts the current thread to sleep for at least the specified amount of time.
 // Note that Shuttle does not model time, so this behaves just like a context switch.
+#[track_caller]
 pub fn sleep(_dur: Duration) {
-    thread::switch();
+    thread::switch_with(Event::untargeted(EventKind::Sleep));
 }
 
 /// Get a handle to the thread that invokes it
@@ -340,6 +345,7 @@ pub fn current() -> Thread {
 }
 
 /// Blocks unless or until the current thread's token is made available (may wake spuriously).
+#[track_caller]
 pub fn park() {
     let switch = ExecutionState::with(|s| s.current_mut().park());
 
@@ -351,7 +357,7 @@ pub fn park() {
     // context would result in spurious wakeups triggering nearly every time.
     if switch {
         ExecutionState::request_yield();
-        thread::switch();
+        thread::switch_with(Event::on_task(EventKind::Park, ExecutionState::me()));
     }
 }
 

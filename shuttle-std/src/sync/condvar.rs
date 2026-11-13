@@ -3,7 +3,7 @@ use assoc::AssocExt;
 use shuttle_engine::current;
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::clock::VectorClock;
-use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::task::{Event, EventKind, TaskId};
 use shuttle_engine::runtime::thread;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -16,7 +16,6 @@ use tracing::trace;
 #[derive(Debug)]
 pub struct Condvar {
     state: RefCell<CondvarState>,
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -131,6 +130,7 @@ impl Condvar {
     }
 
     /// Blocks the current thread until this condition variable receives a notification.
+    #[track_caller]
     pub fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         let me = ExecutionState::me();
 
@@ -163,7 +163,7 @@ impl Condvar {
 
         // TODO: Condvar::wait should allow for spurious wakeups.
         ExecutionState::with(|s| s.current_mut().block(false));
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::CondvarWait, &self.signature));
         std::mem::forget(stop_waiting_on_unwind);
 
         // After the context switch, consume whichever signal that woke this thread
@@ -207,6 +207,7 @@ impl Condvar {
 
     /// Blocks the current thread until this condition variable receives a notification and the
     /// provided condition is false.
+    #[track_caller]
     pub fn wait_while<'a, T, F>(&self, mut guard: MutexGuard<'a, T>, mut condition: F) -> LockResult<MutexGuard<'a, T>>
     where
         F: FnMut(&mut T) -> bool,
@@ -218,6 +219,7 @@ impl Condvar {
     }
 
     /// Waits on this condition variable for a notification, timing out after a specified duration.
+    #[track_caller]
     pub fn wait_timeout<'a, T>(
         &self,
         guard: MutexGuard<'a, T>,
@@ -233,6 +235,7 @@ impl Condvar {
     ///
     /// The semantics of this function are equivalent to [`wait_while`](Self::wait_while) except
     /// that the thread will be blocked for roughly no longer than `dur`.
+    #[track_caller]
     pub fn wait_timeout_while<'a, T, F>(
         &self,
         guard: MutexGuard<'a, T>,
@@ -252,8 +255,9 @@ impl Condvar {
     ///
     /// If there is a blocked thread on this condition variable, then it will be woken up from its
     /// call to wait or wait_timeout. Calls to notify_one are not buffered in any way.
+    #[track_caller]
     pub fn notify_one(&self) {
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::CondvarNotify, &self.signature));
 
         let me = ExecutionState::me();
 
@@ -289,8 +293,9 @@ impl Condvar {
     }
 
     /// Wakes up all blocked threads on this condvar.
+    #[track_caller]
     pub fn notify_all(&self) {
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::CondvarNotify, &self.signature));
 
         let me = ExecutionState::me();
 

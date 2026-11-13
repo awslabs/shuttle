@@ -62,6 +62,7 @@ pub use std::sync::atomic::Ordering;
 use crate::sync::{ResourceSignature, ResourceType};
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::clock::VectorClock;
+use shuttle_engine::runtime::task::{Event, EventKind};
 use shuttle_engine::runtime::thread;
 use shuttle_engine::silence_warnings;
 use std::cell::RefCell;
@@ -121,7 +122,6 @@ pub use std::sync::atomic::compiler_fence;
 struct Atomic<T> {
     inner: RefCell<T>,
     clock: RefCell<Option<VectorClock>>, // wrapped in option to support the const new()
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -159,34 +159,38 @@ impl<T: Copy + Eq> Atomic<T> {
         self.inner.into_inner()
     }
 
+    #[track_caller]
     fn load(&self, order: Ordering) -> T {
         maybe_warn_about_ordering(order);
 
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::AtomicLoad, &self.signature));
         self.exhale_clock();
         let value = *self.inner.borrow();
         value
     }
 
+    #[track_caller]
     fn store(&self, val: T, order: Ordering) {
         maybe_warn_about_ordering(order);
 
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::AtomicStore, &self.signature));
         self.inhale_clock();
         *self.inner.borrow_mut() = val;
     }
 
+    #[track_caller]
     fn swap(&self, mut val: T, order: Ordering) -> T {
         maybe_warn_about_ordering(order);
 
         // swap behaves like { let x = load() ; store(val) ; x }
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::AtomicReadModifyWrite, &self.signature));
         self.exhale_clock(); // for the load
         self.inhale_clock(); // for the store
         std::mem::swap(&mut *self.inner.borrow_mut(), &mut val);
         val
     }
 
+    #[track_caller]
     fn try_update<F>(&self, set_order: Ordering, fetch_order: Ordering, mut f: F) -> Result<T, T>
     where
         F: FnMut(T) -> Option<T>,
@@ -201,7 +205,7 @@ impl<T: Copy + Eq> Atomic<T> {
         // that internally, but not for user-provided callbacks. The public `try_update` and
         // `update` methods run user callbacks, so they loop over `load` and `compare_exchange_weak`
         // instead, just like `std`.
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::AtomicReadModifyWrite, &self.signature));
         self.exhale_clock(); // for the load()
         let current = *self.inner.borrow();
         let ret = if let Some(new) = f(current) {

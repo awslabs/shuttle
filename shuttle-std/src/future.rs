@@ -7,7 +7,7 @@
 
 use shuttle_engine::backtrace_enabled;
 use shuttle_engine::runtime::execution::ExecutionState;
-use shuttle_engine::runtime::task::TaskId;
+use shuttle_engine::runtime::task::{Event, EventKind, TaskId};
 use shuttle_engine::runtime::thread;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -76,11 +76,12 @@ impl AbortHandle {
     ///
     /// The task will be cancelled at the next await point. If the task has already
     /// completed, this is a no-op.
+    #[track_caller]
     pub fn abort(&self) {
         // Scheduling point: the scheduler may run other tasks (including the target)
         // before the abort flag is set, creating interleavings where the task completes
         // normally despite an abort() call.
-        thread::switch();
+        thread::switch_with(Event::on_task(EventKind::Abort, self.task_id));
 
         // Signal the Wrapper to skip the inner future on the next poll.
         // If already aborted, skip the redundant wake.
@@ -142,11 +143,12 @@ impl<T> JoinHandle<T> {
     /// The task will be cancelled at the next await point. Awaiting the `JoinHandle` after
     /// calling `abort` will return `Err(JoinError::Cancelled)`, unless the task completed
     /// before the abort took effect.
+    #[track_caller]
     pub fn abort(&self) {
         // Scheduling point: the scheduler may run other tasks (including the target)
         // before the abort flag is set, creating interleavings where the task completes
         // normally despite an abort() call.
-        thread::switch();
+        thread::switch_with(Event::on_task(EventKind::Abort, self.task_id));
 
         // Signal the Wrapper to skip the inner future on the next poll.
         // If already aborted, skip the redundant wake.
@@ -384,7 +386,7 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
             Poll::Ready(result) => break result,
             Poll::Pending => {
                 ExecutionState::with(|state| state.current_mut().sleep_unless_woken());
-                thread::switch();
+                thread::switch_before_poll();
             }
         }
     }

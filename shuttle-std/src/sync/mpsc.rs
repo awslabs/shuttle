@@ -3,7 +3,7 @@
 use crate::sync::{ResourceSignature, ResourceType};
 use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::clock::VectorClock;
-use shuttle_engine::runtime::task::{TaskId, DEFAULT_INLINE_TASKS};
+use shuttle_engine::runtime::task::{Event, EventKind, TaskId, DEFAULT_INLINE_TASKS};
 use shuttle_engine::runtime::thread;
 use smallvec::SmallVec;
 use std::cell::RefCell;
@@ -174,10 +174,12 @@ impl<T> Channel<T> {
         }
     }
 
+    #[track_caller]
     fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
         self.send_internal(message, false)
     }
 
+    #[track_caller]
     fn send(&self, message: T) -> Result<(), SendError<T>> {
         self.send_internal(message, true).map_err(|e| match e {
             TrySendError::Full(_) => unreachable!(),
@@ -206,10 +208,11 @@ impl<T> Channel<T> {
         is_full || !state.waiting_senders.is_empty() || (is_rendezvous && state.waiting_receivers.is_empty())
     }
 
+    #[track_caller]
     fn send_internal(&self, message: T, can_block: bool) -> Result<(), TrySendError<T>> {
         // Because channels are always fair wrt. waiting senders (waiting senders is an *ordered* list),
         // blocking sends do not commute thus must always provide a switch before blocking
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::ChannelSend, &self.signature));
 
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
@@ -245,7 +248,7 @@ impl<T> Channel<T> {
             // `ExecutionState::tear_down`), the task is no longer waiting. Destructors that run later
             // use this channel as if it did.
             let stop_waiting_on_unwind = StopWaitingOnUnwind(self, me, Waiter::Sender);
-            thread::switch();
+            thread::switch_with(Event::on_resource(EventKind::ChannelSend, &self.signature));
             std::mem::forget(stop_waiting_on_unwind);
 
             state = self.state.borrow_mut();
@@ -304,6 +307,7 @@ impl<T> Channel<T> {
         Ok(())
     }
 
+    #[track_caller]
     fn recv(&self) -> Result<T, RecvError> {
         self.recv_internal(true).map_err(|e| match e {
             TryRecvError::Disconnected => RecvError,
@@ -311,6 +315,7 @@ impl<T> Channel<T> {
         })
     }
 
+    #[track_caller]
     fn try_recv(&self) -> Result<T, TryRecvError> {
         self.recv_internal(false)
     }
@@ -322,10 +327,11 @@ impl<T> Channel<T> {
         state.messages.is_empty() || !state.waiting_receivers.is_empty()
     }
 
+    #[track_caller]
     fn recv_internal(&self, can_block: bool) -> Result<T, TryRecvError> {
         // Because channels are always fair wrt. waiting receivers (waiting receivers is an *ordered* list),
         // blocking receives do not commute thus must always provide a switch before blocking
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::ChannelRecv, &self.signature));
 
         let me = ExecutionState::me();
         let mut state = self.state.borrow_mut();
@@ -386,7 +392,7 @@ impl<T> Channel<T> {
 
             // As for a blocked sender.
             let stop_waiting_on_unwind = StopWaitingOnUnwind(self, me, Waiter::Receiver);
-            thread::switch();
+            thread::switch_with(Event::on_resource(EventKind::ChannelRecv, &self.signature));
             std::mem::forget(stop_waiting_on_unwind);
 
             state = self.state.borrow_mut();
@@ -465,18 +471,21 @@ pub struct Receiver<T> {
 impl<T> Receiver<T> {
     /// Attempts to wait for a value on this receiver, returning an error if the
     /// corresponding channel has hung up.
+    #[track_caller]
     pub fn recv(&self) -> Result<T, RecvError> {
         self.inner.recv()
     }
 
     /// Attempts to wait for a value on this receiver, returning an error if the
     /// corresponding channel has hung up.
+    #[track_caller]
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
         self.inner.try_recv()
     }
 
     /// Attempts to wait for a value on this receiver, returning an error if the
     /// corresponding channel has hung up, or if it waits more than timeout.
+    #[track_caller]
     pub fn recv_timeout(&self, _timeout: Duration) -> Result<T, RecvTimeoutError> {
         // TODO support the timeout case -- this method never times out
         self.inner.recv().map_err(|_| RecvTimeoutError::Disconnected)
@@ -607,6 +616,7 @@ pub struct Sender<T> {
 impl<T> Sender<T> {
     /// Attempts to send a value on this channel, returning it back if it could
     /// not be sent.
+    #[track_caller]
     pub fn send(&self, t: T) -> Result<(), SendError<T>> {
         self.inner.send(t)
     }
@@ -655,6 +665,7 @@ impl<T> SyncSender<T> {
     ///
     /// This function will *block* until space in the internal buffer becomes
     /// available or a receiver is available to hand off the message to.
+    #[track_caller]
     pub fn send(&self, t: T) -> Result<(), SendError<T>> {
         self.inner.send(t)
     }
@@ -667,6 +678,7 @@ impl<T> SyncSender<T> {
     /// instead of one (one for disconnection, one for a full buffer).
     ///
     /// [`send`]: Self::send
+    #[track_caller]
     pub fn try_send(&self, t: T) -> Result<(), TrySendError<T>> {
         self.inner.try_send(t)
     }

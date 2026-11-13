@@ -1,5 +1,6 @@
 use crate::config::UNGRACEFUL_SHUTDOWN_CONFIG;
-use crate::runtime::execution::ExecutionState;
+use crate::runtime::execution::{ExecutionState, NextEvent};
+use crate::runtime::task::{Event, EventKind};
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
@@ -463,11 +464,24 @@ unsafe impl Send for PooledContinuation {}
 /// thus the optimization is safe. So, to ensure the safety of the double-yield optimization for an
 /// operation `Y1`, it suffices to check that `Y1` commutes with all operations `Z` on the same resource,
 /// as operations on other resources should commute trivially.
+///
+/// This scheduling point doesn't say what operation follows it, so while the task is switched out
+/// here, schedulers see [`EventKind::Unknown`] as its next event (see [`Task::next_event`]).
+/// Prefer [`switch_with`], which says.
+///
+/// [`Task::next_event`]: crate::runtime::task::Task::next_event
 #[track_caller]
 pub fn switch() {
+    switch_with(Event::new(EventKind::Unknown, None, Location::caller()));
+}
+
+/// Like [`switch`], for a scheduling point before the operation that `event` describes. While the
+/// task is switched out here, schedulers see `event` as its next event (see
+/// [`Task::next_event`](crate::runtime::task::Task::next_event)).
+pub fn switch_with(event: Event) {
     crate::annotations::record_tick();
-    trace!("switch from {}", Location::caller());
-    if ExecutionState::maybe_yield() {
+    trace!("switch before {}", event);
+    if ExecutionState::maybe_yield_before(NextEvent::Operation(event)) {
         match suspend() {
             ContinuationInput::Exit => panic!("unexpected exit continuation"),
             ContinuationInput::Resume => {}
@@ -483,18 +497,43 @@ pub fn switch() {
 #[track_caller]
 #[inline]
 pub fn switch_if_not_stopping() {
+    switch_if_not_stopping_with(Event::new(EventKind::Unknown, None, Location::caller()));
+}
+
+/// Like [`switch_if_not_stopping`], for a scheduling point before the operation that `event`
+/// describes (see [`switch_with`]).
+#[inline]
+pub fn switch_if_not_stopping_with(event: Event) {
     if !ExecutionState::should_stop() {
-        switch();
+        switch_with(event);
     }
 }
 
-/// Like `switch`, for the loop that polls a future task's future (see `Task::from_future`), between
-/// two polls. Returns true if execution teardown cancelled the task while it was switched out (see
-/// `Continuation::cancel`), in which case the loop drops the future instead of polling it again.
+/// Like `switch`, for a loop that polls a future to completion, after the future returned
+/// `Poll::Pending`: when the task runs next, it polls the future again. While the task is switched
+/// out here, schedulers see [`EventKind::Unknown`] as its next event, until a Shuttle semaphore
+/// wakes it; then they see the acquire it was woken for (see
+/// [`Task::next_event`](crate::runtime::task::Task::next_event)).
+pub fn switch_before_poll() {
+    crate::annotations::record_tick();
+    trace!("switch before poll");
+    if ExecutionState::maybe_yield_before(NextEvent::Poll) {
+        match suspend() {
+            ContinuationInput::Exit => panic!("unexpected exit continuation"),
+            ContinuationInput::Resume => {}
+            ContinuationInput::Cancel => unreachable!("only a task that is between polls is cancelled"),
+        }
+    }
+}
+
+/// Like `switch_before_poll`, for the loop that polls a future task's future (see
+/// `Task::from_future`), between two polls. Returns true if execution teardown cancelled the task
+/// while it was switched out (see `Continuation::cancel`), in which case the loop drops the future
+/// instead of polling it again.
 pub(crate) fn switch_between_polls() -> bool {
     crate::annotations::record_tick();
     trace!("switch between polls");
-    ExecutionState::maybe_yield() && suspend() == ContinuationInput::Cancel
+    ExecutionState::maybe_yield_before(NextEvent::Poll) && suspend() == ContinuationInput::Cancel
 }
 
 /// Suspend the current task's continuation, and return what it is resumed with.
