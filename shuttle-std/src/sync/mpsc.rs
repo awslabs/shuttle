@@ -502,6 +502,10 @@ impl<T> Drop for Receiver<T> {
         if ExecutionState::should_stop() {
             return;
         }
+        // Scheduling point precedes the visible disconnect of the channel by the `Receiver`
+        if self.inner.state.borrow().known_senders > 0 {
+            thread::switch();
+        }
         let mut state = self.inner.state.borrow_mut();
         assert!(state.known_receivers > 0);
         state.known_receivers -= 1;
@@ -628,6 +632,14 @@ impl<T> Drop for Sender<T> {
         if ExecutionState::should_stop() {
             return;
         }
+        // Scheduling point precedes the visible disconnect of the channel by the last sender
+        let disconnects = {
+            let state = self.inner.state.borrow();
+            state.known_senders == 1 && state.known_receivers > 0
+        };
+        if disconnects {
+            thread::switch();
+        }
         let mut state = self.inner.state.borrow_mut();
         assert!(state.known_senders > 0);
         state.known_senders -= 1;
@@ -687,6 +699,14 @@ impl<T> Drop for SyncSender<T> {
     fn drop(&mut self) {
         if ExecutionState::should_stop() {
             return;
+        }
+        // Scheduling point precedes the visible disconnect of the channel by the last sender
+        let disconnects = {
+            let state = self.inner.state.borrow();
+            state.known_senders == 1 && state.known_receivers > 0
+        };
+        if disconnects {
+            thread::switch();
         }
         let mut state = self.inner.state.borrow_mut();
         assert!(state.known_senders > 0);

@@ -834,3 +834,88 @@ fn mpsc_try_send_permutations_no_drop_rendezvous() {
 fn mpsc_try_send_permutations_drop_rendezvous() {
     mpsc_try_send_permutations(true, true);
 }
+
+/// Regression test: Shuttle must be able to schedule another thread between a thread's previous
+/// operation and the drop of the last `Sender`, which disconnects the channel.
+///
+/// The test program wrongly assumes that once the receiver sees `ready`, the channel is
+/// disconnected. That fails when the receiver runs between the store and the drop, which Shuttle
+/// only explores if the drop takes a scheduling point first.
+#[test]
+#[should_panic(expected = "sender not dropped yet")]
+fn last_sender_drop_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = channel::<()>();
+            let receiver = {
+                let ready = ready.clone();
+                thread::spawn(move || {
+                    if ready.load(std::sync::atomic::Ordering::SeqCst) {
+                        // BUG (in this test program): assumes the sender has already been dropped.
+                        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected), "sender not dropped yet");
+                    }
+                })
+            };
+            ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            drop(tx);
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Regression test: as `last_sender_drop_after_store_is_a_separate_step`, for a `SyncSender`.
+#[test]
+#[should_panic(expected = "sender not dropped yet")]
+fn last_sync_sender_drop_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = sync_channel::<()>(1);
+            let receiver = {
+                let ready = ready.clone();
+                thread::spawn(move || {
+                    if ready.load(std::sync::atomic::Ordering::SeqCst) {
+                        // BUG (in this test program): assumes the sender has already been dropped.
+                        assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected), "sender not dropped yet");
+                    }
+                })
+            };
+            ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            drop(tx);
+            receiver.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Regression test: Shuttle must be able to schedule another thread between a thread's previous
+/// operation and the drop of the `Receiver`, which disconnects the channel.
+///
+/// The test program wrongly assumes that once the sender sees `ready`, the channel is
+/// disconnected, so that `send` fails. That fails when the sender runs between the store and the
+/// drop, which Shuttle only explores if the drop takes a scheduling point first.
+#[test]
+#[should_panic(expected = "receiver not dropped yet")]
+fn receiver_drop_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, rx) = channel::<()>();
+            let sender = {
+                let ready = ready.clone();
+                thread::spawn(move || {
+                    if ready.load(std::sync::atomic::Ordering::SeqCst) {
+                        // BUG (in this test program): assumes the receiver has already been dropped.
+                        assert!(tx.send(()).is_err(), "receiver not dropped yet");
+                    }
+                })
+            };
+            ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            drop(rx);
+            sender.join().unwrap();
+        },
+        None,
+    );
+}
