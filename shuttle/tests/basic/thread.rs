@@ -990,3 +990,122 @@ fn spawn_local_sanity() {
         None,
     );
 }
+
+/// A thread that cannot run has not finished, in every schedule, and `is_finished` becomes true
+/// once it has run. A loop around it needs a `yield_now`, because `is_finished` takes no scheduling
+/// point of its own; a fair scheduler is needed for such a loop, as `check_dfs` would explore the
+/// schedule that runs the yielding task again forever.
+#[test]
+fn thread_join_handle_is_finished() {
+    check_dfs(
+        || {
+            let lock = Arc::new(Mutex::new(0));
+            let guard = lock.lock().unwrap();
+            let handle = {
+                let lock = Arc::clone(&lock);
+                thread::spawn(move || *lock.lock().unwrap() += 1)
+            };
+
+            assert!(!handle.is_finished());
+
+            drop(guard);
+            handle.join().unwrap();
+            assert_eq!(*lock.lock().unwrap(), 1);
+        },
+        None,
+    );
+
+    check_random(
+        || {
+            let handle = thread::spawn(|| 7);
+            while !handle.is_finished() {
+                thread::yield_now();
+            }
+            assert_eq!(handle.join().unwrap(), 7);
+        },
+        20,
+    );
+}
+
+/// `Builder::spawn_scoped` lends the thread a borrow, as `Scope::spawn` does, and gives it the
+/// Builder's name and stack size.
+#[test]
+fn thread_builder_spawn_scoped() {
+    check_dfs(
+        || {
+            let data = [1, 2, 3];
+            let mut counted = 0;
+
+            thread::scope(|scope| {
+                let handle = thread::Builder::new()
+                    .name("counter".into())
+                    .stack_size(0x8000)
+                    .spawn_scoped(scope, || data.len())
+                    .unwrap();
+                assert_eq!(handle.thread().name(), Some("counter"));
+                assert!(!handle.is_finished());
+                counted = handle.join().unwrap();
+            });
+
+            assert_eq!(counted, 3);
+        },
+        None,
+    );
+}
+
+/// `Builder::spawn_unchecked` spawns a thread that borrows from the caller, which then has to keep
+/// what it lends alive itself.
+#[test]
+fn thread_builder_spawn_unchecked() {
+    check_dfs(
+        || {
+            let data = String::from("shuttle");
+            let borrowed: &str = &data;
+
+            // SAFETY: the handle is joined below, before `data` goes out of scope.
+            let handle = unsafe { thread::Builder::new().spawn_unchecked(move || borrowed.len()) }.unwrap();
+
+            assert_eq!(handle.join().unwrap(), 7);
+        },
+        None,
+    );
+}
+
+/// `available_parallelism` reports the configured value, which is the same on every host, instead
+/// of the host's processor count.
+#[test]
+fn thread_available_parallelism() {
+    check_dfs(
+        || {
+            assert_eq!(thread::available_parallelism().unwrap().get(), 4);
+            // Every task sees the same value, in every execution.
+            thread::spawn(|| assert_eq!(thread::available_parallelism().unwrap().get(), 4))
+                .join()
+                .unwrap();
+        },
+        None,
+    );
+
+    let mut config = shuttle::Config::new();
+    config.available_parallelism = std::num::NonZeroUsize::new(9).unwrap();
+    let iterations = shuttle::Runner::new(shuttle::scheduler::DfsScheduler::new(None, false), config).run(|| {
+        assert_eq!(thread::available_parallelism().unwrap().get(), 9);
+    });
+    assert_eq!(iterations, 1);
+}
+
+/// The deprecated millisecond waits behave like the functions that replaced them: `sleep_ms` takes
+/// a single scheduling point, and `park_timeout_ms` parks.
+#[test]
+#[allow(deprecated)]
+fn thread_deprecated_millisecond_waits() {
+    check_dfs(
+        || {
+            let parked = thread::spawn(|| thread::park_timeout_ms(1));
+            thread::sleep_ms(1);
+            parked.thread().unpark();
+            parked.join().unwrap();
+        },
+        None,
+    );
+}
