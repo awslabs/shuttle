@@ -305,6 +305,18 @@ impl<T: ?Sized> RwLock<T> {
         acquired
     }
 
+    /// Determines whether the lock is poisoned.
+    ///
+    /// If another thread is active, the lock can still become poisoned at any time. You should not
+    /// trust a `false` value for program correctness without additional synchronization.
+    ///
+    /// Not a scheduling point: it reads whether another task left the lock poisoned, which that
+    /// task cannot observe, exactly as std's relaxed load of the poison flag cannot.
+    #[inline]
+    pub fn is_poisoned(&self) -> bool {
+        self.inner.is_poisoned()
+    }
+
     /// Clear the poisoned state from a lock.
     #[inline]
     pub fn clear_poison(&self) {
