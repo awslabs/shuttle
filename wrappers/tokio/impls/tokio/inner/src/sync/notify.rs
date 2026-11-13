@@ -7,6 +7,7 @@ use futures::channel::oneshot;
 use pin_project::{pin_project, pinned_drop};
 use shuttle::rand::{rngs::ThreadRng, thread_rng, Rng};
 use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::task::Event;
 use shuttle_engine::runtime::thread;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -156,7 +157,7 @@ impl Notify {
         // it, which is where the classic lost wakeup happens. `switch` rather
         // than `yield_now`, which also wakes the current task: a future that
         // never registers its waker would then spin instead of deadlocking.
-        thread::switch();
+        thread::switch(Event::Unknown);
         let (tx, rx) = oneshot::channel();
         let mut state = self.state.lock().unwrap();
         let id = state.next_id;
@@ -193,7 +194,7 @@ impl Notify {
     /// available by this call to `notify_one()`.
     pub fn notify_one(&self) {
         // Scheduling point precedes the visible notification
-        thread::switch();
+        thread::switch(Event::Unknown);
         self.notify_one_no_scheduling_point();
     }
 
@@ -240,7 +241,7 @@ impl Notify {
     /// acquiring an instance of the `Notified` future via calling `notified()`.
     pub fn notify_waiters(&self) {
         // Scheduling point precedes the visible notification
-        thread::switch();
+        thread::switch(Event::Unknown);
         let mut state = self.state.lock().unwrap();
         // Notify all waiters, including those not yet enabled
         let waiters = std::mem::take(&mut state.waiters);
@@ -300,7 +301,7 @@ impl Notified<'_> {
     pub fn enable(mut self: Pin<&mut Self>) -> bool {
         // Scheduling point precedes the read of the waiter's flag. `enable` registers no waker, so
         // it never follows a wake-up.
-        thread::switch();
+        thread::switch(Event::Unknown);
         *self.as_mut().project().poll_pending = false;
         self.poll_inner()
     }
@@ -339,7 +340,7 @@ impl Future for Notified<'_> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         // Scheduling point precedes the read of the waiter's flag, except after a wake-up
         if !*self.as_mut().project().poll_pending {
-            thread::switch();
+            thread::switch(Event::Unknown);
         }
         let poll = if self.as_mut().poll_inner() {
             Poll::Ready(())
@@ -366,7 +367,7 @@ impl PinnedDrop for Notified<'_> {
             return;
         }
         // Scheduling point precedes the read of the waiter's flag
-        thread::switch_if_not_stopping();
+        thread::switch_if_not_stopping(Event::Unknown);
         match self.flag.load() {
             // Not notified: remove the waiter from the waiter queue.
             WaiterState::Init | WaiterState::Enabled => {

@@ -25,12 +25,12 @@ impl<S: Scheduler> Scheduler for SleepableScheduler<S> {
         self.scheduler.new_execution()
     }
 
-    fn next_task(
+    fn next_task<'a>(
         &mut self,
-        runnable_tasks: &[&Task],
+        runnable_tasks: &'a [&'a Task],
         current_task: Option<TaskId>,
         is_yielding: bool,
-    ) -> Option<TaskId> {
+    ) -> Option<&'a Task> {
         self.scheduler.next_task(runnable_tasks, current_task, is_yielding)
     }
 
