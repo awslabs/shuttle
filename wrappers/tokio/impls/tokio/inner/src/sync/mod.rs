@@ -34,6 +34,9 @@ pub mod futures {
 mod once_cell;
 pub use self::once_cell::OnceCell;
 
+mod set_once;
+pub use set_once::{SetOnce, SetOnceError};
+
 #[cfg(test)]
 mod test {
     /// This example demonstrates a historic bug in the interaction of Tokio's `select` and Shuttle's `Mutex`, which caused

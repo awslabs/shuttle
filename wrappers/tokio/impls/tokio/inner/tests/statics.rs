@@ -4,7 +4,7 @@
 
 use shuttle::sync::atomic::{AtomicBool, Ordering};
 use shuttle::{check_random, check_uncontrolled_nondeterminism, future, thread};
-use shuttle_tokio_impl_inner::sync::{Mutex, Notify, OnceCell, RwLock, Semaphore};
+use shuttle_tokio_impl_inner::sync::{Mutex, Notify, OnceCell, RwLock, Semaphore, SetOnce};
 use std::sync::atomic::{AtomicUsize as StdAtomicUsize, Ordering as StdOrdering};
 use test_log::test;
 
@@ -125,6 +125,55 @@ fn once_cell_init_runs_in_every_execution() {
 }
 
 #[test]
+fn set_once_resets() {
+    static CELL: SetOnce<usize> = SetOnce::const_new();
+    static EXECUTIONS: StdAtomicUsize = StdAtomicUsize::new(0);
+    check_random(
+        || {
+            let n = execution(&EXECUTIONS);
+            assert_eq!(CELL.get(), None, "a static SetOnce starts an execution empty");
+            assert!(!CELL.initialized());
+            CELL.set(n).expect("the cell is empty");
+            assert_eq!(CELL.get(), Some(&n));
+            assert!(CELL.set(n).is_err());
+        },
+        10,
+    );
+}
+
+#[test]
+fn set_once_with_a_value_is_shared() {
+    static CELL: SetOnce<usize> = SetOnce::const_new_with(7);
+    check_random(
+        || {
+            assert_eq!(CELL.get(), Some(&7));
+            assert!(CELL.set(8).is_err());
+            // A `wait` on a cell that already has a value returns it at once.
+            future::block_on(async { assert_eq!(*CELL.wait().await, 7) });
+        },
+        10,
+    );
+}
+
+/// A `SetOnce` in a `static` wakes the waiters of its own execution, and no others. A waiter of an
+/// execution that ended is gone with the execution.
+#[test]
+fn set_once_wakes_the_waiters_of_its_execution() {
+    static CELL: SetOnce<usize> = SetOnce::const_new();
+    check_random(
+        || {
+            let waiter = future::spawn(async { *CELL.wait().await });
+            let setter = future::spawn(async { CELL.set(3) });
+            future::block_on(async {
+                setter.await.unwrap().unwrap();
+                assert_eq!(waiter.await.unwrap(), 3);
+            });
+        },
+        20,
+    );
+}
+
+#[test]
 fn notify_resets() {
     static NOTIFY: Notify = Notify::const_new();
     check_random(
@@ -150,6 +199,7 @@ fn notify_resets() {
 fn uncontrolled_nondeterminism_with_statics() {
     static SEMAPHORE: Semaphore = Semaphore::const_new(1);
     static CELL: OnceCell<usize> = OnceCell::const_new();
+    static ONCE: SetOnce<usize> = SetOnce::const_new();
     static NOTIFY: Notify = Notify::const_new();
     static SPAWNED: AtomicBool = AtomicBool::new(false);
 
@@ -158,6 +208,7 @@ fn uncontrolled_nondeterminism_with_statics() {
             future::block_on(async {
                 let permit = SEMAPHORE.acquire().await.unwrap();
                 CELL.set(1).unwrap();
+                ONCE.set(1).unwrap();
                 drop(permit);
 
                 // The number of tasks this execution spawns depends on the statics, so an
@@ -190,6 +241,8 @@ fn constructors_and_destructors_outside_an_execution() {
     drop(Notify::new());
     drop(OnceCell::<usize>::new());
     drop(OnceCell::new_with(Some(1)));
+    drop(SetOnce::<usize>::new());
+    drop(SetOnce::from(1));
     drop(Barrier::new(2));
     drop(mpsc::channel::<usize>(1));
     drop(mpsc::unbounded_channel::<usize>());
