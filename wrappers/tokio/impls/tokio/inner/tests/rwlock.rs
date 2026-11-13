@@ -1,6 +1,6 @@
 use shuttle::current::{me, set_label_for_task};
 use shuttle::{check_dfs, check_random, future};
-use shuttle_tokio_impl_inner::sync::{mpsc, RwLock};
+use shuttle_tokio_impl_inner::sync::{mpsc, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use shuttle_tokio_impl_inner::time::{clear_triggers, timeout, trigger_timeouts};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -111,6 +111,28 @@ fn async_rwlock_two_writers() {
                     let mut w = lock2.write_owned().await;
                     *w += 1;
                 });
+            });
+        },
+        None,
+    );
+}
+
+#[test]
+fn async_rwlock_owned_guards_return_their_lock() {
+    check_dfs(
+        || {
+            future::block_on(async move {
+                let lock = Arc::new(RwLock::new(1));
+
+                let r = lock.clone().read_owned().await;
+                assert!(Arc::ptr_eq(&lock, OwnedRwLockReadGuard::rwlock(&r)));
+                drop(r);
+
+                let w = lock.clone().write_owned().await;
+                assert!(Arc::ptr_eq(&lock, OwnedRwLockWriteGuard::rwlock(&w)));
+
+                let r = w.downgrade();
+                assert!(Arc::ptr_eq(&lock, OwnedRwLockReadGuard::rwlock(&r)));
             });
         },
         None,
