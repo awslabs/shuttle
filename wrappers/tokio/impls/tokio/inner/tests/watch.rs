@@ -319,3 +319,23 @@ fn waits_and_last_drops_take_one_scheduling_point() {
         None,
     );
 }
+
+/// A `Sender` and a `Receiver` that outlive their execution can be dropped. The last drop of each
+/// takes no scheduling point where there is no execution to switch in, and waking the waiters
+/// takes none at all. The channel is made inside an execution, kept in a `static` past the end of
+/// `check_dfs`, and dropped by the test thread.
+#[test]
+fn last_drops_outside_an_execution() {
+    static CHANNELS: Mutex<Vec<(watch::Sender<usize>, watch::Receiver<usize>)>> = Mutex::new(Vec::new());
+
+    check_dfs(
+        || {
+            CHANNELS.lock().unwrap().push(watch::channel(0));
+        },
+        None,
+    );
+
+    let mut channels = CHANNELS.lock().unwrap();
+    assert_eq!(channels.len(), 1, "the execution should have made one channel");
+    channels.clear();
+}
