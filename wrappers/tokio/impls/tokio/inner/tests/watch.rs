@@ -1,4 +1,4 @@
-use shuttle::{check_dfs, check_random, future};
+use shuttle::{check_dfs, check_random, current, future};
 use shuttle_tokio_impl_inner::sync::watch;
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -281,4 +281,61 @@ fn last_receiver_drop_after_store_is_a_separate_step() {
         },
         None,
     );
+}
+
+/// Returns the output of `f` and the number of scheduling points that it took.
+async fn with_scheduling_points<F: std::future::Future>(f: F) -> (F::Output, usize) {
+    let before = current::context_switches();
+    let output = f.await;
+    (output, current::context_switches() - before)
+}
+
+/// A wait that ends at once takes one scheduling point, before it checks the state, and so does
+/// the drop of the last `Sender` or `Receiver`. Waking the waiters takes none of its own.
+#[test]
+fn waits_and_last_drops_take_one_scheduling_point() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = watch::channel(0);
+                tx.send(1).unwrap();
+                let (result, points) = with_scheduling_points(rx.changed()).await;
+                assert!(result.is_ok());
+                assert_eq!(points, 1);
+
+                let ((), points) = with_scheduling_points(async { drop(tx) }).await;
+                assert_eq!(points, 1);
+                let (result, points) = with_scheduling_points(rx.changed()).await;
+                assert!(result.is_err());
+                assert_eq!(points, 1);
+
+                let (tx, rx) = watch::channel(0);
+                let ((), points) = with_scheduling_points(async { drop(rx) }).await;
+                assert_eq!(points, 1);
+                let ((), points) = with_scheduling_points(tx.closed()).await;
+                assert_eq!(points, 1);
+            });
+        },
+        None,
+    );
+}
+
+/// A `Sender` and a `Receiver` that outlive their execution can be dropped. The last drop of each
+/// takes no scheduling point where there is no execution to switch in, and waking the waiters
+/// takes none at all. The channel is made inside an execution, kept in a `static` past the end of
+/// `check_dfs`, and dropped by the test thread.
+#[test]
+fn last_drops_outside_an_execution() {
+    static CHANNELS: Mutex<Vec<(watch::Sender<usize>, watch::Receiver<usize>)>> = Mutex::new(Vec::new());
+
+    check_dfs(
+        || {
+            CHANNELS.lock().unwrap().push(watch::channel(0));
+        },
+        None,
+    );
+
+    let mut channels = CHANNELS.lock().unwrap();
+    assert_eq!(channels.len(), 1, "the execution should have made one channel");
+    channels.clear();
 }
