@@ -5,7 +5,7 @@ pub mod data;
 pub mod metrics;
 pub mod serialization;
 
-pub use crate::runtime::task::{Task, TaskId};
+pub use crate::runtime::task::{Event, EventKind, EventTarget, ResourceId, Task, TaskId};
 pub use data::{DataSource, RandomDataSource};
 
 /// A `Schedule` determines the order in which tasks are to be executed

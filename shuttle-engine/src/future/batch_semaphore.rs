@@ -1,6 +1,6 @@
 //! A counting semaphore supporting both async and sync operations.
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{clock::VectorClock, TaskId};
+use crate::runtime::task::{clock::VectorClock, Event, EventKind, EventTarget, TaskId};
 use crate::runtime::thread;
 use crate::sync_types::{ResourceSignature, ResourceType};
 use crate::{backtrace_enabled, current};
@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::future::Future;
+use std::panic::Location;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -45,6 +46,9 @@ struct Waiter {
     /// only add happens-before edges, never remove them).
     clock: VectorClock,
     waker: Mutex<Option<Waker>>,
+    /// The `Event` of the acquire, which becomes the next event of the task this waiter wakes (see
+    /// `Task::woken_by`).
+    event: Event,
 }
 
 // Implement debug in order to not output the `VectorClock`
@@ -72,7 +76,7 @@ impl Waiter {
     /// `unblock_waiters_from_front`, and a scheduling point sits between those two
     /// moments. `task_id`, in contrast, tracks the current poller (see
     /// [`Waiter::task_id`]), so it is read here and refreshed on later polls.
-    fn new(num_permits: usize, min_permits: usize, priority: Priority, clock: VectorClock) -> Self {
+    fn new(num_permits: usize, min_permits: usize, priority: Priority, clock: VectorClock, event: Event) -> Self {
         Self {
             task_id: AtomicUsize::new(ExecutionState::me().into()),
             num_permits,
@@ -82,6 +86,7 @@ impl Waiter {
             has_permits: AtomicBool::new(false),
             clock,
             waker: Mutex::new(None),
+            event,
         }
     }
 
@@ -375,7 +380,11 @@ impl BatchSemaphoreState {
                 self.reservation = None;
             } else {
                 if holder.num_permits <= self.permits_available.available() {
-                    ExecutionState::with(|s| s.get_mut(holder.task_id()).unblock());
+                    ExecutionState::with(|s| {
+                        let task = s.get_mut(holder.task_id());
+                        task.unblock();
+                        task.woken_by(holder.event);
+                    });
                     if let Some(waker) = holder.waker.lock().unwrap().as_ref() {
                         waker.wake_by_ref();
                     }
@@ -450,6 +459,7 @@ impl BatchSemaphoreState {
                     // which released the acquired permits.
                     task.clock.update(&clock);
                     task.unblock();
+                    task.woken_by(waiter.event);
                 });
                 let mut maybe_waker = waiter.waker.lock().unwrap();
                 if let Some(waker) = maybe_waker.take() {
@@ -483,6 +493,7 @@ fn unblock_unless_stale(waiter: &Waiter) -> bool {
             false
         } else {
             task.unblock();
+            task.woken_by(waiter.event);
             true
         }
     })
@@ -600,8 +611,9 @@ impl BatchSemaphore {
 
     /// Closes the semaphore. This prevents the semaphore from issuing new
     /// permits and notifies all pending waiters.
+    #[track_caller]
     pub fn close(&self) {
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::SemaphoreRelease, &self.signature));
         self.close_no_scheduling_point();
     }
 
@@ -650,8 +662,9 @@ impl BatchSemaphore {
     /// If the permits are available, returns Ok(())
     /// If the semaphore is closed, returns `Err(TryAcquireError::Closed)`
     /// If there aren't enough permits, returns `Err(TryAcquireError::NoPermits)`
+    #[track_caller]
     pub fn try_acquire(&self, num_permits: usize) -> Result<(), TryAcquireError> {
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::SemaphoreAcquire, &self.signature));
 
         self.init_object_id();
         let mut state = self.state.borrow_mut();
@@ -797,6 +810,7 @@ impl BatchSemaphore {
     }
 
     /// Acquire the specified number of permits (async API)
+    #[track_caller]
     pub fn acquire(&self, num_permits: usize) -> Acquire<'_> {
         // No switch here; switch should be triggered on polling future
         self.init_object_id();
@@ -811,12 +825,14 @@ impl BatchSemaphore {
     /// reader wait for another upgradable reader without blocking plain readers.
     ///
     /// On an unfair semaphore, this is equivalent to [`Self::acquire`].
+    #[track_caller]
     pub fn acquire_bypassable(&self, num_permits: usize) -> Acquire<'_> {
         self.init_object_id();
         Acquire::new(self, num_permits, Priority::Bypassable)
     }
 
     /// Acquire the specified number of permits (blocking API)
+    #[track_caller]
     pub fn acquire_blocking(&self, num_permits: usize) -> Result<(), AcquireError> {
         crate::future::block_on(self.acquire(num_permits))
     }
@@ -848,6 +864,7 @@ impl BatchSemaphore {
     /// Panics if the semaphore is strictly fair (its queue already keeps the
     /// permits for its first waiter), if `num_permits` is zero, or if
     /// `min_permits > num_permits`.
+    #[track_caller]
     pub fn acquire_reserving(&self, min_permits: usize, num_permits: usize) -> Acquire<'_> {
         assert_eq!(
             self.fairness,
@@ -862,6 +879,7 @@ impl BatchSemaphore {
     }
 
     /// Release `num_permits` back to the Semaphore
+    #[track_caller]
     pub fn release(&self, num_permits: usize) {
         // Execution teardown can unwind a task's stack from this scheduling point, which is often in
         // a destructor that releases a lock (see `ExecutionState::tear_down`). The permits must not
@@ -873,7 +891,7 @@ impl BatchSemaphore {
             }
         }
         let release_on_unwind = ReleaseOnUnwind(self, num_permits);
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::SemaphoreRelease, &self.signature));
         std::mem::forget(release_on_unwind);
 
         self.release_no_scheduling_point(num_permits);
@@ -969,6 +987,7 @@ impl BatchSemaphore {
     /// could each be waiting for permits the other holds, which no queue discipline can resolve.
     /// Callers are expected to enforce this (an `RwLock` does: there is only ever one upgradable
     /// reader).
+    #[track_caller]
     pub fn upgrade(&self, permits_currently_held: usize, permits_to_be_held: usize) -> Acquire<'_> {
         assert!(permits_currently_held > 0);
         assert!(permits_to_be_held > permits_currently_held);
@@ -987,11 +1006,12 @@ impl BatchSemaphore {
     /// Like `upgrade`, this ignores queued waiters (they hold no permits, so they cannot be the
     /// reason the upgrade is short of permits). A `try_upgrade` therefore fails only when some
     /// other task actually *holds* permits the upgrade needs.
+    #[track_caller]
     pub fn try_upgrade(&self, permits_currently_held: usize, permits_to_be_held: usize) -> Result<(), TryAcquireError> {
         assert!(permits_currently_held > 0);
         assert!(permits_to_be_held > permits_currently_held);
 
-        thread::switch();
+        thread::switch_with(Event::on_resource(EventKind::SemaphoreAcquire, &self.signature));
 
         self.init_object_id();
         let num_permits = permits_to_be_held - permits_currently_held;
@@ -1068,6 +1088,9 @@ pub struct Acquire<'a> {
 
     completed: bool, // Has the future completed yet?
     never_polled: bool,
+
+    /// Where the acquire was created, for its `Event`s.
+    location: &'static Location<'static>,
 }
 
 // Implement Debug in order to not output the `VectorClock`, matching `Waiter`.
@@ -1085,6 +1108,7 @@ impl fmt::Debug for Acquire<'_> {
 }
 
 impl<'a> Acquire<'a> {
+    #[track_caller]
     fn new(semaphore: &'a BatchSemaphore, num_permits: usize, priority: Priority) -> Self {
         Self {
             semaphore,
@@ -1096,13 +1120,24 @@ impl<'a> Acquire<'a> {
             has_permits: false,
             completed: false,
             never_polled: true,
+            location: Location::caller(),
         }
     }
 
+    #[track_caller]
     fn new_reserving(semaphore: &'a BatchSemaphore, num_permits: usize, min_permits: usize) -> Self {
         let mut acquire = Self::new(semaphore, num_permits, Priority::Back);
         acquire.reserve_at = Some(min_permits);
         acquire
+    }
+
+    /// The event of this acquire: acquiring permits from its semaphore.
+    fn event(&self) -> Event {
+        Event::new(
+            EventKind::SemaphoreAcquire,
+            Some(EventTarget::Resource(self.semaphore.signature.resource_id())),
+            self.location,
+        )
     }
 
     /// How many permits must be available for this acquire to make progress
@@ -1155,6 +1190,7 @@ impl<'a> Acquire<'a> {
             self.min_permits(),
             self.priority,
             self.clock.clone(),
+            self.event(),
         ));
         self.waiter = Some(Arc::clone(&waiter));
         waiter
@@ -1301,7 +1337,7 @@ impl Future for Acquire<'_> {
         let blocking_is_not_commutative = self.semaphore.fairness == Fairness::StrictlyFair;
 
         if self.never_polled && (will_succeed || blocking_is_not_commutative) {
-            thread::switch();
+            thread::switch_with(self.event());
         }
         self.never_polled = false;
 
@@ -1457,7 +1493,11 @@ impl Drop for Acquire<'_> {
         trace!("Acquire::drop for {:?}", self);
         // Scheduling point precedes the visible removal of the waiter, or the end of the reservation
         if self.is_queued() || self.is_reserving() {
-            thread::switch_if_not_stopping();
+            thread::switch_if_not_stopping_with(Event::new(
+                EventKind::SemaphoreRelease,
+                Some(EventTarget::Resource(self.semaphore.signature.resource_id())),
+                self.location,
+            ));
         }
         if self.is_queued() {
             // If the associated waiter is in the wait list, remove it

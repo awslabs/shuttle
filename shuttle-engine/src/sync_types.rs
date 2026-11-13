@@ -1,3 +1,4 @@
+use crate::runtime::task::ResourceId;
 use const_siphasher::sip::SipHasher;
 use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
@@ -77,6 +78,13 @@ impl ResourceSignature {
     /// context where the task was spawned.
     pub fn signature_hash(&self) -> u64 {
         self.signature_hash
+    }
+
+    /// The id of the resource this signature belongs to, for describing operations on it (see
+    /// [`Event`](crate::runtime::task::Event)). The id is the address of this signature, so it must
+    /// be called on the resource's own signature, not on a copy of it.
+    pub fn resource_id(&self) -> ResourceId {
+        ResourceId::new(self as *const Self as usize, self.signature_hash)
     }
 }
 

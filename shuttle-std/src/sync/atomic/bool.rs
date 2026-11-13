@@ -44,16 +44,19 @@ impl AtomicBool {
     }
 
     /// Loads a value from the atomic boolean.
+    #[track_caller]
     pub fn load(&self, order: Ordering) -> bool {
         self.inner.load(order)
     }
 
     /// Stores a value into the atomic boolean.
+    #[track_caller]
     pub fn store(&self, val: bool, order: Ordering) {
         self.inner.store(val, order)
     }
 
     /// Stores a value into the atomic boolean, returning the previous value.
+    #[track_caller]
     pub fn swap(&self, val: bool, order: Ordering) -> bool {
         self.inner.swap(val, order)
     }
@@ -61,6 +64,7 @@ impl AtomicBool {
     /// Fetches the value, and applies a function to it that returns an optional new value.
     /// Returns a `Result` of `Ok(previous_value)` if the function returned `Some(_)`, else
     /// `Err(previous_value)`.
+    #[track_caller]
     pub fn try_update(
         &self,
         set_order: Ordering,
@@ -81,6 +85,7 @@ impl AtomicBool {
     ///
     /// Since Rust 1.95 this is an alias for [`try_update`](Self::try_update). Deprecated since
     /// Rust 1.99.
+    #[track_caller]
     pub fn fetch_update<F>(&self, set_order: Ordering, fetch_order: Ordering, f: F) -> Result<bool, bool>
     where
         F: FnMut(bool) -> Option<bool>,
@@ -90,6 +95,7 @@ impl AtomicBool {
 
     /// Fetches the value, applies a function to it that returns a new value, and stores the new
     /// value. Returns the previous value.
+    #[track_caller]
     pub fn update(&self, set_order: Ordering, fetch_order: Ordering, mut f: impl FnMut(bool) -> bool) -> bool {
         let mut prev = self.load(fetch_order);
         loop {
@@ -103,6 +109,7 @@ impl AtomicBool {
     /// Stores a value into the atomic boolean if the current value is the same as the
     /// `current` value.
     #[deprecated(since = "0.0.6", note = "Use `compare_exchange` or `compare_exchange_weak` instead")]
+    #[track_caller]
     pub fn compare_and_swap(&self, current: bool, new: bool, order: Ordering) -> bool {
         match self.compare_exchange(current, new, order, order) {
             Ok(v) => v,
@@ -116,6 +123,7 @@ impl AtomicBool {
     /// The return value is a result indicating whether the new value was written and
     /// containing the previous value. On success this value is guaranteed to be equal to
     /// `current`.
+    #[track_caller]
     pub fn compare_exchange(
         &self,
         current: bool,
@@ -135,6 +143,7 @@ impl AtomicBool {
     /// platforms. The return value is a result indicating whether the new value was written
     /// and containing the previous value.
     // TODO actually produce spurious failures
+    #[track_caller]
     pub fn compare_exchange_weak(
         &self,
         current: bool,
@@ -146,26 +155,31 @@ impl AtomicBool {
     }
 
     /// Logical "and" with the current value. Returns the previous value.
+    #[track_caller]
     pub fn fetch_and(&self, val: bool, order: Ordering) -> bool {
         self.inner.try_update(order, order, |old| Some(old & val)).unwrap()
     }
 
     /// Logical "nand" with the current value. Returns the previous value.
+    #[track_caller]
     pub fn fetch_nand(&self, val: bool, order: Ordering) -> bool {
         self.inner.try_update(order, order, |old| Some(!(old & val))).unwrap()
     }
 
     /// Logical "or" with the current value. Returns the previous value.
+    #[track_caller]
     pub fn fetch_or(&self, val: bool, order: Ordering) -> bool {
         self.inner.try_update(order, order, |old| Some(old | val)).unwrap()
     }
 
     /// Logical "xor" with the current value. Returns the previous value.
+    #[track_caller]
     pub fn fetch_xor(&self, val: bool, order: Ordering) -> bool {
         self.inner.try_update(order, order, |old| Some(old ^ val)).unwrap()
     }
 
     /// Logical "not" with the current value. Returns the previous value.
+    #[track_caller]
     pub fn fetch_not(&self, order: Ordering) -> bool {
         self.fetch_xor(true, order)
     }

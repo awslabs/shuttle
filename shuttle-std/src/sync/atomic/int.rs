@@ -46,16 +46,19 @@ macro_rules! atomic_int {
             }
 
             /// Loads a value from the atomic integer.
+            #[track_caller]
             pub fn load(&self, order: Ordering) -> $int_type {
                 self.inner.load(order)
             }
 
             /// Stores a value into the atomic integer.
+            #[track_caller]
             pub fn store(&self, val: $int_type, order: Ordering) {
                 self.inner.store(val, order)
             }
 
             /// Stores a value into the atomic integer, returning the previous value.
+            #[track_caller]
             pub fn swap(&self, val: $int_type, order: Ordering) -> $int_type {
                 self.inner.swap(val, order)
             }
@@ -63,6 +66,7 @@ macro_rules! atomic_int {
             /// Fetches the value, and applies a function to it that returns an optional new value.
             /// Returns a `Result` of `Ok(previous_value)` if the function returned `Some(_)`, else
             /// `Err(previous_value)`.
+            #[track_caller]
             pub fn try_update(
                 &self,
                 set_order: Ordering,
@@ -83,6 +87,7 @@ macro_rules! atomic_int {
             ///
             /// Since Rust 1.95 this is an alias for [`try_update`](Self::try_update). Deprecated
             /// since Rust 1.99.
+            #[track_caller]
             pub fn fetch_update<F>(
                 &self,
                 set_order: Ordering,
@@ -97,6 +102,7 @@ macro_rules! atomic_int {
 
             /// Fetches the value, applies a function to it that returns a new value, and stores the
             /// new value. Returns the previous value.
+            #[track_caller]
             pub fn update(
                 &self,
                 set_order: Ordering,
@@ -118,6 +124,7 @@ macro_rules! atomic_int {
                 since = "0.0.6",
                 note = "Use `compare_exchange` or `compare_exchange_weak` instead"
             )]
+            #[track_caller]
             pub fn compare_and_swap(&self, current: $int_type, new: $int_type, order: Ordering) -> $int_type {
                 match self.compare_exchange(current, new, order, order) {
                     Ok(v) => v,
@@ -131,6 +138,7 @@ macro_rules! atomic_int {
             /// The return value is a result indicating whether the new value was written and
             /// containing the previous value. On success this value is guaranteed to be equal to
             /// `current`.
+            #[track_caller]
             pub fn compare_exchange(
                 &self,
                 current: $int_type,
@@ -150,6 +158,7 @@ macro_rules! atomic_int {
             /// The return value is a result indicating whether the new value was written and
             /// containing the previous value.
             // TODO actually produce spurious failures
+            #[track_caller]
             pub fn compare_exchange_weak(
                 &self,
                 current: $int_type,
@@ -163,6 +172,7 @@ macro_rules! atomic_int {
             /// Adds to the current value, returning the previous value.
             ///
             /// This operation wraps around on overflow.
+            #[track_caller]
             pub fn fetch_add(&self, val: $int_type, order: Ordering) -> $int_type {
                 self.inner
                     .try_update(order, order, |old| Some(old.wrapping_add(val)))
@@ -172,6 +182,7 @@ macro_rules! atomic_int {
             /// Subtracts from the current value, returning the previous value.
             ///
             /// This operation wraps around on overflow.
+            #[track_caller]
             pub fn fetch_sub(&self, val: $int_type, order: Ordering) -> $int_type {
                 self.inner
                     .try_update(order, order, |old| Some(old.wrapping_sub(val)))
@@ -179,6 +190,7 @@ macro_rules! atomic_int {
             }
 
             /// Bitwise "and" with the current value. Returns the previous value.
+            #[track_caller]
             pub fn fetch_and(&self, val: $int_type, order: Ordering) -> $int_type {
                 self.inner
                     .try_update(order, order, |old| Some(old & val))
@@ -186,6 +198,7 @@ macro_rules! atomic_int {
             }
 
             /// Bitwise "nand" with the current value. Returns the previous value.
+            #[track_caller]
             pub fn fetch_nand(&self, val: $int_type, order: Ordering) -> $int_type {
                 self.inner
                     .try_update(order, order, |old| Some(!(old & val)))
@@ -193,6 +206,7 @@ macro_rules! atomic_int {
             }
 
             /// Bitwise "or" with the current value. Returns the previous value.
+            #[track_caller]
             pub fn fetch_or(&self, val: $int_type, order: Ordering) -> $int_type {
                 self.inner
                     .try_update(order, order, |old| Some(old | val))
@@ -200,6 +214,7 @@ macro_rules! atomic_int {
             }
 
             /// Bitwise "xor" with the current value. Returns the previous value.
+            #[track_caller]
             pub fn fetch_xor(&self, val: $int_type, order: Ordering) -> $int_type {
                 self.inner
                     .try_update(order, order, |old| Some(old ^ val))
@@ -207,6 +222,7 @@ macro_rules! atomic_int {
             }
 
             /// Maximum with the current value. Returns the previous value.
+            #[track_caller]
             pub fn fetch_max(&self, val: $int_type, order: Ordering) -> $int_type {
                 self.inner
                     .try_update(order, order, |old| Some(old.max(val)))
@@ -214,6 +230,7 @@ macro_rules! atomic_int {
             }
 
             /// Minimum with the current value. Returns the previous value.
+            #[track_caller]
             pub fn fetch_min(&self, val: $int_type, order: Ordering) -> $int_type {
                 self.inner
                     .try_update(order, order, |old| Some(old.min(val)))
