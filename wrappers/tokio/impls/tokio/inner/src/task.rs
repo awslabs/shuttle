@@ -26,6 +26,11 @@ pub use coop::unconstrained;
 #[deprecated = "Moved to shuttle_tokio_impl_inner::task::coop::Unconstrained"]
 pub use coop::Unconstrained;
 
+// SHUTTLE_CHANGES: Added, for the slot `task_local!` uses when Shuttle has no current task. Only
+// reachable through `macros::support`, as an implementation detail of the macro.
+#[doc(hidden)]
+pub mod fallback_key;
+
 mod task_local;
 pub use task_local::LocalKey;
 
