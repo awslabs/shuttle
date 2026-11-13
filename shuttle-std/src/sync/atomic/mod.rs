@@ -64,6 +64,7 @@ use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::clock::VectorClock;
 use shuttle_engine::runtime::thread;
 use shuttle_engine::silence_warnings;
+use shuttle_engine::sync_types::AccessKind;
 use std::cell::RefCell;
 use std::panic::RefUnwindSafe;
 
@@ -121,7 +122,6 @@ pub use std::sync::atomic::compiler_fence;
 struct Atomic<T> {
     inner: RefCell<T>,
     clock: RefCell<Option<VectorClock>>, // wrapped in option to support the const new()
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -163,6 +163,7 @@ impl<T: Copy + Eq> Atomic<T> {
         maybe_warn_about_ordering(order);
 
         thread::switch();
+        ExecutionState::record_access(&self.signature, AccessKind::Read);
         self.exhale_clock();
         let value = *self.inner.borrow();
         value
@@ -172,6 +173,7 @@ impl<T: Copy + Eq> Atomic<T> {
         maybe_warn_about_ordering(order);
 
         thread::switch();
+        ExecutionState::record_access(&self.signature, AccessKind::Write);
         self.inhale_clock();
         *self.inner.borrow_mut() = val;
     }
@@ -181,6 +183,7 @@ impl<T: Copy + Eq> Atomic<T> {
 
         // swap behaves like { let x = load() ; store(val) ; x }
         thread::switch();
+        ExecutionState::record_access(&self.signature, AccessKind::Write);
         self.exhale_clock(); // for the load
         self.inhale_clock(); // for the store
         std::mem::swap(&mut *self.inner.borrow_mut(), &mut val);
@@ -202,9 +205,11 @@ impl<T: Copy + Eq> Atomic<T> {
         // `update` methods run user callbacks, so they loop over `load` and `compare_exchange_weak`
         // instead, just like `std`.
         thread::switch();
+        ExecutionState::record_access(&self.signature, AccessKind::Read);
         self.exhale_clock(); // for the load()
         let current = *self.inner.borrow();
         let ret = if let Some(new) = f(current) {
+            ExecutionState::record_access(&self.signature, AccessKind::Write);
             *self.inner.borrow_mut() = new;
             self.inhale_clock(); // for the store()
             Ok(current)
