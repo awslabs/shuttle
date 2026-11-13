@@ -285,6 +285,14 @@ impl<T: ?Sized> RwLock<T> {
                 _ => (),
             };
             drop(state);
+            if !acquired {
+                // The permit was taken above, and no guard will release it, so release it here.
+                // Otherwise the lock loses a reader's worth of permits for the rest of the
+                // execution, and once it has lost them all, every later lock operation blocks.
+                // Without a scheduling point: no task ran while the permit was taken, so the
+                // release puts the semaphore back exactly as the `try_acquire` found it.
+                self.semaphore.release_no_scheduling_point(typ.num_permits());
+            }
         }
 
         trace!(

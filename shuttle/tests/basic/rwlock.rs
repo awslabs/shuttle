@@ -494,6 +494,48 @@ fn double_try_read() {
     )
 }
 
+/// A `try_read` that fails because the task already holds the read lock must give back the permit
+/// it took, or the lock loses a reader's worth of permits for the rest of the execution, and once it
+/// has lost them all every later lock operation blocks.
+#[test]
+fn failed_recursive_try_read_keeps_the_locks_permits() {
+    check_dfs(
+        || {
+            let rwlock = RwLock::new(0);
+            {
+                let _guard = rwlock.read().unwrap();
+                for _ in 0..4 {
+                    assert!(matches!(rwlock.try_read(), Err(TryLockError::WouldBlock)));
+                }
+            }
+            // A writer needs every permit, so it blocks forever if any were lost.
+            *rwlock.write().unwrap() += 1;
+            // `into_inner` takes every permit too, and asserts that it gets them.
+            assert_eq!(rwlock.into_inner().unwrap(), 1);
+        },
+        None,
+    )
+}
+
+/// A failed `try_read` takes no scheduling point of its own beyond the one its attempt takes, so
+/// giving the permit back must not add one.
+#[test]
+fn failed_recursive_try_read_takes_one_scheduling_point() {
+    check_dfs(
+        || {
+            let rwlock = RwLock::new(());
+            let _guard = rwlock.read().unwrap();
+            let before = shuttle::current::context_switches();
+            assert!(matches!(rwlock.try_read(), Err(TryLockError::WouldBlock)));
+            let failed = shuttle::current::context_switches() - before;
+            let before = shuttle::current::context_switches();
+            assert!(matches!(rwlock.try_write(), Err(TryLockError::WouldBlock)));
+            assert_eq!(failed, shuttle::current::context_switches() - before);
+        },
+        None,
+    )
+}
+
 /// As with `double_try_read`, this isn't consistent with `std`.
 #[test]
 fn read_try_read() {
