@@ -6,13 +6,14 @@
 //! `yield_now`, `park` and `spin_loop`, and the task- and execution-scoped `thread_local!` values).
 
 use shuttle_thread::{hint, thread, thread_local};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use std::time::Duration;
 
 thread_local! {
     static COUNT: Cell<usize> = Cell::new(0);
     static NAME: Cell<&'static str> = const { Cell::new("unnamed") };
+    static NAMES: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
 }
 
 /// Runs the body: under a Shuttle test with the feature, directly without it.
@@ -40,6 +41,25 @@ fn a_thread_local_holds_a_value() {
             assert_eq!(count.get(), 1);
         });
         NAME.with(|name| assert_eq!(name.get(), "unnamed"));
+    });
+}
+
+/// The `Cell` and `RefCell` methods of `LocalKey`, which both modes have.
+#[test]
+fn a_thread_local_has_the_cell_methods() {
+    run(|| {
+        COUNT.set(1);
+        assert_eq!(COUNT.get(), 1);
+        assert_eq!(COUNT.replace(2), 1);
+        assert_eq!(COUNT.take(), 2);
+        assert_eq!(COUNT.get(), 0);
+
+        NAMES.set(vec!["first"]);
+        NAMES.with_borrow(|names| assert_eq!(names.as_slice(), ["first"]));
+        NAMES.with_borrow_mut(|names| names.push("second"));
+        assert_eq!(NAMES.replace(vec!["replaced"]).len(), 2);
+        assert_eq!(NAMES.take(), ["replaced"]);
+        NAMES.with_borrow(|names| assert!(names.is_empty()));
     });
 }
 

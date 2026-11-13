@@ -692,6 +692,49 @@ mod thread_local {
         );
     }
 
+    /// The `Cell` and `RefCell` methods std's `LocalKey` has, on the value of the running task.
+    /// `set` does not run the initializer, which here would panic.
+    #[test]
+    fn cell_and_refcell_methods() {
+        use std::cell::Cell;
+
+        shuttle::thread_local! {
+            static COUNT: Cell<usize> = panic!("the Cell initializer ran");
+            static NAMES: RefCell<Vec<&'static str>> = panic!("the RefCell initializer ran");
+        }
+
+        check_dfs(
+            || {
+                COUNT.set(1);
+                assert_eq!(COUNT.get(), 1);
+                assert_eq!(COUNT.replace(2), 1);
+                assert_eq!(COUNT.take(), 2);
+                assert_eq!(COUNT.get(), 0, "`take` left `Default::default()`");
+
+                NAMES.set(vec!["parent"]);
+                NAMES.with_borrow(|names| assert_eq!(names.as_slice(), ["parent"]));
+                NAMES.with_borrow_mut(|names| names.push("also the parent"));
+                assert_eq!(NAMES.replace(vec!["replaced"]).len(), 2);
+                assert_eq!(NAMES.take(), ["replaced"]);
+                NAMES.with_borrow(|names| assert!(names.is_empty(), "`take` left `Vec::default()`"));
+
+                // The spawned task has its own value of each key, which `set` creates there too.
+                thread::spawn(|| {
+                    COUNT.set(7);
+                    assert_eq!(COUNT.get(), 7);
+                    NAMES.set(vec!["child"]);
+                    NAMES.with_borrow(|names| assert_eq!(names.as_slice(), ["child"]));
+                })
+                .join()
+                .unwrap();
+
+                assert_eq!(COUNT.get(), 0);
+                NAMES.with_borrow(|names| assert!(names.is_empty()));
+            },
+            None,
+        );
+    }
+
     /// A `LocalKey` has the same auto traits as `std::thread::LocalKey`, whatever it holds.
     #[test]
     fn auto_traits() {
