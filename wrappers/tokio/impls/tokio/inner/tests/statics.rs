@@ -182,7 +182,7 @@ fn uncontrolled_nondeterminism_with_statics() {
 /// scheduling point unconditionally and panic in a destructor.
 #[test]
 fn constructors_and_destructors_outside_an_execution() {
-    use shuttle_tokio_impl_inner::sync::{mpsc, oneshot, watch};
+    use shuttle_tokio_impl_inner::sync::{mpsc, oneshot, watch, Barrier};
 
     drop(Mutex::new(0));
     drop(RwLock::new(0));
@@ -190,6 +190,7 @@ fn constructors_and_destructors_outside_an_execution() {
     drop(Notify::new());
     drop(OnceCell::<usize>::new());
     drop(OnceCell::new_with(Some(1)));
+    drop(Barrier::new(2));
     drop(mpsc::channel::<usize>(1));
     drop(mpsc::unbounded_channel::<usize>());
     drop(oneshot::channel::<usize>());

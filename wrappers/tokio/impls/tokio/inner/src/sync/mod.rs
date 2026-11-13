@@ -1,3 +1,6 @@
+mod barrier;
+pub use barrier::{Barrier, BarrierWaitResult};
+
 mod mutex;
 pub use mutex::{Mutex, MutexGuard, OwnedMutexGuard, TryLockError};
 

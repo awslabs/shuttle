@@ -81,7 +81,8 @@ fn barrier_test(n: usize, c: usize) {
 // Every arrival at a barrier is now a scheduling point of its own (see
 // `every_arrival_is_a_separate_step`), which multiplies the schedules of a test where several
 // threads meet at one. Exhausting them for four threads took 57 s, against 1.5 s before, so this
-// runs three threads exhaustively and four under a seeded random scheduler.
+// runs three threads exhaustively and four under a seeded random scheduler, as the barrier tests of
+// `shuttle-tokio` do.
 #[test]
 fn barrier_test_many_ok() {
     check_dfs(|| barrier_test(3, 3), None);
