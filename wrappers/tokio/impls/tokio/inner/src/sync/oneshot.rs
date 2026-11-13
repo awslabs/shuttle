@@ -4,6 +4,7 @@
 
 use futures::channel::oneshot;
 use shuttle::future;
+use shuttle_engine::runtime::task::Event;
 use shuttle_engine::runtime::thread;
 use std::future::Future;
 use std::pin::Pin;
@@ -107,7 +108,7 @@ impl<T> Sender<T> {
         trace!("sender waiting for oneshot {:p} to close", self.inner());
         // Scheduling point precedes the first read of the channel's state, at the first poll of
         // this future
-        thread::switch();
+        thread::switch(Event::Unknown);
         self.inner().cancellation().await;
     }
 
@@ -127,7 +128,7 @@ impl<T> Sender<T> {
     /// to the most recent call will be scheduled to receive a wakeup.
     pub fn poll_closed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         // Scheduling point precedes the read of the channel's state, on every call
-        thread::switch();
+        thread::switch(Event::Unknown);
         self.inner().poll_canceled(cx)
     }
 }
@@ -137,7 +138,7 @@ impl<T> Drop for Sender<T> {
         // Scheduling point precedes the visible close of the channel by a `Sender` that didn't send
         if let Some(inner) = &self.inner {
             trace!("dropping oneshot sender {:p} without sending", inner);
-            thread::switch_if_not_stopping();
+            thread::switch_if_not_stopping(Event::Unknown);
         }
     }
 }
@@ -173,7 +174,7 @@ impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         tracing::trace!("dropping oneshot receiver {:p}", self);
         // Scheduling point precedes the visible close of the channel
-        thread::switch_if_not_stopping();
+        thread::switch_if_not_stopping(Event::Unknown);
     }
 }
 
@@ -184,7 +185,7 @@ impl<T> Future for Receiver<T> {
         trace!("polling oneshot receiver {:p}", &self.inner);
         // Scheduling point precedes the read of the channel's state, except after a wake-up
         if !self.poll_pending {
-            thread::switch();
+            thread::switch(Event::Unknown);
         }
         let poll_result = Pin::new(&mut self.inner).poll(cx).map_err(|_| RecvError(()));
         self.poll_pending = poll_result.is_pending();
