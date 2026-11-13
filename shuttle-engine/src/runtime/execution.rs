@@ -2126,9 +2126,9 @@ impl ExecutionState {
             MaxSteps::None => {}
         }
 
-        let mut unfinished_attached = false;
-        let mut all_runnable_detached = true;
-        let mut any_runnable = false;
+        let mut unfinished_attached;
+        let mut all_runnable_detached;
+        let mut any_runnable;
 
         // The loop below only looks at `live_tasks`, so a task missing from that set would silently
         // never be scheduled. Check that direction of the invariant here; the loop itself checks the
@@ -2141,23 +2141,41 @@ impl ExecutionState {
             "live_tasks is missing a runnable unfinished task"
         );
 
-        for &task_id in &self.live_tasks {
-            let task = &self.tasks[task_id.0];
-            debug_assert!(!task.finished());
-            unfinished_attached |= !task.detached;
-            let is_runnable = task.runnable();
-            any_runnable |= is_runnable;
+        loop {
+            unfinished_attached = false;
+            all_runnable_detached = true;
+            any_runnable = false;
 
-            if is_runnable {
-                all_runnable_detached &= task.detached;
-                self.runnable_tasks.push(task as *const Task);
-            } else if task.can_spuriously_wakeup() {
-                // Some blocked tasks can be woken up spuriously, even though the condition the task is
-                // blocked on hasn't happened yet. We'll add such tasks to the list of runnable tasks, but
-                // they won't contribute to the check on `any_runnable`; if the only runnable tasks
-                // are ones that are waiting for a potential spurious wakeup, it should still be treated as
-                // a deadlock since there's no guarantee that spurious wakeups will ever occur.
-                self.runnable_tasks.push(task as *const Task);
+            for &task_id in &self.live_tasks {
+                let task = &self.tasks[task_id.0];
+                debug_assert!(!task.finished());
+                unfinished_attached |= !task.detached;
+                let is_runnable = task.runnable();
+                any_runnable |= is_runnable;
+
+                if is_runnable {
+                    all_runnable_detached &= task.detached;
+                    self.runnable_tasks.push(task as *const Task);
+                } else if task.can_spuriously_wakeup() {
+                    // Some blocked tasks can be woken up spuriously, even though the condition the task is
+                    // blocked on hasn't happened yet. We'll add such tasks to the list of runnable tasks, but
+                    // they won't contribute to the check on `any_runnable`; if the only runnable tasks
+                    // are ones that are waiting for a potential spurious wakeup, it should still be treated as
+                    // a deadlock since there's no guarantee that spurious wakeups will ever occur.
+                    self.runnable_tasks.push(task as *const Task);
+                }
+            }
+
+            if any_runnable || !unfinished_attached {
+                break;
+            }
+            // No task can run, and the execution would otherwise deadlock. The timed waits with the
+            // earliest deadline time out (see `Task::block_with_timeout`), and the scan starts over
+            // with the tasks they unblocked. The list is cleared first, as timing out a wait changes
+            // the tasks it points to; if no wait times out, the execution finishes without it.
+            self.runnable_tasks.clear();
+            if !self.time_out_earliest_waits() {
+                break;
             }
         }
 
@@ -2220,6 +2238,23 @@ impl ExecutionState {
         self.runnable_tasks.clear();
 
         Ok(())
+    }
+
+    /// Time out the timed waits with the earliest deadline (see `Task::block_with_timeout`). Returns
+    /// false if no task is blocked in a timed wait.
+    fn time_out_earliest_waits(&mut self) -> bool {
+        let tasks = &mut self.tasks;
+        let Some(earliest) = self.live_tasks.iter().filter_map(|id| tasks[id.0].timeout()).min() else {
+            return false;
+        };
+        for id in &self.live_tasks {
+            let task = &mut tasks[id.0];
+            if task.timeout() == Some(earliest) {
+                trace!(task = ?task.id(), deadline = ?earliest, "timed wait timed out, as no task can run");
+                task.time_out();
+            }
+        }
+        true
     }
 
     /// Set the next task as the current task
