@@ -28,6 +28,7 @@ mod tag;
 mod task;
 mod teardown;
 mod thread;
+mod timed_wait;
 mod timeout;
 mod tracing;
 mod uncontrolled_nondeterminism;
