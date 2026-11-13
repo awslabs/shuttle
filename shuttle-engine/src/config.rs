@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::num::NonZeroUsize;
 
 /// Configuration parameters for Shuttle
 #[derive(Clone, Debug)]
@@ -6,6 +7,17 @@ use std::cell::Cell;
 pub struct Config {
     /// Stack size allocated for each thread
     pub stack_size: usize,
+
+    /// What `thread::available_parallelism` reports to the code under test.
+    ///
+    /// Shuttle runs every task of an execution on one OS thread, so the host's processor count says
+    /// nothing about the test, and reading it makes the test depend on the machine it runs on: a
+    /// thread pool or a sharded structure sized by it has a different shape on every host, and a
+    /// schedule that fails on one does not replay on another. Shuttle therefore answers with this
+    /// value, which is 4 by default, and so is the same on every host and in every execution. A
+    /// replay uses the value of the `Config` it is given, as it does for `stack_size`, so a replay
+    /// of a test that set it has to set it too.
+    pub available_parallelism: NonZeroUsize,
 
     /// How to persist schedules when a test fails
     pub failure_persistence: FailurePersistence,
@@ -132,11 +144,17 @@ impl Default for UngracefulShutdownConfig {
 /// The step bound of the default configuration.
 pub(crate) const DEFAULT_MAX_STEPS: usize = 1_000_000;
 
+/// The parallelism the default configuration reports. Four is enough for code that sizes a
+/// structure by it to have more than one shard, and small enough that such a structure stays within
+/// what an exhaustive test can explore.
+const DEFAULT_AVAILABLE_PARALLELISM: NonZeroUsize = NonZeroUsize::new(4).expect("4 is not zero");
+
 impl Config {
     /// Create a new default configuration
     pub fn new() -> Self {
         Self {
             stack_size: 0xf000,
+            available_parallelism: DEFAULT_AVAILABLE_PARALLELISM,
             failure_persistence: FailurePersistence::Print,
             max_steps: MaxSteps::FailAfter(DEFAULT_MAX_STEPS),
             max_time: None,
