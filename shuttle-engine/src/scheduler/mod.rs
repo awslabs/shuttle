@@ -98,6 +98,25 @@ pub trait Scheduler {
 
     /// Choose the next u64 value to return to the currently running task.
     fn next_u64(&mut self) -> u64;
+
+    /// Choose the next u64 value to return to the currently running task, as `next_u64` does, or
+    /// return `None` if this scheduler does not provide random data. A
+    /// `shuttle::scheduler::DfsScheduler` created with `allow_random_data` unset, as `check_dfs`
+    /// creates it, returns `None` here where its `next_u64` panics.
+    ///
+    /// Code that can do without random data asks through this method (with
+    /// `shuttle::rand::try_thread_rng`), and makes a fixed choice of its own when it gets `None`,
+    /// so that it also runs under such a scheduler. A value returned here is a random step of the
+    /// schedule, as one returned by `next_u64` is; a `None` adds nothing to the schedule. So a
+    /// recorded schedule has a random step exactly where its execution got a value, and a scheduler
+    /// that replays one returns `None` wherever the next step is not a random one.
+    ///
+    /// The default returns `Some(self.next_u64())`, so a scheduler that does not implement this
+    /// method always provides random data. A scheduler that wraps another one should forward this
+    /// method to it, as it forwards `next_u64`.
+    fn try_next_u64(&mut self) -> Option<u64> {
+        Some(self.next_u64())
+    }
 }
 
 impl Scheduler for Box<dyn Scheduler + Send> {
@@ -116,5 +135,9 @@ impl Scheduler for Box<dyn Scheduler + Send> {
 
     fn next_u64(&mut self) -> u64 {
         self.as_mut().next_u64()
+    }
+
+    fn try_next_u64(&mut self) -> Option<u64> {
+        self.as_mut().try_next_u64()
     }
 }

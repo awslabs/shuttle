@@ -1,6 +1,7 @@
 use serde_json::Value;
 use shuttle::annotations::WithName;
-use shuttle::scheduler::{AnnotationScheduler, RoundRobinScheduler};
+use shuttle::rand::{try_thread_rng, RngCore};
+use shuttle::scheduler::{AnnotationScheduler, DfsScheduler, RoundRobinScheduler, Scheduler};
 use shuttle::sync::{mpsc, Mutex};
 use shuttle::{current, future, thread, Runner};
 use std::sync::Arc;
@@ -24,11 +25,21 @@ fn contend() {
 }
 
 /// Run `f` under an `AnnotationScheduler` and return the parsed annotated schedule.
+fn annotated<F>(f: F) -> Value
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    annotated_with(RoundRobinScheduler::new(1), f)
+}
+
+/// Run `f` under an `AnnotationScheduler` over `scheduler` and return the parsed annotated
+/// schedule.
 ///
 /// `SHUTTLE_ANNOTATION_FILE` is process-global, so all annotation tests share this
 /// helper and run behind a single mutex to keep them from clobbering each other.
-fn annotated<F>(f: F) -> Value
+fn annotated_with<S, F>(scheduler: S, f: F) -> Value
 where
+    S: Scheduler + 'static,
     F: Fn() + Send + Sync + 'static,
 {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -40,10 +51,7 @@ where
 
     {
         // `AnnotationScheduler` writes the file when it is dropped
-        let runner = Runner::new(
-            AnnotationScheduler::new(RoundRobinScheduler::new(1)),
-            Default::default(),
-        );
+        let runner = Runner::new(AnnotationScheduler::new(scheduler), Default::default());
         runner.run(f);
     }
 
@@ -246,4 +254,25 @@ fn teardown_annotations_follow_task_and_clock() {
             assert!(matching[0][4].is_null(), "teardown does not schedule runnable tasks");
         }
     }
+}
+
+/// A random value is a `Random` event, and a refusal to provide one (see `try_thread_rng`) is none,
+/// as it is no step of the schedule.
+#[test]
+fn annotation_records_random_values_but_not_refusals() {
+    fn random_events(schedule: &Value) -> usize {
+        let events = schedule["events"].as_array().unwrap();
+        events.iter().filter(|event| event[2] == "Random").count()
+    }
+
+    fn asks() {
+        for _ in 0..3 {
+            if let Some(mut rng) = try_thread_rng() {
+                let _ = rng.next_u64();
+            }
+        }
+    }
+
+    assert_eq!(random_events(&annotated_with(RoundRobinScheduler::new(1), asks)), 3);
+    assert_eq!(random_events(&annotated_with(DfsScheduler::new(None, false), asks)), 0);
 }
