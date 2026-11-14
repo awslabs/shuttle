@@ -28,6 +28,8 @@ members = [
     "wrappers/async_stream",
     "wrappers/dashmap",
     "wrappers/dashmap/dashmap_impl",
+    "wrappers/crossbeam_channel",
+    "wrappers/crossbeam_channel/shuttle_crossbeam_channel_inner",
 ]
 
 resolver = "2"

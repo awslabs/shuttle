@@ -1,0 +1,33 @@
+[package]
+name = "shuttle-crossbeam-channel-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `crossbeam-channel` crate. Do not depend on this crate directly; use `shuttle-crossbeam-channel`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-crossbeam-channel`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+[features]
+default = ["std"]
+# crossbeam-channel's only feature. Without it crossbeam-channel exports nothing; this model always
+# needs `std`, so here the feature only exists to be forwarded, and changes nothing.
+std = []
+
+[dependencies]
+# The API mirrored here is crossbeam-channel 0.5.17's. Its error types are re-exported from it, so
+# that they are the same types in both modes.
+crossbeam-channel = { version = "0.5.17", default-features = false, features = ["std"] }
+# For `shuttle::rand`, which picks among the ready operations of a `select!`, and for the tests.
+shuttle = { path = "../../../shuttle", version = "0.9.2" }
+# For `Task::block_with_timeout`, which times a wait out when no task can run, and for the
+# execution's storage. Tighten this to the release that carries `block_with_timeout` once it is
+# published.
+shuttle-engine = { path = "../../../shuttle-engine", version = "0.1" }
+# The channels' `Instant` is shuttle-time's, and their timers read and advance its clock.
+shuttle-time-inner = { path = "../../time/shuttle_time_inner", version = "0.1" }
+
+[dev-dependencies]
+# For the test that shows the real crate is uncontrolled nondeterminism under Shuttle.
+crossbeam-channel = { version = "0.5.17" }
+tempfile = "3.2.0"
