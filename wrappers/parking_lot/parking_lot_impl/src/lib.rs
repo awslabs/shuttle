@@ -16,13 +16,47 @@
 //!   implementing the relevant `lock_api` raw traits.
 //! * `mutex` / `rwlock` contain the user-facing `Mutex` / `RwLock` types, which are the generic
 //!   `lock_api` containers and guards specialised to those raw locks.
+//! * `raw_fair_mutex` / `fair_mutex` and `remutex` do the same for `FairMutex` and `ReentrantMutex`,
+//!   as `parking_lot` does.
+//! * `condvar` and `once` are Shuttle models of `parking_lot`'s `Condvar` and `Once`, which
+//!   `parking_lot` doesn't build on `lock_api` either.
 //!
 //! This layering means the entire `parking_lot` guard surface — `Arc` guards, mapped guards,
 //! upgradable guards — is available under Shuttle without reimplementing it by hand.
+//!
+//! # State that outlives an execution
+//!
+//! Every primitive here can be `const`-constructed and live in a `static`. Its Shuttle state (a
+//! lock's semaphore, a condvar's waiters, a `Once`'s progress) belongs to the running execution
+//! (see `per_execution`), so every execution starts with the primitive unlocked, unwaited and
+//! uncompleted, whatever the execution before it did, and executions running at the same time on
+//! other threads don't share it. What a lock protects is not part of that state: `lock_api` keeps
+//! the data inside the lock, so the data of a `static` lock carries over from one execution to the
+//! next. For the same reason two executions can't both hold a lock's data, even both to read it:
+//! one whose own state grants it the lock while a guard of another execution holds the data panics
+//! rather than hand out a second reference to the data, and says whose guard it is, one of a test
+//! that runs at the same time on another thread or one that an ended execution left behind (one
+//! that a failed execution leaked, or a forgotten one), which holds the data for good (see
+//! `shuttle-engine`'s `ValueLock`). Tests that share a `static` lock have to take turns. A lock that
+//! a test needs to start afresh in every execution belongs in a `shuttle::lazy_static!`, which
+//! creates it anew in each one.
+//!
+//! # Timeouts
+//!
+//! Shuttle has no clock to measure a timeout against, so the timed operations never time out: the
+//! `*_for` and `*_until` lock methods wait until they get the lock and return `true`, and a timed
+//! `Condvar` wait waits until it is notified. A task that would time out in a real run waits
+//! instead, and if nothing ever releases or notifies it, Shuttle reports a deadlock.
 
+mod condvar;
+mod fair_mutex;
 mod mutex;
+mod once;
+mod per_execution;
+mod raw_fair_mutex;
 mod raw_mutex;
 mod raw_rwlock;
+mod remutex;
 mod rwlock;
 
 // The marker that determines whether lock guards are `Send`, defined once here and referenced as
@@ -41,10 +75,16 @@ type GuardMarker = ::lock_api::GuardNoSend;
 // API is a deliberate, reviewable list that mirrors `parking_lot`'s own `lib.rs`. This matters
 // because `shuttle-parking_lot` re-exports this crate wholesale, so anything public here becomes
 // part of the client-facing `parking_lot` namespace.
+pub use self::condvar::{Condvar, WaitTimeoutResult};
+pub use self::fair_mutex::{FairMutex, FairMutexGuard, MappedFairMutexGuard, const_fair_mutex};
+pub use self::mutex::{MappedMutexGuard, Mutex, MutexGuard, const_mutex};
+pub use self::once::{Once, OnceState};
+pub use self::raw_fair_mutex::RawFairMutex;
 pub use self::raw_mutex::RawMutex;
 pub use self::raw_rwlock::RawRwLock;
-
-pub use self::mutex::{MappedMutexGuard, Mutex, MutexGuard, const_mutex};
+pub use self::remutex::{
+    MappedReentrantMutexGuard, RawThreadId, ReentrantMutex, ReentrantMutexGuard, const_reentrant_mutex,
+};
 pub use self::rwlock::{
     MappedRwLockReadGuard, MappedRwLockWriteGuard, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard,
     RwLockWriteGuard, const_rwlock,
@@ -53,7 +93,9 @@ pub use self::rwlock::{
 // The `Arc`-based guards are plain re-exports of the generic `lock_api` guard types (gated on
 // `arc_lock`), placed here at the crate root exactly as `parking_lot` does in its `lib.rs`.
 #[cfg(feature = "arc_lock")]
-pub use ::lock_api::{ArcMutexGuard, ArcRwLockReadGuard, ArcRwLockUpgradableReadGuard, ArcRwLockWriteGuard};
+pub use ::lock_api::{
+    ArcMutexGuard, ArcReentrantMutexGuard, ArcRwLockReadGuard, ArcRwLockUpgradableReadGuard, ArcRwLockWriteGuard,
+};
 
 // Re-export `lock_api` to mirror `parking_lot`'s own `pub use lock_api;`, so code that refers to
 // `parking_lot::lock_api::...` continues to resolve under the Shuttle feature. This is the same
