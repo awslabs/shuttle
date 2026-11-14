@@ -1,0 +1,26 @@
+[package]
+name = "shuttle-fastrand-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `fastrand` crate. Do not depend on this crate directly; use `shuttle-fastrand`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-fastrand`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+# fastrand's features, each forwarded to fastrand. This crate's own items exist whichever are on: the
+# free functions and `Rng::new` need `std` in fastrand, and Shuttle needs `std` anyway.
+[features]
+default = [ "fastrand-orig/default" ]
+alloc = [ "fastrand-orig/alloc" ]
+js = [ "fastrand-orig/js" ]
+std = [ "fastrand-orig/std" ]
+
+[dependencies]
+# The API mirrored here is fastrand 2.5's, which 2.4 already has (`f32_inclusive`, the const `with_seed`).
+# `alloc` for `Rng::choose_multiple`.
+fastrand-orig = { package = "fastrand", version = "2.4", default-features = false, features = ["alloc"] }
+shuttle = { path = "../../../shuttle", version = "0.9" }
+
+[dev-dependencies]
+tempfile = "3.2.0"
