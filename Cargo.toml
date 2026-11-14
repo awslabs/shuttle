@@ -24,6 +24,8 @@ members = [
     "wrappers/async_stream",
     "wrappers/dashmap",
     "wrappers/dashmap/dashmap_impl",
+    "wrappers/io_uring",
+    "wrappers/io_uring/io_uring_impl",
 ]
 
 resolver = "2"
