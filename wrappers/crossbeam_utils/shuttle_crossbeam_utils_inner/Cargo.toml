@@ -1,0 +1,37 @@
+[package]
+name = "shuttle-crossbeam-utils-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `crossbeam-utils` crate. Do not depend on this crate directly; use `shuttle-crossbeam-utils`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-crossbeam-utils`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+[features]
+default = ["std"]
+# crossbeam-utils's features. This model always needs `std`, so the feature only exists to be
+# forwarded; `nightly` changes nothing here.
+std = ["crossbeam-utils/std"]
+nightly = []
+
+[dependencies]
+# The API mirrored here is crossbeam-utils 0.8.23's. `CachePadded` is re-exported from it, as it
+# needs no model.
+crossbeam-utils = { version = "0.8.23", default-features = false }
+# For the locks, the scoped threads and the scheduling points.
+shuttle = { path = "../../../shuttle", version = "0.9.2" }
+# For `Task::block_with_timeout`, which times a wait out when no task can run, for the clocks that
+# record causality, and for `PerExecution` and `ValueLock`, which keep an `AtomicCell`'s clock per
+# execution and its value to one execution at a time. `ValueLock` is new in the release after
+# 0.1.8, which the requirement has to name at release prep.
+shuttle-engine = { path = "../../../shuttle-engine", version = "0.1" }
+# `Parker::park_timeout` and `park_deadline` measure their deadlines on shuttle-time's clock.
+shuttle-time-inner = { path = "../../time/shuttle_time_inner", version = "0.1" }
+
+[dev-dependencies]
+# For the test that shows the real crate's `scope` is an unscheduled thread under Shuttle.
+crossbeam-utils = { version = "0.8.23" }
+# Real clocks for the tests of causality, as shuttle's own tests have: without the feature, clocks
+# are empty, so that a test of a join would pass whatever the cell does.
+shuttle = { path = "../../../shuttle", version = "0.9.2", features = ["vector-clocks"] }

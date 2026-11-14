@@ -30,6 +30,8 @@ members = [
     "wrappers/dashmap/dashmap_impl",
     "wrappers/crossbeam_channel",
     "wrappers/crossbeam_channel/shuttle_crossbeam_channel_inner",
+    "wrappers/crossbeam_utils",
+    "wrappers/crossbeam_utils/shuttle_crossbeam_utils_inner",
 ]
 
 resolver = "2"
