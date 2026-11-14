@@ -844,9 +844,11 @@ impl Ring {
     // ---- enter ----
 
     /// `io_uring_enter`: submit up to `to_submit` published entries, then,
-    /// with `getevents`, block until `min_complete` completions are visible.
-    /// A bounded wait (`timeout`) may time out at any point Shuttle chooses,
-    /// and does at once if nothing in flight could complete it.
+    /// with `getevents`, block until `min_complete` completions are visible,
+    /// or a full CQ's worth if that is fewer. A bounded wait (`timeout`) may
+    /// time out at any point Shuttle chooses, and does at once if nothing in
+    /// flight could complete it. As the kernel's, an enter that submits fewer
+    /// entries than `to_submit` returns without waiting.
     pub(crate) fn enter(
         &self,
         to_submit: u32,
@@ -862,9 +864,16 @@ impl Ring {
                 return Err(io::Error::from_raw_os_error(libc::EBUSY));
             }
             submitted = self.submit(to_submit);
+            // `io_uring_enter` waits only once it has submitted all it was
+            // asked to.
+            if submitted != to_submit as usize {
+                return Ok(submitted);
+            }
         }
         if getevents && min_complete > 0 {
-            let waited = self.wait(min_complete, timeout);
+            // `io_uring_enter` caps the count at the CQ's size, which is all
+            // that can be visible at once.
+            let waited = self.wait(min_complete.min(self.cq_entries), timeout);
             // The kernel reports the entries it submitted, if it submitted
             // any, whatever became of the wait (`io_uring_enter` returns
             // `submitted ? submitted : ret`): a consumer counting submissions

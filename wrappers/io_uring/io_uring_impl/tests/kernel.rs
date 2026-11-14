@@ -1894,3 +1894,59 @@ fn setup_options_without_a_model_are_accepted_as_the_kernel_would() {
         1,
     );
 }
+
+/// An enter waits for at most a full CQ's worth of completions, as
+/// `io_uring_enter` caps `min_complete` at the CQ's size: a wait for more than
+/// fit returns once the CQ is full.
+#[test]
+fn a_wait_for_more_than_the_cq_holds_returns_once_it_is_full() {
+    check_random(
+        || {
+            // One SQ entry, so two CQ entries.
+            let ring = IoUring::new(1).unwrap();
+            for ud in 1..=2 {
+                push(
+                    &ring,
+                    opcode::Nop::new().build().flags(squeue::Flags::ASYNC).user_data(ud),
+                );
+                ring.submit().unwrap();
+            }
+            ring.submit_and_wait(3).unwrap();
+            assert_eq!(reap(&ring).len(), 2);
+        },
+        ITERATIONS,
+    );
+}
+
+/// An enter that submits fewer entries than it was asked to returns at once,
+/// without waiting for completions, as `io_uring_enter` does when it cannot
+/// submit them all.
+#[test]
+fn an_enter_that_submits_fewer_than_asked_does_not_wait() {
+    let outcomes = Arc::new(Mutex::new(HashSet::new()));
+    let seen = Arc::clone(&outcomes);
+    check_random(
+        move || {
+            let ring = IoUring::new(8).unwrap();
+            push(
+                &ring,
+                opcode::Nop::new().build().flags(squeue::Flags::ASYNC).user_data(1),
+            );
+            let getevents = shuttle_io_uring_impl::EnterFlags::GETEVENTS.bits();
+            // Four entries asked for, and one queued.
+            // SAFETY: no argument, as the flags ask for none.
+            let submitted = unsafe { ring.submitter().enter::<libc::sigset_t>(4, 1, getevents, None) };
+            assert_eq!(submitted.unwrap(), 1);
+            let waited = !reap(&ring).is_empty();
+            if !waited {
+                reap_n(&ring, 1);
+            }
+            seen.lock().unwrap().insert(waited);
+        },
+        ITERATIONS,
+    );
+    assert!(
+        outcomes.lock().unwrap().contains(&false),
+        "the enter waited for the completion every time"
+    );
+}
