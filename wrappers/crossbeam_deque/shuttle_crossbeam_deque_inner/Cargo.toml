@@ -1,0 +1,28 @@
+[package]
+name = "shuttle-crossbeam-deque-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `crossbeam-deque` crate. Do not depend on this crate directly; use `shuttle-crossbeam-deque`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-crossbeam-deque`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+# crossbeam-deque's features, so that the wrapper can forward them. The model needs `std` whichever
+# of them are on, so they change nothing here.
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+# 0.9.2 is the first `shuttle` built on `shuttle-engine`, so that the engine below is the one that
+# runs the test.
+shuttle = { path = "../../../shuttle", version = "0.9.2" }
+# For scheduling points, vector clocks and `ExecutionState::{get_storage, init_storage}`, which hold
+# each queue's tasks for one execution.
+shuttle-engine = { path = "../../../shuttle-engine", version = "0.1" }
+# `Steal` is crossbeam-deque's own type, which it exports with its `std` feature.
+crossbeam-deque-orig = { package = "crossbeam-deque", version = "0.8.8" }
+
+[dev-dependencies]
+tempfile = "3.2.0"
