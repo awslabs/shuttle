@@ -17,7 +17,10 @@
 //! under Shuttle and its failing schedules replay. That crate also provides
 //! the `AsyncFd` a reactor waits on for the ring's readiness, which tokio's
 //! I/O driver cannot provide under Shuttle.
+//!
+//! io_uring is Linux's, so on other targets this crate is empty.
 
+#[cfg(target_os = "linux")]
 cfg_if::cfg_if! {
     if #[cfg(feature = "shuttle")] {
         pub use shuttle_io_uring_impl::*;
