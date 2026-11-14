@@ -1,3 +1,10 @@
+// This crate began as a fork of turmoil-io-uring 0.1.0 (crates/turmoil-io-uring
+// in https://github.com/tokio-rs/turmoil, commit
+// 684acc1a8eea3a9cf2c6959dc47b69dba981cac1), Copyright (c) 2022 Carl Lerche,
+// which is licensed under the MIT license: see LICENSE-MIT in this crate. This
+// file is new in the fork, and is licensed under the Apache License, Version
+// 2.0, as the rest of Shuttle is.
+
 //! Which kernel the simulation behaves as.
 //!
 //! io_uring grew over many releases, and a system may still run an old one. A

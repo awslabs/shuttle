@@ -48,7 +48,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-** turmoil-io-uring; version 0.1.0 -- https://github.com/tokio-rs/turmoil
+** turmoil-io-uring; version 0.1.0, commit 684acc1a8eea3a9cf2c6959dc47b69dba981cac1 -- https://github.com/tokio-rs/turmoil
+
+The files of wrappers/io_uring/io_uring_impl whose headers say so are derived
+from crates/turmoil-io-uring.
 
 MIT License
 

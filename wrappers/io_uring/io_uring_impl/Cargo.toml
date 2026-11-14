@@ -2,7 +2,10 @@
 name = "shuttle-io-uring-impl"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+# This crate began as a fork of turmoil-io-uring, which is MIT-licensed: see LICENSE-MIT, and each
+# source file's header for whether it is derived from that crate or new here. The parts that are not
+# derived, and the changes to the ones that are, are Apache-2.0, as the rest of Shuttle is.
+license = "Apache-2.0 AND MIT"
 description = "Internal implementation of the `io-uring` crate for use with the Shuttle concurrency testing tool: a simulated kernel ring whose completions Shuttle schedules. Do not depend on this crate directly; use `shuttle-io-uring`."
 repository = "https://github.com/awslabs/shuttle"
 # These tests share their sources with `shuttle-io-uring`'s tests, which are outside this package.

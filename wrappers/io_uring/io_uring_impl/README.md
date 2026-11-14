@@ -32,8 +32,8 @@ On top of that the crate checks what the kernel would not:
   kernel lacks: newer opcodes, timed enters, `IORING_FEAT_NODROP` (a full CQ drops completions),
   `IORING_FEAT_SUBMIT_STABLE` and `IORING_FEAT_RW_CUR_POS`.
 
-The crate is forked from `turmoil-io-uring` (MIT; see [LICENSE](LICENSE)), which simulates the ring
-on turmoil's clock and filesystem. It keeps that crate's API mirroring, and replaces the clock with
+The crate is forked from `turmoil-io-uring` (MIT; see [LICENSE-MIT](LICENSE-MIT)), which simulates
+the ring on turmoil's clock and filesystem. It keeps that crate's API mirroring, and replaces the clock with
 Shuttle's scheduler, the simulated filesystem with real file descriptors, and its simplified
 semantics with the kernel's.
 
@@ -49,3 +49,12 @@ semantics with the kernel's.
   power loss or torn writes: the file is a real one.
 - Only the simulated kernel's signals wake an `AsyncFd`; the application's own writes to an eventfd
   do not.
+
+## License
+
+Parts of this crate are derived from
+[`turmoil-io-uring`](https://github.com/tokio-rs/turmoil/tree/684acc1a8eea3a9cf2c6959dc47b69dba981cac1/crates/turmoil-io-uring)
+0.1.0, Copyright (c) 2022 Carl Lerche, which is licensed under the MIT license: see
+[LICENSE-MIT](LICENSE-MIT). Every source file says in its header whether it is derived from that
+crate or new in the fork. The parts that are not derived, and the changes to the ones that are, are
+licensed under the Apache License, Version 2.0, as the rest of Shuttle is.

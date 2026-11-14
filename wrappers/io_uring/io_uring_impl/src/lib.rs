@@ -1,3 +1,10 @@
+// This file is derived from turmoil-io-uring 0.1.0 (crates/turmoil-io-uring in
+// https://github.com/tokio-rs/turmoil, commit
+// 684acc1a8eea3a9cf2c6959dc47b69dba981cac1), Copyright (c) 2022 Carl Lerche,
+// and licensed under the MIT license: see LICENSE-MIT in this crate. The
+// changes to it are licensed under the Apache License, Version 2.0, as the rest
+// of Shuttle is.
+
 //! A simulated `io_uring` kernel for [Shuttle](https://crates.io/crates/shuttle),
 //! mirroring the [`io-uring` 0.7](https://docs.rs/io-uring/0.7) crate's API.
 //!
@@ -96,11 +103,14 @@
 //!
 //! # Provenance
 //!
-//! Forked from `turmoil-io-uring` (MIT, Copyright (c) 2022 Carl Lerche; see
-//! `LICENSE`), which simulates the ring on turmoil's clock and
+//! Forked from `turmoil-io-uring` 0.1.0 (MIT, Copyright (c) 2022 Carl Lerche;
+//! see `LICENSE-MIT`), which simulates the ring on turmoil's clock and
 //! filesystem. This crate keeps its API mirroring and replaces the clock with
 //! Shuttle's scheduler, the simulated filesystem with real file descriptors,
-//! and its simplified semantics with the kernel's.
+//! and its simplified semantics with the kernel's. Each source file says in its
+//! header whether it is derived from that crate or new here. What is new, and
+//! the changes to what is derived, are licensed under the Apache License,
+//! Version 2.0, so the crate is `Apache-2.0 AND MIT`.
 
 // io_uring, and the system calls the simulated kernel makes, are Linux's. On
 // other targets the crate is empty, so the workspace still builds there.

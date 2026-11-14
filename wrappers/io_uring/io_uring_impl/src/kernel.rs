@@ -1,3 +1,10 @@
+// This file is derived from src/sim.rs of turmoil-io-uring 0.1.0
+// (crates/turmoil-io-uring in https://github.com/tokio-rs/turmoil, commit
+// 684acc1a8eea3a9cf2c6959dc47b69dba981cac1), Copyright (c) 2022 Carl Lerche,
+// and licensed under the MIT license: see LICENSE-MIT in this crate. The
+// changes to it are licensed under the Apache License, Version 2.0, as the rest
+// of Shuttle is.
+
 //! The simulated kernel: one ring's queues, the ops it holds in flight, and
 //! the Shuttle task that completes them.
 //!
