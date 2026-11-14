@@ -21,6 +21,8 @@ members = [
     "wrappers/tokio/wrappers/shuttle-tokio-util",
     "wrappers/tokio/impls/tokio-retry",
     "wrappers/parking_lot",
+    "wrappers/time",
+    "wrappers/time/shuttle_time_inner",
     "wrappers/async_stream",
     "wrappers/dashmap",
     "wrappers/dashmap/dashmap_impl",
