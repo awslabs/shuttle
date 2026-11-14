@@ -42,8 +42,9 @@ belongs to the running execution:
 **The timestamps track nothing real.** They say only how many times the execution has read the clock
 and in which order; nothing here measures how long anything took.
 
-This is not virtual time: the crate models no timers, and sleeps and timeouts do not advance the
-counter.
+This is not virtual time: the crate models no timers, and `std`'s and tokio's sleeps and timeouts
+do not advance the counter. A timer of another Shuttle wrapper (`shuttle-crossbeam-channel`'s `after`,
+`tick` and timeouts) moves the counter forward to its deadline when it fires.
 
 `Duration`, `SystemTimeError` and `TryFromFloatSecsError` are `std::time`'s in both modes, and so
 `UNIX_EPOCH` still means 1970-01-01T00:00:00Z.

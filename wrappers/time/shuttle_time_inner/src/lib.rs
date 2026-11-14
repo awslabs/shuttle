@@ -42,10 +42,12 @@
 //! nanosecond apart may be any distance apart in a real run, and two equal readings may not be.
 //! Nothing here measures how long anything took.
 //!
-//! This is not virtual time. The crate models no timers: nothing advances the counter except a call
-//! to `now()`, and `shuttle::thread::sleep`, `tokio::time::sleep` and `tokio::time::timeout` do not.
-//! A loop that waits for a deadline to pass therefore spins until the execution hits its step
-//! limit, both with this crate and with `std::time`.
+//! This is not virtual time. The crate models no timers of its own: the counter advances on a call
+//! to `now()`, and when a timer of one of Shuttle's other wrappers fires (the `after`, `tick` and
+//! timeouts of `shuttle-crossbeam-channel`, say), which moves it forward to the timer's deadline.
+//! `shuttle::thread::sleep`, `tokio::time::sleep` and `tokio::time::timeout` do not advance it. A
+//! loop that waits for a deadline to pass by reading the clock therefore spins until the execution
+//! hits its step limit, both with this crate and with `std::time`.
 //!
 //! # Limitations
 //!
@@ -89,3 +91,60 @@ pub mod time {
 mod clock;
 mod instant;
 mod system_time;
+
+/// What Shuttle's other wrappers need to model timers on this clock: a crossbeam channel's
+/// `after`, `tick` and timeouts, for example. Not part of `std::time`'s API, and not re-exported
+/// by `shuttle-time`.
+///
+/// A timer whose deadline the clock has not reached waits, without reading the clock, until it
+/// fires: for the wrappers that this module serves, until no task can run (see
+/// `shuttle_engine::runtime::task::Task::block_with_timeout`). The timer then moves the clock
+/// forward to its deadline, so that the program never sees a timer fire before its deadline.
+#[doc(hidden)]
+pub mod timer_support {
+    use crate::time::Instant;
+    use shuttle_engine::runtime::execution::ExecutionState;
+    use shuttle_engine::runtime::thread;
+    use std::time::Duration;
+
+    /// The clock's current reading, without advancing the clock and without a draw from Shuttle,
+    /// unlike [`Instant::now`]. Panics outside of a Shuttle test.
+    pub fn peek() -> Instant {
+        Instant::from_since_base(crate::clock::peek())
+    }
+
+    /// Moves the clock forward to `deadline`, unless it has reached it already. Panics outside of a
+    /// Shuttle test.
+    pub fn advance_to(deadline: Instant) {
+        crate::clock::advance_to(deadline.since_base());
+    }
+
+    /// How far `instant` is from the clock's origin, which is the same for every `Instant`. Timed
+    /// waits order their deadlines by it.
+    pub fn since_origin(instant: Instant) -> Duration {
+        instant.since_base()
+    }
+
+    /// Blocks the current task until another task unblocks it, or until `deadline` passes. Returns
+    /// whether the wait timed out.
+    ///
+    /// A wait with a deadline times out only when no task can run and the execution would otherwise
+    /// deadlock (see `shuttle_engine::runtime::task::Task::block_with_timeout`), and the timeout then
+    /// moves the clock forward to the deadline, so that the program never sees a timeout before its
+    /// deadline. A wait without one blocks until another task unblocks it, as every other Shuttle
+    /// primitive does.
+    ///
+    /// Panics outside of a Shuttle test.
+    pub fn block_until(deadline: Option<Instant>) -> bool {
+        ExecutionState::with(|state| match deadline {
+            Some(deadline) => state.current_mut().block_with_timeout(since_origin(deadline)),
+            None => state.current_mut().block(false),
+        });
+        thread::switch();
+        let timed_out = ExecutionState::with(|state| state.current_mut().take_timed_out());
+        if let (true, Some(deadline)) = (timed_out, deadline) {
+            advance_to(deadline);
+        }
+        timed_out
+    }
+}

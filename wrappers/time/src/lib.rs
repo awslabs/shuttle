@@ -32,9 +32,11 @@
 //! limitations the feature brings: `now()` panics outside of a Shuttle test, and a
 //! `time::Instant` does not convert to or from a `std::time::Instant`.
 //!
-//! This crate does not model timers. Under Shuttle, sleeps and timeouts return immediately and do
-//! not advance this clock; a loop that waits for a deadline to pass therefore spins until the
-//! execution hits its step limit, both with and without this crate.
+//! This crate does not model timers. Under Shuttle, `std`'s and tokio's sleeps and timeouts return
+//! immediately and do not advance this clock; a loop that waits for a deadline to pass therefore
+//! spins until the execution hits its step limit, both with and without this crate. The timers of
+//! Shuttle's other wrappers (`shuttle-crossbeam-channel`'s `after`, `tick` and timeouts) move the
+//! clock forward to their deadlines when they fire.
 //!
 //! [`shuttle::check_uncontrolled_nondeterminism`]: <https://docs.rs/shuttle/latest/shuttle/fn.check_uncontrolled_nondeterminism.html>
 
