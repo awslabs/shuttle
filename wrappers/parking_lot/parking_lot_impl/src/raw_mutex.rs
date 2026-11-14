@@ -1,12 +1,14 @@
 //! The Shuttle-backed raw mutex that underpins [`crate::Mutex`].
 //!
-//! This provides [`RawMutex`], an implementation of [`lock_api::RawMutex`] (and the fair variant)
-//! routed through Shuttle's scheduler. The user-facing `Mutex`/`MutexGuard`/`ArcMutexGuard` are the
-//! generic `lock_api` types specialised to this raw lock (see [`crate::Mutex`]), exactly how the
-//! real `parking_lot` crate layers its `Mutex` on top of `lock_api`.
+//! This provides [`RawMutex`], an implementation of [`lock_api::RawMutex`] (and the fair and timed
+//! variants) routed through Shuttle's scheduler. The user-facing `Mutex`/`MutexGuard`/`ArcMutexGuard`
+//! are the generic `lock_api` types specialised to this raw lock (see [`crate::Mutex`]), exactly how
+//! the real `parking_lot` crate layers its `Mutex` on top of `lock_api`.
 
 use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness};
+use shuttle_engine::runtime::thread::switch;
 use std::thread;
+use std::time::{Duration, Instant};
 use tracing::trace;
 
 /// A Shuttle-backed raw mutex implementing [`lock_api::RawMutex`].
@@ -54,6 +56,14 @@ unsafe impl lock_api::RawMutex for RawMutex {
         trace!("releasing parking_lot mutex {:p}", self);
         self.semaphore.release(1);
     }
+
+    // `lock_api`'s default takes and releases the lock, so a task asking whether the lock is held
+    // would make another task's `try_lock` fail, which can't happen with `parking_lot`, where this is
+    // a load. Here it is a load too, after a scheduling point, as an atomic load is in Shuttle.
+    fn is_locked(&self) -> bool {
+        switch();
+        self.semaphore.available_permits() == 0
+    }
 }
 
 // Safety: Shuttle's semaphore is strictly fair, so a plain `release` already hands the permit to the
@@ -62,5 +72,26 @@ unsafe impl lock_api::RawMutexFair for RawMutex {
     unsafe fn unlock_fair(&self) {
         trace!("fair-releasing parking_lot mutex {:p}", self);
         self.semaphore.release(1);
+    }
+}
+
+// Safety: a timed lock is a lock that never times out (see below), so it is as exclusive as `lock`.
+//
+// Shuttle has no clock that a timeout could be measured against, so a timed lock waits until it
+// gets the lock and returns `true`, as Shuttle's `Condvar::wait_timeout` never times out. A task
+// that would time out in a real run blocks instead; if nothing ever releases the lock, Shuttle
+// reports a deadlock.
+unsafe impl lock_api::RawMutexTimed for RawMutex {
+    type Duration = Duration;
+    type Instant = Instant;
+
+    fn try_lock_for(&self, _timeout: Duration) -> bool {
+        lock_api::RawMutex::lock(self);
+        true
+    }
+
+    fn try_lock_until(&self, _timeout: Instant) -> bool {
+        lock_api::RawMutex::lock(self);
+        true
     }
 }
