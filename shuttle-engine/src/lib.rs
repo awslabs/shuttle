@@ -10,6 +10,7 @@ pub mod runtime;
 pub mod scheduler;
 pub mod sync_types;
 pub mod thread_support;
+pub mod time;
 
 pub use config::{
     Config, ContinuationFunctionBehavior, FailurePersistence, MaxSteps, UngracefulShutdownConfig,
