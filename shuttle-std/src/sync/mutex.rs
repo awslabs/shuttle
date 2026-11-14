@@ -3,6 +3,7 @@ use crate::sync::{ResourceSignature, ResourceType};
 use shuttle_engine::current;
 use shuttle_engine::future::batch_semaphore::{BatchSemaphore, Fairness};
 use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::per_execution::{PerExecution, ValueLock};
 use shuttle_engine::runtime::task::TaskId;
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
@@ -11,9 +12,31 @@ use std::panic::{RefUnwindSafe, UnwindSafe};
 use tracing::trace;
 
 /// A mutex, the same as [`std::sync::Mutex`].
+///
+/// # Differences from `std`
+///
+/// The state of the lock is kept once for each execution, so that a `static` mutex is unlocked and
+/// unpoisoned at the start of every execution, whatever an earlier execution left it in. The value
+/// it protects is not: the mutex has only the one value it was created with, and can't make a
+/// fresh copy of it for each execution. A `static` mutex that an execution changes the value of
+/// passes the change on to the executions after it, which then depend on each other, so that a
+/// failing schedule may not replay on its own. To give each execution a fresh value, put the mutex
+/// in a [`LazyLock`](crate::sync::LazyLock) or a `shuttle::lazy_static!`, which make it again in
+/// each execution.
+///
+/// Two executions can't hold the value at once. An execution that the mutex's state lets take the
+/// lock while a guard of another execution holds the value panics, saying whose guard it is: one of
+/// a test that runs at the same time on another thread and shares the mutex in a `static`, or one
+/// that an execution which has ended left behind (see
+/// `shuttle_engine::runtime::per_execution::ValueLock`).
 pub struct Mutex<T: ?Sized> {
-    state: RefCell<MutexState>,
+    state: PerExecution<RefCell<MutexState>>,
     semaphore: BatchSemaphore,
+    /// Keeps the value to one execution at a time, which the state, being per execution, can't.
+    value: ValueLock,
+    /// The value. Its own locking only gives out the guards that the state and `value` grant, and
+    /// its poisoning, which every execution would share, is cleared as soon as it is set, and kept
+    /// in the state instead (see `MutexState::poisoned`).
     inner: std::sync::Mutex<T>,
 }
 
@@ -26,7 +49,12 @@ pub struct MutexGuard<'a, T: ?Sized> {
 #[derive(Debug)]
 struct MutexState {
     holder: Option<TaskId>,
+    /// Whether a thread of this execution panicked while it held the lock.
+    poisoned: bool,
 }
+
+/// The name of the lock in the messages of [`ValueLock::acquire`].
+const KIND: &str = "Mutex";
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
@@ -36,26 +64,72 @@ impl<T> Mutex<T> {
     }
 
     pub(crate) const fn new_internal(value: T, signature: ResourceSignature) -> Self {
-        let state = MutexState { holder: None };
         Self {
-            state: RefCell::new(state),
+            state: PerExecution::new(),
             semaphore: BatchSemaphore::const_new_with_signature(1, Fairness::Unfair, signature),
+            value: ValueLock::new(),
             inner: std::sync::Mutex::new(value),
         }
     }
 }
 
 impl<T: ?Sized> Mutex<T> {
+    /// The state of the lock in the current execution, which the execution creates when it first
+    /// uses the mutex.
+    fn state(&self) -> &RefCell<MutexState> {
+        self.state.get(Self::fresh_state)
+    }
+
+    /// The state of an execution that hasn't used the mutex yet.
+    fn fresh_state() -> RefCell<MutexState> {
+        RefCell::new(MutexState {
+            holder: None,
+            poisoned: false,
+        })
+    }
+
+    /// A guard for the current task, which this execution's state has just let take the lock,
+    /// poisoned if the state says so.
+    ///
+    /// A guard of another execution that holds the value is reported (see [`ValueLock`]). Past
+    /// that, the inner `std::sync::Mutex` is free: the `ValueLock` keeps out every other execution's
+    /// guards, and the state the other tasks of this one. Only a `Debug` on another thread can hold
+    /// it, for a moment, and its poisoning is never left set.
+    fn guard(&self, poisoned: bool) -> LockResult<MutexGuard<'_, T>> {
+        self.value.acquire(KIND);
+        let guard = MutexGuard {
+            inner: Some(self.inner.lock().unwrap_or_else(PoisonError::into_inner)),
+            mutex: self,
+        };
+        if poisoned {
+            Err(PoisonError::new(guard))
+        } else {
+            Ok(guard)
+        }
+    }
+
+    /// Whether the lock is poisoned in the current execution, where its state can be reached.
+    fn poisoned_here(&self) -> bool {
+        self.state
+            .try_get(Self::fresh_state)
+            .and_then(|state| state.try_borrow().ok().map(|state| state.poisoned))
+            .unwrap_or(false)
+    }
+
     /// Acquires a mutex, blocking the current thread until it is able to do so.
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
         let me = current::me();
 
-        let mut state = self.state.borrow_mut();
+        // The execution's state of the lock, looked up once: for a `static` mutex the lookup goes
+        // through the execution's storage (see `PerExecution`).
+        let lock_state = self.state();
+
+        let mut state = lock_state.borrow_mut();
         trace!(holder=?state.holder, semaphore=?self.semaphore, "waiting to acquire mutex {:p}", self);
         drop(state);
 
         // Detect deadlock due to re-entrancy.
-        state = self.state.borrow_mut();
+        state = lock_state.borrow_mut();
         assert!(
             match &state.holder {
                 Some(holder) => *holder != me,
@@ -71,27 +145,15 @@ impl<T: ?Sized> Mutex<T> {
         // if it were free, and the inner `std::sync::Mutex` reports whether it is poisoned.
         let _ = self.semaphore.acquire_blocking(1);
 
-        state = self.state.borrow_mut();
+        state = lock_state.borrow_mut();
         assert!(state.holder.is_none());
         state.holder = Some(me);
+        let poisoned = state.poisoned;
         drop(state);
 
         trace!(semaphore=?self.semaphore, "acquired mutex {:p}", self);
 
-        // Grab a `MutexGuard` from the inner lock, which we must be able to acquire here
-        let result = match self.inner.try_lock() {
-            Ok(guard) => Ok(MutexGuard {
-                inner: Some(guard),
-                mutex: self,
-            }),
-            Err(TryLockError::Poisoned(guard)) => Err(PoisonError::new(MutexGuard {
-                inner: Some(guard.into_inner()),
-                mutex: self,
-            })),
-            Err(TryLockError::WouldBlock) => unreachable!("mutex state out of sync"),
-        };
-
-        result
+        self.guard(poisoned)
     }
 
     /// Attempts to acquire this lock.
@@ -101,7 +163,10 @@ impl<T: ?Sized> Mutex<T> {
     pub fn try_lock(&self) -> TryLockResult<MutexGuard<'_, T>> {
         let me = current::me();
 
-        let mut state = self.state.borrow_mut();
+        // As in `lock`, looked up once.
+        let lock_state = self.state();
+
+        let mut state = lock_state.borrow_mut();
         trace!(holder=?state.holder, semaphore=?self.semaphore, "trying to acquire mutex {:p}", self);
         drop(state);
 
@@ -110,26 +175,17 @@ impl<T: ?Sized> Mutex<T> {
         // (b) may release the lock (in case we failed to acquire) so we can succeed in a subsequent `try_lock`.
         self.semaphore.try_acquire(1).map_err(|_| TryLockError::WouldBlock)?;
 
-        state = self.state.borrow_mut();
+        state = lock_state.borrow_mut();
         state.holder = Some(me);
+        let poisoned = state.poisoned;
         drop(state);
 
         trace!(semaphore=?self.semaphore, "acquired mutex {:p}", self);
 
-        // Grab a `MutexGuard` from the inner lock, which we must be able to acquire here
-        let result = match self.inner.try_lock() {
-            Ok(guard) => Ok(MutexGuard {
-                inner: Some(guard),
-                mutex: self,
-            }),
-            Err(TryLockError::Poisoned(guard)) => Err(TryLockError::Poisoned(PoisonError::new(MutexGuard {
-                inner: Some(guard.into_inner()),
-                mutex: self,
-            }))),
-            Err(TryLockError::WouldBlock) => unreachable!("mutex state out of sync"),
-        };
-
-        result
+        // The execution's state has granted the lock, so this takes it. A guard of another
+        // execution that holds the value is reported, rather than failing the `try_lock`, which
+        // would make this execution depend on the other one.
+        Ok(self.guard(poisoned)?)
     }
 
     /// Returns a mutable reference to the underlying data.
@@ -138,7 +194,13 @@ impl<T: ?Sized> Mutex<T> {
     /// take place -- the mutable borrow statically guarantees no locks exist.
     #[inline]
     pub fn get_mut(&mut self) -> LockResult<&mut T> {
-        self.inner.get_mut()
+        let poisoned = self.state().borrow().poisoned;
+        let value = self.inner.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if poisoned {
+            Err(PoisonError::new(value))
+        } else {
+            Ok(value)
+        }
     }
 
     /// Consumes this mutex, returning the underlying data.
@@ -146,18 +208,37 @@ impl<T: ?Sized> Mutex<T> {
     where
         T: Sized,
     {
-        let state = self.state.borrow();
-        assert!(state.holder.is_none());
+        let poisoned = {
+            let state = self.state().borrow();
+            assert!(state.holder.is_none());
+            state.poisoned
+        };
 
         // Update the receiver's clock with the Mutex clock
         self.semaphore.try_acquire(1).unwrap();
 
-        self.inner.into_inner()
+        let value = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
+        if poisoned {
+            Err(PoisonError::new(value))
+        } else {
+            Ok(value)
+        }
+    }
+
+    /// Determines whether the mutex is poisoned.
+    ///
+    /// If another thread is active, the mutex can still become poisoned at any time. You should
+    /// not trust a `false` value for program correctness without additional synchronization.
+    ///
+    /// Not a scheduling point: it reads whether another task left the mutex poisoned, which that
+    /// task cannot observe, exactly as std's relaxed load of the poison flag cannot.
+    pub fn is_poisoned(&self) -> bool {
+        self.state().borrow().poisoned
     }
 
     /// Clear the poisoned state from a mutex.
     pub fn clear_poison(&self) {
-        self.inner.clear_poison()
+        self.state().borrow_mut().poisoned = false;
     }
 }
 
@@ -179,8 +260,17 @@ impl<T: Default> Default for Mutex<T> {
 }
 
 impl<T: ?Sized + Debug> Debug for Mutex<T> {
+    /// As `std`'s, from the inner `std::sync::Mutex`, which a guard of any execution holds, and with
+    /// the current execution's poisoning.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&self.inner, f)
+        let mut d = f.debug_struct("Mutex");
+        match self.inner.try_lock() {
+            Ok(guard) => d.field("data", &&*guard),
+            Err(TryLockError::Poisoned(err)) => d.field("data", &&**err.get_ref()),
+            Err(TryLockError::WouldBlock) => d.field("data", &format_args!("<locked>")),
+        };
+        d.field("poisoned", &self.poisoned_here());
+        d.finish_non_exhaustive()
     }
 }
 
@@ -193,34 +283,49 @@ impl<'a, T: ?Sized> MutexGuard<'a, T> {
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
+        // The guard is done with the value, so it gives it up first, before the scheduling point of
+        // the release below: a test on another thread that takes the mutex while this task is
+        // switched out there finds the value free (see `ValueLock`). No other task of this execution
+        // can take the lock until the release, so none reaches the value meanwhile.
+        //
+        // Releasing the inner mutex poisons it if this thread panicked while it held it. Every
+        // execution shares the inner mutex, so the poisoning is cleared at once, before the value
+        // goes to another execution, and recorded in this execution's state below. Teardown
+        // unwinding the task is no panic, which mustn't poison it.
+        self.inner = None;
+        let poisoned = self.mutex.inner.is_poisoned();
+        if poisoned {
+            self.mutex.inner.clear_poison();
+        }
+        let poisons = poisoned && !ExecutionState::unwinding_for_teardown();
+        self.mutex.value.release();
+
         // Execution teardown can unwind the task from the yield point in `release` (see
         // `ExecutionState::tear_down`). `release` releases the permit even then, and the rest of
         // unlocking has to happen too, so that the destructors that teardown runs later can lock the
         // mutex.
-        struct Unlock<'g, 'a, T: ?Sized>(&'g mut MutexGuard<'a, T>);
+        struct Unlock<'g, 'a, T: ?Sized> {
+            guard: &'g MutexGuard<'a, T>,
+            poisons: bool,
+        }
         impl<T: ?Sized> Drop for Unlock<'_, '_, T> {
             #[inline]
             fn drop(&mut self) {
-                let guard = &mut *self.0;
-                // Release the inner mutex. Teardown unwinding the task is no panic, which mustn't
-                // poison it.
-                let clear_poison = std::thread::panicking()
-                    && !guard.mutex.inner.is_poisoned()
-                    && ExecutionState::unwinding_for_teardown();
-                guard.inner = None;
-                if clear_poison {
-                    guard.mutex.inner.clear_poison();
+                let mutex = self.guard.mutex;
+                // Where the execution's state can't be reached, there is no bookkeeping to do (see
+                // `ExecutionState::should_stop`).
+                if let Some(state) = mutex.state.try_get(Mutex::<T>::fresh_state) {
+                    trace!(semaphore=?mutex.semaphore, "releasing mutex {:p}", mutex);
+                    let mut state = state.borrow_mut();
+                    state.holder = None;
+                    state.poisoned |= self.poisons;
                 }
-
-                let mut state = guard.mutex.state.borrow_mut();
-                trace!(semaphore=?guard.mutex.semaphore, "releasing mutex {:p}", guard.mutex);
-                state.holder = None;
             }
         }
-        let unlock = Unlock(self);
+        let unlock = Unlock { guard: self, poisons };
 
         // Release a permit (this is a yield point)
-        unlock.0.mutex.semaphore.release(1);
+        unlock.guard.mutex.semaphore.release(1);
     }
 }
 

@@ -61,10 +61,11 @@ pub use std::sync::atomic::Ordering;
 
 use crate::sync::{ResourceSignature, ResourceType};
 use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::per_execution::PerExecution;
 use shuttle_engine::runtime::task::clock::VectorClock;
 use shuttle_engine::runtime::thread;
 use shuttle_engine::silence_warnings;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::panic::RefUnwindSafe;
 
 static PRINTED_ORDERING_WARNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -117,12 +118,57 @@ pub use std::sync::atomic::compiler_fence;
 /// Base type for atomic implementations. This type handles generating the right interleavings for
 /// all atomics. The interesting stuff is in `load`, `store`, `swap`, and `try_update`; all other
 /// atomic operations are implemented in terms of those four primitives.
-#[derive(Debug)]
+///
+/// The value and its clock are kept once for each execution (see [`PerExecution`]): an execution that
+/// uses an atomic it didn't create, such as one in a `static`, finds the value it was created with,
+/// whatever an earlier execution stored.
 struct Atomic<T> {
-    inner: RefCell<T>,
-    clock: RefCell<Option<VectorClock>>, // wrapped in option to support the const new()
+    /// The value that each execution finds in the atomic, until it stores one of its own.
+    init: T,
+    state: PerExecution<AtomicState<T>>,
     #[allow(unused)]
     signature: ResourceSignature,
+}
+
+// Increment the clock for the current thread, and update the atomic's clock with it.
+// The atomic "inhales" the clock from the thread.
+fn inhale_clock<T>(state: &AtomicState<T>) {
+    ExecutionState::with(|s| {
+        let clock = s.increment_clock();
+        state.clock.borrow_mut().update(clock);
+    });
+}
+
+// Increment the clock for the current thread, and update with the atomic's current clock.
+// The atomic "exhales" its clock to the thread.
+fn exhale_clock<T>(state: &AtomicState<T>) {
+    ExecutionState::with(|s| {
+        s.update_clock(&state.clock.borrow());
+    });
+}
+
+/// An execution's value of an atomic.
+struct AtomicState<T> {
+    value: Cell<T>,
+    // The clock associated with the atomic starts out as all zeros, in each execution, rather than
+    // as the creator's clock, because the constructor is a `const fn`. It should be safe to
+    // initialize the Atomic's clock to all-zeros because the only way for another thread to access
+    // this Atomic is for a reference to it to be passed to it via some other synchronization
+    // mechanism, which will carry the knowledge about the owning thread's clock.
+    // TODO Check that the argument above is sound
+    clock: RefCell<VectorClock>,
+}
+
+impl<T: Copy + std::fmt::Debug + 'static> std::fmt::Debug for Atomic<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Atomic")
+            .field(
+                "value",
+                &self.state.try_get(|| self.fresh_state()).map(|state| state.value.get()),
+            )
+            .field("signature", &self.signature)
+            .finish()
+    }
 }
 
 // Safety: Atomic is never actually passed across true threads, only across continuations. The
@@ -133,58 +179,74 @@ impl<T: RefUnwindSafe> RefUnwindSafe for Atomic<T> {}
 impl<T> Atomic<T> {
     #[track_caller]
     const fn new(v: T) -> Self {
-        // Since this is a `const fn`, the clock associated with this Atomic is assigned a const value of None
-        // (which represents all zeros).  At the time of creation of the atomic, however, we have more causal
-        // knowledge (the value of the current thread's vector clock).  However, it should be safe to initialize
-        // the Atomic's clock to all-zeros because the only way for another thread to access this Atomic is for
-        // a reference to it to be passed to it via some other synchronization mechanism, which will carry the
-        // knowledge about the owning thread's clock.
-        // TODO Check that the argument above is sound
         Self {
-            inner: RefCell::new(v),
-            clock: RefCell::new(None),
+            init: v,
+            state: PerExecution::new(),
             signature: ResourceSignature::new_const(ResourceType::Atomic),
         }
     }
 }
 
-impl<T: Copy + Eq> Atomic<T> {
+impl<T: Copy + 'static> Atomic<T> {
+    /// The state of an execution that hasn't used the atomic yet.
+    fn fresh_state(&self) -> AtomicState<T> {
+        AtomicState {
+            value: Cell::new(self.init),
+            clock: RefCell::new(VectorClock::new()),
+        }
+    }
+
+    /// The current execution's value and clock.
+    #[inline]
+    fn state(&self) -> &AtomicState<T> {
+        self.state.get(|| self.fresh_state())
+    }
+}
+
+impl<T: Copy + Eq + 'static> Atomic<T> {
     fn get_mut(&mut self) -> &mut T {
-        self.exhale_clock();
-        self.inner.get_mut()
+        let state = self.state();
+        exhale_clock(state);
+        // Safety: `&mut self` rules out any other reference to the atomic, and so to its state, for
+        // as long as the returned reference lives.
+        unsafe { &mut *state.value.as_ptr() }
     }
 
     fn into_inner(self) -> T {
-        self.exhale_clock();
-        self.inner.into_inner()
+        let state = self.state();
+        exhale_clock(state);
+        state.value.get()
     }
 
     fn load(&self, order: Ordering) -> T {
         maybe_warn_about_ordering(order);
 
         thread::switch();
-        self.exhale_clock();
-        let value = *self.inner.borrow();
-        value
+        // The execution's state of the atomic, looked up once: for a `static` atomic the lookup
+        // goes through the execution's storage (see `PerExecution`).
+        let state = self.state();
+        exhale_clock(state);
+        state.value.get()
     }
 
     fn store(&self, val: T, order: Ordering) {
         maybe_warn_about_ordering(order);
 
         thread::switch();
-        self.inhale_clock();
-        *self.inner.borrow_mut() = val;
+        let state = self.state();
+        inhale_clock(state);
+        state.value.set(val);
     }
 
-    fn swap(&self, mut val: T, order: Ordering) -> T {
+    fn swap(&self, val: T, order: Ordering) -> T {
         maybe_warn_about_ordering(order);
 
         // swap behaves like { let x = load() ; store(val) ; x }
         thread::switch();
-        self.exhale_clock(); // for the load
-        self.inhale_clock(); // for the store
-        std::mem::swap(&mut *self.inner.borrow_mut(), &mut val);
-        val
+        let state = self.state();
+        exhale_clock(state); // for the load
+        inhale_clock(state); // for the store
+        state.value.replace(val)
     }
 
     fn try_update<F>(&self, set_order: Ordering, fetch_order: Ordering, mut f: F) -> Result<T, T>
@@ -202,45 +264,20 @@ impl<T: Copy + Eq> Atomic<T> {
         // `update` methods run user callbacks, so they loop over `load` and `compare_exchange_weak`
         // instead, just like `std`.
         thread::switch();
-        self.exhale_clock(); // for the load()
-        let current = *self.inner.borrow();
-        let ret = if let Some(new) = f(current) {
-            *self.inner.borrow_mut() = new;
-            self.inhale_clock(); // for the store()
+        let state = self.state();
+        exhale_clock(state); // for the load()
+        let current = state.value.get();
+        if let Some(new) = f(current) {
+            state.value.set(new);
+            inhale_clock(state); // for the store()
             Ok(current)
         } else {
             Err(current)
-        };
-        ret
+        }
     }
 
     unsafe fn raw_load(&self) -> T {
-        *self.inner.borrow()
-    }
-
-    fn init_clock(&self) {
-        self.clock.borrow_mut().get_or_insert(VectorClock::new());
-    }
-
-    // Increment the clock for the current thread, and update the Atomic's clock with it
-    // The Atomic (self) "inhales" the clock from the thread
-    fn inhale_clock(&self) {
-        self.init_clock();
-        ExecutionState::with(|s| {
-            let clock = s.increment_clock();
-            let mut self_clock = self.clock.borrow_mut();
-            self_clock.as_mut().unwrap().update(clock);
-        });
-    }
-
-    // Increment the clock for the current thread, and update with the Atomic's current clock
-    // The Atomic (self) "exhales" its clock to the thread
-    fn exhale_clock(&self) {
-        self.init_clock();
-        ExecutionState::with(|s| {
-            let self_clock = self.clock.borrow();
-            s.update_clock(self_clock.as_ref().unwrap());
-        });
+        self.state().value.get()
     }
 
     #[cfg(test)]
