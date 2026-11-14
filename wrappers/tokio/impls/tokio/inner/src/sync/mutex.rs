@@ -79,6 +79,22 @@ impl<T: ?Sized> Mutex<T> {
         }
     }
 
+    /// Creates a new lock in an unlocked state ready for use.
+    ///
+    /// Equivalent to [`Mutex::new`], except that it can be used in static variables. The state of
+    /// the lock is per execution, so a `static` mutex is unlocked at the start of every execution;
+    /// its value is the one it was created with (see the type's docs).
+    pub const fn const_new(t: T) -> Self
+    where
+        T: Sized,
+    {
+        Self {
+            semaphore: BatchSemaphore::const_new(1, Fairness::StrictlyFair),
+            value: ValueLock::new(),
+            inner: UnsafeCell::new(t),
+        }
+    }
+
     async fn acquire(&self) {
         trace!("acquiring lock {:p}", self);
         self.semaphore.acquire(1).await.unwrap_or_else(|_| {

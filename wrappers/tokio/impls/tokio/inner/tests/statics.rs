@@ -30,6 +30,36 @@ fn semaphore_resets() {
     );
 }
 
+/// A `static` tokio mutex and rwlock are unlocked at the start of every execution, and their value
+/// is the one they were created with, which every execution shares.
+#[test]
+fn locks_reset() {
+    static LOCK: Mutex<usize> = Mutex::const_new(0);
+    static RW: RwLock<usize> = RwLock::const_new(0);
+    static EXECUTIONS: StdAtomicUsize = StdAtomicUsize::new(0);
+    check_random(
+        || {
+            let executions_before = execution(&EXECUTIONS);
+            let mut guard = LOCK.try_lock().expect("a static mutex starts an execution unlocked");
+            assert_eq!(*guard, executions_before);
+            *guard += 1;
+            drop(guard);
+
+            let mut guard = RW.try_write().expect("a static rwlock starts an execution unlocked");
+            assert_eq!(*guard, executions_before);
+            *guard += 1;
+            drop(guard);
+
+            // The guards of this execution are gone, so the locks are free again.
+            future::block_on(async {
+                drop(LOCK.lock().await);
+                drop(RW.read().await);
+            });
+        },
+        10,
+    );
+}
+
 #[test]
 fn once_cell_resets() {
     static CELL: OnceCell<usize> = OnceCell::const_new();
@@ -164,4 +194,88 @@ fn constructors_and_destructors_outside_an_execution() {
     drop(mpsc::unbounded_channel::<usize>());
     drop(oneshot::channel::<usize>());
     drop(watch::channel(0usize));
+}
+
+/// The message of the panic for a guard of a test that runs at the same time on the thread
+/// `while_another_test_holds` names "holder" (see `ValueLock`).
+const HELD_BY_ANOTHER_TEST: &str = "a guard of the execution on thread 'holder', which runs at the same time";
+
+/// Runs `hold` as a test of its own, in one execution, on a thread named "holder". `hold` takes some
+/// `static` locks and, while it holds them, calls the function it is given, which runs each of
+/// `tries` as a test of its own, on another thread, at the same time. Each must fail; returns their
+/// messages.
+fn while_another_test_holds(hold: impl Fn(&dyn Fn()) + Send + Sync + 'static, tries: Vec<fn()>) -> Vec<String> {
+    let (held, holding) = std::sync::mpsc::channel();
+    let (done, is_done) = std::sync::mpsc::channel::<()>();
+    let is_done = std::sync::Mutex::new(is_done);
+    let holder = std::thread::Builder::new()
+        .name("holder".into())
+        .spawn(move || {
+            check_random(
+                move || {
+                    hold(&|| {
+                        held.send(()).unwrap();
+                        is_done.lock().unwrap().recv().unwrap();
+                    })
+                },
+                1,
+            )
+        })
+        .unwrap();
+    holding.recv().unwrap();
+    let messages = tries
+        .into_iter()
+        .map(|tried| {
+            let result = std::thread::spawn(move || check_random(tried, 1)).join();
+            let panic = result.expect_err("a test that takes a lock that another test holds fails");
+            panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_default()
+        })
+        .collect();
+    done.send(()).unwrap();
+    holder.join().unwrap();
+    messages
+}
+
+/// A test that takes a `static` tokio mutex that a test running at the same time holds panics,
+/// naming that test's thread, also from a `try_lock`, which the mutex's state grants: failing it
+/// would make the execution depend on the other test.
+#[test]
+fn a_static_mutex_held_by_a_test_running_at_the_same_time_is_reported() {
+    static LOCK: Mutex<usize> = Mutex::const_new(0);
+    let messages = while_another_test_holds(
+        |meanwhile| {
+            future::block_on(async {
+                let _guard = LOCK.lock().await;
+                meanwhile();
+            })
+        },
+        vec![|| drop(LOCK.try_lock()), || drop(future::block_on(LOCK.lock()))],
+    );
+    for message in messages {
+        assert!(message.contains(HELD_BY_ANOTHER_TEST), "another panic: {message}");
+    }
+}
+
+/// The same for a `static` tokio rwlock, even when both tests only read it.
+#[test]
+fn a_static_rwlock_held_by_a_test_running_at_the_same_time_is_reported_even_to_a_reader() {
+    static PAIR: RwLock<(usize, usize)> = RwLock::const_new((0, 0));
+    let messages = while_another_test_holds(
+        |meanwhile| {
+            future::block_on(async {
+                let _guard = PAIR.read().await;
+                meanwhile();
+            })
+        },
+        vec![|| drop(PAIR.try_read()), || drop(future::block_on(PAIR.read())), || {
+            drop(future::block_on(PAIR.write()))
+        }],
+    );
+    for message in messages {
+        assert!(message.contains(HELD_BY_ANOTHER_TEST), "another panic: {message}");
+    }
 }

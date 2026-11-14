@@ -75,6 +75,39 @@ impl<T: ?Sized> RwLock<T> {
         rwlock
     }
 
+    /// Creates a new instance of an `RwLock<T>` which is unlocked.
+    ///
+    /// Equivalent to [`RwLock::new`], except that it can be used in static variables. The state of
+    /// the lock is per execution, so a `static` lock is unlocked at the start of every execution;
+    /// its value is the one it was created with (see the type's docs).
+    pub const fn const_new(value: T) -> RwLock<T>
+    where
+        T: Sized,
+    {
+        Self::const_with_max_readers(value, MAX_READERS)
+    }
+
+    /// Creates a new instance of an `RwLock<T>` which is unlocked and allows a maximum of
+    /// `max_readers` concurrent readers.
+    ///
+    /// Equivalent to [`RwLock::with_max_readers`], except that it can be used in static variables.
+    pub const fn const_with_max_readers(value: T, max_readers: usize) -> RwLock<T>
+    where
+        T: Sized,
+    {
+        assert!(max_readers != 0, "a RwLock may not be created with 0 readers");
+        assert!(
+            max_readers <= MAX_READERS,
+            "a RwLock may not be created with more readers than MAX_READERS"
+        );
+        RwLock {
+            max_readers,
+            sem: BatchSemaphore::const_new(max_readers, Fairness::StrictlyFair),
+            value: ValueLock::new(),
+            inner: UnsafeCell::new(value),
+        }
+    }
+
     /// Locks this `RwLock` with shared read access, causing the current task
     /// to yield until the lock has been acquired.
     ///
