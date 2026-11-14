@@ -53,6 +53,10 @@ pub mod sealed {
     }
 }
 
+/// The type of an op's `rw_flags`, as the real crate had it.
+#[deprecated]
+pub type RwFlags = u32;
+
 /// A file descriptor, mirroring [`io_uring::types::Fd`](https://docs.rs/io-uring/0.7/io_uring/types/struct.Fd.html).
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -70,7 +74,7 @@ bitflags! {
     /// Options for [`Timeout`](crate::opcode::Timeout), mirroring
     /// `IORING_TIMEOUT_*`. The simulation accepts them and ignores the
     /// clock-selection ones: a timeout fires whenever Shuttle schedules it.
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct TimeoutFlags: u32 {
         const ABS = 1;
         const BOOTTIME = 1 << 2;
@@ -84,7 +88,7 @@ bitflags! {
 bitflags! {
     /// Options for [`Fsync`](crate::opcode::Fsync), mirroring
     /// `IORING_FSYNC_*`.
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct FsyncFlags: u32 {
         const DATASYNC = 1;
     }
@@ -132,6 +136,7 @@ impl From<Duration> for Timespec {
 /// Arguments for [`Submitter::submit_with_args`](crate::Submitter::submit_with_args),
 /// mirroring [`io_uring::types::SubmitArgs`](https://docs.rs/io-uring/0.7/io_uring/types/struct.SubmitArgs.html): the real crate's two lifetimes,
 /// a timeout, and a signal mask the simulation ignores.
+#[derive(Debug, Clone, Copy)]
 pub struct SubmitArgs<'prev: 'now, 'now> {
     pub(crate) timeout: Option<Timespec>,
     _prev: PhantomData<&'prev ()>,
@@ -163,6 +168,11 @@ impl<'prev, 'now> SubmitArgs<'prev, 'now> {
             _prev: PhantomData,
             _now: PhantomData,
         }
+    }
+
+    /// Accepted for source compatibility; Shuttle has no clock to wait by.
+    pub fn min_wait_usec(self, _min_wait_usec: u32) -> Self {
+        self
     }
 
     /// Bound the wait by `timespec`.

@@ -113,7 +113,7 @@ pub mod faults;
 mod host;
 mod kernel;
 pub mod opcode;
-mod register;
+pub mod register;
 pub mod squeue;
 mod submit;
 pub mod types;
@@ -125,7 +125,9 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::sync::Arc;
 
 pub use async_fd::{AsyncFd, AsyncFdReadyGuard, Interest, TryIoError};
+pub use cqueue::CompletionQueue;
 pub use register::Probe;
+pub use squeue::SubmissionQueue;
 pub use submit::{EnterFlags, Submitter};
 
 use host::Host;
@@ -160,6 +162,11 @@ impl Parameters {
 
     pub fn cq_entries(&self) -> u32 {
         self.cq_entries
+    }
+
+    /// Always zero: there is no SQ polling thread.
+    pub fn sq_thread_idle(&self) -> u32 {
+        0
     }
 
     pub fn is_setup_sqpoll(&self) -> bool {
@@ -216,12 +223,43 @@ impl Parameters {
     pub fn is_feature_native_workers(&self) -> bool {
         self.kernel.has(since::NATIVE_WORKERS)
     }
+
+    /// `false`: registered resources, and so their tags, are not simulated.
+    pub fn is_feature_resource_tagging(&self) -> bool {
+        false
+    }
+
+    /// `false`: `IOSQE_CQE_SKIP_SUCCESS` completes with `-EINVAL`.
+    pub fn is_feature_skip_cqe_on_success(&self) -> bool {
+        false
+    }
+
+    /// `false`: linked SQEs complete with `-EINVAL`.
+    pub fn is_feature_linked_file(&self) -> bool {
+        false
+    }
+
+    /// `false`: the simulation has no socket opcodes.
+    pub fn is_feature_recvsend_bundle(&self) -> bool {
+        false
+    }
+
+    /// `false`: a minimum wait needs a clock, which Shuttle does not have.
+    pub fn is_feature_min_timeout(&self) -> bool {
+        false
+    }
+
+    /// `false`: `IORING_ENTER_NO_IOWAIT` is not simulated.
+    pub fn is_feature_no_iowait(&self) -> bool {
+        false
+    }
 }
 
 /// Ring setup options, mirroring the real crate's `Builder`.
 ///
 /// `SQPOLL` and `IOPOLL` fail the build with `EINVAL`; the task-run flags are
-/// accepted (see the crate docs on deferred task work).
+/// accepted (see the crate docs on deferred task work), and so are the options
+/// that make no difference to the simulation.
 #[derive(Clone)]
 pub struct Builder<S = squeue::Entry, C = cqueue::Entry>
 where
@@ -239,7 +277,20 @@ where
 }
 
 impl<S: squeue::EntryMarker, C: cqueue::EntryMarker> Builder<S, C> {
+    /// Accepted for source compatibility: the simulation maps no memory for a
+    /// child process to inherit.
+    pub fn dontfork(&mut self) -> &mut Self {
+        self
+    }
+
     pub fn setup_sqpoll(&mut self, _idle: u32) -> &mut Self {
+        self.sqpoll = true;
+        self
+    }
+
+    /// Fails the build with `EINVAL`: the CPU is the SQ polling thread's,
+    /// which needs `SQPOLL`.
+    pub fn setup_sqpoll_cpu(&mut self, _cpu: u32) -> &mut Self {
         self.sqpoll = true;
         self
     }
@@ -283,6 +334,18 @@ impl<S: squeue::EntryMarker, C: cqueue::EntryMarker> Builder<S, C> {
     pub fn setup_cqsize(&mut self, entries: u32) -> &mut Self {
         self.need(since::SETUP_CQSIZE);
         self.cq_entries = Some(entries);
+        self
+    }
+
+    /// Accepted: the simulation has no worker pool to share.
+    pub fn setup_attach_wq(&mut self, _fd: RawFd) -> &mut Self {
+        self.need(since::SETUP_ATTACH_WQ);
+        self
+    }
+
+    /// Accepted: the simulation has no SQ array.
+    pub fn setup_no_sqarray(&mut self) -> &mut Self {
+        self.need(since::SETUP_NO_SQARRAY);
         self
     }
 

@@ -89,11 +89,13 @@ pub(crate) mod since {
 
     pub(crate) const SETUP_CQSIZE: Release = (5, 5);
     pub(crate) const SETUP_CLAMP: Release = (5, 6);
+    pub(crate) const SETUP_ATTACH_WQ: Release = (5, 6);
     pub(crate) const SETUP_SUBMIT_ALL: Release = (5, 18);
     pub(crate) const SETUP_COOP_TASKRUN: Release = (5, 19);
     pub(crate) const SETUP_TASKRUN_FLAG: Release = (5, 19);
     pub(crate) const SETUP_SINGLE_ISSUER: Release = (6, 0);
     pub(crate) const SETUP_DEFER_TASKRUN: Release = (6, 1);
+    pub(crate) const SETUP_NO_SQARRAY: Release = (6, 6);
 
     pub(crate) const REGISTER_FILES_UPDATE: Release = (5, 5);
     pub(crate) const REGISTER_EVENTFD_ASYNC: Release = (5, 6);

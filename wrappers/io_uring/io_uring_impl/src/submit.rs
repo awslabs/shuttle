@@ -13,7 +13,7 @@ use crate::version::{Release, since};
 
 bitflags! {
     /// `io_uring_enter` flags, mirroring the real crate's `EnterFlags`.
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct EnterFlags: u32 {
         const GETEVENTS = 1;
         const SQ_WAKEUP = 1 << 1;
@@ -21,6 +21,8 @@ bitflags! {
         const EXT_ARG = 1 << 3;
         const REGISTERED_RING = 1 << 4;
         const ABS_TIMER = 1 << 5;
+        const EXT_ARG_REG = 1 << 6;
+        const NO_IOWAIT = 1 << 7;
     }
 }
 

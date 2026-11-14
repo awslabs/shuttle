@@ -1834,3 +1834,63 @@ fn a_cut_short_wait_succeeds_with_a_completion_visible() {
         ITERATIONS,
     );
 }
+
+/// `fill` takes as many visible completions as the slice has room for, and
+/// leaves the rest visible; the entries' accessors are the real crate's.
+#[test]
+fn fill_takes_as_many_completions_as_fit() {
+    check_random(
+        || {
+            let ring = IoUring::new(8).unwrap();
+            for ud in 1..=3 {
+                let mut entry = opcode::Nop::new().build();
+                entry.set_user_data(ud);
+                assert_eq!(entry.get_opcode(), u32::from(opcode::Nop::CODE));
+                push(&ring, entry);
+            }
+            ring.submit_and_wait(3).unwrap();
+            // SAFETY: the only CQ handle.
+            let mut cq = unsafe { ring.completion_shared() };
+            let mut slots = [const { std::mem::MaybeUninit::uninit() }; 2];
+            let mut seen: Vec<u64> = cq.fill(&mut slots).iter().map(cqueue::Entry::user_data).collect();
+            assert_eq!((seen.len(), cq.len()), (2, 1));
+            let mut last = cq.next().unwrap();
+            seen.push(last.user_data());
+            seen.sort();
+            assert_eq!(seen, [1, 2, 3]);
+            last.set_user_data(9);
+            assert_eq!(last.user_data(), 9);
+        },
+        ITERATIONS,
+    );
+}
+
+/// Set a ring up with `setup` applied to the builder.
+fn build_with(
+    setup: impl FnOnce(&mut shuttle_io_uring_impl::Builder) -> &mut shuttle_io_uring_impl::Builder,
+) -> std::io::Result<()> {
+    let mut builder = IoUring::<squeue::Entry, cqueue::Entry>::builder();
+    setup(&mut builder).build(8).map(drop)
+}
+
+/// The setup options that make no difference to the simulation are accepted,
+/// unless the kernel the ring runs as is older than the option;
+/// `setup_sqpoll_cpu`, which needs `SQPOLL`, fails as `SQPOLL` does.
+#[test]
+fn setup_options_without_a_model_are_accepted_as_the_kernel_would() {
+    check_random(
+        || {
+            let einval = |result: std::io::Result<()>| result.unwrap_err().raw_os_error() == Some(libc::EINVAL);
+            build_with(|b| b.dontfork()).unwrap();
+            build_with(|b| b.setup_attach_wq(0)).unwrap();
+            build_with(|b| b.setup_no_sqarray()).unwrap();
+            assert!(einval(build_with(|b| b.setup_sqpoll_cpu(0))));
+            as_kernel(Kernel::Linux5_4, || {
+                build_with(|b| b.dontfork()).unwrap();
+                assert!(einval(build_with(|b| b.setup_attach_wq(0))));
+                assert!(einval(build_with(|b| b.setup_no_sqarray())));
+            });
+        },
+        1,
+    );
+}

@@ -5,6 +5,8 @@ edition = "2024"
 license = "MIT"
 description = "Internal implementation of the `io-uring` crate for use with the Shuttle concurrency testing tool: a simulated kernel ring whose completions Shuttle schedules. Do not depend on this crate directly; use `shuttle-io-uring`."
 repository = "https://github.com/awslabs/shuttle"
+# These tests share their sources with `shuttle-io-uring`'s tests, which are outside this package.
+exclude = ["tests/parity.rs"]
 
 # io_uring is Linux's; on other targets the crate is empty (see src/lib.rs).
 [target.'cfg(target_os = "linux")'.dependencies]

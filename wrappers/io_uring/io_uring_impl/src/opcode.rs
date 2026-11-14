@@ -69,6 +69,12 @@ impl Read {
         self
     }
 
+    /// Accepted for source compatibility. A buffer group takes effect only
+    /// with `IOSQE_BUFFER_SELECT`, which posts `-EINVAL`.
+    pub const fn buf_group(self, _buf_group: u16) -> Self {
+        self
+    }
+
     pub fn build(self) -> Entry {
         Entry::new(
             SqOp::Read {
@@ -121,6 +127,11 @@ impl Write {
     /// behave as the kernel's do.
     pub const fn rw_flags(mut self, rw_flags: i32) -> Self {
         self.rw_flags = rw_flags;
+        self
+    }
+
+    /// Accepted for source compatibility; write streams are not simulated.
+    pub const fn write_stream(self, _write_stream: u8) -> Self {
         self
     }
 
@@ -282,6 +293,17 @@ impl Fsync {
             fd: fd.into(),
             flags: FsyncFlags::empty(),
         }
+    }
+
+    /// Accepted: the simulation syncs the whole file, which covers the range
+    /// this and [`len`](Self::len) select.
+    pub const fn offset(self, _offset: u64) -> Self {
+        self
+    }
+
+    /// Accepted, as [`offset`](Self::offset) is.
+    pub const fn len(self, _len: u32) -> Self {
+        self
     }
 
     pub const fn flags(mut self, flags: FsyncFlags) -> Self {

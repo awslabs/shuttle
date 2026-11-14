@@ -1,6 +1,7 @@
 //! Completion queue, mirroring [`io_uring::cqueue`](https://docs.rs/io-uring/0.7/io_uring/cqueue).
 
 use std::fmt;
+use std::mem::MaybeUninit;
 
 use crate::kernel::Ring;
 
@@ -24,6 +25,11 @@ impl Entry {
     /// The op's result: non-negative on success, `-errno` on failure.
     pub fn result(&self) -> i32 {
         self.result
+    }
+
+    /// Replace the `user_data`.
+    pub fn set_user_data(&mut self, user_data: u64) {
+        self.user_data = user_data;
     }
 
     /// The CQE flags. Always zero: the simulation has no multishot ops,
@@ -112,6 +118,17 @@ impl<'a, E: EntryMarker> CompletionQueue<'a, E> {
     pub fn enable_eventfd(&self) {
         self.ring.set_eventfd_disabled(false);
     }
+
+    /// Take as many of the visible completions as `entries` has room for,
+    /// and return them.
+    pub fn fill<'b>(&mut self, entries: &'b mut [MaybeUninit<E>]) -> &'b mut [E] {
+        let len = self.len().min(entries.len());
+        for entry in &mut entries[..len] {
+            entry.write(self.next().expect("a visible completion"));
+        }
+        // SAFETY: the first `len` entries were just written.
+        unsafe { std::slice::from_raw_parts_mut(entries.as_mut_ptr().cast::<E>(), len) }
+    }
 }
 
 impl<E: EntryMarker> Iterator for CompletionQueue<'_, E> {
@@ -133,6 +150,33 @@ impl<E: EntryMarker> Iterator for CompletionQueue<'_, E> {
 }
 
 impl<E: EntryMarker> ExactSizeIterator for CompletionQueue<'_, E> {}
+
+/// `IORING_CQE_F_BUF_MORE`. The simulation's completions carry no flags, so
+/// this and the other flag tests are `false` (or `None`) for them; they are
+/// here for source compatibility.
+pub fn buffer_more(flags: u32) -> bool {
+    flags & (1 << 4) != 0
+}
+
+/// The provided buffer an op used, from `IORING_CQE_F_BUFFER`.
+pub fn buffer_select(flags: u32) -> Option<u16> {
+    (flags & 1 != 0).then_some((flags >> 16) as u16)
+}
+
+/// `IORING_CQE_F_MORE`.
+pub fn more(flags: u32) -> bool {
+    flags & (1 << 1) != 0
+}
+
+/// `IORING_CQE_F_SOCK_NONEMPTY`.
+pub fn sock_nonempty(flags: u32) -> bool {
+    flags & (1 << 2) != 0
+}
+
+/// `IORING_CQE_F_NOTIF`.
+pub fn notif(flags: u32) -> bool {
+    flags & (1 << 3) != 0
+}
 
 mod private {
     pub trait Sealed {}

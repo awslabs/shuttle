@@ -53,9 +53,19 @@ impl Entry {
         self
     }
 
+    /// Set the `user_data` the completion carries back, in place.
+    pub fn set_user_data(&mut self, user_data: u64) {
+        self.user_data = user_data;
+    }
+
     /// The `user_data` set on this entry.
     pub fn get_user_data(&self) -> u64 {
         self.user_data
+    }
+
+    /// The entry's opcode.
+    pub fn get_opcode(&self) -> u32 {
+        u32::from(self.op.code())
     }
 
     /// Accepted for source compatibility; credentials are not simulated.
@@ -74,7 +84,7 @@ bitflags! {
     /// completes inline). The others post `-EINVAL`, so a consumer that
     /// needs links or drains learns at once that the simulation does not
     /// model them.
-    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Flags: u8 {
         const FIXED_FILE = 1 << 0;
         const IO_DRAIN = 1 << 1;
@@ -236,6 +246,11 @@ impl<'a, E: EntryMarker> SubmissionQueue<'a, E> {
 
     /// Always `false`: the simulation has no SQ polling thread to wake.
     pub fn need_wakeup(&self) -> bool {
+        false
+    }
+
+    /// Always `false`, as [`need_wakeup`](Self::need_wakeup).
+    pub fn need_wakeup_after_intermittent_seqcst(&self) -> bool {
         false
     }
 
