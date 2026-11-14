@@ -1,0 +1,13 @@
+[package]
+name = "shuttle-thread-impl"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Internal implementation of `std::thread` for use with the Shuttle concurrency testing tool. Do not depend on this crate directly; use `shuttle-thread`."
+repository = "https://github.com/awslabs/shuttle"
+
+[dependencies]
+# `thread_local!`, `JoinHandle::is_finished`, `thread::available_parallelism` and
+# `Builder::{spawn_scoped, spawn_unchecked}` arrived together with this crate, so the first release
+# that satisfies it is the one that carries them. Tighten this to that release when it is published.
+shuttle = { path = "../../../shuttle", version = "0.9" }

@@ -1,0 +1,19 @@
+[package]
+name = "shuttle-thread"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "std::thread wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+shuttle = [ "dep:shuttle-thread-impl" ]
+
+[dependencies]
+cfg-if = "1.0"
+shuttle-thread-impl = { path = "./thread_impl", version = "0.1.0", optional = true }
+
+[dev-dependencies]
+# The tests of the `shuttle` feature need a runner. This is not a dependency of the crate itself,
+# so it does not pull Shuttle into a consumer that builds without the feature.
+shuttle = { path = "../../shuttle", version = "0.9" }

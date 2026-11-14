@@ -19,7 +19,8 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::panic::{self, Location};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use tracing::subscriber::NoSubscriber;
 use tracing::{trace, Span};
 
@@ -48,6 +49,166 @@ thread_local! {
     // access must not emit the event again: `tracing` only refuses re-entrant calls for scoped
     // subscribers, and with a global one this would recurse until the stack overflows.
     static TRACING_TRY_WITH: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Source of the identifiers of executions, unique among all the executions of the process, on any
+/// thread. Zero means no execution.
+static NEXT_EXECUTION_ID: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+thread_local! {
+    // The identifier of the execution that this thread runs, or zero if it runs none. Outside
+    // `EXECUTION_STATE`, so that a primitive can find out which execution it is used in while the
+    // state is borrowed, and without borrowing it (see `PerExecution`).
+    static CURRENT_EXECUTION_ID: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The identifier of the execution that the current thread runs, if it runs one: from the start of
+/// `Execution::run` to the end of the execution's teardown.
+#[inline]
+pub(crate) fn current_execution_id() -> Option<usize> {
+    let id = CURRENT_EXECUTION_ID.with(Cell::get);
+    (id != 0).then_some(id)
+}
+
+/// Marks the current thread as running a new execution, until it is dropped.
+pub(crate) struct CurrentExecutionId {
+    /// The execution that this one runs inside of, if any, which runs again once this one ends.
+    previous: usize,
+    /// What this thread tells other threads about the executions it runs.
+    thread: Arc<ExecutionThread>,
+}
+
+impl CurrentExecutionId {
+    pub(crate) fn enter() -> Self {
+        let id = NEXT_EXECUTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // `PerExecution` reserves the largest identifiers for itself.
+        assert!(id < usize::MAX - 8, "execution id overflow");
+        let previous = CURRENT_EXECUTION_ID.with(|current| current.replace(id));
+        let thread = ExecutionThread::current();
+        thread.enter(id, previous);
+        Self { previous, thread }
+    }
+}
+
+impl Drop for CurrentExecutionId {
+    fn drop(&mut self) {
+        CURRENT_EXECUTION_ID.with(|current| current.set(self.previous));
+        self.thread.exit(self.previous);
+    }
+}
+
+/// What an OS thread that runs executions tells other threads about them: which ones it runs now.
+///
+/// A `ValueLock` that finds another execution's guard holding its value says whether that
+/// execution runs at the same time, on another thread, or has ended, leaving the value held for
+/// good. Execution identifiers are unique in the process and an execution runs on the one thread
+/// that called `Execution::run` from start to end, so an execution has ended exactly when no thread
+/// runs it any more.
+///
+/// Each thread publishes its executions in one of these, kept for the thread's life, so that
+/// starting and ending an execution only stores to it. Only a lock that reports another
+/// execution's guard looks at the others' (see [`execution_thread`]).
+#[derive(Debug)]
+pub(crate) struct ExecutionThread {
+    /// The execution that the thread runs, the innermost one if executions nest, or zero.
+    current: AtomicUsize,
+    /// The executions that `current` runs inside of, outermost first. Empty unless an execution
+    /// runs another one on its thread, which suspends it until the inner one ends.
+    outer: Mutex<Vec<usize>>,
+    /// The thread, for messages.
+    handle: std::thread::Thread,
+}
+
+/// Every thread that has run an execution and is still alive, for [`execution_thread`].
+static EXECUTION_THREADS: Mutex<Vec<Weak<ExecutionThread>>> = Mutex::new(Vec::new());
+
+thread_local! {
+    static THIS_EXECUTION_THREAD: Arc<ExecutionThread> = ExecutionThread::register();
+}
+
+impl ExecutionThread {
+    /// The current thread's.
+    fn current() -> Arc<Self> {
+        // Once the thread-local is gone (an execution that a thread-local's destructor runs), the
+        // execution gets one of its own, which it keeps alive itself (see `CurrentExecutionId`).
+        THIS_EXECUTION_THREAD
+            .try_with(Arc::clone)
+            .unwrap_or_else(|_| Self::register())
+    }
+
+    /// A new one for the current thread, which [`execution_thread`] finds while it lives.
+    fn register() -> Arc<Self> {
+        let thread = Arc::new(Self {
+            current: AtomicUsize::new(0),
+            outer: Mutex::new(Vec::new()),
+            handle: std::thread::current(),
+        });
+        let mut threads = EXECUTION_THREADS.lock().unwrap_or_else(PoisonError::into_inner);
+        // The threads that have exited since.
+        threads.retain(|thread| thread.strong_count() > 0);
+        threads.push(Arc::downgrade(&thread));
+        thread
+    }
+
+    /// The thread starts to run `execution`, inside of `previous`, if it runs one.
+    fn enter(&self, execution: usize, previous: usize) {
+        if previous == 0 {
+            self.current.store(execution, Ordering::SeqCst);
+        } else {
+            // Under `outer`, so that `runs` never misses the outer execution in between.
+            let mut outer = self.outer.lock().unwrap_or_else(PoisonError::into_inner);
+            outer.push(previous);
+            self.current.store(execution, Ordering::SeqCst);
+        }
+    }
+
+    /// The thread's innermost execution has ended, and `previous`, if any, runs again. A thread
+    /// that sees that the execution no longer runs sees what it did before, such as letting a lock's
+    /// value go (see `ValueLock`).
+    fn exit(&self, previous: usize) {
+        if previous == 0 {
+            self.current.store(0, Ordering::SeqCst);
+        } else {
+            let mut outer = self.outer.lock().unwrap_or_else(PoisonError::into_inner);
+            self.current.store(previous, Ordering::SeqCst);
+            let resumed = outer.pop();
+            debug_assert_eq!(
+                resumed,
+                Some(previous),
+                "executions end in the reverse order of their start"
+            );
+        }
+    }
+
+    /// Whether the thread runs `execution` now, as its innermost execution or one of the outer
+    /// ones.
+    fn runs(&self, execution: usize) -> bool {
+        let outer = self.outer.lock().unwrap_or_else(PoisonError::into_inner);
+        self.current.load(Ordering::SeqCst) == execution || outer.contains(&execution)
+    }
+
+    /// The thread's name, for messages.
+    pub(crate) fn describe(&self) -> String {
+        match self.handle.name() {
+            Some(name) => format!("thread '{name}'"),
+            None => format!("an unnamed thread ({:?})", self.handle.id()),
+        }
+    }
+
+    /// Whether this is the current thread's.
+    pub(crate) fn is_current(&self) -> bool {
+        self.handle.id() == std::thread::current().id()
+    }
+}
+
+/// The thread that runs `execution`, if one does: the execution has started and not yet ended.
+/// Once it returns `None` for an execution, it does so for good, as no execution runs twice.
+pub(crate) fn execution_thread(execution: usize) -> Option<Arc<ExecutionThread>> {
+    let threads = EXECUTION_THREADS.lock().unwrap_or_else(PoisonError::into_inner);
+    threads
+        .iter()
+        .filter_map(Weak::upgrade)
+        .find(|thread| thread.runs(execution))
 }
 
 // The reason this is separated out from `ExecutionState` is to ensure that we're always able to persist the schedule.
@@ -181,6 +342,10 @@ impl Execution {
         UNGRACEFUL_SHUTDOWN_CONFIG.set(config.ungraceful_shutdown_config);
 
         EXECUTION_STATE.set(&state, move || {
+            // Until the execution is torn down, primitives keep their state for this execution
+            // (see `PerExecution`).
+            let _execution_id = CurrentExecutionId::enter();
+
             // Spawn `f` as the first task
             ExecutionState::spawn_main_thread(
                 Box::new(move || thread_fn(f, true, Default::default())),
@@ -1976,6 +2141,27 @@ impl ExecutionState {
         })
     }
 
+    /// Like `next_u64`, but return `None` if the scheduler does not provide random data (see
+    /// `Scheduler::try_next_u64`), where `next_u64` fails the execution. A `None` adds nothing to
+    /// the schedule, and a value is a random step of it, as one from `next_u64` is.
+    ///
+    /// During execution teardown this returns a value whatever the scheduler, from the same
+    /// generator as `next_u64` (see `Teardown::rng`), which doesn't involve the scheduler, so that
+    /// a replay of the execution makes the same choice.
+    #[inline]
+    pub fn try_next_u64() -> Option<u64> {
+        Self::with(|state| {
+            if let Some(teardown) = &mut state.teardown {
+                return Some(teardown.next_u64());
+            }
+            let next = state.scheduler.borrow_mut().try_next_u64();
+            if next.is_some() {
+                CurrentSchedule::push_random();
+            }
+            next
+        })
+    }
+
     pub fn current(&self) -> &Task {
         self.get(self.current_task.id().expect("there is no current task"))
     }
@@ -2039,9 +2225,19 @@ impl ExecutionState {
         Self::with(|state| state.context_switches)
     }
 
+    /// The signature of a resource that the current task creates. Outside of an execution, where a
+    /// primitive can be created too, the signature has no task to name, so it names the place in
+    /// the source code that creates the resource only, as a resource that a `const fn` creates does.
     #[track_caller]
     pub fn new_resource_signature(resource_type: ResourceType) -> ResourceSignature {
-        ExecutionState::with(|s| s.current_mut().signature.new_resource(resource_type))
+        let in_task = ExecutionState::try_with(|s| {
+            let task = s.current_task.id()?;
+            Some(s.get_mut(task).signature.new_resource(resource_type.clone()))
+        });
+        match in_task {
+            Ok(Some(signature)) => signature,
+            _ => ResourceSignature::new_const(resource_type),
+        }
     }
 
     pub fn get_storage<K: Into<StorageKey>, T: 'static>(&self, key: K) -> Option<&T> {
@@ -2052,6 +2248,18 @@ impl ExecutionState {
 
     pub fn init_storage<K: Into<StorageKey>, T: 'static>(&mut self, key: K, value: T) {
         self.storage.init(key.into(), value);
+    }
+
+    /// The value of a storage slot, if it has been initialized and not destructed yet.
+    pub(crate) fn storage_slot<T: 'static>(&self, key: StorageKey) -> Option<&T> {
+        self.storage.get(key).and_then(Result::ok)
+    }
+
+    /// Initialize a storage slot that is destructed after every slot initialized with
+    /// `init_storage`, or initialize it again if it has been destructed already, and return its
+    /// value.
+    pub(crate) fn init_storage_destructed_last<T: 'static>(&mut self, key: StorageKey, value: T) -> &T {
+        self.storage.init_or_reinit_destructed_last(key, value)
     }
 
     pub fn get_clock(&self, id: TaskId) -> &VectorClock {
@@ -2126,9 +2334,9 @@ impl ExecutionState {
             MaxSteps::None => {}
         }
 
-        let mut unfinished_attached = false;
-        let mut all_runnable_detached = true;
-        let mut any_runnable = false;
+        let mut unfinished_attached;
+        let mut all_runnable_detached;
+        let mut any_runnable;
 
         // The loop below only looks at `live_tasks`, so a task missing from that set would silently
         // never be scheduled. Check that direction of the invariant here; the loop itself checks the
@@ -2141,23 +2349,41 @@ impl ExecutionState {
             "live_tasks is missing a runnable unfinished task"
         );
 
-        for &task_id in &self.live_tasks {
-            let task = &self.tasks[task_id.0];
-            debug_assert!(!task.finished());
-            unfinished_attached |= !task.detached;
-            let is_runnable = task.runnable();
-            any_runnable |= is_runnable;
+        loop {
+            unfinished_attached = false;
+            all_runnable_detached = true;
+            any_runnable = false;
 
-            if is_runnable {
-                all_runnable_detached &= task.detached;
-                self.runnable_tasks.push(task as *const Task);
-            } else if task.can_spuriously_wakeup() {
-                // Some blocked tasks can be woken up spuriously, even though the condition the task is
-                // blocked on hasn't happened yet. We'll add such tasks to the list of runnable tasks, but
-                // they won't contribute to the check on `any_runnable`; if the only runnable tasks
-                // are ones that are waiting for a potential spurious wakeup, it should still be treated as
-                // a deadlock since there's no guarantee that spurious wakeups will ever occur.
-                self.runnable_tasks.push(task as *const Task);
+            for &task_id in &self.live_tasks {
+                let task = &self.tasks[task_id.0];
+                debug_assert!(!task.finished());
+                unfinished_attached |= !task.detached;
+                let is_runnable = task.runnable();
+                any_runnable |= is_runnable;
+
+                if is_runnable {
+                    all_runnable_detached &= task.detached;
+                    self.runnable_tasks.push(task as *const Task);
+                } else if task.can_spuriously_wakeup() {
+                    // Some blocked tasks can be woken up spuriously, even though the condition the task is
+                    // blocked on hasn't happened yet. We'll add such tasks to the list of runnable tasks, but
+                    // they won't contribute to the check on `any_runnable`; if the only runnable tasks
+                    // are ones that are waiting for a potential spurious wakeup, it should still be treated as
+                    // a deadlock since there's no guarantee that spurious wakeups will ever occur.
+                    self.runnable_tasks.push(task as *const Task);
+                }
+            }
+
+            if any_runnable || !unfinished_attached {
+                break;
+            }
+            // No task can run, and the execution would otherwise deadlock. The timed waits with the
+            // earliest deadline time out (see `Task::block_with_timeout`), and the scan starts over
+            // with the tasks they unblocked. The list is cleared first, as timing out a wait changes
+            // the tasks it points to; if no wait times out, the execution finishes without it.
+            self.runnable_tasks.clear();
+            if !self.time_out_earliest_waits() {
+                break;
             }
         }
 
@@ -2220,6 +2446,23 @@ impl ExecutionState {
         self.runnable_tasks.clear();
 
         Ok(())
+    }
+
+    /// Time out the timed waits with the earliest deadline (see `Task::block_with_timeout`). Returns
+    /// false if no task is blocked in a timed wait.
+    fn time_out_earliest_waits(&mut self) -> bool {
+        let tasks = &mut self.tasks;
+        let Some(earliest) = self.live_tasks.iter().filter_map(|id| tasks[id.0].timeout()).min() else {
+            return false;
+        };
+        for id in &self.live_tasks {
+            let task = &mut tasks[id.0];
+            if task.timeout() == Some(earliest) {
+                trace!(task = ?task.id(), deadline = ?earliest, "timed wait timed out, as no task can run");
+                task.time_out();
+            }
+        }
+        true
     }
 
     /// Set the next task as the current task

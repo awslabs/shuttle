@@ -6,6 +6,8 @@ members = [
     "shuttle",
     "wrappers/shuttle_rand_0.8",
     "wrappers/shuttle_sync",
+    "wrappers/thread",
+    "wrappers/thread/thread_impl",
     "wrappers/collections",
     "wrappers/collections/deterministic_collections",
     "wrappers/collections/std_collections",
@@ -21,9 +23,15 @@ members = [
     "wrappers/tokio/wrappers/shuttle-tokio-util",
     "wrappers/tokio/impls/tokio-retry",
     "wrappers/parking_lot",
+    "wrappers/time",
+    "wrappers/time/shuttle_time_inner",
     "wrappers/async_stream",
     "wrappers/dashmap",
     "wrappers/dashmap/dashmap_impl",
+    "wrappers/crossbeam_channel",
+    "wrappers/crossbeam_channel/shuttle_crossbeam_channel_inner",
+    "wrappers/crossbeam_utils",
+    "wrappers/crossbeam_utils/shuttle_crossbeam_utils_inner",
 ]
 
 resolver = "2"

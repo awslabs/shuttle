@@ -1,0 +1,32 @@
+[package]
+name = "shuttle-crossbeam-channel"
+# Wrappers mirror the version of the crate they wrap, so that a downstream crate can depend on the
+# wrapper with the requirement it used for crossbeam-channel.
+version = "0.5.17"
+edition = "2024"
+license = "Apache-2.0"
+description = "crossbeam-channel wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+# Under `shuttle`, a channel's `Instant` is shuttle-time's, so the feature turns on shuttle-time's
+# `shuttle` feature too: a consumer that takes `Instant` from `shuttle_time::time` gets the same type
+# the channels take.
+shuttle = [ "dep:shuttle-crossbeam-channel-inner", "shuttle-time/shuttle" ]
+
+# crossbeam-channel's features, forwarded to it, and to the inner crate when `shuttle` is enabled.
+default = [ "crossbeam-channel-orig/default", "shuttle-crossbeam-channel-inner?/default" ]
+std = [ "crossbeam-channel-orig/std", "shuttle-crossbeam-channel-inner?/std" ]
+
+[dependencies]
+cfg-if = "1.0"
+# Without default features, so that `default-features = false` on this crate reaches crossbeam-channel
+# too. Under `shuttle` this crate has crossbeam-channel 0.5.17's API, so it needs 0.5.17 in both modes.
+crossbeam-channel-orig = { package = "crossbeam-channel", version = "0.5.17", default-features = false }
+shuttle-crossbeam-channel-inner = { path = "./shuttle_crossbeam_channel_inner", version = "0.1", optional = true, default-features = false }
+shuttle-time = { path = "../time", version = "0.1", optional = true }
+
+[dev-dependencies]
+# For the tests that run under `--features shuttle`.
+shuttle = { path = "../../shuttle", version = "0.9.2" }
+shuttle-time = { path = "../time", version = "0.1" }
