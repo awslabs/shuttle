@@ -6,6 +6,7 @@
 //! the real `parking_lot` crate layers its `Mutex` on top of `lock_api`.
 
 use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness};
+use shuttle_engine::runtime::per_execution::ValueLock;
 use shuttle_engine::runtime::thread::switch;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,10 +17,24 @@ use tracing::trace;
 /// The lock is modelled as a [`BatchSemaphore`] with a single permit: acquiring the lock takes the
 /// permit, releasing it returns the permit. All blocking happens through Shuttle's scheduler, so
 /// every lock/unlock is a scheduling point that Shuttle can explore.
+///
+/// The semaphore's state belongs to the running execution, not to the lock (see
+/// [`BatchSemaphore`]), so a `static` mutex starts every execution unlocked, with no waiters,
+/// whatever the execution before left behind. The value the mutex protects belongs to the lock,
+/// though, so an execution that locks the mutex while a guard of another execution holds the value
+/// panics rather than hand out a second reference to it: a guard of a test that runs at the same
+/// time on another thread, or one that an ended execution left behind (one that a failed execution
+/// leaked, or a forgotten one) (see [`ValueLock`]).
 #[derive(Debug)]
 pub struct RawMutex {
     semaphore: BatchSemaphore,
+    /// Keeps the value of the lock to one execution at a time, which the semaphore, being per
+    /// execution, can't (see [`ValueLock`]).
+    value: ValueLock,
 }
+
+/// The name of the lock in the message of [`ValueLock::acquire`].
+const KIND: &str = "parking_lot Mutex";
 
 // Safety: `RawMutex` guarantees exclusivity because the underlying semaphore has exactly one permit,
 // so at most one context can hold the lock at a time.
@@ -31,6 +46,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: RawMutex = RawMutex {
         semaphore: BatchSemaphore::const_new(1, Fairness::StrictlyFair),
+        value: ValueLock::new(),
     };
 
     // Gated by `send_guard`; defined once as `crate::GuardMarker` (see `lib.rs`).
@@ -45,15 +61,21 @@ unsafe impl lock_api::RawMutex for RawMutex {
                 unreachable!()
             }
         });
+        self.value.acquire(KIND);
         trace!("acquired parking_lot mutex {:p}", self);
     }
 
     fn try_lock(&self) -> bool {
-        self.semaphore.try_acquire(1).is_ok()
+        let acquired = self.semaphore.try_acquire(1).is_ok();
+        if acquired {
+            self.value.acquire(KIND);
+        }
+        acquired
     }
 
     unsafe fn unlock(&self) {
         trace!("releasing parking_lot mutex {:p}", self);
+        self.value.release();
         self.semaphore.release(1);
     }
 
@@ -71,6 +93,7 @@ unsafe impl lock_api::RawMutex for RawMutex {
 unsafe impl lock_api::RawMutexFair for RawMutex {
     unsafe fn unlock_fair(&self) {
         trace!("fair-releasing parking_lot mutex {:p}", self);
+        self.value.release();
         self.semaphore.release(1);
     }
 }

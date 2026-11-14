@@ -1,6 +1,7 @@
 //! An asynchronous `Mutex`-like type.
 
 use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness, TryAcquireError};
+use shuttle_engine::runtime::per_execution::ValueLock;
 use std::cell::UnsafeCell;
 use std::error::Error;
 use std::fmt::{self, Debug, Display};
@@ -10,8 +11,20 @@ use std::thread;
 use tracing::trace;
 
 /// An asynchronous mutex
+///
+/// The state of the lock is kept once for each execution (see `BatchSemaphore`), so that a
+/// `static` mutex is unlocked at the start of every execution. The value it protects is not: the
+/// mutex has only the one value it was created with. A `static` mutex that an execution changes the
+/// value of passes the change on to the executions after it. Two executions can't hold the value at
+/// once: one that the mutex's state lets take the lock while a guard of another execution holds the
+/// value panics, saying whose guard it is, one of a test that runs at the same time on another
+/// thread or one that an execution which has ended left behind (see
+/// `shuttle_engine::runtime::per_execution::ValueLock`).
 pub struct Mutex<T: ?Sized> {
     semaphore: BatchSemaphore,
+    /// Keeps the value to the guards of one execution at a time, which the semaphore, whose state is
+    /// per execution, can't.
+    value: ValueLock,
     inner: UnsafeCell<T>,
 }
 
@@ -61,6 +74,7 @@ impl<T: ?Sized> Mutex<T> {
     {
         Self {
             semaphore: BatchSemaphore::new(1, Fairness::StrictlyFair),
+            value: ValueLock::new(),
             inner: UnsafeCell::new(t),
         }
     }
@@ -74,6 +88,7 @@ impl<T: ?Sized> Mutex<T> {
                 unreachable!()
             }
         });
+        self.value.acquire("Mutex");
         trace!("acquired lock {:p}", self);
     }
 
@@ -105,7 +120,15 @@ impl<T: ?Sized> Mutex<T> {
     }
 
     fn try_acquire(&self) -> Result<(), TryAcquireError> {
-        self.semaphore.try_acquire(1)
+        self.semaphore.try_acquire(1)?;
+        self.value.acquire("Mutex");
+        Ok(())
+    }
+
+    /// Release the lock that a guard holds.
+    fn release(&self) {
+        self.value.release();
+        self.semaphore.release(1);
     }
 
     /// Attempts to acquire the lock, and returns [`TryLockError`] if the
@@ -159,7 +182,7 @@ impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         trace!("releasing lock {:p}", self);
-        self.mutex.semaphore.release(1);
+        self.mutex.release();
     }
 }
 
@@ -172,7 +195,7 @@ impl<T: ?Sized + Debug> Debug for MutexGuard<'_, T> {
 impl<T: ?Sized> Drop for OwnedMutexGuard<T> {
     fn drop(&mut self) {
         trace!("releasing owned lock {:p}", self);
-        self.mutex.semaphore.release(1);
+        self.mutex.release();
     }
 }
 

@@ -2,6 +2,7 @@
 
 use crate::sync::TryLockError;
 use shuttle::future::batch_semaphore::{BatchSemaphore, Fairness, TryAcquireError};
+use shuttle_engine::runtime::per_execution::ValueLock;
 use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
@@ -22,6 +23,12 @@ const MAX_READERS: usize = usize::MAX >> 3;
 /// that acquire the lock, therefore causing any tasks waiting for the lock to
 /// become available to yield. An `RwLock` will allow any number of readers to
 /// acquire the lock as long as a writer is not holding the lock.
+///
+/// The state of the lock is kept once for each execution (see `BatchSemaphore`), so that a
+/// `static` lock is unlocked at the start of every execution. The value it protects is not: the lock
+/// has only the one value it was created with. A `static` lock that an execution changes the value
+/// of passes the change on to the executions after it. Two executions can't hold the value at once,
+/// even both to read it: the second panics, as for [`Mutex`](crate::sync::Mutex).
 #[derive(Debug)]
 pub struct RwLock<T: ?Sized> {
     // maximum number of concurrent readers
@@ -29,6 +36,10 @@ pub struct RwLock<T: ?Sized> {
 
     //semaphore to coordinate read and write access to T
     sem: BatchSemaphore,
+
+    // keeps T to the guards of one execution at a time, which the semaphore, whose state is per
+    // execution, can't
+    value: ValueLock,
 
     //inner data T
     inner: UnsafeCell<T>,
@@ -57,6 +68,7 @@ impl<T: ?Sized> RwLock<T> {
         let rwlock = RwLock {
             max_readers,
             sem,
+            value: ValueLock::new(),
             inner: UnsafeCell::new(value),
         };
         trace!("initialized RwLock {:p} with {} permits", &rwlock, max_readers);
@@ -82,9 +94,11 @@ impl<T: ?Sized> RwLock<T> {
             }
         });
 
+        self.value.acquire("RwLock");
         trace!("rwlock {:p} read acquired ReadGuard", self);
         RwLockReadGuard {
             sem: &self.sem,
+            value: &self.value,
             data: self.inner.get(),
             _p: PhantomData,
         }
@@ -123,6 +137,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         });
 
+        self.value.acquire("RwLock");
         trace!("rwlock {:p} read_owned acquired OwnedReadGuard", self);
         OwnedRwLockReadGuard {
             data: self.inner.get(),
@@ -149,9 +164,11 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
+        self.value.acquire("RwLock");
         trace!("rwlock {:p} try_read acquired ReadGuard", self);
         Ok(RwLockReadGuard {
             sem: &self.sem,
+            value: &self.value,
             data: self.inner.get(),
             _p: PhantomData,
         })
@@ -181,6 +198,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
+        self.value.acquire("RwLock");
         trace!("rwlock {:p} try_read_owned acquired OwnedReadGuard", self);
         Ok(OwnedRwLockReadGuard {
             data: self.inner.get(),
@@ -205,11 +223,13 @@ impl<T: ?Sized> RwLock<T> {
             }
         });
 
+        self.value.acquire("RwLock");
         trace!("rwlock {:p} write acquired WriteGuard", self);
         RwLockWriteGuard {
             permits_acquired: self.max_readers,
             data: self.inner.get(),
             sem: &self.sem,
+            value: &self.value,
             _p: PhantomData,
         }
     }
@@ -243,6 +263,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         });
 
+        self.value.acquire("RwLock");
         tracing::trace!("rwlock {:p} write_owned acquired OwnedWriteGuard", self);
         OwnedRwLockWriteGuard {
             permits_acquired: self.max_readers,
@@ -270,10 +291,12 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
+        self.value.acquire("RwLock");
         tracing::trace!("rwlock {:p} try_write acquired WriteGuard", self);
         Ok(RwLockWriteGuard {
             permits_acquired: self.max_readers,
             sem: &self.sem,
+            value: &self.value,
             data: self.inner.get(),
             _p: PhantomData,
         })
@@ -303,6 +326,7 @@ impl<T: ?Sized> RwLock<T> {
             }
         }
 
+        self.value.acquire("RwLock");
         tracing::trace!("rwlock {:p} try_write_owned acquired OwnedWriteGuard", self);
         Ok(OwnedRwLockWriteGuard {
             permits_acquired: self.max_readers,
@@ -391,6 +415,7 @@ unsafe impl<T> Send for OwnedRwLockWriteGuard<T> where T: ?Sized + Send + Sync {
 /// [`RwLock`]: struct@crate::sync::RwLock
 pub struct RwLockReadGuard<'a, T: ?Sized> {
     sem: &'a BatchSemaphore,
+    value: &'a ValueLock,
     data: *const T,
     _p: PhantomData<&'a T>,
 }
@@ -414,6 +439,7 @@ where
 
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
+        self.value.release();
         self.sem.release(1);
     }
 }
@@ -459,6 +485,7 @@ where
 
 impl<T: ?Sized, U: ?Sized> Drop for OwnedRwLockReadGuard<T, U> {
     fn drop(&mut self) {
+        self.lock.value.release();
         self.lock.sem.release(1);
         unsafe { ManuallyDrop::drop(&mut self.lock) };
     }
@@ -469,6 +496,7 @@ impl<T: ?Sized, U: ?Sized> Drop for OwnedRwLockReadGuard<T, U> {
 pub struct RwLockWriteGuard<'a, T: ?Sized> {
     permits_acquired: usize,
     sem: &'a BatchSemaphore,
+    value: &'a ValueLock,
     data: *mut T,
     _p: PhantomData<&'a mut T>,
 }
@@ -481,7 +509,7 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
     /// locks, since [`RwLock`] is fair and it is possible that a writer is next
     /// in line.
     pub fn downgrade(self) -> RwLockReadGuard<'a, T> {
-        let RwLockWriteGuard { sem, data, .. } = self;
+        let RwLockWriteGuard { sem, value, data, .. } = self;
         let to_release = self.permits_acquired - 1;
 
         tracing::trace!("rwlock {:p} downgrading to ReadGuard", &self);
@@ -492,8 +520,10 @@ impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
         // Release all but one of the permits held by the write guard
         sem.release(to_release);
 
+        // The read guard takes over the write guard's hold on the value.
         RwLockReadGuard {
             sem,
+            value,
             data,
             _p: PhantomData,
         }
@@ -525,6 +555,7 @@ where
 
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
+        self.value.release();
         self.sem.release(self.permits_acquired);
     }
 }
@@ -598,6 +629,7 @@ where
 
 impl<T: ?Sized> Drop for OwnedRwLockWriteGuard<T> {
     fn drop(&mut self) {
+        self.lock.value.release();
         self.lock.sem.release(self.permits_acquired);
         unsafe { ManuallyDrop::drop(&mut self.lock) };
     }

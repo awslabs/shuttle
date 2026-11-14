@@ -44,6 +44,7 @@
 //! drain: an upgradable reader's view of the data cannot change underneath it while it upgrades.
 
 use shuttle::future::batch_semaphore::{Acquire, BatchSemaphore, Fairness};
+use shuttle_engine::runtime::per_execution::ValueLock;
 use shuttle_engine::runtime::thread::switch;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -68,12 +69,26 @@ const UPGRADABLE_READER: usize = MAX_READERS / 2 + 1;
 
 /// A Shuttle-backed raw reader-writer lock implementing [`lock_api::RawRwLock`] and its upgrade,
 /// downgrade, fair, timed and recursive extensions.
+///
+/// The semaphore's state belongs to the running execution, not to the lock (see
+/// [`BatchSemaphore`]), so a `static` lock starts every execution unlocked, with no waiters,
+/// whatever the execution before left behind. The value the lock protects belongs to the lock,
+/// though, so an execution that takes the lock while a guard of another execution holds the value
+/// panics rather than hand out a second reference to it, even if both only read it, as for
+/// [`RawMutex`](crate::RawMutex) (see [`ValueLock`]).
 #[derive(Debug)]
 pub struct RawRwLock {
     /// Coordinates all access. `MAX_READERS` permits total; see the module docs for the permit count
     /// each lock state holds.
     sem: BatchSemaphore,
+    /// Keeps the value of the lock to the guards of one execution at a time, which the semaphore,
+    /// being per execution, can't (see [`ValueLock`]). Counts guards of every kind; upgrades and
+    /// downgrades keep the guard.
+    value: ValueLock,
 }
+
+/// The name of the lock in the message of [`ValueLock::acquire`].
+const KIND: &str = "parking_lot RwLock";
 
 impl RawRwLock {
     #[inline]
@@ -95,6 +110,7 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: RawRwLock = RawRwLock {
         sem: BatchSemaphore::const_new(MAX_READERS, Fairness::StrictlyFair),
+        value: ValueLock::new(),
     };
 
     // Gated by `send_guard`; defined once as `crate::GuardMarker` (see `lib.rs`).
@@ -103,30 +119,42 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
     fn lock_shared(&self) {
         trace!("acquiring parking_lot rwlock {:p} (shared)", self);
         Self::acquire(self.sem.acquire(1));
+        self.value.acquire(KIND);
         trace!("acquired parking_lot rwlock {:p} (shared)", self);
     }
 
     fn try_lock_shared(&self) -> bool {
-        self.sem.try_acquire(1).is_ok()
+        let acquired = self.sem.try_acquire(1).is_ok();
+        if acquired {
+            self.value.acquire(KIND);
+        }
+        acquired
     }
 
     unsafe fn unlock_shared(&self) {
         trace!("releasing parking_lot rwlock {:p} (shared)", self);
+        self.value.release();
         self.sem.release(1);
     }
 
     fn lock_exclusive(&self) {
         trace!("acquiring parking_lot rwlock {:p} (exclusive)", self);
         Self::acquire(self.sem.acquire(MAX_READERS));
+        self.value.acquire(KIND);
         trace!("acquired parking_lot rwlock {:p} (exclusive)", self);
     }
 
     fn try_lock_exclusive(&self) -> bool {
-        self.sem.try_acquire(MAX_READERS).is_ok()
+        let acquired = self.sem.try_acquire(MAX_READERS).is_ok();
+        if acquired {
+            self.value.acquire(KIND);
+        }
+        acquired
     }
 
     unsafe fn unlock_exclusive(&self) {
         trace!("releasing parking_lot rwlock {:p} (exclusive)", self);
+        self.value.release();
         self.sem.release(MAX_READERS);
     }
 
@@ -149,10 +177,12 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
 // next eligible waiter in FIFO order. Fair unlocking is therefore identical to a normal unlock.
 unsafe impl lock_api::RawRwLockFair for RawRwLock {
     unsafe fn unlock_shared_fair(&self) {
+        self.value.release();
         self.sem.release(1);
     }
 
     unsafe fn unlock_exclusive_fair(&self) {
+        self.value.release();
         self.sem.release(MAX_READERS);
     }
 }
@@ -175,15 +205,21 @@ unsafe impl lock_api::RawRwLockUpgrade for RawRwLock {
     fn lock_upgradable(&self) {
         trace!("acquiring parking_lot rwlock {:p} (upgradable)", self);
         Self::acquire(self.sem.acquire_bypassable(UPGRADABLE_READER));
+        self.value.acquire(KIND);
         trace!("acquired parking_lot rwlock {:p} (upgradable)", self);
     }
 
     fn try_lock_upgradable(&self) -> bool {
-        self.sem.try_acquire(UPGRADABLE_READER).is_ok()
+        let acquired = self.sem.try_acquire(UPGRADABLE_READER).is_ok();
+        if acquired {
+            self.value.acquire(KIND);
+        }
+        acquired
     }
 
     unsafe fn unlock_upgradable(&self) {
         trace!("releasing parking_lot rwlock {:p} (upgradable)", self);
+        self.value.release();
         self.sem.release(UPGRADABLE_READER);
     }
 
@@ -232,6 +268,7 @@ unsafe impl lock_api::RawRwLockUpgradeDowngrade for RawRwLock {
 // Safety: fair unlocking is identical to normal unlocking for a strictly fair semaphore.
 unsafe impl lock_api::RawRwLockUpgradeFair for RawRwLock {
     unsafe fn unlock_upgradable_fair(&self) {
+        self.value.release();
         self.sem.release(UPGRADABLE_READER);
     }
 }
@@ -254,7 +291,11 @@ unsafe impl lock_api::RawRwLockRecursive for RawRwLock {
     }
 
     fn try_lock_shared_recursive(&self) -> bool {
-        self.sem.try_upgrade(1, 2).is_ok()
+        let acquired = self.sem.try_upgrade(1, 2).is_ok();
+        if acquired {
+            self.value.acquire(KIND);
+        }
+        acquired
     }
 }
 
