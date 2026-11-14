@@ -1,0 +1,63 @@
+[package]
+name = "shuttle-uuid"
+# Wrappers mirror the major version of the crate they wrap, so that a downstream crate can depend on
+# the wrapper with the same `version = "1"` requirement it would have used for uuid.
+version = "1.0.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "uuid wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+shuttle = [ "dep:shuttle-uuid-inner" ]
+
+# uuid's features. Each one is forwarded to uuid, and to the inner crate when `shuttle` is enabled.
+# uuid is a dependency in both modes, and the inner crate re-exports it, so the features take effect
+# with and without `shuttle`.
+default = [ "uuid-orig/default", "shuttle-uuid-inner?/default" ]
+atomic = [ "uuid-orig/atomic", "shuttle-uuid-inner?/atomic" ]
+borsh = [ "uuid-orig/borsh", "shuttle-uuid-inner?/borsh" ]
+fast-rng = [ "uuid-orig/fast-rng", "shuttle-uuid-inner?/fast-rng" ]
+js = [ "uuid-orig/js", "shuttle-uuid-inner?/js" ]
+macro-diagnostics = [ "uuid-orig/macro-diagnostics", "shuttle-uuid-inner?/macro-diagnostics" ]
+md5 = [ "uuid-orig/md5", "shuttle-uuid-inner?/md5" ]
+rng = [ "uuid-orig/rng", "shuttle-uuid-inner?/rng" ]
+rng-getrandom = [ "uuid-orig/rng-getrandom", "shuttle-uuid-inner?/rng-getrandom" ]
+rng-rand = [ "uuid-orig/rng-rand", "shuttle-uuid-inner?/rng-rand" ]
+serde = [ "uuid-orig/serde", "shuttle-uuid-inner?/serde" ]
+sha1 = [ "uuid-orig/sha1", "shuttle-uuid-inner?/sha1" ]
+std = [ "uuid-orig/std", "shuttle-uuid-inner?/std" ]
+v1 = [ "uuid-orig/v1", "shuttle-uuid-inner?/v1" ]
+v3 = [ "uuid-orig/v3", "shuttle-uuid-inner?/v3" ]
+v4 = [ "uuid-orig/v4", "shuttle-uuid-inner?/v4" ]
+v5 = [ "uuid-orig/v5", "shuttle-uuid-inner?/v5" ]
+v6 = [ "uuid-orig/v6", "shuttle-uuid-inner?/v6" ]
+v7 = [ "uuid-orig/v7", "shuttle-uuid-inner?/v7" ]
+v8 = [ "uuid-orig/v8", "shuttle-uuid-inner?/v8" ]
+
+# uuid's optional dependencies that uuid documents as features. A crate that depends on uuid with,
+# say, `features = ["bytemuck"]` must keep building after switching to this crate. uuid's remaining
+# implicit feature, `uuid-rng-internal-lib`, is an implementation detail of its `rng-getrandom` and
+# `rng-rand` features on wasm, so it is not mirrored.
+arbitrary = [ "uuid-orig/arbitrary", "shuttle-uuid-inner?/arbitrary" ]
+bytemuck = [ "uuid-orig/bytemuck", "shuttle-uuid-inner?/bytemuck" ]
+slog = [ "uuid-orig/slog", "shuttle-uuid-inner?/slog" ]
+zerocopy = [ "uuid-orig/zerocopy", "shuttle-uuid-inner?/zerocopy" ]
+
+[dependencies]
+cfg-if = "1.0"
+# Without default features, so that `default-features = false` on this crate reaches uuid too. Under
+# `shuttle` this crate has uuid 1.29's API, so it needs uuid 1.29 in both modes.
+uuid-orig = { package = "uuid", version = "1.29", default-features = false }
+shuttle-uuid-inner = { path = "./shuttle_uuid_inner", version = "0.1", optional = true, default-features = false }
+
+[dev-dependencies]
+# The tests use every constructor.
+shuttle-uuid = { path = ".", features = ["v1", "v3", "v4", "v5", "v6", "v7", "v8", "serde"] }
+# For the tests that run under `--features shuttle`.
+shuttle = { path = "../../shuttle", version = "0.9" }
+serde = { version = "1.0.221", features = ["derive"] }
+serde_json = "1.0"
+
+[package.metadata.docs.rs]
+features = ["v1", "v3", "v4", "v5", "v6", "v7", "v8", "serde"]
