@@ -19,6 +19,13 @@
 //!
 //! This layering means the entire `parking_lot` guard surface — `Arc` guards, mapped guards,
 //! upgradable guards — is available under Shuttle without reimplementing it by hand.
+//!
+//! # Timeouts
+//!
+//! Shuttle has no clock to measure a timeout against, so the timed operations never time out: the
+//! `*_for` and `*_until` lock methods wait until they get the lock and return `true`. A task that
+//! would time out in a real run waits instead, and if nothing ever releases the lock, Shuttle reports
+//! a deadlock.
 
 mod mutex;
 mod raw_mutex;

@@ -44,7 +44,9 @@
 //! drain: an upgradable reader's view of the data cannot change underneath it while it upgrades.
 
 use shuttle::future::batch_semaphore::{Acquire, BatchSemaphore, Fairness};
+use shuttle_engine::runtime::thread::switch;
 use std::thread;
+use std::time::{Duration, Instant};
 use tracing::trace;
 
 /// Sentinel permit count representing "all readers". An exclusive (write) lock is modelled by
@@ -65,7 +67,7 @@ const MAX_READERS: usize = usize::MAX >> 3;
 const UPGRADABLE_READER: usize = MAX_READERS / 2 + 1;
 
 /// A Shuttle-backed raw reader-writer lock implementing [`lock_api::RawRwLock`] and its upgrade,
-/// downgrade, and fair extensions.
+/// downgrade, fair, timed and recursive extensions.
 #[derive(Debug)]
 pub struct RawRwLock {
     /// Coordinates all access. `MAX_READERS` permits total; see the module docs for the permit count
@@ -126,6 +128,20 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
     unsafe fn unlock_exclusive(&self) {
         trace!("releasing parking_lot rwlock {:p} (exclusive)", self);
         self.sem.release(MAX_READERS);
+    }
+
+    // `lock_api`'s defaults take and release the lock (`is_locked` exclusively, `is_locked_exclusive`
+    // shared), so a task asking would make another task's `try_*` fail, which can't happen with
+    // `parking_lot`, where these are loads. Here they are loads too, after a scheduling point, as an
+    // atomic load is in Shuttle. Only a writer holds every permit (see the module docs).
+    fn is_locked(&self) -> bool {
+        switch();
+        self.sem.available_permits() < MAX_READERS
+    }
+
+    fn is_locked_exclusive(&self) -> bool {
+        switch();
+        self.sem.available_permits() == 0
     }
 }
 
@@ -217,5 +233,97 @@ unsafe impl lock_api::RawRwLockUpgradeDowngrade for RawRwLock {
 unsafe impl lock_api::RawRwLockUpgradeFair for RawRwLock {
     unsafe fn unlock_upgradable_fair(&self) {
         self.sem.release(UPGRADABLE_READER);
+    }
+}
+
+// Safety: a recursive read takes one permit, as a read does, so it is as exclusive as `lock_shared`.
+//
+// `parking_lot` grants a recursive read at once while any reader holds the lock, even with a writer
+// waiting: that is what lets a thread that already reads take another read without deadlocking
+// behind the writer. `BatchSemaphore::try_upgrade` is the semaphore's one way to take permits ahead
+// of queued waiters, and `try_upgrade(1, 2)` asks for the one permit a read needs (the semaphore
+// doesn't check the permits a caller says it holds). It succeeds unless a writer holds the lock; a
+// queued writer or a pending upgrade doesn't stop it, as they don't in `parking_lot` while readers
+// hold the lock. When a writer holds it, the read queues like any other.
+unsafe impl lock_api::RawRwLockRecursive for RawRwLock {
+    fn lock_shared_recursive(&self) {
+        trace!("acquiring parking_lot rwlock {:p} (shared, recursive)", self);
+        if !self.try_lock_shared_recursive() {
+            lock_api::RawRwLock::lock_shared(self);
+        }
+    }
+
+    fn try_lock_shared_recursive(&self) -> bool {
+        self.sem.try_upgrade(1, 2).is_ok()
+    }
+}
+
+// Safety: a timed acquire is an acquire that never times out (see below), so it is as exclusive as
+// the untimed one.
+//
+// Shuttle has no clock that a timeout could be measured against, so a timed acquire waits until it
+// gets the lock and returns `true`, as Shuttle's `Condvar::wait_timeout` never times out. A task that
+// would time out in a real run blocks instead; if nothing ever releases the lock, Shuttle reports a
+// deadlock.
+unsafe impl lock_api::RawRwLockTimed for RawRwLock {
+    type Duration = Duration;
+    type Instant = Instant;
+
+    fn try_lock_shared_for(&self, _timeout: Duration) -> bool {
+        lock_api::RawRwLock::lock_shared(self);
+        true
+    }
+
+    fn try_lock_shared_until(&self, _timeout: Instant) -> bool {
+        lock_api::RawRwLock::lock_shared(self);
+        true
+    }
+
+    fn try_lock_exclusive_for(&self, _timeout: Duration) -> bool {
+        lock_api::RawRwLock::lock_exclusive(self);
+        true
+    }
+
+    fn try_lock_exclusive_until(&self, _timeout: Instant) -> bool {
+        lock_api::RawRwLock::lock_exclusive(self);
+        true
+    }
+}
+
+// Safety: as for `RawRwLockTimed` and `RawRwLockRecursive`.
+unsafe impl lock_api::RawRwLockRecursiveTimed for RawRwLock {
+    fn try_lock_shared_recursive_for(&self, _timeout: Duration) -> bool {
+        lock_api::RawRwLockRecursive::lock_shared_recursive(self);
+        true
+    }
+
+    fn try_lock_shared_recursive_until(&self, _timeout: Instant) -> bool {
+        lock_api::RawRwLockRecursive::lock_shared_recursive(self);
+        true
+    }
+}
+
+// Safety: as for `RawRwLockTimed` and `RawRwLockUpgrade`.
+unsafe impl lock_api::RawRwLockUpgradeTimed for RawRwLock {
+    fn try_lock_upgradable_for(&self, _timeout: Duration) -> bool {
+        lock_api::RawRwLockUpgrade::lock_upgradable(self);
+        true
+    }
+
+    fn try_lock_upgradable_until(&self, _timeout: Instant) -> bool {
+        lock_api::RawRwLockUpgrade::lock_upgradable(self);
+        true
+    }
+
+    unsafe fn try_upgrade_for(&self, _timeout: Duration) -> bool {
+        // Safety: the caller holds an upgradable lock, as `try_upgrade_for` requires.
+        unsafe { lock_api::RawRwLockUpgrade::upgrade(self) };
+        true
+    }
+
+    unsafe fn try_upgrade_until(&self, _timeout: Instant) -> bool {
+        // Safety: as above.
+        unsafe { lock_api::RawRwLockUpgrade::upgrade(self) };
+        true
     }
 }
