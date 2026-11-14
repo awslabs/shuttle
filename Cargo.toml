@@ -28,6 +28,8 @@ members = [
     "wrappers/crossbeam_queue/shuttle_crossbeam_queue_inner",
     "wrappers/crossbeam_deque",
     "wrappers/crossbeam_deque/shuttle_crossbeam_deque_inner",
+    "wrappers/crossbeam_skiplist",
+    "wrappers/crossbeam_skiplist/shuttle_crossbeam_skiplist_inner",
 ]
 
 resolver = "2"
