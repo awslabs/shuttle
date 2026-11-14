@@ -1,0 +1,39 @@
+[package]
+name = "shuttle-arc-swap-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `arc-swap` crate. Do not depend on this crate directly; use `shuttle-arc-swap`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-arc-swap`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+# arc-swap 1.9's features. `experimental-strategies` and `experimental-thread-local` add nothing
+# here: this crate has one strategy and no thread-locals, and Shuttle needs `std`. They are
+# accepted so that a consumer's feature flags keep working.
+[features]
+experimental-strategies = []
+experimental-thread-local = []
+internal-test-strategies = ["rwlock-strategy"]
+rwlock-strategy = []
+weak = []
+serde = ["dep:serde"]
+
+[dependencies]
+# For `ExecutionState`'s clocks and storage, and for the scheduling points. Cargo unifies this with
+# the engine the `shuttle` that runs the test brings in, so both are the same copy.
+shuttle-engine = { path = "../../../shuttle-engine", version = "0.1" }
+serde = { version = "1", features = ["rc"], optional = true }
+
+[dev-dependencies]
+# The tests and doctests run Shuttle executions.
+shuttle = { path = "../../../shuttle", version = "0.9" }
+# The tests use every type.
+shuttle-arc-swap-inner = { path = ".", features = ["weak", "serde", "internal-test-strategies"] }
+# `tests/shuttle.rs` compares the model with the real crate.
+arc-swap-orig = { package = "arc-swap", version = "1.9" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[package.metadata.docs.rs]
+features = ["weak", "serde"]
