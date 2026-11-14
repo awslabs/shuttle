@@ -2,6 +2,7 @@ use crate::sync::{MutexGuard, ResourceSignature, ResourceType};
 use assoc::AssocExt;
 use shuttle_engine::current;
 use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::per_execution::PerExecution;
 use shuttle_engine::runtime::task::clock::VectorClock;
 use shuttle_engine::runtime::task::TaskId;
 use shuttle_engine::runtime::thread;
@@ -13,9 +14,12 @@ use tracing::trace;
 
 /// A `Condvar` represents the ability to block a thread such that it consumes no CPU time while
 /// waiting for an event to occur.
+///
+/// Its waiters are kept once for each execution, so that a `static` condvar starts every execution
+/// with none, whatever an earlier execution left waiting on it.
 #[derive(Debug)]
 pub struct Condvar {
-    state: RefCell<CondvarState>,
+    state: PerExecution<RefCell<CondvarState>>,
     #[allow(unused)]
     signature: ResourceSignature,
 }
@@ -119,15 +123,24 @@ impl Condvar {
     /// Creates a new condition variable which is ready to be waited on and notified.
     #[track_caller]
     pub const fn new() -> Self {
-        let state = CondvarState {
-            waiters: Vec::new(),
-            next_epoch: 0,
-        };
-
         Self {
-            state: RefCell::new(state),
+            state: PerExecution::new(),
             signature: ResourceSignature::new_const(ResourceType::Condvar),
         }
+    }
+
+    /// The waiters of the current execution, which the execution creates when it first uses the
+    /// condvar.
+    fn state(&self) -> &RefCell<CondvarState> {
+        self.state.get(Self::fresh_state)
+    }
+
+    /// The state of an execution that hasn't used the condvar yet.
+    fn fresh_state() -> RefCell<CondvarState> {
+        RefCell::new(CondvarState {
+            waiters: Vec::new(),
+            next_epoch: 0,
+        })
     }
 
     /// Blocks the current thread until this condition variable receives a notification.
@@ -142,7 +155,7 @@ impl Condvar {
         // we switch ourselves
         let mutex = guard.unlock();
         // Unlocked, but no other task has run yet. We thus block ourselves and switch
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state().borrow_mut();
 
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "waiting on condvar {:p}", self);
 
@@ -156,7 +169,11 @@ impl Condvar {
         struct StopWaitingOnUnwind<'a>(&'a Condvar, TaskId);
         impl Drop for StopWaitingOnUnwind<'_> {
             fn drop(&mut self) {
-                <_ as AssocExt<_, _>>::remove(&mut self.0.state.borrow_mut().waiters, &self.1);
+                // Where the execution's state can't be reached, there is no bookkeeping to do (see
+                // `ExecutionState::should_stop`).
+                if let Some(state) = self.0.state.try_get(Condvar::fresh_state) {
+                    <_ as AssocExt<_, _>>::remove(&mut state.borrow_mut().waiters, &self.1);
+                }
             }
         }
         let stop_waiting_on_unwind = StopWaitingOnUnwind(self, me);
@@ -167,7 +184,7 @@ impl Condvar {
         std::mem::forget(stop_waiting_on_unwind);
 
         // After the context switch, consume whichever signal that woke this thread
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state().borrow_mut();
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "woken from condvar {:p}", self);
         let my_status = <_ as AssocExt<_, _>>::remove(&mut state.waiters, &me).expect("should be waiting");
         match my_status {
@@ -257,7 +274,7 @@ impl Condvar {
 
         let me = ExecutionState::me();
 
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state().borrow_mut();
 
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "notifying one on condvar {:p}", self);
 
@@ -294,7 +311,7 @@ impl Condvar {
 
         let me = ExecutionState::me();
 
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state().borrow_mut();
 
         trace!(waiters=?state.waiters, next_epoch=state.next_epoch, "notifying all on condvar {:p}", self);
 

@@ -1,6 +1,7 @@
 use crate::sync::{ResourceSignature, ResourceType};
 use shuttle_engine::future::batch_semaphore::{BatchSemaphore, Fairness};
 use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::per_execution::{PerExecution, ValueLock};
 use shuttle_engine::runtime::task::{TaskId, TaskSet};
 use std::cell::RefCell;
 use std::fmt::{Debug, Display};
@@ -18,16 +19,29 @@ const MAX_READS: usize = (u32::MAX >> 3) as usize;
 /// Unlike [`std::sync::RwLock`], the same thread is never allowed to acquire the read side of a
 /// `RwLock` more than once. The `std` version is ambiguous about what behavior is allowed here, so
 /// we choose the most conservative one.
+///
+/// The state of the lock is kept once for each execution, and the value it protects is not, as for
+/// [`Mutex`](crate::sync::Mutex), whose docs say more. Two executions can't hold the value at once,
+/// even both to read it: the second one panics.
 pub struct RwLock<T: ?Sized> {
-    state: RefCell<RwLockState>,
+    state: PerExecution<RefCell<RwLockState>>,
     semaphore: BatchSemaphore,
+    /// Keeps the value to the guards of one execution at a time, which the state, being per
+    /// execution, can't.
+    value: ValueLock,
+    /// The value, as for `Mutex`.
     inner: std::sync::RwLock<T>,
 }
 
 #[derive(Debug)]
 struct RwLockState {
     holder: RwLockHolder,
+    /// Whether a thread of this execution panicked while it held the lock for writing.
+    poisoned: bool,
 }
+
+/// The name of the lock in the messages of [`ValueLock::acquire`].
+const KIND: &str = "RwLock";
 
 #[derive(PartialEq, Eq, Debug)]
 enum RwLockHolder {
@@ -56,10 +70,6 @@ impl<T> RwLock<T> {
     /// Create a new instance of an `RwLock<T>` which is unlocked.
     #[track_caller]
     pub const fn new(value: T) -> Self {
-        let state = RwLockState {
-            holder: RwLockHolder::None,
-        };
-
         Self {
             inner: std::sync::RwLock::new(value),
             semaphore: BatchSemaphore::const_new_with_signature(
@@ -67,50 +77,82 @@ impl<T> RwLock<T> {
                 Fairness::Unfair,
                 ResourceSignature::new_const(ResourceType::RwLock),
             ),
-            state: RefCell::new(state),
+            value: ValueLock::new(),
+            state: PerExecution::new(),
         }
     }
 }
 
 impl<T: ?Sized> RwLock<T> {
+    /// The state of the lock in the current execution, which the execution creates when it first
+    /// uses the lock.
+    fn state(&self) -> &RefCell<RwLockState> {
+        self.state.get(Self::fresh_state)
+    }
+
+    /// The state of an execution that hasn't used the lock yet.
+    fn fresh_state() -> RefCell<RwLockState> {
+        RefCell::new(RwLockState {
+            holder: RwLockHolder::None,
+            poisoned: false,
+        })
+    }
+
+    /// Whether the lock is poisoned in the current execution, where its state can be reached.
+    fn poisoned_here(&self) -> bool {
+        self.state
+            .try_get(Self::fresh_state)
+            .and_then(|state| state.try_borrow().ok().map(|state| state.poisoned))
+            .unwrap_or(false)
+    }
+
+    /// A read guard for the current task, which this execution's state has just let take the lock
+    /// for reading, poisoned if the state says so.
+    ///
+    /// A guard of another execution that holds the value is reported (see [`ValueLock`]). Past
+    /// that, the inner `std::sync::RwLock` can only be held by a `Debug` on another thread, for a
+    /// moment, as for `Mutex`.
+    fn read_guard(&self, poisoned: bool) -> LockResult<RwLockReadGuard<'_, T>> {
+        self.value.acquire(KIND);
+        let guard = RwLockReadGuard {
+            inner: Some(self.inner.read().unwrap_or_else(PoisonError::into_inner)),
+            rwlock: self,
+            me: ExecutionState::me(),
+        };
+        if poisoned {
+            Err(PoisonError::new(guard))
+        } else {
+            Ok(guard)
+        }
+    }
+
+    /// As `read_guard`, for writing.
+    fn write_guard(&self, poisoned: bool) -> LockResult<RwLockWriteGuard<'_, T>> {
+        self.value.acquire(KIND);
+        let guard = RwLockWriteGuard {
+            inner: Some(self.inner.write().unwrap_or_else(PoisonError::into_inner)),
+            rwlock: self,
+            me: ExecutionState::me(),
+        };
+        if poisoned {
+            Err(PoisonError::new(guard))
+        } else {
+            Ok(guard)
+        }
+    }
+
     /// Locks this rwlock with shared read access, blocking the current thread until it can be
     /// acquired.
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
-        self.lock(RwLockType::Read);
-
-        match self.inner.try_read() {
-            Ok(guard) => Ok(RwLockReadGuard {
-                inner: Some(guard),
-                rwlock: self,
-                me: ExecutionState::me(),
-            }),
-            Err(TryLockError::Poisoned(err)) => Err(PoisonError::new(RwLockReadGuard {
-                inner: Some(err.into_inner()),
-                rwlock: self,
-                me: ExecutionState::me(),
-            })),
-            Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
-        }
+        let poisoned = self.lock(RwLockType::Read);
+        self.read_guard(poisoned)
     }
 
     /// Locks this rwlock with exclusive write access, blocking the current thread until it can
     /// be acquired.
     pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, T>> {
-        self.lock(RwLockType::Write);
-
-        match self.inner.try_write() {
-            Ok(guard) => Ok(RwLockWriteGuard {
-                inner: Some(guard),
-                rwlock: self,
-                me: ExecutionState::me(),
-            }),
-            Err(TryLockError::Poisoned(err)) => Err(PoisonError::new(RwLockWriteGuard {
-                inner: Some(err.into_inner()),
-                rwlock: self,
-                me: ExecutionState::me(),
-            })),
-            Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
-        }
+        let poisoned = self.lock(RwLockType::Write);
+        self.write_guard(poisoned)
     }
 
     /// Attempts to acquire this rwlock with shared read access.
@@ -121,22 +163,11 @@ impl<T: ?Sized> RwLock<T> {
     /// Note that unlike [`std::sync::RwLock::try_read`], if the current thread already holds this
     /// read lock, `try_read` will return Err.
     pub fn try_read(&self) -> TryLockResult<RwLockReadGuard<'_, T>> {
-        if self.try_lock(RwLockType::Read) {
-            match self.inner.try_read() {
-                Ok(guard) => Ok(RwLockReadGuard {
-                    inner: Some(guard),
-                    rwlock: self,
-                    me: ExecutionState::me(),
-                }),
-                Err(TryLockError::Poisoned(err)) => Err(TryLockError::Poisoned(PoisonError::new(RwLockReadGuard {
-                    inner: Some(err.into_inner()),
-                    rwlock: self,
-                    me: ExecutionState::me(),
-                }))),
-                Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
-            }
-        } else {
-            Err(TryLockError::WouldBlock)
+        // Once the execution's state has granted the lock, this takes it, and reports a guard of
+        // another execution that holds the value, as `Mutex::try_lock` does.
+        match self.try_lock(RwLockType::Read) {
+            Some(poisoned) => Ok(self.read_guard(poisoned)?),
+            None => Err(TryLockError::WouldBlock),
         }
     }
 
@@ -145,22 +176,9 @@ impl<T: ?Sized> RwLock<T> {
     /// If the access could not be granted at this time, then Err is returned. This function does
     /// not block.
     pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, T>> {
-        if self.try_lock(RwLockType::Write) {
-            match self.inner.try_write() {
-                Ok(guard) => Ok(RwLockWriteGuard {
-                    inner: Some(guard),
-                    rwlock: self,
-                    me: ExecutionState::me(),
-                }),
-                Err(TryLockError::Poisoned(err)) => Err(TryLockError::Poisoned(PoisonError::new(RwLockWriteGuard {
-                    inner: Some(err.into_inner()),
-                    rwlock: self,
-                    me: ExecutionState::me(),
-                }))),
-                Err(TryLockError::WouldBlock) => panic!("rwlock state out of sync"),
-            }
-        } else {
-            Err(TryLockError::WouldBlock)
+        match self.try_lock(RwLockType::Write) {
+            Some(poisoned) => Ok(self.write_guard(poisoned)?),
+            None => Err(TryLockError::WouldBlock),
         }
     }
 
@@ -170,7 +188,13 @@ impl<T: ?Sized> RwLock<T> {
     /// take place---the mutable borrow statically guarantees no locks exist.
     #[inline]
     pub fn get_mut(&mut self) -> LockResult<&mut T> {
-        self.inner.get_mut()
+        let poisoned = self.state().borrow().poisoned;
+        let value = self.inner.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if poisoned {
+            Err(PoisonError::new(value))
+        } else {
+            Ok(value)
+        }
     }
 
     /// Consumes this `RwLock`, returning the underlying data
@@ -178,20 +202,33 @@ impl<T: ?Sized> RwLock<T> {
     where
         T: Sized,
     {
-        let state = self.state.borrow();
-        assert_eq!(state.holder, RwLockHolder::None);
+        let poisoned = {
+            let state = self.state().borrow();
+            assert_eq!(state.holder, RwLockHolder::None);
+            state.poisoned
+        };
 
         // Update the receiver's clock with the RwLock clock
         self.semaphore.try_acquire(MAX_READS).unwrap();
 
-        self.inner.into_inner()
+        let value = self.inner.into_inner().unwrap_or_else(PoisonError::into_inner);
+        if poisoned {
+            Err(PoisonError::new(value))
+        } else {
+            Ok(value)
+        }
     }
 
-    /// Acquire the lock in the provided mode, blocking this thread until it succeeds.
-    fn lock(&self, typ: RwLockType) {
+    /// Acquire the lock in the provided mode, blocking this thread until it succeeds. Returns
+    /// whether the lock is poisoned in this execution.
+    fn lock(&self, typ: RwLockType) -> bool {
         let me = ExecutionState::me();
 
-        let mut state = self.state.borrow_mut();
+        // The execution's state of the lock, looked up once: for a `static` lock the lookup goes
+        // through the execution's storage (see `PerExecution`).
+        let lock_state = self.state();
+
+        let mut state = lock_state.borrow_mut();
         trace!(
             holder = ?state.holder,
             semaphore = ?self.semaphore,
@@ -202,7 +239,7 @@ impl<T: ?Sized> RwLock<T> {
         drop(state);
 
         // Detect deadlock due to re-entrancy.
-        state = self.state.borrow_mut();
+        state = lock_state.borrow_mut();
         assert!(
             match &state.holder {
                 RwLockHolder::Write(writer) => *writer != me,
@@ -219,7 +256,7 @@ impl<T: ?Sized> RwLock<T> {
         // if it were free, and the inner `std::sync::RwLock` reports whether it is poisoned.
         let _ = self.semaphore.acquire_blocking(typ.num_permits());
 
-        state = self.state.borrow_mut();
+        state = lock_state.borrow_mut();
         match (typ, &mut state.holder) {
             (RwLockType::Write, RwLockHolder::None) => {
                 state.holder = RwLockHolder::Write(me);
@@ -246,15 +283,19 @@ impl<T: ?Sized> RwLock<T> {
             typ,
             self
         );
-        drop(state);
+        state.poisoned
     }
 
-    /// Attempt to acquire this lock in the provided mode, but without blocking. Returns `true` if
-    /// the lock was able to be acquired without blocking, or `false` otherwise.
-    fn try_lock(&self, typ: RwLockType) -> bool {
+    /// Attempt to acquire this lock in the provided mode, but without blocking. Returns whether the
+    /// lock is poisoned in this execution if it was able to be acquired without blocking, or `None`
+    /// otherwise.
+    fn try_lock(&self, typ: RwLockType) -> Option<bool> {
         let me = ExecutionState::me();
 
-        let mut state = self.state.borrow_mut();
+        // As in `lock`, looked up once.
+        let lock_state = self.state();
+
+        let mut state = lock_state.borrow_mut();
         trace!(
             holder = ?state.holder,
             semaphore = ?self.semaphore,
@@ -267,7 +308,7 @@ impl<T: ?Sized> RwLock<T> {
         // Semaphore is never closed, so an error here is always `NoPermits`.
         let mut acquired = self.semaphore.try_acquire(typ.num_permits()).is_ok();
         if acquired {
-            state = self.state.borrow_mut();
+            state = lock_state.borrow_mut();
             match (typ, &mut state.holder) {
                 (RwLockType::Write, RwLockHolder::None) => {
                     state.holder = RwLockHolder::Write(me);
@@ -302,7 +343,7 @@ impl<T: ?Sized> RwLock<T> {
             self,
         );
 
-        acquired
+        acquired.then(|| lock_state.borrow().poisoned)
     }
 
     /// Determines whether the lock is poisoned.
@@ -314,13 +355,13 @@ impl<T: ?Sized> RwLock<T> {
     /// task cannot observe, exactly as std's relaxed load of the poison flag cannot.
     #[inline]
     pub fn is_poisoned(&self) -> bool {
-        self.inner.is_poisoned()
+        self.state().borrow().poisoned
     }
 
     /// Clear the poisoned state from a lock.
     #[inline]
     pub fn clear_poison(&self) {
-        self.inner.clear_poison();
+        self.state().borrow_mut().poisoned = false;
     }
 }
 
@@ -342,8 +383,17 @@ impl<T: Default> Default for RwLock<T> {
 }
 
 impl<T: ?Sized + Debug> Debug for RwLock<T> {
+    /// As `std`'s, from the inner `std::sync::RwLock`, which a guard of any execution holds, and
+    /// with the current execution's poisoning.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Debug::fmt(&self.inner, f)
+        let mut d = f.debug_struct("RwLock");
+        match self.inner.try_read() {
+            Ok(guard) => d.field("data", &&*guard),
+            Err(TryLockError::Poisoned(err)) => d.field("data", &&**err.get_ref()),
+            Err(TryLockError::WouldBlock) => d.field("data", &format_args!("<locked>")),
+        };
+        d.field("poisoned", &self.poisoned_here());
+        d.finish_non_exhaustive()
     }
 }
 
@@ -376,18 +426,26 @@ impl<T: Display + ?Sized> Display for RwLockReadGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) {
+        // The guard is done with the value, so it gives it up before the scheduling point of the
+        // release below, as `Mutex`'s does. A read guard doesn't poison the lock.
+        self.inner = None;
+        self.rwlock.value.release();
+
         // Execution teardown can unwind the task from the yield point in `release` (see
         // `ExecutionState::tear_down`). `release` releases the permit even then, and the rest of
         // unlocking has to happen too, so that the destructors that teardown runs later can lock the
         // `RwLock`.
-        struct Unlock<'g, 'a, T: ?Sized>(&'g mut RwLockReadGuard<'a, T>);
+        struct Unlock<'g, 'a, T: ?Sized>(&'g RwLockReadGuard<'a, T>);
         impl<T: ?Sized> Drop for Unlock<'_, '_, T> {
             #[inline]
             fn drop(&mut self) {
-                let guard = &mut *self.0;
-                guard.inner = None;
-
-                let mut state = guard.rwlock.state.borrow_mut();
+                let guard = self.0;
+                // Where the execution's state can't be reached, there is no bookkeeping to do (see
+                // `ExecutionState::should_stop`).
+                let Some(state) = guard.rwlock.state.try_get(RwLock::<T>::fresh_state) else {
+                    return;
+                };
+                let mut state = state.borrow_mut();
                 trace!(
                     holder = ?state.holder,
                     semaphore = ?guard.rwlock.semaphore,
@@ -445,22 +503,29 @@ impl<T: Display + ?Sized> Display for RwLockWriteGuard<'_, T> {
 
 impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
+        // As for `RwLockReadGuard`, and the poisoning as for `Mutex`'s guard.
+        self.inner = None;
+        let poisoned = self.rwlock.inner.is_poisoned();
+        if poisoned {
+            self.rwlock.inner.clear_poison();
+        }
+        let poisons = poisoned && !ExecutionState::unwinding_for_teardown();
+        self.rwlock.value.release();
+
         // As for `RwLockReadGuard`.
-        struct Unlock<'g, 'a, T: ?Sized>(&'g mut RwLockWriteGuard<'a, T>);
+        struct Unlock<'g, 'a, T: ?Sized> {
+            guard: &'g RwLockWriteGuard<'a, T>,
+            poisons: bool,
+        }
         impl<T: ?Sized> Drop for Unlock<'_, '_, T> {
             #[inline]
             fn drop(&mut self) {
-                let guard = &mut *self.0;
-                // Teardown unwinding the task is no panic, which mustn't poison the inner lock.
-                let clear_poison = std::thread::panicking()
-                    && !guard.rwlock.inner.is_poisoned()
-                    && ExecutionState::unwinding_for_teardown();
-                guard.inner = None;
-                if clear_poison {
-                    guard.rwlock.inner.clear_poison();
-                }
-
-                let mut state = guard.rwlock.state.borrow_mut();
+                let guard = self.guard;
+                // As for `RwLockReadGuard`.
+                let Some(state) = guard.rwlock.state.try_get(RwLock::<T>::fresh_state) else {
+                    return;
+                };
+                let mut state = state.borrow_mut();
                 trace!(
                     holder = ?state.holder,
                     semaphore = ?guard.rwlock.semaphore,
@@ -469,12 +534,13 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
                 );
                 assert_eq!(state.holder, RwLockHolder::Write(guard.me));
                 state.holder = RwLockHolder::None;
+                state.poisoned |= self.poisons;
                 drop(state);
             }
         }
-        let unlock = Unlock(self);
+        let unlock = Unlock { guard: self, poisons };
 
-        unlock.0.rwlock.semaphore.release(RwLockType::Write.num_permits());
+        unlock.guard.rwlock.semaphore.release(RwLockType::Write.num_permits());
     }
 }
 
