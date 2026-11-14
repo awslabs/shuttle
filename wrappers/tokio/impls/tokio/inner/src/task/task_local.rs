@@ -38,11 +38,12 @@
 //! not a scheduling point, as it is not in tokio: it is not visible to any other task.
 //!
 //! Whenever Shuttle has no current task, or is updating its own state, the slot is a plain
-//! `std::thread_local!` instead, which is what tokio uses all the time. That is the case outside of
-//! a Shuttle test, where a `LocalKey` therefore behaves exactly as tokio's does, and while Shuttle
-//! updates its own state (which is when it calls `tracing` subscribers for some of its own events).
-//! In both, only one thing runs at a time, so a single slot is as sound there as it is in tokio:
-//! scopes can only nest, never interleave.
+//! thread-local instead (a [`FallbackKey`](crate::task::fallback_key::FallbackKey)), which is what
+//! tokio uses all the time. That is the case outside of a Shuttle test, where a `LocalKey`
+//! therefore behaves exactly as tokio's does, and while Shuttle updates its own state (which is
+//! when it calls `tracing` subscribers for some of its own events). In both, only one thing runs
+//! at a time, so a single slot is as sound there as it is in tokio: scopes can only nest, never
+//! interleave.
 //!
 //! Code that Shuttle runs while it updates its own state therefore sees no task's values, even when
 //! it runs on behalf of a task that is inside a scope. That includes `tracing` subscribers handling
@@ -63,7 +64,7 @@ use std::future::Future;
 use std::marker::PhantomPinned;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::{fmt, mem, thread};
+use std::{fmt, mem};
 
 /// Declares a new task-local key of type [`LocalKey`].
 ///
@@ -110,21 +111,23 @@ macro_rules! __task_local_inner {
         $(#[$attr])*
         $vis static $name: $crate::task::LocalKey<$t> = {
             // SHUTTLE_CHANGES: tokio declares a single `std::thread_local!` here. See `LocalKey`
-            // for what each of these two slots is for.
+            // for what each of these two slots is for. Neither is a `std::thread_local!`: this
+            // expansion is compiled in whatever crate invokes the macro, and a lint that fires on
+            // `std::thread_local!` fires on calls inside other crates' expansions too, so a
+            // `#[deny]` of clippy's `disallowed_macros` for it in a consumer would make every
+            // `task_local!` in that consumer an error. See `task::fallback_key`.
             // Destroyed after the task's other thread-locals, whose destructors may use the key.
             static __TASK_SLOT: $crate::macros::support::__ShuttleDestroyedLastKey<
                 ::std::cell::RefCell<::std::option::Option<$t>>,
             > = $crate::macros::support::__ShuttleDestroyedLastKey::new(|| {
                 ::std::cell::RefCell::new(::std::option::Option::None)
             });
-            ::std::thread_local! {
-                static __FALLBACK_SLOT: ::std::cell::RefCell<::std::option::Option<$t>> =
-                    const { ::std::cell::RefCell::new(::std::option::Option::None) };
-            }
+            static __FALLBACK_SLOT: $crate::macros::support::__ShuttleFallbackKey<$t> =
+                $crate::macros::support::__ShuttleFallbackKey::new();
 
             $crate::task::LocalKey {
                 task_slot: &__TASK_SLOT,
-                fallback_slot: __FALLBACK_SLOT,
+                fallback_slot: &__FALLBACK_SLOT,
             }
         };
     };
@@ -171,11 +174,12 @@ pub struct LocalKey<T: 'static> {
     #[doc(hidden)]
     pub task_slot: &'static shuttle_engine::thread_support::DestroyedLastKey<RefCell<Option<T>>>,
     // The slot used instead whenever Shuttle has no current task or is updating its own state:
-    // outside of a Shuttle test, and while it updates its own state (see the module docs). It is
-    // what tokio uses all the time, and is as sound here as it is there, since only one thing runs
-    // at a time in each of those cases.
+    // outside of a Shuttle test, and while it updates its own state (see the module docs). It is a
+    // plain thread-local, which is what tokio uses all the time, and is as sound here as it is
+    // there, since only one thing runs at a time in each of those cases. See `task::fallback_key`
+    // for why it is not a `std::thread_local!`.
     #[doc(hidden)]
-    pub fallback_slot: thread::LocalKey<RefCell<Option<T>>>,
+    pub fallback_slot: &'static crate::task::fallback_key::FallbackKey<T>,
 }
 
 impl<T: 'static> LocalKey<T> {
@@ -314,7 +318,7 @@ impl<T: 'static> LocalKey<T> {
         if shuttle::current::try_get_current_task().is_some() {
             self.task_slot.try_with(f).map_err(|_| AccessError { _private: () })
         } else {
-            self.fallback_slot.try_with(f).map_err(|_| AccessError { _private: () })
+            self.fallback_slot.try_with(f).ok_or(AccessError { _private: () })
         }
     }
 

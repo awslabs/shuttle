@@ -7,6 +7,7 @@ use futures::channel::oneshot;
 use pin_project::{pin_project, pinned_drop};
 use shuttle::rand::{rngs::ThreadRng, thread_rng, Rng};
 use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::per_execution::PerExecution;
 use shuttle_engine::runtime::thread;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -16,9 +17,11 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tracing::trace;
 
+/// Its waiters are kept once for each execution (see [`PerExecution`]), so that a `Notify` that
+/// outlives an execution, as one in a `static` does, starts every execution with none.
 #[derive(Debug)]
 pub struct Notify {
-    state: Mutex<NotifyState>,
+    state: PerExecution<Mutex<NotifyState>>,
 }
 
 #[derive(Debug)]
@@ -144,8 +147,30 @@ impl Notify {
     /// Create a new `Notify`, initialized without a permit.
     pub fn new() -> Notify {
         Notify {
-            state: Mutex::new(NotifyState::new()),
+            state: PerExecution::new(),
         }
+    }
+
+    /// Create a new `Notify`, initialized without a permit.
+    ///
+    /// Equivalent to [`Notify::new`], except that it can be used in static variables.
+    pub const fn const_new() -> Notify {
+        Notify {
+            state: PerExecution::new(),
+        }
+    }
+
+    /// The waiters of the current execution, which the execution creates when it first uses the
+    /// `Notify`.
+    fn state(&self) -> &Mutex<NotifyState> {
+        self.state.get(|| Mutex::new(NotifyState::new()))
+    }
+
+    /// Like `state`, but `None` where the state can't be reached: in an execution's storage while
+    /// Shuttle holds its own state borrowed. Only the destructor of a `Notified` gets there, and
+    /// there is nothing for it to remove.
+    fn try_state(&self) -> Option<&Mutex<NotifyState>> {
+        self.state.try_get(|| Mutex::new(NotifyState::new()))
     }
 
     /// Wait for a notification.
@@ -158,7 +183,7 @@ impl Notify {
         // never registers its waker would then spin instead of deadlocking.
         thread::switch();
         let (tx, rx) = oneshot::channel();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state().lock().unwrap();
         let id = state.next_id;
         state.next_id += 1;
         let flag = Arc::new(WaiterFlag::new(WaiterState::Init));
@@ -192,15 +217,21 @@ impl Notify {
     /// [`notified().await`] will complete immediately consuming the permit made
     /// available by this call to `notify_one()`.
     pub fn notify_one(&self) {
-        // Scheduling point precedes the visible notification
-        thread::switch();
+        // Scheduling point precedes the visible notification. The destructors of the channels built
+        // on this one notify, and can run where the current task can't switch (see
+        // `thread::switch_if_not_stopping`).
+        thread::switch_if_not_stopping();
         self.notify_one_no_scheduling_point();
     }
 
     /// `notify_one` without its scheduling point. The drop of a `Notified` calls this after its own
     /// scheduling point.
     fn notify_one_no_scheduling_point(&self) {
-        let mut state = self.state.lock().unwrap();
+        // Where the execution's state can't be reached, there is nobody to notify.
+        let Some(state) = self.try_state() else {
+            return;
+        };
+        let mut state = state.lock().unwrap();
         // Need to choose a waiter that is Pending
         let mut pending = Vec::with_capacity(state.waiters.len());
         for w in &state.waiters {
@@ -239,9 +270,13 @@ impl Notify {
     /// already registered waiters. Registering for notification is done by
     /// acquiring an instance of the `Notified` future via calling `notified()`.
     pub fn notify_waiters(&self) {
-        // Scheduling point precedes the visible notification
-        thread::switch();
-        let mut state = self.state.lock().unwrap();
+        // Scheduling point precedes the visible notification. As in `notify_one`, it is skipped
+        // where the current task can't switch, and then there is nobody to notify either.
+        thread::switch_if_not_stopping();
+        let Some(state) = self.try_state() else {
+            return;
+        };
+        let mut state = state.lock().unwrap();
         // Notify all waiters, including those not yet enabled
         let waiters = std::mem::take(&mut state.waiters);
         trace!("notify_waiters for {:p} notifying waiters {:?}", self, waiters);
@@ -316,7 +351,7 @@ impl Notified<'_> {
             // Not yet polled or enabled, so mark it enabled
             this.flag.store(WaiterState::Enabled);
         }
-        let mut state = this.notify.state.lock().unwrap();
+        let mut state = this.notify.state().lock().unwrap();
         if std::mem::replace(&mut state.pending, false) {
             trace!("waiter {} in state {:?} consuming permit", this.id, flag);
             // We just consumed a permit, so mark this future ready and remove
@@ -370,8 +405,10 @@ impl PinnedDrop for Notified<'_> {
         match self.flag.load() {
             // Not notified: remove the waiter from the waiter queue.
             WaiterState::Init | WaiterState::Enabled => {
-                let mut state = self.notify.state.lock().unwrap();
-                let _ = state.remove_waiter(self.id);
+                // Where the execution's state can't be reached, the waiter queue is gone with it.
+                if let Some(state) = self.notify.try_state() {
+                    let _ = state.lock().unwrap().remove_waiter(self.id);
+                }
             }
             // Notified by `notify_one`, but not completed. As in tokio, pass the notification on to
             // another waiter, so that it is not lost. The drop passes the notification on also while
