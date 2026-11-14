@@ -1,0 +1,34 @@
+[package]
+name = "shuttle-rand_0_10-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `rand` 0.10 crate. Do not depend on this crate directly; use `shuttle-rand_0_10`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-rand_0_10`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+# rand's features, each forwarded to rand. This crate's own items exist whichever are on, so that code
+# that relies on another crate in the graph turning a rand feature on still builds under `shuttle`.
+[features]
+default = [ "rand-orig/default" ]
+alloc = [ "rand-orig/alloc" ]
+chacha = [ "rand-orig/chacha" ]
+log = [ "rand-orig/log" ]
+serde = [ "rand-orig/serde" ]
+simd_support = [ "rand-orig/simd_support" ]
+std = [ "rand-orig/std" ]
+std_rng = [ "rand-orig/std_rng" ]
+sys_rng = [ "rand-orig/sys_rng" ]
+thread_rng = [ "rand-orig/thread_rng" ]
+unbiased = [ "rand-orig/unbiased" ]
+
+[dependencies]
+# The API mirrored here is rand 0.10.3's, which 0.10.0 already has. The features are the ones that
+# the re-exported items need: `std_rng` and `chacha` for the generators, `std` for `RngReader`, and
+# `sys_rng` for `SysError`, which `ThreadRng::reseed` and `SysRng` name.
+rand-orig = { package = "rand", version = "0.10", default-features = false, features = ["std", "std_rng", "chacha", "sys_rng"] }
+shuttle = { path = "../../../shuttle", version = "0.9" }
+
+[dev-dependencies]
+tempfile = "3.2.0"

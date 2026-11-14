@@ -1,0 +1,38 @@
+[package]
+name = "shuttle-rand_0_9-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `rand` 0.9 crate. Do not depend on this crate directly; use `shuttle-rand_0_9`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-rand_0_9`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+# rand's features, each forwarded to rand. This crate's own items exist whichever are on, so that code
+# that relies on another crate in the graph turning a rand feature on still builds under `shuttle`.
+[features]
+default = [ "rand-orig/default" ]
+alloc = [ "rand-orig/alloc" ]
+log = [ "rand-orig/log" ]
+nightly = [ "rand-orig/nightly" ]
+os_rng = [ "rand-orig/os_rng" ]
+serde = [ "rand-orig/serde" ]
+simd_support = [ "rand-orig/simd_support" ]
+small_rng = [ "rand-orig/small_rng" ]
+std = [ "rand-orig/std" ]
+std_rng = [ "rand-orig/std_rng" ]
+thread_rng = [ "rand-orig/thread_rng" ]
+unbiased = [ "rand-orig/unbiased" ]
+
+[dependencies]
+# The API mirrored here is rand 0.9.5's; 0.9.1 added the `rand_core` re-export. The features are the
+# ones that the re-exported items need: `std_rng` and `small_rng` for the generators, `os_rng` for
+# `rand_core::OsError`, which `ThreadRng::reseed` and `OsRng` name, and `std`, which Shuttle needs
+# anyway.
+rand-orig = { package = "rand", version = "0.9.1", default-features = false, features = ["std", "std_rng", "small_rng", "os_rng"] }
+# For `getrandom::Error`, which `SeedableRng::try_from_os_rng` returns, as rand_core's does.
+getrandom = { version = "0.3", default-features = false }
+shuttle = { path = "../../../shuttle", version = "0.9" }
+
+[dev-dependencies]
+tempfile = "3.2.0"

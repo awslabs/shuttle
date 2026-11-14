@@ -1,0 +1,41 @@
+[package]
+# Cargo allows only one package of a name in a workspace, and `shuttle-rand` is the rand 0.8 wrapper,
+# so the name carries rand's version, as the inner crates' names already do.
+name = "shuttle-rand_0_10"
+# Wrappers mirror the version of the crate they wrap, so that a downstream crate can depend on the
+# wrapper with the same `version = "0.10"` requirement it would have used for rand.
+version = "0.10.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "rand 0.10 wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+shuttle = [ "dep:shuttle-rand-inner" ]
+
+# rand's features. Each one is forwarded to rand, and to the inner crate when `shuttle` is enabled.
+# rand is a dependency in both modes, and the inner crate re-exports most of it, so the features
+# take effect with and without `shuttle`.
+default = [ "rand-orig/default", "shuttle-rand-inner?/default" ]
+alloc = [ "rand-orig/alloc", "shuttle-rand-inner?/alloc" ]
+chacha = [ "rand-orig/chacha", "shuttle-rand-inner?/chacha" ]
+log = [ "rand-orig/log", "shuttle-rand-inner?/log" ]
+serde = [ "rand-orig/serde", "shuttle-rand-inner?/serde" ]
+simd_support = [ "rand-orig/simd_support", "shuttle-rand-inner?/simd_support" ]
+std = [ "rand-orig/std", "shuttle-rand-inner?/std" ]
+std_rng = [ "rand-orig/std_rng", "shuttle-rand-inner?/std_rng" ]
+sys_rng = [ "rand-orig/sys_rng", "shuttle-rand-inner?/sys_rng" ]
+thread_rng = [ "rand-orig/thread_rng", "shuttle-rand-inner?/thread_rng" ]
+unbiased = [ "rand-orig/unbiased", "shuttle-rand-inner?/unbiased" ]
+
+[dependencies]
+cfg-if = "1.0"
+# Without default features, so that `default-features = false` on this crate reaches rand too.
+rand-orig = { package = "rand", version = "0.10", default-features = false }
+shuttle-rand-inner = { package = "shuttle-rand_0_10-inner", path = "./shuttle_rand_inner", version = "0.1", optional = true, default-features = false }
+
+[dev-dependencies]
+# The tests use the ChaCha generators.
+shuttle-rand_0_10 = { path = ".", features = ["chacha"] }
+# For the tests that run under `--features shuttle`.
+shuttle = { path = "../../shuttle", version = "0.9" }
