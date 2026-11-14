@@ -254,4 +254,8 @@ impl<S: Scheduler> Scheduler for PortfolioStoppableScheduler<S> {
     fn next_u64(&mut self) -> u64 {
         self.scheduler.next_u64()
     }
+
+    fn try_next_u64(&mut self) -> Option<u64> {
+        self.scheduler.try_next_u64()
+    }
 }
