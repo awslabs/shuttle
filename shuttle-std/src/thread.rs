@@ -4,6 +4,7 @@ use shuttle_engine::runtime::execution::ExecutionState;
 use shuttle_engine::runtime::task::TaskId;
 use shuttle_engine::runtime::thread;
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -82,6 +83,22 @@ impl<'scope> Scope<'scope, '_> {
         F: FnOnce() -> T + Send + 'scope,
         T: Send + 'scope,
     {
+        self.spawn_named(f, None, None, Location::caller())
+    }
+
+    /// [`Scope::spawn`], with the name and stack size a [`Builder`] was given. `caller` is the
+    /// caller of the public method, which `#[track_caller]` cannot reach from here.
+    fn spawn_named<F, T>(
+        &'scope self,
+        f: F,
+        name: Option<String>,
+        stack_size: Option<usize>,
+        caller: &'static Location<'static>,
+    ) -> ScopedJoinHandle<'scope, T>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
         // A task that a destructor spawns while the execution is torn down never runs (see
         // `ExecutionState::tear_down`), so the scope would wait for it forever. And if that wait is
         // stopped, the thread would outlive the scope that it borrows from.
@@ -118,7 +135,7 @@ impl<'scope> Scope<'scope, '_> {
         // (above) in the `scope_closure` *before* setting `finished` to be `true`.
         // SAFETY: main task is blocked until all scoped closures complete so all captured references remain valid
         ScopedJoinHandle {
-            handle: unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) },
+            handle: unsafe { spawn_named_unchecked(scope_closure, name, stack_size, false, caller) },
             finished,
             _marker: PhantomData,
         }
@@ -307,6 +324,22 @@ impl<T> JoinHandle<T> {
     pub fn thread(&self) -> &Thread {
         &self.thread
     }
+
+    /// Checks if the associated thread has finished running its main function.
+    ///
+    /// A thread is finished here once its task has ended, which is after its thread-local values
+    /// have been dropped and its result has been stored, so a `true` means a `join` will not block.
+    ///
+    /// Unlike [`join`](JoinHandle::join), this takes no scheduling point: it only reads the other
+    /// task's state, which that task cannot observe, exactly as std's atomic load of a flag cannot.
+    /// A loop that waits for the thread to finish therefore has to give the scheduler a chance to
+    /// run it, with [`yield_now`], as a spin loop under Shuttle always does.
+    ///
+    /// ## Panics
+    /// Panics if called outside a Shuttle execution.
+    pub fn is_finished(&self) -> bool {
+        ExecutionState::with(|state| state.get(self.task_id).finished())
+    }
 }
 
 /// Cooperatively gives up a timeslice to the Shuttle scheduler.
@@ -324,6 +357,36 @@ pub fn yield_now() {
 // Note that Shuttle does not model time, so this behaves just like a context switch.
 pub fn sleep(_dur: Duration) {
     thread::switch();
+}
+
+/// Puts the current thread to sleep for at least the specified number of milliseconds.
+///
+/// Mirrors std's long-deprecated `sleep_ms`, so that code that still calls it builds under Shuttle.
+#[deprecated(since = "0.1.6", note = "replaced by `sleep`")]
+pub fn sleep_ms(ms: u32) {
+    sleep(Duration::from_millis(u64::from(ms)))
+}
+
+/// Returns the parallelism [`Config::available_parallelism`] configures, which is 4 by default.
+///
+/// std returns an estimate of the parallelism the host offers. Shuttle runs every task of an
+/// execution on one OS thread, so that number says nothing about the test, and reading it makes the
+/// test depend on the machine it runs on: a thread pool or a sharded structure sized by it has a
+/// different shape on every host, and a schedule that fails on one does not replay on another.
+/// Shuttle therefore answers with the configured value, which is the same on every host and in
+/// every execution of the test, and never returns an error.
+///
+/// A test that wants a different number sets `available_parallelism` in its [`Config`]. A replay
+/// uses the value of the `Config` it is given, as it does for `stack_size`, so a replay of such a
+/// test has to set it too.
+///
+/// [`Config`]: shuttle_engine::Config
+/// [`Config::available_parallelism`]: shuttle_engine::Config::available_parallelism
+///
+/// ## Panics
+/// Panics if called outside a Shuttle execution.
+pub fn available_parallelism() -> std::io::Result<NonZeroUsize> {
+    Ok(ExecutionState::with(|state| state.config.available_parallelism))
 }
 
 /// Get a handle to the thread that invokes it
@@ -365,6 +428,16 @@ pub fn park_timeout(_dur: Duration) {
     park();
 }
 
+/// Blocks unless or until the current thread's token is made available or the specified number of
+/// milliseconds has passed (may wake spuriously).
+///
+/// Mirrors std's long-deprecated `park_timeout_ms`, so that code that still calls it builds under
+/// Shuttle. As Shuttle does not model time, this behaves identically to [`park`].
+#[deprecated(since = "0.1.6", note = "replaced by `park_timeout`")]
+pub fn park_timeout_ms(_ms: u32) {
+    park();
+}
+
 /// Thread factory, which can be used in order to configure the properties of a new thread.
 #[derive(Debug, Default)]
 pub struct Builder {
@@ -402,6 +475,46 @@ impl Builder {
         T: Send + 'static,
     {
         Ok(spawn_named(f, self.name, self.stack_size, Location::caller()))
+    }
+
+    /// Spawns a new scoped thread by taking ownership of the Builder, and returns an `io::Result` to
+    /// its [`ScopedJoinHandle`].
+    ///
+    /// Like [`Scope::spawn`], but with the name and stack size this Builder was given. Spawning
+    /// never fails under Shuttle, so the result is always `Ok`.
+    #[track_caller]
+    pub fn spawn_scoped<'scope, 'env, F, T>(
+        self,
+        scope: &'scope Scope<'scope, 'env>,
+        f: F,
+    ) -> std::io::Result<ScopedJoinHandle<'scope, T>>
+    where
+        F: FnOnce() -> T + Send + 'scope,
+        T: Send + 'scope,
+    {
+        Ok(scope.spawn_named(f, self.name, self.stack_size, Location::caller()))
+    }
+
+    /// Spawns a new thread without the `'static` bound on `f` and its return value, by taking
+    /// ownership of the Builder.
+    ///
+    /// Mirrors std's unstable `spawn_unchecked`. Spawning never fails under Shuttle, so the result
+    /// is always `Ok`.
+    ///
+    /// # Safety
+    ///
+    /// The caller has to ensure that everything `f` borrows, and everything the value it returns
+    /// borrows, outlives the spawned thread. Shuttle cannot stop the thread when the borrow ends:
+    /// if nothing joins the handle, the thread runs until the execution ends, and so do the
+    /// destructors of its locals. [`Scope::spawn`] is the safe way to lend a thread a borrow.
+    #[track_caller]
+    pub unsafe fn spawn_unchecked<'a, F, T>(self, f: F) -> std::io::Result<JoinHandle<T>>
+    where
+        F: FnOnce() -> T + Send + 'a,
+        T: Send + 'a,
+    {
+        // SAFETY: the caller promises that everything `f` and `T` borrow outlives the thread.
+        Ok(unsafe { spawn_named_unchecked(f, self.name, self.stack_size, true, Location::caller()) })
     }
 }
 

@@ -218,45 +218,9 @@ pub use shuttle_schedulers::{
 pub use shuttle_schedulers::annotate_replay;
 
 /// Declare a new thread local storage key of type [`LocalKey`](crate::thread::LocalKey).
-#[macro_export]
-macro_rules! thread_local {
-    // empty (base case for the recursion)
-    () => {};
-
-    // process multiple declarations with a const initializer
-    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = const { $init:expr }; $($rest:tt)*) => (
-        $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
-        $crate::thread_local!($($rest)*);
-    );
-
-    // handle a single declaration with a const initializer
-    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = const { $init:expr }) => (
-        $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
-    );
-
-    // process multiple declarations
-    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr; $($rest:tt)*) => (
-        $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
-        $crate::thread_local!($($rest)*);
-    );
-
-    // handle a single declaration
-    ($(#[$attr:meta])* $vis:vis static $name:ident: $t:ty = $init:expr) => (
-        $crate::__thread_local_inner!($(#[$attr])* $vis $name, $t, $init);
-    );
-}
-
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __thread_local_inner {
-    ($(#[$attr:meta])* $vis:vis $name:ident, $t:ty, $init:expr) => {
-        $(#[$attr])* $vis static $name: $crate::thread::LocalKey<$t> =
-            $crate::thread::LocalKey {
-                init: || { $init },
-                _p: std::marker::PhantomData,
-            };
-    }
-}
+///
+/// The macro lives in `shuttle-std`, beside the `LocalKey` its expansion names.
+pub use shuttle_std::thread_local;
 
 /// Declare a new [lazy static value](crate::lazy_static::Lazy), like the `lazy_static` crate.
 // These macros are copied from the lazy_static crate.
