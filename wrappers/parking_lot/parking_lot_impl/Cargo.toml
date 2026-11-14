@@ -24,11 +24,12 @@ hardware-lock-elision = []
 # `RawRwLock` needs `BatchSemaphore::acquire_bypassable`, provided by shuttle-engine 0.1.6.
 # Shuttle 0.9.8 is the first release that requires that engine version.
 shuttle = { path = "../../../shuttle", version = ">=0.9.8, <0.10" }
-# For `switch`, the scheduling point that `is_locked` takes, and for `ValueLock`, which keeps a
-# lock's value to one execution at a time (`shuttle` keeps its `runtime` module private). `ValueLock`
-# is new in the release after 0.1.8, which the requirement has to name at release prep. 0.1.8 is the
-# engine of every `shuttle` this crate allows (0.9.8 and later), so it is the same engine, not a
-# second one.
+# For the execution's storage, which holds the primitives' state, for blocking and waking tasks in
+# `Condvar`, and for `ValueLock`, which keeps a lock's value to one execution at a time (`shuttle`
+# keeps its `runtime` module private). 0.1.8 is the first with a public
+# `BatchSemaphore::release_no_scheduling_point`, which `Condvar::wait` uses; `ValueLock` is new in
+# the release after it, which the requirement has to name at release prep. It is the engine of every
+# `shuttle` this crate allows (0.9.8 and later), so it is the same engine, not a second one.
 shuttle-engine = { path = "../../../shuttle-engine", version = "0.1.8" }
 lock_api = "0.4"
 tracing = { version = "0.1.36", default-features = false, features = ["std"] }
@@ -40,3 +41,5 @@ tracing = { version = "0.1.36", default-features = false, features = ["std"] }
 # on an unrelated PR. The failure message gives this cause. The weekly `beta` job in
 # `.github/workflows/crons.yml` also runs the test, and opens an issue when it fails.
 parking_lot = "0.12.5"
+# Vector clocks, so that the tests of causality see real clocks.
+shuttle = { path = "../../../shuttle", features = ["vector-clocks"] }

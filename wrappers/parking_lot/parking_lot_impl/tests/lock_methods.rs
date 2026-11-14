@@ -1,7 +1,7 @@
 //! The lock methods beyond lock and unlock: `is_locked`, the timed locks, recursive reads.
 
 use shuttle::{check_dfs, check_random, current, thread};
-use shuttle_parking_lot_impl::{Mutex, RwLock, RwLockUpgradableReadGuard};
+use shuttle_parking_lot_impl::{FairMutex, Mutex, ReentrantMutex, RwLock, RwLockUpgradableReadGuard};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -126,10 +126,19 @@ fn a_timed_lock_waits_for_the_lock() {
         || {
             let lock = Arc::new(Mutex::new(0));
             let rwlock = Arc::new(RwLock::new(0));
+            let fair = Arc::new(FairMutex::new(0));
+            let reentrant = Arc::new(ReentrantMutex::new(()));
             let mut guard = lock.lock();
             let mut write = rwlock.write();
+            let mut fair_guard = fair.lock();
+            let reentrant_guard = reentrant.lock();
             let waiter = {
-                let (lock, rwlock) = (Arc::clone(&lock), Arc::clone(&rwlock));
+                let (lock, rwlock, fair, reentrant) = (
+                    Arc::clone(&lock),
+                    Arc::clone(&rwlock),
+                    Arc::clone(&fair),
+                    Arc::clone(&reentrant),
+                );
                 thread::spawn(move || {
                     assert_eq!(*lock.try_lock_for(Duration::ZERO).expect("timed out"), 1);
                     assert_eq!(*lock.try_lock_until(Instant::now()).expect("timed out"), 1);
@@ -141,11 +150,14 @@ fn a_timed_lock_waits_for_the_lock() {
                     assert_eq!(*upgraded, 1);
                     drop(upgraded);
                     assert_eq!(*rwlock.try_read_recursive_for(Duration::ZERO).expect("timed out"), 1);
+                    assert_eq!(*fair.try_lock_for(Duration::ZERO).expect("timed out"), 1);
+                    assert!(reentrant.try_lock_for(Duration::ZERO).is_some());
                 })
             };
             *guard = 1;
             *write = 1;
-            drop((guard, write));
+            *fair_guard = 1;
+            drop((guard, write, fair_guard, reentrant_guard));
             waiter.join().unwrap();
         },
         None,
