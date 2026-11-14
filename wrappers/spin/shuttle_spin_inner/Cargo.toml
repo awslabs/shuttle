@@ -1,0 +1,48 @@
+[package]
+name = "shuttle-spin-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `spin` crate. Do not depend on this crate directly; use `shuttle-spin`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-spin`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+# spin 0.10's features, with the same implications between them. They decide which parts of spin's
+# API this crate mirrors, as they do in spin. `portable-atomic` changes nothing under Shuttle,
+# whose model replaces the atomics.
+[features]
+default = ["lock_api", "mutex", "spin_mutex", "rwlock", "once", "lazy", "barrier"]
+barrier = ["mutex"]
+fair_mutex = ["mutex"]
+lazy = ["once"]
+lock_api = ["dep:lock_api_crate"]
+mutex = ["dep:spin-orig"]
+once = []
+portable-atomic = []
+portable_atomic = ["portable-atomic"]
+rwlock = ["dep:spin-orig"]
+spin_mutex = ["mutex"]
+std = []
+ticket_mutex = ["mutex"]
+use_ticket_mutex = ["mutex", "ticket_mutex"]
+
+[dependencies]
+# For `hint::spin_loop` and `thread::yield_now`, the relax strategies under Shuttle.
+shuttle = { path = "../../../shuttle", version = "0.9" }
+# For the execution's storage, which holds each primitive's state for one execution, for blocking
+# and waking tasks, and for `ValueLock`, which keeps a lock to one execution at a time. `ValueLock`
+# is new in the release after 0.1.8, which the requirement has to name at release prep.
+shuttle-engine = { path = "../../../shuttle-engine", version = "0.1" }
+# The locks keep their data in spin's own locks. See the crate documentation.
+spin-orig = { package = "spin", version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock"], optional = true }
+lock_api_crate = { package = "lock_api", version = "0.4", optional = true }
+
+[dev-dependencies]
+# The tests use every type.
+shuttle-spin-inner = { path = ".", features = ["fair_mutex", "ticket_mutex", "std"] }
+# `tests/shuttle.rs` compares the model with the real crate.
+spin-orig = { package = "spin", version = "0.10" }
+
+[package.metadata.docs.rs]
+all-features = true
