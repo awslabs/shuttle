@@ -98,24 +98,20 @@ impl Barrier {
 
     /// Blocks the current thread until all threads have rendezvoused here.
     pub fn wait(&self) -> BarrierWaitResult {
-        let state = self.state.borrow_mut();
-        // The barrier will block if the number of current waiters *plus* an additional waiter
-        // for this thread is less than the bound
-        let will_block = state.waiters.len() + 1 < state.bound;
-        drop(state);
-
-        // If all tasks have already rendezvoused, we need to context switch once to allow the
-        // previous event to become visible before the epoch changes. Otherwise, we can omit the
-        // scheduling point if the wait commutes with other blocking waits (double-yield optimization,
-        // reasoning below).
+        // The scheduling point precedes the arrival, whether this thread will wait for the
+        // generation or release it.
         //
-        // Blocking waits Y1 and Z on threads T1 and T2 always commute with each other because
-        // the waiters for a barrier are represented by an unordered set. Thus for both orderings
-        // `Y1 Z` and `Z Y1`, the state of the barrier is {T1, T2}. As a result, we never need to
-        // switch before blocking on a barrier wait.
-        if !will_block {
-            thread::switch();
-        }
+        // Two arrivals that both wait do commute: the waiters of a generation are an unordered set,
+        // so after `Y Z` and after `Z Y` the barrier holds the same two waiters. But an arrival that
+        // waits does not commute with the arrival that releases the generation after it, because the
+        // last arrival is the leader. Without a scheduling point here, an arrival runs in the same
+        // step as its thread's previous operation, so no other thread can observe that operation and
+        // still arrive first. In a test where one thread stores a flag and then waits, and the other
+        // loads the flag and then waits, real threads produce all four (flag seen, leader) outcomes,
+        // and an arrival without a scheduling point explores two of them (see
+        // `basic::barrier::every_arrival_is_a_separate_step`).
+        thread::switch();
+
         let mut state = self.state.borrow_mut();
         let my_epoch = state.epoch;
 
