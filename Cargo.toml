@@ -26,6 +26,8 @@ members = [
     "wrappers/dashmap/dashmap_impl",
     "wrappers/crossbeam_queue",
     "wrappers/crossbeam_queue/shuttle_crossbeam_queue_inner",
+    "wrappers/crossbeam_deque",
+    "wrappers/crossbeam_deque/shuttle_crossbeam_deque_inner",
 ]
 
 resolver = "2"
