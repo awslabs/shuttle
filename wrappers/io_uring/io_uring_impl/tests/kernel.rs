@@ -1950,3 +1950,48 @@ fn an_enter_that_submits_fewer_than_asked_does_not_wait() {
         "the enter waited for the completion every time"
     );
 }
+
+/// The ring signals the eventfd through a reference of its own, as the kernel
+/// does: a file that takes the eventfd's number once its user closes it never
+/// gets the eventfd's signals.
+#[test]
+fn the_ring_signals_its_own_reference_to_the_eventfd() {
+    check_random(
+        || {
+            let ring = IoUring::new(8).unwrap();
+            let efd = eventfd();
+            let number = efd.as_raw_fd();
+            // Another reference to the eventfd, to read its counter by.
+            let counter = efd.try_clone().unwrap();
+            ring.submitter().register_eventfd(number).unwrap();
+            // A file takes the eventfd's number, closing it there.
+            let file = file();
+            // SAFETY: `number` is this test's, and `dup2` replaces it whole.
+            assert_eq!(unsafe { libc::dup2(file.as_raw_fd(), number) }, number);
+            push(&ring, opcode::Nop::new().build().user_data(1));
+            assert_eq!(reap_n(&ring, 1).len(), 1);
+            assert_eq!(drain_eventfd(&counter, 1), 1, "the eventfd was signalled");
+            assert_eq!(file.metadata().unwrap().len(), 0, "the file got the signal");
+            drop(efd);
+        },
+        ITERATIONS,
+    );
+}
+
+/// The kernel registers only an eventfd: anything else fails with `EINVAL`,
+/// and an fd that is not open with `EBADF`.
+#[test]
+fn registering_an_fd_that_is_no_eventfd_fails() {
+    check_random(
+        || {
+            let ring = IoUring::new(8).unwrap();
+            let file = file();
+            let error = ring.submitter().register_eventfd(file.as_raw_fd()).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+            let error = ring.submitter().register_eventfd(-1).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+            ring.submitter().register_eventfd(eventfd().as_raw_fd()).unwrap();
+        },
+        1,
+    );
+}

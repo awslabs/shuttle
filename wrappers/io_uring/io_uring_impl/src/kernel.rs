@@ -28,7 +28,7 @@ use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::io;
 use std::mem;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 use std::thread;
@@ -127,7 +127,13 @@ struct State {
 
 /// An eventfd registered with the ring.
 struct Eventfd {
+    /// The number the ring's user registered, which an `AsyncFd` on the
+    /// eventfd names.
     fd: RawFd,
+    /// The ring's own reference to the eventfd, as the kernel takes one: a
+    /// duplicate of `fd`, so a signal still reaches the eventfd after its user
+    /// closes `fd`, and never a file that reuses the number.
+    own: Arc<OwnedFd>,
     /// The readiness an `AsyncFd` on the fd sees.
     readiness: Arc<Readiness>,
     /// Registered with `IORING_REGISTER_EVENTFD_ASYNC`: signalled only for
@@ -572,20 +578,39 @@ fn import_iovecs(iovec: *const libc::iovec, count: u32) -> Result<Vec<libc::iove
 ///
 /// Skipped when the fd cannot take the write, which a counter at its maximum
 /// cannot: the kernel's own `eventfd_signal` adds nothing then either.
-fn add_to_eventfd(fd: RawFd) {
+fn add_to_eventfd(eventfd: &OwnedFd) {
+    let fd = eventfd.as_raw_fd();
     let one: u64 = 1;
     let mut pollfd = libc::pollfd {
         fd,
         events: libc::POLLOUT,
         revents: 0,
     };
-    // SAFETY: plain syscalls on the fd the consumer registered, which it keeps
-    // open until it unregisters it. An fd that is not an eventfd takes the
-    // eight bytes as an ordinary write, as it would from the kernel.
+    // SAFETY: plain syscalls on the ring's own reference to the eventfd, which
+    // the caller holds open.
     unsafe {
         if libc::poll(&mut pollfd, 1, 0) > 0 && pollfd.revents & libc::POLLOUT != 0 {
             libc::write(fd, (&raw const one).cast(), 8);
         }
+    }
+}
+
+/// The ring's own reference to the eventfd `fd` names, as the kernel takes one
+/// when the eventfd is registered: `EBADF` if `fd` is not open, and `EINVAL` if
+/// it is not an eventfd.
+fn own_eventfd(fd: RawFd) -> io::Result<OwnedFd> {
+    // SAFETY: `fcntl` only reads `fd`; the fd it returns is owned by nothing
+    // else.
+    let own = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if own < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `own` was just created.
+    let own = unsafe { OwnedFd::from_raw_fd(own) };
+    // Where `/proc` cannot tell, the fd is taken to be an eventfd.
+    match std::fs::read_link(format!("/proc/self/fd/{}", own.as_raw_fd())) {
+        Ok(target) if target.as_os_str() != "anon_inode:[eventfd]" => Err(io::Error::from_raw_os_error(libc::EINVAL)),
+        _ => Ok(own),
     }
 }
 
@@ -789,15 +814,15 @@ impl Ring {
                     .eventfd
                     .as_ref()
                     .filter(|eventfd| !(eventfd.async_only && inline))
-                    .map(|eventfd| (eventfd.fd, Arc::clone(&eventfd.readiness))),
+                    .map(|eventfd| (Arc::clone(&eventfd.own), Arc::clone(&eventfd.readiness))),
             )
         };
         self.publish(added);
         self.readiness.signal();
-        if let Some((fd, readiness)) = eventfd
+        if let Some((own, readiness)) = eventfd
             && self.cq_flags.load(Ordering::SeqCst) & CQ_EVENTFD_DISABLED == 0
         {
-            add_to_eventfd(fd);
+            add_to_eventfd(&own);
             readiness.signal();
         }
     }
@@ -1159,7 +1184,14 @@ impl Ring {
 
     /// Register `fd` to be signalled as completions post; with `async_only`,
     /// only those that did not post inline (`IORING_REGISTER_EVENTFD_ASYNC`).
+    /// The ring keeps a reference of its own to the eventfd, as the kernel
+    /// does. An fd that is not open fails with `EBADF`, and one that is not
+    /// an eventfd with `EINVAL`.
     pub(crate) fn register_eventfd(&self, fd: RawFd, async_only: bool) -> io::Result<()> {
+        if self.lock().eventfd.is_some() {
+            return Err(io::Error::from_raw_os_error(libc::EBUSY));
+        }
+        let own = own_eventfd(fd)?;
         let readiness = Arc::new(Readiness::new());
         {
             let mut state = self.lock();
@@ -1168,6 +1200,7 @@ impl Ring {
             }
             state.eventfd = Some(Eventfd {
                 fd,
+                own: Arc::new(own),
                 readiness: Arc::clone(&readiness),
                 async_only,
             });
