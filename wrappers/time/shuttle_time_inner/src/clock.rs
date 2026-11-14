@@ -28,6 +28,31 @@ fn key() -> StorageKey {
     StorageKey(&ID as *const u8 as usize, 0x7469_6d65)
 }
 
+/// Returns the clock's state in the running execution, creating it if this is the first time the
+/// execution looks at the clock.
+fn with_clock<R>(f: impl FnOnce(&Clock) -> R) -> R {
+    ExecutionState::with(|state| {
+        if state.get_storage::<_, Clock>(key()).is_none() {
+            state.init_storage(key(), Clock { nanos: Cell::new(0) });
+        }
+        f(state.get_storage(key()).expect("the clock was just initialized"))
+    })
+}
+
+/// Reads the clock without advancing it and without a draw from Shuttle, so that a timer can check
+/// its deadline without changing the readings the program sees. Panics outside of a Shuttle test.
+pub(crate) fn peek() -> Duration {
+    with_clock(|clock| START + Duration::from_nanos(clock.nanos.get()))
+}
+
+/// Moves the clock forward to `reading`, if it is behind it, so that the reading after a timer has
+/// fired is no earlier than the timer's deadline. Panics outside of a Shuttle test.
+pub(crate) fn advance_to(reading: Duration) {
+    let target = reading.saturating_sub(START).as_nanos();
+    let target = u64::try_from(target).unwrap_or(u64::MAX);
+    with_clock(|clock| clock.nanos.set(clock.nanos.get().max(target)));
+}
+
 /// How far a reading moves the clock on: zero or one nanosecond, as a random bool from Shuttle
 /// decides, or exactly one nanosecond if the scheduler provides no random data, as under
 /// `shuttle::check_dfs`.
@@ -49,11 +74,7 @@ pub(crate) fn read() -> Duration {
     // Ask before taking the execution's state below: asking takes it too, and Shuttle panics on the
     // second borrow.
     let advance = step();
-    ExecutionState::with(|state| {
-        if state.get_storage::<_, Clock>(key()).is_none() {
-            state.init_storage(key(), Clock { nanos: Cell::new(0) });
-        }
-        let clock: &Clock = state.get_storage(key()).expect("the clock was just initialized");
+    with_clock(|clock| {
         let nanos = clock.nanos.get();
         clock.nanos.set(nanos.saturating_add(advance));
         START + Duration::from_nanos(nanos)

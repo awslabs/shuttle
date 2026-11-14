@@ -20,6 +20,16 @@ use std::time::Duration;
 pub struct Instant(Duration);
 
 impl Instant {
+    /// The instant `self` is the given duration after this type's base, for [`crate::timer_support`].
+    pub(crate) fn from_since_base(since_base: Duration) -> Instant {
+        Instant(since_base)
+    }
+
+    /// How long after this type's base `self` is, for [`crate::timer_support`].
+    pub(crate) fn since_base(self) -> Duration {
+        self.0
+    }
+
     /// Returns an instant corresponding to "now".
     ///
     /// Reads the running execution's clock, and advances it by zero or one nanosecond. Panics

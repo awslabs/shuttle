@@ -7,5 +7,6 @@ clocks with Shuttle. It should not be depended on directly, depend on `shuttle-t
 execution, which starts over in every execution, so that a failing schedule replays. Each reading
 advances it by zero or one nanosecond, as Shuttle chooses, or by exactly one where the scheduler
 provides no random data, as under `shuttle::check_dfs`. **The timestamps track nothing real.** This
-is not virtual time: the crate models no timers. See the crate documentation for the clock, and for
+is not virtual time: the crate models no timers, though the timers of Shuttle's other wrappers move
+the counter to their deadlines when they fire. See the crate documentation for the clock, and for
 the limitations.
