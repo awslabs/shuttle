@@ -3,8 +3,9 @@
 //! io_uring grew over many releases, and a system may still run an old one. A
 //! consumer that probes for features and falls back without them can run its
 //! fallback under the simulation by choosing the kernel for an execution, as it
-//! sets [`crate::faults`]: on the calling thread, before it creates the rings
-//! the choice applies to. A ring keeps the kernel it was created under.
+//! sets [`crate::faults`]: inside the test function, before it creates the
+//! rings the choice applies to. Every execution starts with the default, and a
+//! ring keeps the kernel it was created under.
 //!
 //! What an older kernel lacks, the simulation lacks too, as the kernel shows
 //! it:
@@ -28,7 +29,7 @@
 //! [`Parameters`]: crate::Parameters
 //! [`CompletionQueue::overflow`]: crate::cqueue::CompletionQueue::overflow
 
-use std::cell::Cell;
+use crate::host::Host;
 
 /// A kernel release, as `(major, minor)`.
 pub type Release = (u32, u32);
@@ -61,18 +62,14 @@ impl Kernel {
     }
 }
 
-thread_local! {
-    static KERNEL: Cell<Kernel> = const { Cell::new(Kernel::Current) };
-}
-
-/// Create this thread's rings as `kernel` from now on.
+/// Create this execution's rings as `kernel` from now on.
 pub fn set_kernel(kernel: Kernel) {
-    KERNEL.with(|current| current.set(kernel));
+    Host::current().lock().kernel = kernel;
 }
 
-/// The kernel this thread's new rings behave as.
+/// The kernel this execution's new rings behave as.
 pub fn kernel() -> Kernel {
-    KERNEL.with(Cell::get)
+    Host::current().lock().kernel
 }
 
 /// What each feature the simulation models arrived in.

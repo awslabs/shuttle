@@ -35,6 +35,7 @@ use crate::async_fd::{self, Readiness};
 use crate::buffers;
 use crate::cqueue;
 use crate::faults;
+use crate::host::Host;
 use crate::opcode;
 use crate::squeue::{self, Flags, SqOp};
 use crate::types::Timespec;
@@ -60,6 +61,8 @@ pub(crate) struct Ring {
     pub(crate) fd: RawFd,
     pub(crate) sq_entries: u32,
     pub(crate) cq_entries: u32,
+    /// The simulated kernel of the execution that created the ring.
+    host: Arc<Host>,
     /// Bookkeeping no consumer can observe directly, behind a plain lock so
     /// it adds no scheduling points of its own.
     state: Mutex<State>,
@@ -166,41 +169,41 @@ struct InFlight {
 
 impl InFlight {
     /// Complete the op: run its system call, or refuse it with `-EAGAIN` at
-    /// the rate this thread's faults set, after moving part of its range; or
-    /// post one of the errors this thread's errors set (see
+    /// the rate the execution's faults set, after moving part of its range;
+    /// or post one of the errors the execution's errors set (see
     /// [`faults::Errors`]).
     ///
     /// Checks the op's buffers first, so a buffer the submitter touched while
     /// the kernel owned it panics here rather than surfacing as the wrong
     /// bytes later.
-    fn complete(self) -> i32 {
+    fn complete(self, host: &Host) -> i32 {
         let InFlight {
             user_data,
             mut op,
             refusable,
             watch,
         } = self;
-        op.read_iovecs_again(user_data);
+        op.read_iovecs_again(host, user_data);
         if let Some(watch) = &watch {
             watch.before_completion();
         }
-        if refusable && faults::refuse() {
+        if refusable && faults::refuse(host) {
             op.move_part();
             return -libc::EAGAIN;
         }
         match op {
-            Op::Read { .. } | Op::Readv { .. } if faults::fail_read() => {
+            Op::Read { .. } | Op::Readv { .. } if faults::fail_read(host) => {
                 op.move_part();
                 return -libc::EIO;
             }
-            Op::Read { .. } | Op::Readv { .. } if faults::short_read() => {
+            Op::Read { .. } | Op::Readv { .. } if faults::short_read(host) => {
                 let moved = op.move_part();
                 if moved > 0 {
-                    faults::note_short_read();
+                    faults::note_short_read(host);
                     return moved as i32;
                 }
             }
-            Op::Fallocate { .. } if faults::no_space() => return -libc::ENOSPC,
+            Op::Fallocate { .. } if faults::no_space(host) => return -libc::ENOSPC,
             _ => {}
         }
         op.execute()
@@ -330,7 +333,7 @@ impl Op {
     /// Panics if the array changed while the op was in flight, when the
     /// buffer checks are on (see [`buffers::Checks`]): on such a kernel the
     /// array must outlive the op, not just the submit.
-    fn read_iovecs_again(&mut self, user_data: u64) {
+    fn read_iovecs_again(&mut self, host: &Host, user_data: u64) {
         let (Op::Readv {
             iovecs,
             source: Some((array, count)),
@@ -348,7 +351,7 @@ impl Op {
         if iovec_bufs(&now) == iovec_bufs(iovecs) {
             return;
         }
-        let checks = buffers::checks();
+        let checks = host.lock().checks;
         assert!(
             !(checks.reads || checks.writes),
             "shuttle-io-uring: op {user_data}'s iovec array changed while it was in flight: \
@@ -372,7 +375,7 @@ impl Op {
 
     /// Watch the op's buffers for as long as the kernel owns them. `None` for
     /// an op with no buffers and no file range, and when every check is off.
-    fn watch(&self, user_data: u64) -> Option<buffers::Watch> {
+    fn watch(&self, host: &Arc<Host>, user_data: u64) -> Option<buffers::Watch> {
         let (access, fd, bufs, offset) = match self {
             Op::Read {
                 fd, buf, len, offset, ..
@@ -403,7 +406,7 @@ impl Op {
             _ if offset == CUR_POS => None,
             _ => self.transfer_len().map(|len| offset..offset.saturating_add(len as u64)),
         };
-        buffers::watch(user_data, fd, access, offset, &bufs, file)
+        buffers::watch(host, user_data, fd, access, offset, &bufs, file)
     }
 
     /// Run the op's system call and return its CQE result.
@@ -603,13 +606,14 @@ fn prefix(iovecs: &[libc::iovec], mut bytes: usize) -> Vec<libc::iovec> {
 }
 
 impl Ring {
-    /// A new ring and its kernel task.
-    pub(crate) fn start(sq_entries: u32, cq_entries: u32, kernel: Kernel) -> Arc<Ring> {
-        let fd = async_fd::alloc_ring_fd();
+    /// A new ring of `host`'s and its kernel task.
+    pub(crate) fn start(host: Arc<Host>, sq_entries: u32, cq_entries: u32, kernel: Kernel) -> Arc<Ring> {
+        let fd = async_fd::alloc_ring_fd(&host);
         let ring = Arc::new(Ring {
             fd,
             sq_entries,
             cq_entries,
+            host,
             state: Mutex::new(State {
                 sq: VecDeque::new(),
                 inflight: Vec::new(),
@@ -634,7 +638,7 @@ impl Ring {
             readiness: Arc::new(Readiness::new()),
             kernel,
         });
-        async_fd::register(fd, Arc::clone(&ring.readiness));
+        async_fd::register(&ring.host, fd, Arc::clone(&ring.readiness));
         let kernel = Arc::clone(&ring);
         // Detached: the task ends once the ring is closed.
         drop(future::spawn(async move {
@@ -645,7 +649,7 @@ impl Ring {
             while let Some(next) = poll_fn(|cx| kernel.poll_next(cx)).await {
                 if let Next::Op(op) = next {
                     let user_data = op.user_data;
-                    let result = op.complete();
+                    let result = op.complete(&kernel.host);
                     kernel.post(user_data, result, false);
                 }
                 future::yield_now().await;
@@ -662,6 +666,7 @@ impl Ring {
     /// Shuttle, or park until one arrives. Ends the kernel task once the ring
     /// is closed.
     fn poll_next(&self, cx: &mut Context<'_>) -> Poll<Option<Next>> {
+        let hang_odds = faults::hang_odds(&self.host);
         let mut state = self.lock();
         if state.closed {
             return Poll::Ready(None);
@@ -670,7 +675,7 @@ impl Ring {
             state.kernel = Some(cx.waker().clone());
             return Poll::Pending;
         }
-        match state.pick_next() {
+        match state.pick_next(hang_odds) {
             Pick::Op(i) => {
                 let op = state.inflight.swap_remove(i);
                 if matches!(op.op, Op::Timeout { .. }) && state.io_in_flight() {
@@ -991,7 +996,7 @@ impl Ring {
         let inline = !matches!(op, Op::Timeout { .. })
             && !entry.flags.contains(Flags::ASYNC)
             && thread_rng().gen_bool(INLINE_COMPLETION);
-        let watch = op.watch(user_data);
+        let watch = op.watch(&self.host, user_data);
         let op = InFlight {
             user_data,
             op,
@@ -999,7 +1004,7 @@ impl Ring {
             watch,
         };
         if inline {
-            let result = op.complete();
+            let result = op.complete(&self.host);
             self.post(user_data, result, true);
         } else {
             self.lock().inflight.push(op);
@@ -1081,7 +1086,7 @@ impl Ring {
                     Err(io::Error::from_raw_os_error(errno))
                 })
             };
-            if mem::take(&mut first_block) && faults::interrupt() {
+            if mem::take(&mut first_block) && faults::interrupt(&self.host) {
                 return cut_short(libc::EINTR);
             }
             if timed {
@@ -1152,7 +1157,7 @@ impl Ring {
             });
         }
         // Outside the ring's lock: nothing that can switch tasks runs under it.
-        async_fd::register(fd, readiness);
+        async_fd::register(&self.host, fd, readiness);
         Ok(())
     }
 
@@ -1160,7 +1165,7 @@ impl Ring {
         let eventfd = self.lock().eventfd.take();
         match eventfd {
             Some(eventfd) => {
-                async_fd::unregister(eventfd.fd, &eventfd.readiness);
+                async_fd::unregister(&self.host, eventfd.fd, &eventfd.readiness);
                 Ok(())
             }
             None => Err(io::Error::from_raw_os_error(libc::ENXIO)),
@@ -1190,9 +1195,9 @@ impl Ring {
         if let Some(kernel) = kernel {
             kernel.wake();
         }
-        async_fd::unregister(self.fd, &self.readiness);
+        async_fd::unregister(&self.host, self.fd, &self.readiness);
         if let Some(eventfd) = eventfd {
-            async_fd::unregister(eventfd.fd, &eventfd.readiness);
+            async_fd::unregister(&self.host, eventfd.fd, &eventfd.readiness);
         }
         if inflight > 0 && !hung && !thread::panicking() {
             panic!(
@@ -1267,10 +1272,10 @@ impl State {
     }
 
     /// What to deal with next, chosen by Shuttle: any of them when they are
-    /// all I/O or all timers, else I/O, but for one time in
-    /// [`faults::Faults::hang_odds`] a
-    /// timer. A timer is a timeout SQE or a timed enter.
-    fn pick_next(&self) -> Pick {
+    /// all I/O or all timers, else I/O, but for one time in `hang_odds` (see
+    /// [`faults::Faults::hang_odds`]) a timer. A timer is a timeout SQE or a
+    /// timed enter.
+    fn pick_next(&self, hang_odds: u32) -> Pick {
         let waits = self.wait_timers();
         let ops = self.inflight.len();
         let n = ops + waits.len();
@@ -1296,7 +1301,7 @@ impl State {
                 Pick::WaitTimer(waits[k - ops])
             };
         }
-        let want_timer = rng.gen_ratio(1, faults::hang_odds());
+        let want_timer = rng.gen_ratio(1, hang_odds);
         let k = rng.gen_range(0..if want_timer { timers } else { n - timers });
         let mut picks = self.candidates(want_timer, &waits);
         assert!(k < picks.len(), "k counts candidates of the chosen kind");

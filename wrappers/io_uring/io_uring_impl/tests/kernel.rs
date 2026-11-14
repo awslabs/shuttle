@@ -1569,9 +1569,8 @@ fn offset_minus_one_uses_and_advances_the_file_position() {
     );
 }
 
-/// Run `f` with this thread's new rings behaving as `kernel`, then put the
-/// default back, so a failing iteration cannot leak an old kernel into the
-/// next test on the thread.
+/// Run `f` with this execution's new rings behaving as `kernel`, then put the
+/// default back for the rest of the execution.
 fn as_kernel<R>(kernel: Kernel, f: impl FnOnce() -> R) -> R {
     struct Restore;
     impl Drop for Restore {

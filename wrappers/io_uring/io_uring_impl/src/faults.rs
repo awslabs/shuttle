@@ -1,13 +1,15 @@
 //! Faults the simulated kernel injects: refusals a real kernel can post,
 //! chosen with `shuttle::rand` so a schedule replays them.
 //!
-//! The faults apply to the rings of the Shuttle execution on the calling
-//! thread, since Shuttle runs an execution's tasks on one thread; a test
-//! sets them at the start of each execution, before it submits any op.
-
-use std::cell::Cell;
+//! The settings belong to the running Shuttle execution, as its rings do:
+//! they start at the defaults in every execution, and apply to the
+//! execution's rings from the call that sets them on. A test therefore sets
+//! them inside the test function, before it submits the ops they are for.
+//! Like the rest of Shuttle, the functions here panic outside a Shuttle test.
 
 use shuttle::rand::{Rng, thread_rng};
+
+use crate::host::Host;
 
 /// One in this many of the kernel's choices between I/O and a timer goes to
 /// the timer, by default. A timeout is typically far longer than an I/O (a
@@ -42,33 +44,24 @@ impl Default for Faults {
     }
 }
 
-thread_local! {
-    static FAULTS: Cell<Faults> = const {
-        Cell::new(Faults {
-            eagain: 0.0,
-            hang_odds: DEFAULT_HANG_ODDS,
-        })
-    };
-}
-
 /// One in how many choices between I/O and a timer goes to the timer.
-pub(crate) fn hang_odds() -> u32 {
-    faults().hang_odds.max(1)
+pub(crate) fn hang_odds(host: &Host) -> u32 {
+    host.lock().faults.hang_odds.max(1)
 }
 
-/// Inject `faults` into the ops of this thread's rings from now on.
+/// Inject `faults` into the ops of this execution's rings from now on.
 pub fn set_faults(faults: Faults) {
-    FAULTS.with(|current| current.set(faults));
+    Host::current().lock().faults = faults;
 }
 
-/// The faults this thread's rings inject.
+/// The faults this execution's rings inject.
 pub fn faults() -> Faults {
-    FAULTS.with(Cell::get)
+    Host::current().lock().faults
 }
 
 /// Whether to refuse a read or write that may be refused.
-pub(crate) fn refuse() -> bool {
-    let p = faults().eagain;
+pub(crate) fn refuse(host: &Host) -> bool {
+    let p = host.lock().faults.eagain;
     p > 0.0 && thread_rng().gen_bool(p.min(1.0))
 }
 
@@ -94,7 +87,7 @@ pub struct Errors {
     pub eintr: f64,
 }
 
-/// How many errors of each kind the kernel posted on this thread.
+/// How many errors of each kind the kernel posted in this execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Posted {
     pub eio: u64,
@@ -104,38 +97,19 @@ pub struct Posted {
     pub eintr: u64,
 }
 
-thread_local! {
-    static ERRORS: Cell<Errors> = const {
-        Cell::new(Errors {
-            eio: 0.0,
-            short_read: 0.0,
-            enospc: 0.0,
-            eintr: 0.0,
-        })
-    };
-    static POSTED: Cell<Posted> = const {
-        Cell::new(Posted {
-            eio: 0,
-            short_reads: 0,
-            enospc: 0,
-            eintr: 0,
-        })
-    };
-}
-
-/// Post `errors` for the ops of this thread's rings from now on.
+/// Post `errors` for the ops of this execution's rings from now on.
 pub fn set_errors(errors: Errors) {
-    ERRORS.with(|current| current.set(errors));
+    Host::current().lock().errors = errors;
 }
 
-/// The errors this thread's rings post.
+/// The errors this execution's rings post.
 pub fn errors() -> Errors {
-    ERRORS.with(Cell::get)
+    Host::current().lock().errors
 }
 
-/// The errors this thread's rings have posted, and reset the counts.
+/// The errors this execution's rings have posted, and reset the counts.
 pub fn take_posted() -> Posted {
-    POSTED.with(|posted| posted.replace(Posted::default()))
+    std::mem::take(&mut Host::current().lock().posted)
 }
 
 /// Draw with probability `p`, drawing nothing at 0 so a run without errors
@@ -144,47 +118,47 @@ fn draw(p: f64) -> bool {
     p > 0.0 && thread_rng().gen_bool(p.min(1.0))
 }
 
-fn note(count: impl FnOnce(&mut Posted)) {
-    POSTED.with(|posted| {
-        let mut current = posted.get();
-        count(&mut current);
-        posted.set(current);
-    });
+fn note(host: &Host, count: impl FnOnce(&mut Posted)) {
+    count(&mut host.lock().posted);
 }
 
 /// Whether to fail a read with `-EIO`.
-pub(crate) fn fail_read() -> bool {
-    let fail = draw(errors().eio);
+pub(crate) fn fail_read(host: &Host) -> bool {
+    let p = host.lock().errors.eio;
+    let fail = draw(p);
     if fail {
-        note(|posted| posted.eio += 1);
+        note(host, |posted| posted.eio += 1);
     }
     fail
 }
 
 /// Whether to return a read short.
-pub(crate) fn short_read() -> bool {
-    draw(errors().short_read)
+pub(crate) fn short_read(host: &Host) -> bool {
+    let p = host.lock().errors.short_read;
+    draw(p)
 }
 
 /// Count a short read posted.
-pub(crate) fn note_short_read() {
-    note(|posted| posted.short_reads += 1);
+pub(crate) fn note_short_read(host: &Host) {
+    note(host, |posted| posted.short_reads += 1);
 }
 
 /// Whether to fail a `fallocate` with `-ENOSPC`.
-pub(crate) fn no_space() -> bool {
-    let fail = draw(errors().enospc);
+pub(crate) fn no_space(host: &Host) -> bool {
+    let p = host.lock().errors.enospc;
+    let fail = draw(p);
     if fail {
-        note(|posted| posted.enospc += 1);
+        note(host, |posted| posted.enospc += 1);
     }
     fail
 }
 
 /// Whether to interrupt a wait that would block.
-pub(crate) fn interrupt() -> bool {
-    let interrupt = draw(errors().eintr);
+pub(crate) fn interrupt(host: &Host) -> bool {
+    let p = host.lock().errors.eintr;
+    let interrupt = draw(p);
     if interrupt {
-        note(|posted| posted.eintr += 1);
+        note(host, |posted| posted.eintr += 1);
     }
     interrupt
 }

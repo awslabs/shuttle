@@ -22,52 +22,53 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 
+use crate::host::Host;
+
 /// Simulated ring fds start here, above any fd the process opens, so they
 /// never collide with the eventfds sharing the registry.
 const RING_FD_BASE: RawFd = 1 << 28;
 
-/// The fds an `AsyncFd` can wait on in this execution.
-struct Registry {
+/// The fds an `AsyncFd` can wait on in an execution. It belongs to the
+/// execution's [`Host`], so a reused eventfd number never sees an earlier
+/// execution's ring.
+pub(crate) struct Registry {
     next_ring_fd: RawFd,
     fds: HashMap<RawFd, Arc<Readiness>>,
 }
 
-shuttle::lazy_static! {
-    /// Per execution: Shuttle resets it between executions, so a reused
-    /// eventfd number never sees an earlier execution's ring.
-    static ref REGISTRY: Mutex<Registry> = Mutex::new(Registry {
-        next_ring_fd: RING_FD_BASE,
-        fds: HashMap::new(),
-    });
-}
-
-fn registry() -> MutexGuard<'static, Registry> {
-    REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
+impl Default for Registry {
+    fn default() -> Self {
+        Self {
+            next_ring_fd: RING_FD_BASE,
+            fds: HashMap::new(),
+        }
+    }
 }
 
 /// An fd number for a new simulated ring.
-pub(crate) fn alloc_ring_fd() -> RawFd {
-    let mut registry = registry();
-    let fd = registry.next_ring_fd;
-    registry.next_ring_fd += 1;
+pub(crate) fn alloc_ring_fd(host: &Host) -> RawFd {
+    let mut host = host.lock();
+    let fd = host.waitable.next_ring_fd;
+    host.waitable.next_ring_fd += 1;
     fd
 }
 
 /// Make `fd` waitable. Re-registering a number (an eventfd closed and
 /// reopened) replaces the old entry; `AsyncFd`s built on it keep the old one.
-pub(crate) fn register(fd: RawFd, readiness: Arc<Readiness>) {
-    registry().fds.insert(fd, readiness);
+pub(crate) fn register(host: &Host, fd: RawFd, readiness: Arc<Readiness>) {
+    host.lock().waitable.fds.insert(fd, readiness);
 }
 
 /// Forget `fd`, if it still maps to `readiness`.
-pub(crate) fn unregister(fd: RawFd, readiness: &Arc<Readiness>) {
-    let mut registry = registry();
-    if registry
+pub(crate) fn unregister(host: &Host, fd: RawFd, readiness: &Arc<Readiness>) {
+    let mut host = host.lock();
+    if host
+        .waitable
         .fds
         .get(&fd)
         .is_some_and(|current| Arc::ptr_eq(current, readiness))
     {
-        registry.fds.remove(&fd);
+        host.waitable.fds.remove(&fd);
     }
 }
 
@@ -191,7 +192,7 @@ impl<T: AsRawFd> AsyncFd<T> {
     /// registered with one.
     pub fn with_interest(inner: T, _interest: Interest) -> io::Result<Self> {
         let fd = inner.as_raw_fd();
-        let readiness = registry().fds.get(&fd).cloned();
+        let readiness = Host::current().lock().waitable.fds.get(&fd).cloned();
         let Some(readiness) = readiness else {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,

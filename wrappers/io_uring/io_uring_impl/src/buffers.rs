@@ -9,16 +9,19 @@
 //! fails somewhere else, or passes.
 //!
 //! Every check is on by default except [`Checks::file_ranges`]. A test sets
-//! them per execution, as it does [`crate::faults`].
+//! them per execution, as it does [`crate::faults`]: they start at the
+//! defaults in every execution.
 //!
 //! The cost is the bytes in flight: each buffer is copied when its op is
 //! submitted. A buffer freed while its op is in flight is still undefined
 //! behaviour, as it is with the kernel, and beyond what these checks can see.
 
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::os::fd::RawFd;
+use std::sync::Arc;
+
+use crate::host::Host;
 
 /// The checks the simulated kernel makes on an op's buffers.
 ///
@@ -67,25 +70,14 @@ impl Checks {
     }
 }
 
-thread_local! {
-    static CHECKS: Cell<Checks> = const {
-        Cell::new(Checks {
-            writes: true,
-            reads: true,
-            overlap: true,
-            file_ranges: false,
-        })
-    };
-}
-
-/// Make `checks` on the ops of this thread's rings from now on.
+/// Make `checks` on the ops of this execution's rings from now on.
 pub fn set_checks(checks: Checks) {
-    CHECKS.with(|current| current.set(checks));
+    Host::current().lock().checks = checks;
 }
 
-/// The checks this thread's rings make.
+/// The checks this execution's rings make.
 pub fn checks() -> Checks {
-    CHECKS.with(Cell::get)
+    Host::current().lock().checks
 }
 
 /// Which way an op moves its buffers' bytes.
@@ -125,28 +117,21 @@ struct Tracked {
     file: Option<(FileId, Range<u64>)>,
 }
 
-/// Every op in flight on every ring of this execution, since a buffer may be
-/// handed to two rings.
+/// Every op in flight on every ring of an execution, since a buffer may be
+/// handed to two rings. It belongs to the execution's [`Host`], behind a plain
+/// lock rather than a Shuttle one, which would be a scheduling point: one
+/// inside a submit would let the kernel task run between two SQEs of the same
+/// `io_uring_enter`.
 #[derive(Default)]
-struct Registry {
+pub(crate) struct Registry {
     next_id: u64,
     tracked: HashMap<u64, Tracked>,
 }
 
-thread_local! {
-    /// The ops in flight on this thread, which is the execution's: Shuttle
-    /// runs an execution's tasks on one thread, as [`crate::faults`] notes.
-    ///
-    /// A thread local rather than a Shuttle lock or `lazy_static`, because
-    /// those are scheduling points, and one inside a submit would let the
-    /// kernel task run between two SQEs of the same `io_uring_enter`.
-    static REGISTRY: RefCell<Registry> = RefCell::new(Registry::default());
-}
-
 /// Run `f` on the ops in flight. Never nests: each caller finishes before it
 /// runs anything that could watch or release another op.
-fn with_registry<R>(f: impl FnOnce(&mut Registry) -> R) -> R {
-    REGISTRY.with(|registry| f(&mut registry.borrow_mut()))
+fn with_registry<R>(host: &Host, f: impl FnOnce(&mut Registry) -> R) -> R {
+    f(&mut host.lock().watched)
 }
 
 /// The bytes a buffer of `len` at `addr` covers. Empty buffers cover nothing,
@@ -175,6 +160,9 @@ fn file_id(fd: RawFd) -> Option<FileId> {
 /// An op's buffers, watched for as long as the kernel owns them. Dropping it
 /// gives them back.
 pub(crate) struct Watch {
+    /// The host the op is registered with, which outlives the execution's
+    /// storage if a ring does.
+    host: Arc<Host>,
     id: u64,
     user_data: u64,
     fd: RawFd,
@@ -186,12 +174,13 @@ pub(crate) struct Watch {
 }
 
 /// Watch `bufs` (each an address and a length) for the op `user_data` moves
-/// `access`-ward on `fd` at `offset`, covering `file` of the file's bytes.
-/// `None` when no check is on.
+/// `access`-ward on `fd` at `offset`, covering `file` of the file's bytes, on
+/// a ring of `host`'s. `None` when no check is on.
 ///
 /// Panics if the op's buffers or file range clash with an op already in
 /// flight.
 pub(crate) fn watch(
+    host: &Arc<Host>,
     user_data: u64,
     fd: RawFd,
     access: Access,
@@ -199,7 +188,7 @@ pub(crate) fn watch(
     bufs: &[(usize, usize)],
     file: Option<Range<u64>>,
 ) -> Option<Watch> {
-    let checks = checks();
+    let checks = host.lock().checks;
     if !checks.any() {
         return None;
     }
@@ -208,7 +197,7 @@ pub(crate) fn watch(
         .filter(|range| checks.file_ranges && range.start < range.end)
         .and_then(|range| file_id(fd).map(|id| (id, range)));
 
-    let id = with_registry(|registry| {
+    let id = with_registry(host, |registry| {
         if checks.overlap {
             check_overlap(registry, user_data, access, &memory);
         }
@@ -255,6 +244,7 @@ pub(crate) fn watch(
     }
 
     Some(Watch {
+        host: Arc::clone(host),
         id,
         user_data,
         fd,
@@ -395,6 +385,6 @@ impl Watch {
 
 impl Drop for Watch {
     fn drop(&mut self) {
-        with_registry(|registry| registry.tracked.remove(&self.id));
+        with_registry(&self.host, |registry| registry.tracked.remove(&self.id));
     }
 }

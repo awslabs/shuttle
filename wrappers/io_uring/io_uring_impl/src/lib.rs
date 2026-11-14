@@ -74,6 +74,12 @@
 //! drive a consumer's fallbacks for what an old kernel lacks; see
 //! [`version`].
 //!
+//! Everything the simulation keeps belongs to the running Shuttle execution:
+//! the settings of [`faults`], [`buffers`] and [`version`], the ops in flight,
+//! and the fds an [`AsyncFd`] can wait on. Every execution starts from the
+//! defaults, whatever an earlier one did, so a failing execution replays on
+//! its own as it ran in the test.
+//!
 //! # Not modelled
 //!
 //! - `IORING_SETUP_SQPOLL` and `IORING_SETUP_IOPOLL` (rejected at build).
@@ -104,6 +110,7 @@ mod async_fd;
 pub mod buffers;
 pub mod cqueue;
 pub mod faults;
+mod host;
 mod kernel;
 pub mod opcode;
 mod register;
@@ -121,6 +128,7 @@ pub use async_fd::{AsyncFd, AsyncFdReadyGuard, Interest, TryIoError};
 pub use register::Probe;
 pub use submit::{EnterFlags, Submitter};
 
+use host::Host;
 use kernel::Ring;
 use version::{Kernel, Release, since};
 
@@ -283,17 +291,19 @@ impl<S: squeue::EntryMarker, C: cqueue::EntryMarker> Builder<S, C> {
         self.needs = Some(self.needs.map_or(release, |needs| needs.max(release)));
     }
 
-    /// Set the ring up, as the kernel this thread's rings behave as (see
+    /// Set the ring up, as the kernel this execution's rings behave as (see
     /// [`version`]): one older than a setup flag asked for fails with `EINVAL`.
+    /// Panics outside a Shuttle test.
     pub fn build(&self, entries: u32) -> io::Result<IoUring<S, C>> {
-        let kernel = version::kernel();
+        let host = Host::current();
+        let kernel = host.lock().kernel;
         if self.sqpoll || self.iopoll || entries == 0 || self.needs.is_some_and(|needs| !kernel.has(needs)) {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
         }
         let sq_entries = entries.next_power_of_two();
         let cq_entries = self.cq_entries.map_or(sq_entries * 2, u32::next_power_of_two);
         Ok(IoUring {
-            ring: Ring::start(sq_entries, cq_entries, kernel),
+            ring: Ring::start(host, sq_entries, cq_entries, kernel),
             params: Parameters {
                 sq_entries,
                 cq_entries,
