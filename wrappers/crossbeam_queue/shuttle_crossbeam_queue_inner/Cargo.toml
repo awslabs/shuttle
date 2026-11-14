@@ -1,0 +1,30 @@
+[package]
+name = "shuttle-crossbeam-queue-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `crossbeam-queue` crate. Do not depend on this crate directly; use `shuttle-crossbeam-queue`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-crossbeam-queue`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+# crossbeam-queue's features, so that the wrapper can forward them. The model needs `std` whichever
+# of them are on, so they change nothing here.
+[features]
+default = ["std"]
+alloc = []
+std = ["alloc"]
+nightly = []
+
+[dependencies]
+# 0.9.2 is the first `shuttle` built on `shuttle-engine`, so that the engine below is the one that
+# runs the test.
+shuttle = { path = "../../../shuttle", version = "0.9.2" }
+# For scheduling points, vector clocks and `ExecutionState::{get_storage, init_storage}`, which hold
+# each queue's contents for one execution.
+shuttle-engine = { path = "../../../shuttle-engine", version = "0.1" }
+
+[dev-dependencies]
+# The real crate, for the API probe and the control test that runs it under Shuttle.
+crossbeam-queue-orig = { package = "crossbeam-queue", version = "0.3.14" }
+tempfile = "3.2.0"

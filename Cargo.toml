@@ -24,6 +24,8 @@ members = [
     "wrappers/async_stream",
     "wrappers/dashmap",
     "wrappers/dashmap/dashmap_impl",
+    "wrappers/crossbeam_queue",
+    "wrappers/crossbeam_queue/shuttle_crossbeam_queue_inner",
 ]
 
 resolver = "2"
