@@ -89,6 +89,9 @@ struct State {
     /// finds the CQ full is dropped and counted in `dropped`.
     nodrop: bool,
     dropped: u32,
+    /// Completions in the CQ whose tail store has not happened yet: posted,
+    /// and still invisible.
+    unpublished: u32,
     /// Completions consumers have taken.
     cq_head: u32,
     /// The CQ tail as of the kernel's last store: what an enter waiting for
@@ -614,6 +617,7 @@ impl Ring {
                 overflow: VecDeque::new(),
                 nodrop: kernel.has(since::NODROP),
                 dropped: 0,
+                unpublished: 0,
                 cq_head: 0,
                 published: 0,
                 posted: 0,
@@ -797,6 +801,7 @@ impl Ring {
                     break;
                 };
                 state.cq.push_back(entry);
+                state.unpublished += 1;
                 moved += 1;
             }
             moved
@@ -816,6 +821,7 @@ impl Ring {
         let wakers: Vec<Waker> = {
             let mut state = self.lock();
             state.published = state.published.wrapping_add(added);
+            state.unpublished -= added;
             state.waiters.iter().map(|waiter| waiter.waker.clone()).collect()
         };
         for waker in wakers {
@@ -1046,7 +1052,8 @@ impl Ring {
     /// A timed wait is one more timer among the ops in flight: the kernel
     /// expires it at the rate it fires a timeout SQE, so a wait with I/O in
     /// flight times out only as a device that outlasts the timeout would. With
-    /// nothing in flight to complete it, the timeout is all that is left and
+    /// no completion to come, neither an op in flight nor one posted whose
+    /// tail store is still to happen, the timeout is all that is left and
     /// fires at once.
     fn wait(&self, min_complete: u32, timeout: Option<Timespec>) -> io::Result<()> {
         let timed = timeout.is_some();
@@ -1079,7 +1086,7 @@ impl Ring {
             }
             if timed {
                 let expired = state.waiters.iter().any(|waiter| waiter.id == id && waiter.expired);
-                if expired || state.inflight.is_empty() {
+                if expired || !state.completion_to_come() {
                     return cut_short(libc::ETIME);
                 }
             }
@@ -1204,6 +1211,7 @@ impl State {
         self.posted += 1;
         if self.overflow.is_empty() && (self.cq.len() as u32) < cq_entries {
             self.cq.push_back(entry);
+            self.unpublished += 1;
             1
         } else if self.nodrop {
             self.overflow.push_back(entry);
@@ -1214,6 +1222,17 @@ impl State {
             self.dropped = self.dropped.wrapping_add(1);
             0
         }
+    }
+
+    /// Whether a completion is still to come: an op is in flight, or a
+    /// completion is posted whose tail store has not happened yet. The kernel
+    /// task stores the tail one scheduling point after it takes an op out of
+    /// flight, so a timed wait that counted only the ops in flight would time
+    /// out at once, again and again, for a completion that has all but posted;
+    /// and with the waiting task favoured over the kernel task, as PCT may
+    /// favour it, the store would never happen.
+    fn completion_to_come(&self) -> bool {
+        !self.inflight.is_empty() || self.unpublished > 0
     }
 
     /// Whether an op other than a timer is in flight.

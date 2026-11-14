@@ -1118,6 +1118,38 @@ fn a_timed_wait_with_io_in_flight_rarely_times_out() {
     );
 }
 
+/// A consumer that loops on timed enters until its ops complete, as a ring
+/// thread does, finishes under PCT, which keeps the highest-priority task
+/// running for as long as it can. The kernel task stores the CQ tail one
+/// scheduling point after it takes an op out of flight, so a timed wait that
+/// counted only the ops in flight would time out at once, again and again,
+/// while the kernel task, never scheduled, never stored it.
+#[test]
+fn a_timed_wait_loop_finishes_under_pct() {
+    shuttle::check_pct(
+        || {
+            let ring = IoUring::new(8).unwrap();
+            for ud in 0..4 {
+                push(&ring, opcode::Nop::new().build().user_data(ud));
+            }
+            ring.submit().unwrap();
+            let ts = Timespec::from(Duration::from_millis(100));
+            let args = SubmitArgs::new().timespec(&ts);
+            let mut done = 0;
+            for _ in 0..10_000 {
+                done += reap(&ring).len();
+                if done == 4 {
+                    return;
+                }
+                let _ = ring.submitter().submit_with_args(1, &args);
+            }
+            panic!("the timed waits spun with {done} of 4 completions reaped");
+        },
+        300,
+        3,
+    );
+}
+
 /// A timed enter waiting on completions that cannot come times out at once,
 /// even with a timer in flight: nothing is left but the timeouts.
 #[test]
