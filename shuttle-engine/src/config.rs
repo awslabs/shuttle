@@ -47,6 +47,17 @@ pub struct Config {
 
     /// The config to define how to handle ungraceful shutdowns, ie. when the test panics.
     pub ungraceful_shutdown_config: UngracefulShutdownConfig,
+
+    /// Whether atomic loads may read older stores, as orderings weaker than `SeqCst` allow. When
+    /// this is `false`, Shuttle runs every atomic operation as if it were `SeqCst`. See the
+    /// documentation of `shuttle::sync::atomic` for what the emulation does and doesn't produce.
+    ///
+    /// A load picks the store it reads with the scheduler's random numbers, so a failing schedule
+    /// replays. `DfsScheduler` doesn't explore these choices, and panics on them unless it was
+    /// created with `allow_random_data`.
+    ///
+    /// This needs the `weak-memory` feature. `Runner::run` panics if it is set without it.
+    pub weak_memory: bool,
 }
 
 std::thread_local! {
@@ -143,6 +154,7 @@ impl Config {
             silence_warnings: false,
             record_steps_in_span: false,
             ungraceful_shutdown_config: UngracefulShutdownConfig::default(),
+            weak_memory: false,
         }
     }
 }

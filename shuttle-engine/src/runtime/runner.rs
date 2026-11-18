@@ -76,6 +76,11 @@ impl<S: Scheduler + 'static> Runner<S> {
     where
         F: Fn() + Send + Sync + 'static,
     {
+        assert!(
+            !self.config.weak_memory || cfg!(all(feature = "weak-memory", not(feature = "bench-no-vector-clocks"))),
+            "`Config::weak_memory` needs Shuttle's `weak-memory` feature, and the vector clocks that \
+            `bench-no-vector-clocks` turns off"
+        );
         let _span_drop_guard = ResetSpanOnDrop::new();
         // Share continuations across executions to avoid reallocating them
         // TODO it would be a lot nicer if this were a more generic "context" thing that we passed

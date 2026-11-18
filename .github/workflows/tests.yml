@@ -44,6 +44,20 @@ jobs:
       - name: cargo nextest
         run: cargo nextest run --release --workspace --features annotation
 
+  test-weak-memory:
+    env:
+      RUST_LOG: off
+    name: Tests (weak-memory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: cargo nextest
+        run: cargo nextest run --release --workspace --features weak-memory
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -69,6 +83,8 @@ jobs:
         run: cargo clippy --all-targets -- -D clippy::all
       - name: clippy (annotation)
         run: cargo clippy --all-targets --features annotation -- -D clippy::all
+      - name: clippy (weak-memory)
+        run: cargo clippy --all-targets --features weak-memory -- -D clippy::all
 
   docs:
     name: Docs
