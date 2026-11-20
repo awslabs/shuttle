@@ -57,6 +57,10 @@ impl Thread {
 pub struct Scope<'scope, 'env: 'scope> {
     num_running_threads: AtomicUsize,
     main_task: TaskId,
+    // Whether `main_task` is blocked at the end of `scope`, waiting for the scoped threads. Only then
+    // may the last of them wake it. Before that, the task can be blocked on something else, such as
+    // a `join` or an inner scope.
+    main_task_waiting: AtomicBool,
     scope: PhantomData<&'scope mut &'scope ()>,
     env: PhantomData<&'env mut &'env ()>,
 }
@@ -104,7 +108,9 @@ impl<'scope> Scope<'scope, '_> {
 
                 finished.store(true, Ordering::Relaxed);
 
-                if self.num_running_threads.fetch_sub(1, Ordering::Relaxed) == 1 {
+                if self.num_running_threads.fetch_sub(1, Ordering::Relaxed) == 1
+                    && self.main_task_waiting.load(Ordering::Relaxed)
+                {
                     ExecutionState::with(|s| s.get_mut(self.main_task).unblock());
                 }
 
@@ -136,6 +142,7 @@ where
     let scope = Scope {
         num_running_threads: AtomicUsize::new(0),
         main_task: ExecutionState::with(|s| s.current().id()),
+        main_task_waiting: AtomicBool::new(false),
         env: PhantomData,
         scope: PhantomData,
     };
@@ -144,6 +151,7 @@ where
 
     if scope.num_running_threads.load(Ordering::Relaxed) != 0 {
         tracing::info!("thread blocked, waiting for completion of scoped threads");
+        scope.main_task_waiting.store(true, Ordering::Relaxed);
         ExecutionState::with(|s| s.current_mut().block(false));
         thread::switch();
     }
