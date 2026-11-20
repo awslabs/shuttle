@@ -72,6 +72,9 @@ struct ScopeData {
     // may the last of them wake it. Before that, the task can be blocked on something else, such as
     // a `join` or an inner scope.
     main_task_waiting: AtomicBool,
+    // The clocks of the scoped threads when each stopped running. `main_task` takes them at the end
+    // of `scope`, because the end of a scope happens after its threads end, as a join of each would.
+    clock: std::sync::Mutex<shuttle_engine::runtime::task::clock::VectorClock>,
 }
 
 impl std::fmt::Debug for Scope<'_, '_> {
@@ -122,7 +125,12 @@ impl<'scope> Scope<'scope, '_> {
                 finished.store(true, Ordering::Relaxed);
 
                 // The thread counts as running until the guard is dropped, which is after `ret`.
-                (ret, RunningScopedThread { scope: data })
+                let thread_clock = ExecutionState::with(|s| s.increment_clock().clone());
+                let running = RunningScopedThread {
+                    scope: data,
+                    thread_clock,
+                };
+                (ret, running)
             }
         };
 
@@ -150,10 +158,19 @@ impl<'scope> Scope<'scope, '_> {
 #[derive(Debug)]
 struct RunningScopedThread {
     scope: std::sync::Arc<ScopeData>,
+    // The thread's clock when its function returned. Another task can drop the guard, such as the
+    // owner when it drops the handle, so the guard passes on this clock as well as the dropper's.
+    thread_clock: shuttle_engine::runtime::task::clock::VectorClock,
 }
 
 impl Drop for RunningScopedThread {
     fn drop(&mut self) {
+        ExecutionState::with(|s| {
+            let mut clock = self.scope.clock.lock().unwrap();
+            clock.update(&self.thread_clock);
+            clock.update(s.increment_clock());
+        });
+
         if self.scope.num_running_threads.fetch_sub(1, Ordering::Relaxed) == 1
             && self.scope.main_task_waiting.load(Ordering::Relaxed)
         {
@@ -175,6 +192,7 @@ where
             num_running_threads: AtomicUsize::new(0),
             main_task: ExecutionState::with(|s| s.current().id()),
             main_task_waiting: AtomicBool::new(false),
+            clock: std::sync::Mutex::new(shuttle_engine::runtime::task::clock::VectorClock::new()),
         }),
         env: PhantomData,
         scope: PhantomData,
@@ -188,6 +206,8 @@ where
         ExecutionState::with(|s| s.current_mut().block(false));
         thread::switch();
     }
+
+    ExecutionState::with(|s| s.update_clock(&scope.data.clock.lock().unwrap()));
 
     ret
 }

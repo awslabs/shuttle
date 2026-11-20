@@ -426,6 +426,49 @@ fn clock_threads_pct() {
     check_pct(|| clock_threads(20), 10_000, 3);
 }
 
+// The end of a scope happens after each of its threads ends, so the scope's owner gets their
+// clocks without joining them.
+fn clock_scoped_threads(num_threads: usize) {
+    let flag = AtomicBool::new(false);
+    thread::scope(|s| {
+        for k in 1..num_threads + 1 {
+            let flag = &flag;
+            s.spawn(move || {
+                assert_eq!(me(), k);
+                assert!(!flag.load(Ordering::SeqCst));
+            });
+        }
+    });
+    check_clock(|i, c| (c > 0) == (i <= num_threads));
+}
+
+#[test]
+fn clock_scoped_threads_dfs() {
+    check_dfs(|| clock_scoped_threads(2), None);
+}
+
+#[test]
+fn clock_scoped_threads_pct() {
+    check_pct(|| clock_scoped_threads(20), 10_000, 3);
+}
+
+// The same when the owner drops a handle without joining it, which can be after the thread ended.
+#[test]
+fn clock_scoped_thread_with_dropped_handle() {
+    check_dfs(
+        || {
+            let flag = AtomicBool::new(false);
+            thread::scope(|s| {
+                let handle = s.spawn(|| assert!(!flag.load(Ordering::SeqCst)));
+                thread::yield_now();
+                drop(handle);
+            });
+            check_clock(|i, c| (c > 0) == (i <= 1));
+        },
+        None,
+    );
+}
+
 #[test]
 fn clock_try_update() {
     // Ensure that when a try_update fails, the caller does not inherit the clock from the register.
