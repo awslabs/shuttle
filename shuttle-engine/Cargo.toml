@@ -38,4 +38,7 @@ annotation = ["vector-clocks", "dep:serde", "dep:serde_json", "dep:regex"]
 # Weak-memory emulation for the atomics, which `Config::weak_memory` turns on. It tracks
 # happens-before with the vector clocks, so `weak-memory` implies `vector-clocks`.
 weak-memory = ["vector-clocks"]
+# Tree Borrows and data race checks for the checked `UnsafeCell` of `shuttle::cell`. Races are
+# found with the vector clocks, so `tree-borrows` implies `vector-clocks`.
+tree-borrows = ["vector-clocks"]
 bench-no-vector-clocks = []

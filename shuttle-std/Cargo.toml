@@ -20,3 +20,5 @@ shuttle-schedulers = { path = "../shuttle-schedulers" }
 default = []
 # Weak-memory emulation for the atomics, which `Config::weak_memory` turns on
 weak-memory = ["shuttle-engine/weak-memory"]
+# The checked `UnsafeCell` of `cell`, with Tree Borrows and data race checks
+tree-borrows = ["shuttle-engine/tree-borrows"]
