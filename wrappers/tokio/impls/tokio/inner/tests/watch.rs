@@ -158,6 +158,57 @@ fn wait_for_returns_correct_value() {
     );
 }
 
+/// The steps of `sender_new_and_mark_unchanged`, on the given `watch` module, so that they run on
+/// the model and on tokio's `watch`.
+macro_rules! sender_new_and_mark_unchanged_steps {
+    ($($watch:tt)+) => {
+        async {
+            use futures::FutureExt as _;
+
+            // A sender made with `new` has no receiver, so a send fails until a receiver subscribes.
+            let tx = $($watch)+::Sender::new(0usize);
+            assert_eq!(tx.receiver_count(), 0);
+            assert!(tx.send(1).is_err());
+            let mut rx = tx.subscribe();
+            assert_eq!(*rx.borrow(), 0);
+            assert!(!rx.has_changed().unwrap());
+
+            // `mark_unchanged` marks the sent value as seen, without borrowing it.
+            tx.send(2).unwrap();
+            assert!(rx.has_changed().unwrap());
+            rx.mark_unchanged();
+            assert!(!rx.has_changed().unwrap());
+            assert!(rx.changed().now_or_never().is_none());
+            assert_eq!(*rx.borrow(), 2);
+
+            // The next send is a change.
+            tx.send(3).unwrap();
+            rx.changed().await.unwrap();
+            assert_eq!(*rx.borrow_and_update(), 3);
+        }
+    };
+}
+
+#[test]
+fn sender_new_and_mark_unchanged() {
+    check_dfs(|| future::block_on(sender_new_and_mark_unchanged_steps!(watch)), None);
+    futures::executor::block_on(sender_new_and_mark_unchanged_steps!(tokio::sync::watch));
+}
+
+/// No other task can reach a channel that `Sender::new` has just made, so making it takes no
+/// scheduling point.
+#[test]
+fn sender_new_takes_no_scheduling_point() {
+    check_dfs(
+        || {
+            let before = shuttle::current::context_switches();
+            let _tx = watch::Sender::new(0);
+            assert_eq!(shuttle::current::context_switches(), before);
+        },
+        None,
+    );
+}
+
 /// Regression test: Shuttle must be able to schedule another task between a sender's previous
 /// operation and its `send()`.
 ///
@@ -214,6 +265,43 @@ fn subscribe_after_store_is_a_separate_step() {
             let _rx = tx.subscribe();
 
             other.join().unwrap();
+        },
+        None,
+    );
+}
+
+/// Regression test: Shuttle must be able to schedule another task between a receiver's previous
+/// operation and its `mark_unchanged()`, which marks the channel's current value as seen.
+///
+/// The test program wrongly assumes that a value sent once the sender sees `ready` is not yet marked
+/// as seen. That fails when the sender runs between the store and `mark_unchanged()`, which Shuttle
+/// only explores if `mark_unchanged()` takes a scheduling point first.
+#[test]
+#[should_panic(expected = "the send was marked as seen")]
+fn mark_unchanged_after_store_is_a_separate_step() {
+    check_dfs(
+        || {
+            let ready = Arc::new(shuttle::sync::atomic::AtomicBool::new(false));
+            let (tx, mut rx) = watch::channel(0);
+            let sender = {
+                let ready = ready.clone();
+                shuttle::thread::spawn(move || {
+                    let sends = ready.load(Ordering::SeqCst);
+                    if sends {
+                        tx.send(1).unwrap();
+                    }
+                    (tx, sends)
+                })
+            };
+
+            ready.store(true, Ordering::SeqCst);
+            rx.mark_unchanged();
+
+            let (_tx, sent) = sender.join().unwrap();
+            if sent {
+                // BUG (in this test program): assumes the send came after `mark_unchanged()`.
+                assert!(rx.has_changed().unwrap(), "the send was marked as seen");
+            }
         },
         None,
     );

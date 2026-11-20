@@ -416,6 +416,19 @@ impl<T> Receiver<T> {
         Ok(self.version != new_version)
     }
 
+    /// Marks the state as unchanged.
+    ///
+    /// The current value will be considered seen by the receiver.
+    ///
+    /// This is useful if you are not interested in the current value
+    /// visible in the receiver.
+    pub fn mark_unchanged(&mut self) {
+        // Scheduling point precedes the visible read of the state
+        thread::switch();
+        let current_version = self.shared.state.load().version();
+        self.version = current_version;
+    }
+
     /// Waits for a change notification, then marks the newest value as seen.
     ///
     /// If the newest value in the channel has not yet been marked seen when
@@ -642,6 +655,39 @@ impl<T> Drop for Receiver<T> {
 }
 
 impl<T> Sender<T> {
+    /// Creates the sending-half of the [`watch`] channel.
+    ///
+    /// See documentation of [`watch::channel`] for errors when calling this function.
+    /// Beware that attempting to send a value when there are no receivers will
+    /// return an error.
+    ///
+    /// [`watch`]: crate::sync::watch
+    /// [`watch::channel`]: crate::sync::watch::channel
+    ///
+    /// # Examples
+    /// ```text
+    /// let sender = crate::sync::watch::Sender::new(0u8);
+    /// assert!(sender.send(3).is_err());
+    /// let _rec = sender.subscribe();
+    /// assert!(sender.send(4).is_ok());
+    /// ```
+    pub fn new(init: T) -> Self {
+        // SHUTTLE_CHANGES: tokio returns `channel(init).0`. Here, dropping that receiver would take
+        // the scheduling points of the drop of the last `Receiver`. No other task can reach the new
+        // channel, so they would add schedules but no outcomes. The channel starts with no receiver
+        // instead.
+        let shared = Arc::new(Shared {
+            value: RwLock::new(init),
+            state: AtomicState::new(),
+            ref_count_rx: AtomicUsize::new(0),
+            ref_count_tx: AtomicUsize::new(1),
+            notify_rx: Notify::new(),
+            notify_tx: Notify::new(),
+        });
+
+        Sender { shared }
+    }
+
     /// Sends a new value via the channel, notifying all receivers.
     ///
     /// This method fails if the channel has been closed, which happens when
