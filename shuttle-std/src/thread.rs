@@ -55,21 +55,33 @@ impl Thread {
 ///
 /// See [`scope`] for details.
 pub struct Scope<'scope, 'env: 'scope> {
+    // The scope's threads hold this in an `Arc`, as std's do. A reference would put `'scope` into
+    // the type of a scoped thread's result (see `RunningScopedThread`), which would make
+    // `ScopedJoinHandle` invariant in `'scope`.
+    data: std::sync::Arc<ScopeData>,
+    scope: PhantomData<&'scope mut &'scope ()>,
+    env: PhantomData<&'env mut &'env ()>,
+}
+
+/// The state that a scope shares with its threads.
+#[derive(Debug)]
+struct ScopeData {
     num_running_threads: AtomicUsize,
     main_task: TaskId,
     // Whether `main_task` is blocked at the end of `scope`, waiting for the scoped threads. Only then
     // may the last of them wake it. Before that, the task can be blocked on something else, such as
     // a `join` or an inner scope.
     main_task_waiting: AtomicBool,
-    scope: PhantomData<&'scope mut &'scope ()>,
-    env: PhantomData<&'env mut &'env ()>,
 }
 
 impl std::fmt::Debug for Scope<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Scope")
-            .field("num_running_threads", &self.num_running_threads.load(Ordering::Relaxed))
-            .field("main_thread", &self.main_task)
+            .field(
+                "num_running_threads",
+                &self.data.num_running_threads.load(Ordering::Relaxed),
+            )
+            .field("main_thread", &self.data.main_task)
             .finish_non_exhaustive()
     }
 }
@@ -94,11 +106,12 @@ impl<'scope> Scope<'scope, '_> {
             "a destructor spawned a scoped thread while the execution was being torn down, but tasks don't run \
              once an execution is over"
         );
-        self.num_running_threads.fetch_add(1, Ordering::Relaxed);
+        self.data.num_running_threads.fetch_add(1, Ordering::Relaxed);
 
         let finished = std::sync::Arc::new(AtomicBool::new(false));
         let scope_closure = {
             let finished = finished.clone();
+            let data = std::sync::Arc::clone(&self.data);
             move || {
                 let ret = f();
 
@@ -108,13 +121,8 @@ impl<'scope> Scope<'scope, '_> {
 
                 finished.store(true, Ordering::Relaxed);
 
-                if self.num_running_threads.fetch_sub(1, Ordering::Relaxed) == 1
-                    && self.main_task_waiting.load(Ordering::Relaxed)
-                {
-                    ExecutionState::with(|s| s.get_mut(self.main_task).unblock());
-                }
-
-                ret
+                // The thread counts as running until the guard is dropped, which is after `ret`.
+                (ret, RunningScopedThread { scope: data })
             }
         };
 
@@ -122,11 +130,34 @@ impl<'scope> Scope<'scope, '_> {
         // This logic is expected to run atomically with scoped thread termination, so there *cannot* be a switch after the atomic store.
         // To avoid violating this invariant, we pass `switch_before_exit = false` (below). Instead, we provide our own context switch on exit
         // (above) in the `scope_closure` *before* setting `finished` to be `true`.
-        // SAFETY: main task is blocked until all scoped closures complete so all captured references remain valid
+        // SAFETY: the main task is blocked until every scoped thread's `RunningScopedThread` is dropped,
+        // which is after the thread's closure and its result, so all captured references remain valid
         ScopedJoinHandle {
             handle: unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) },
             finished,
             _marker: PhantomData,
+        }
+    }
+}
+
+/// Counts a scoped thread as running until it is dropped. The thread returns it with its result,
+/// which is dropped first, so the scope can't end while the result's destructor still runs. The
+/// result can borrow from the scope's environment, which is also why std counts a scoped thread as
+/// running until its result is gone.
+///
+/// It is dropped with the result: by the thread when its handle is gone, or else by `join`, or with
+/// the handle.
+#[derive(Debug)]
+struct RunningScopedThread {
+    scope: std::sync::Arc<ScopeData>,
+}
+
+impl Drop for RunningScopedThread {
+    fn drop(&mut self) {
+        if self.scope.num_running_threads.fetch_sub(1, Ordering::Relaxed) == 1
+            && self.scope.main_task_waiting.load(Ordering::Relaxed)
+        {
+            ExecutionState::with(|s| s.get_mut(self.scope.main_task).unblock());
         }
     }
 }
@@ -140,18 +171,20 @@ where
     F: for<'scope> FnOnce(&'scope Scope<'scope, 'env>) -> T,
 {
     let scope = Scope {
-        num_running_threads: AtomicUsize::new(0),
-        main_task: ExecutionState::with(|s| s.current().id()),
-        main_task_waiting: AtomicBool::new(false),
+        data: std::sync::Arc::new(ScopeData {
+            num_running_threads: AtomicUsize::new(0),
+            main_task: ExecutionState::with(|s| s.current().id()),
+            main_task_waiting: AtomicBool::new(false),
+        }),
         env: PhantomData,
         scope: PhantomData,
     };
 
     let ret = f(&scope);
 
-    if scope.num_running_threads.load(Ordering::Relaxed) != 0 {
+    if scope.data.num_running_threads.load(Ordering::Relaxed) != 0 {
         tracing::info!("thread blocked, waiting for completion of scoped threads");
-        scope.main_task_waiting.store(true, Ordering::Relaxed);
+        scope.data.main_task_waiting.store(true, Ordering::Relaxed);
         ExecutionState::with(|s| s.current_mut().block(false));
         thread::switch();
     }
@@ -235,7 +268,7 @@ pub(crate) use shuttle_engine::thread_support::thread_fn;
 /// See [`Scope::spawn`] for details.
 #[derive(Debug)]
 pub struct ScopedJoinHandle<'scope, T> {
-    handle: JoinHandle<T>,
+    handle: JoinHandle<(T, RunningScopedThread)>,
     finished: std::sync::Arc<AtomicBool>,
     _marker: PhantomData<&'scope T>,
 }
@@ -243,7 +276,8 @@ pub struct ScopedJoinHandle<'scope, T> {
 impl<T> ScopedJoinHandle<'_, T> {
     /// Waits for the associated thread to finish.
     pub fn join(self) -> Result<T> {
-        self.handle.join()
+        // The thread stops counting as running here, once its result is out of the handle.
+        self.handle.join().map(|(value, _running)| value)
     }
 
     /// Extracts a handle to the underlying thread.
