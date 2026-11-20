@@ -3,10 +3,13 @@
 use crate::runtime::dump::Dump;
 use crate::task::JoinHandle;
 use criterion::async_executor::AsyncExecutor;
+use shuttle::current::{with_labels_for_task, TaskId};
 use std::fmt;
 use std::future::Future;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 /// Runtime which is used to spawn and run async tasks
@@ -61,7 +64,8 @@ impl AsyncExecutor for &Runtime {
     }
 }
 
-// NOTE: This only exists to get stuff to compile, and currently returns `0`s, `false` and `Duration::new(0, 0)`s
+// NOTE: Apart from `num_alive_tasks`, this only exists to get stuff to compile, and currently returns `0`s, `false`
+// and `Duration::new(0, 0)`s
 // Protected behind tokio_unstable and feature rt.
 #[derive(Clone, Debug)]
 pub struct RuntimeMetrics {}
@@ -79,8 +83,19 @@ impl RuntimeMetrics {
         0
     }
 
+    /// Returns the current number of alive tasks in the runtime.
+    ///
+    /// This counter increases when a task is spawned and decreases when a
+    /// task exits.
+    ///
+    /// As in tokio, tasks from `spawn_blocking` don't count. Tasks from `JoinSet::spawn_local` don't
+    /// count either, because tokio runs them on a `LocalSet`, which keeps them out of the runtime's
+    /// count.
+    ///
+    /// SHUTTLE_CHANGES: Shuttle has no notion of runtimes (see [`Handle::id`]), so this counts the
+    /// tasks of every runtime in the execution.
     pub fn num_alive_tasks(&self) -> usize {
-        0
+        AliveTasks::current().0.load(Ordering::SeqCst)
     }
 
     pub fn num_idle_blocking_threads(&self) -> usize {
@@ -172,6 +187,40 @@ impl RuntimeMetrics {
 
     pub fn io_driver_ready_count(&self) -> u64 {
         0
+    }
+}
+
+/// The number of tasks in the current Shuttle execution that were spawned on the runtime and haven't
+/// finished or been dropped, for [`RuntimeMetrics::num_alive_tasks`].
+///
+/// It is a label on the main thread, so that every task can reach it and Shuttle drops it when the
+/// execution ends. A `shuttle::lazy_static!` would be dropped then too, but its first use in each
+/// execution takes a scheduling point, so it would change the schedules of every test that spawns a
+/// task.
+#[derive(Clone, Debug, Default)]
+struct AliveTasks(Arc<AtomicUsize>);
+
+impl AliveTasks {
+    fn current() -> Self {
+        let main_thread = TaskId::from(0);
+        with_labels_for_task(main_thread, |labels| labels.get_or_insert_default::<Self>().clone())
+    }
+}
+
+/// One task in [`AliveTasks`], from when this is made until it is dropped.
+struct Alive(Arc<AtomicUsize>);
+
+impl Alive {
+    fn new() -> Self {
+        let count = AliveTasks::current().0;
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count)
+    }
+}
+
+impl Drop for Alive {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -267,7 +316,21 @@ impl Handle {
         F: Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        JoinHandle::new(shuttle::future::spawn(future))
+        // The task counts in `num_alive_tasks` while its future holds `alive`, until the future
+        // finishes or is dropped. `alive` gets its `Alive` after `spawn` has taken its scheduling
+        // point, so the count goes up in the step that creates the task. The task can't run before
+        // the next scheduling point, so it can't end first. If `spawn` panics, the task never counts.
+        let alive = Arc::new(OnceLock::new());
+        let future = {
+            let alive = alive.clone();
+            async move {
+                let _alive = alive;
+                future.await
+            }
+        };
+        let handle = JoinHandle::new(shuttle::future::spawn(future));
+        alive.get_or_init(Alive::new);
+        handle
     }
 
     // TODO:
