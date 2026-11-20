@@ -54,6 +54,8 @@ default = []
 vector-clocks = ["shuttle-engine/vector-clocks"]
 # Weak-memory emulation for the atomics, which `Config::weak_memory` turns on (see `sync::atomic`)
 weak-memory = ["vector-clocks", "shuttle-engine/weak-memory", "shuttle-std/weak-memory"]
+# The checked `UnsafeCell` of `shuttle::cell`, with Tree Borrows and data race checks
+tree-borrows = ["vector-clocks", "shuttle-engine/tree-borrows", "shuttle-std/tree-borrows"]
 annotation = ["vector-clocks", "shuttle-engine/annotation", "shuttle-schedulers/annotation", "dep:serde", "dep:serde_json", "dep:regex"]
 # The following feature overrides the `vector-clocks` feature. It SHOULD NOT be used in production.
 # Its purpose is solely to allow `cargo bench` to be run without vector clocks enabled, as they

@@ -58,6 +58,22 @@ jobs:
       - name: cargo nextest
         run: cargo nextest run --release --workspace --features weak-memory
 
+  test-tree-borrows:
+    env:
+      RUST_LOG: off
+    name: Tests (tree-borrows)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: cargo nextest
+        run: cargo nextest run --release --workspace --features tree-borrows,weak-memory
+      - name: cargo test --doc
+        run: cargo test --release --doc -p shuttle-std --features tree-borrows
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -85,6 +101,10 @@ jobs:
         run: cargo clippy --all-targets --features annotation -- -D clippy::all
       - name: clippy (weak-memory)
         run: cargo clippy --all-targets --features weak-memory -- -D clippy::all
+      - name: clippy (tree-borrows)
+        run: cargo clippy --all-targets --features tree-borrows -- -D clippy::all
+      - name: clippy (tree-borrows, weak-memory)
+        run: cargo clippy --all-targets --features tree-borrows,weak-memory -- -D clippy::all
 
   docs:
     name: Docs

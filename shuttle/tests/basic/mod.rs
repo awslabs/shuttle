@@ -26,6 +26,8 @@ mod teardown;
 mod thread;
 mod timeout;
 mod tracing;
+#[cfg(feature = "tree-borrows")]
+mod tree_borrows;
 mod uncontrolled_nondeterminism;
 #[cfg(feature = "weak-memory")]
 mod weak_memory;

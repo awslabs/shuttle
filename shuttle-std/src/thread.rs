@@ -56,6 +56,8 @@ impl Thread {
 /// See [`scope`] for details.
 pub struct Scope<'scope, 'env: 'scope> {
     num_running_threads: AtomicUsize,
+    /// The threads spawned in the scope. The scope's task inherits their clocks when the scope ends.
+    threads: std::sync::Mutex<Vec<TaskId>>,
     main_task: TaskId,
     scope: PhantomData<&'scope mut &'scope ()>,
     env: PhantomData<&'env mut &'env ()>,
@@ -117,8 +119,10 @@ impl<'scope> Scope<'scope, '_> {
         // To avoid violating this invariant, we pass `switch_before_exit = false` (below). Instead, we provide our own context switch on exit
         // (above) in the `scope_closure` *before* setting `finished` to be `true`.
         // SAFETY: main task is blocked until all scoped closures complete so all captured references remain valid
+        let handle = unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) };
+        self.threads.lock().unwrap().push(handle.task_id);
         ScopedJoinHandle {
-            handle: unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) },
+            handle,
             finished,
             _marker: PhantomData,
         }
@@ -135,6 +139,7 @@ where
 {
     let scope = Scope {
         num_running_threads: AtomicUsize::new(0),
+        threads: std::sync::Mutex::new(Vec::new()),
         main_task: ExecutionState::with(|s| s.current().id()),
         env: PhantomData,
         scope: PhantomData,
@@ -147,6 +152,15 @@ where
         ExecutionState::with(|s| s.current_mut().block(false));
         thread::switch();
     }
+
+    // The end of the scope joins each of its threads, so the scope's task inherits their clocks, as
+    // `JoinHandle::join` does.
+    ExecutionState::with(|s| {
+        for &id in scope.threads.lock().unwrap().iter() {
+            let clock = s.get_clock(id).clone();
+            s.update_clock(&clock);
+        }
+    });
 
     ret
 }

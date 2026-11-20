@@ -223,6 +223,12 @@ impl<T> Future for JoinHandle<T> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut lock = self.inner.lock().unwrap();
         if let Some(result) = lock.result.take() {
+            // The waiting task inherits the clock of the finished task, as `thread::JoinHandle::join`
+            // does.
+            let _ = ExecutionState::try_with(|state| {
+                let clock = state.get_clock(self.task_id).clone();
+                state.update_clock(&clock);
+            });
             Poll::Ready(result)
         } else {
             lock.waker = Some(cx.waker().clone());
