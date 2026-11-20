@@ -34,6 +34,10 @@ parking_lot = { package = "shuttle-parking_lot", version = "0.12" }
 
 Note that depending on `shuttle_enabler` will cause all crates in `shuttle_enabler` to be compiled when the `shuttle` flag is enabled.
 
+## Keeping std primitives out
+
+A `std` primitive left in the code still compiles and runs under Shuttle, but Shuttle can't see it. [backdoor](backdoor) has a `clippy.toml` that rejects the `std` paths in a clippy pass with the `shuttle` feature, and the `shuttle-backdoor` crate for the deliberate exceptions.
+
 ## A note on versioning
 
 The wrappers use minimal version constraints for the crates they wrap:
