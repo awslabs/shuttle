@@ -35,4 +35,7 @@ vector-clocks = []
 # Annotated schedules record each task's vector clock so that Shuttle Explorer can
 # show causal dependence between tasks, so `annotation` implies `vector-clocks`.
 annotation = ["vector-clocks", "dep:serde", "dep:serde_json", "dep:regex"]
+# Weak-memory emulation for the atomics, which `Config::weak_memory` turns on. It tracks
+# happens-before with the vector clocks, so `weak-memory` implies `vector-clocks`.
+weak-memory = ["vector-clocks"]
 bench-no-vector-clocks = []

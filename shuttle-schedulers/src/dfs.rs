@@ -99,7 +99,11 @@ impl Scheduler for DfsScheduler {
 
     fn next_u64(&mut self) -> u64 {
         if !self.allow_random_data {
-            panic!("requested random data from DFS scheduler with allow_random_data = false");
+            panic!(
+                "requested random data from DFS scheduler with allow_random_data = false \
+                (random data is what `shuttle::rand` returns, and what picks the store an atomic \
+                load reads when `Config::weak_memory` is set)"
+            );
         }
         self.data_source.next_u64()
     }

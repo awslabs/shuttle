@@ -485,6 +485,10 @@ pub struct ExecutionState {
     #[cfg(debug_assertions)]
     has_cleaned_up: bool,
 
+    // the clocks of the weak-memory emulation of atomics (see `weak_memory`)
+    #[cfg(feature = "weak-memory")]
+    weak_memory: crate::runtime::weak_memory::WeakMemoryState,
+
     // The `Span` which the `ExecutionState` was created under. Will be the parent of all `Task` `Span`s
     pub top_level_span: Span,
 
@@ -804,6 +808,8 @@ impl ExecutionState {
             switched_out_unwinding: false,
             #[cfg(debug_assertions)]
             has_cleaned_up: false,
+            #[cfg(feature = "weak-memory")]
+            weak_memory: crate::runtime::weak_memory::WeakMemoryState::new(),
             top_level_span: tracing::Span::current(),
             top_level_dispatch,
             top_level_dispatch_global_ptr,
@@ -2081,6 +2087,21 @@ impl ExecutionState {
         let task = self.current_mut();
         task.clock.increment(task.id);
         &mut task.clock
+    }
+
+    /// The current task's id and clock, and the state of the weak-memory emulation, which the
+    /// atomics use when `Config::weak_memory` is set.
+    #[cfg(feature = "weak-memory")]
+    pub fn weak_memory(
+        &mut self,
+    ) -> (
+        TaskId,
+        &mut VectorClock,
+        &mut crate::runtime::weak_memory::WeakMemoryState,
+    ) {
+        let id = self.current_task.id().expect("there is no current task");
+        let clock = &mut self.tasks.get_mut(id.0).unwrap().clock;
+        (id, clock, &mut self.weak_memory)
     }
 
     /// Set the number of steps used, with respect to the step bound, to 0 (see
