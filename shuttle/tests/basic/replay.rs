@@ -287,6 +287,63 @@ fn replay_past_the_end_lets_the_unwinding_task_finish() {
     assert_eq!(payload.downcast_ref::<&str>(), Some(&"task failed"));
 }
 
+/// Set by the test closure, for the scheduler of `scheduler_panic_reports_its_schedule`.
+static THREAD_FINISHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// A random scheduler that panics on the first decision after the spawned thread has finished. Shuttle
+/// makes that decision on the executor's own stack, outside any task.
+struct FailsAfterAThreadFinishes(RandomScheduler);
+
+impl shuttle::scheduler::Scheduler for FailsAfterAThreadFinishes {
+    fn new_execution(&mut self) -> Option<Schedule> {
+        self.0.new_execution()
+    }
+
+    fn next_task(
+        &mut self,
+        runnable: &[&shuttle::scheduler::Task],
+        current: Option<shuttle::scheduler::TaskId>,
+        is_yielding: bool,
+    ) -> Option<shuttle::scheduler::TaskId> {
+        let current_finished = !runnable.iter().any(|task| Some(task.id()) == current);
+        if current_finished && THREAD_FINISHING.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            panic!("scheduler failed");
+        }
+        self.0.next_task(runnable, current, is_yielding)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0.next_u64()
+    }
+}
+
+/// A panic out of the scheduler fails the test as a task's panic does, and has to report a schedule
+/// too, though only the panic hook sees it.
+#[test]
+fn scheduler_panic_reports_its_schedule() {
+    let dir = tempfile::tempdir().expect("could not create tempdir");
+    let mut config = Config::new();
+    config.failure_persistence = FailurePersistence::File(Some(dir.path().to_path_buf()));
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        Runner::new(FailsAfterAThreadFinishes(RandomScheduler::new_from_seed(1, 1)), config).run(|| {
+            let lock = Arc::new(Mutex::new(0));
+            let thd = {
+                let lock = Arc::clone(&lock);
+                thread::spawn(move || {
+                    *lock.lock().unwrap() += 1;
+                    THREAD_FINISHING.store(true, std::sync::atomic::Ordering::SeqCst);
+                })
+            };
+            *lock.lock().unwrap() += 1;
+            thd.join().unwrap();
+        })
+    }));
+    let payload = result.expect_err("the scheduler should fail the test");
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"scheduler failed"));
+    let persisted = std::fs::read_dir(dir.path()).expect("could not read tempdir").count();
+    assert_eq!(persisted, 1, "expected one schedule for the scheduler's panic");
+}
+
 fn deadlock() {
     let lock1 = Arc::new(Mutex::new(0usize));
     let lock2 = Arc::new(Mutex::new(0usize));

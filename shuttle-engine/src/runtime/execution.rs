@@ -200,8 +200,11 @@ impl Execution {
             })) {
                 Ok(Ok(())) => None,
                 Ok(Err(e)) => Some(Self::failure(e, config)),
-                // The panic hook has reported it.
-                Err(payload) => Some(Failure::Unwind(payload)),
+                // The panic hook reports only with `Config::eager_failure_reports`, so report here.
+                Err(payload) => {
+                    persist_failure(config);
+                    Some(Failure::Unwind(payload))
+                }
             };
 
             // Tear down the execution before it goes out of `EXECUTION_STATE` scope. A failed
