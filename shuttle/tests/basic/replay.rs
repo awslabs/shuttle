@@ -261,6 +261,32 @@ fn panic_after_test_reports_no_schedule() {
     );
 }
 
+/// A schedule can end while a task unwinds, after the replay has switched to another task. Here the
+/// main thread spins on `yield_now` while the spawned task unwinds. The replay has to share the steps
+/// after the end of the schedule, so that the unwinding task finishes and its panic comes back,
+/// instead of the spinning thread running until `max_steps`.
+#[test]
+fn replay_past_the_end_lets_the_unwinding_task_finish() {
+    // Ends while the spawned task unwinds, once the main thread has yielded twice.
+    let schedule = Schedule::new_from_task_ids(0, vec![0, 0, 1, 1, 0, 0]);
+    let mut config = Config::new();
+    config.failure_persistence = FailurePersistence::None;
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        Runner::new(ReplayScheduler::new_from_schedule(schedule), config).run(|| {
+            let mutex = Arc::new(Mutex::new(0));
+            drop(thread::spawn(move || {
+                let _guard = mutex.lock().unwrap();
+                panic!("task failed");
+            }));
+            loop {
+                thread::yield_now();
+            }
+        })
+    }));
+    let payload = result.expect_err("replay should reproduce the failure");
+    assert_eq!(payload.downcast_ref::<&str>(), Some(&"task failed"));
+}
+
 fn deadlock() {
     let lock1 = Arc::new(Mutex::new(0usize));
     let lock2 = Arc::new(Mutex::new(0usize));

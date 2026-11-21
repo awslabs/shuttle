@@ -84,13 +84,18 @@ impl Scheduler for ReplayScheduler {
                 // `Drop` handler that touches a synchronization primitive yields. Those decisions
                 // come after the failure has already been reproduced, so any of them will do; we
                 // just have to keep scheduling, because returning `None` here would stop the
-                // execution mid-unwind and abandon the panic we were trying to reproduce.
+                // execution mid-unwind and abandon the panic we were trying to reproduce. With
+                // `allow_incomplete` set, the replay still stops at the end of the schedule.
                 //
-                // Prefer the task that is unwinding so that it makes progress and finishes.
-                if std::thread::panicking() {
-                    return current
-                        .filter(|current| runnable.iter().any(|task| task.id() == *current))
-                        .or_else(|| runnable.first().map(|task| task.id()));
+                // `std::thread::panicking()` doesn't say which task is unwinding, because the tasks
+                // share the OS thread, and the current task may be another one that spins. So take
+                // turns, as `RoundRobinScheduler` does, so that the unwinding task gets to finish.
+                if std::thread::panicking() && !self.allow_incomplete {
+                    return runnable
+                        .iter()
+                        .find(|task| Some(task.id()) > current)
+                        .or_else(|| runnable.first())
+                        .map(|task| task.id());
                 }
 
                 assert!(
