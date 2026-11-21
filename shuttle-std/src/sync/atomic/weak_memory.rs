@@ -17,9 +17,7 @@
 //! the store it read into the clock it releases, which continues a release sequence.
 //!
 //! SeqCst stores, loads and fences follow Miri's rules. SeqCst fences synchronize with each other
-//! through one global clock, which rules out some outcomes that C++20 allows. Miri's emulation never
-//! produces an outcome that C++11 forbids. It can produce a few outcomes that C++20 forbids
-//! (<https://github.com/rust-lang/miri/issues/2301>), and so can this one.
+//! through one global clock, which rules out some outcomes that C++20 allows.
 //!
 //! Miri works on bytes, so it creates a store buffer at the first atomic write to a range and drops
 //! it at the next non-atomic or differently sized access. Shuttle's atomics are typed objects, so

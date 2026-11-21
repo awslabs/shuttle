@@ -638,6 +638,346 @@ fn a_seqcst_load_never_reads_before_a_store_that_precedes_an_earlier_seqcst_fenc
     assert_eq!(seen, HashSet::from([1]));
 }
 
+// Ported from Miri's `tests/pass/0weak_memory/consistency_sc.rs`. Each test checks that the
+// emulation never produces one outcome that C++20 forbids for SeqCst accesses and fences. The file's
+// store-buffering test is `store_buffering_seqcst_never_reads_both_old_values` above. Where a thread
+// in Miri's test spins until a load reads a value, the thread here loads once. The forbidden outcome
+// then includes that this load read the value. The comments in the tests are Miri's.
+mod consistency_sc {
+    use super::all_outcomes;
+    use shuttle::sync::atomic::{fence, AtomicUsize, Ordering};
+    use shuttle::thread;
+    use test_log::test;
+
+    use Ordering::{Acquire, Relaxed, Release, SeqCst};
+
+    /// A new atomic that the threads can share without an `Arc`. Each execution needs new atomics,
+    /// so this leaks them, as Miri's tests do.
+    fn static_atomic(val: usize) -> &'static AtomicUsize {
+        Box::leak(Box::new(AtomicUsize::new(val)))
+    }
+
+    #[test]
+    fn iriw_sc_rlx() {
+        // Test case by @SabrinaJewson
+        // https://github.com/rust-lang/miri/issues/2301#issuecomment-1221502757
+        // Demonstrating C++20 SC access changes
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            let a = thread::spawn(move || x.store(1, Relaxed));
+            let b = thread::spawn(move || y.store(1, Relaxed));
+            let c = thread::spawn(move || (x.load(SeqCst), y.load(SeqCst)));
+            let d = thread::spawn(move || (y.load(SeqCst), x.load(SeqCst)));
+            a.join().unwrap();
+            b.join().unwrap();
+            let (cx, cy) = c.join().unwrap();
+            let (dy, dx) = d.join().unwrap();
+            (cx, cy, dy, dx)
+        });
+        assert!(!seen.contains(&(1, 0, 1, 0)), "{seen:?}");
+    }
+
+    #[test]
+    fn cpp20_sc_fence_fix() {
+        // Similar to `iriw_sc_rlx` but with fences instead of SC accesses.
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            let thread1 = thread::spawn(move || {
+                let a = x.load(Relaxed);
+                fence(SeqCst);
+                let b = y.load(Relaxed);
+                (a, b)
+            });
+            let thread2 = thread::spawn(move || x.store(1, Relaxed));
+            let thread3 = thread::spawn(move || y.store(1, Relaxed));
+            let thread4 = thread::spawn(move || {
+                let c = y.load(Relaxed);
+                fence(SeqCst);
+                let d = x.load(Relaxed);
+                (c, d)
+            });
+            let (a, b) = thread1.join().unwrap();
+            thread2.join().unwrap();
+            thread3.join().unwrap();
+            let (c, d) = thread4.join().unwrap();
+            (a, b, c, d)
+        });
+        assert!(!seen.contains(&(1, 0, 1, 0)), "{seen:?}");
+    }
+
+    #[test]
+    fn cpp20_rwc_syncs() {
+        // https://plv.mpi-sws.org/scfix/paper.pdf
+        // 2.2 Second Problem: SC Fences are Too Weak
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            let j1 = thread::spawn(move || x.store(1, Relaxed));
+            let j2 = thread::spawn(move || {
+                let a = x.load(Relaxed);
+                fence(SeqCst);
+                (a, y.load(Relaxed))
+            });
+            let j3 = thread::spawn(move || {
+                y.store(1, Relaxed);
+                fence(SeqCst);
+                x.load(Relaxed)
+            });
+            j1.join().unwrap();
+            let (a, b) = j2.join().unwrap();
+            let c = j3.join().unwrap();
+            (a, b, c)
+        });
+        assert!(!seen.contains(&(1, 0, 0)), "{seen:?}");
+    }
+
+    #[test]
+    fn sc_fence_release() {
+        // This checks that the *last* thing the SC fence does is act like a release fence.
+        // See <https://github.com/rust-lang/miri/pull/4057#issuecomment-2522296601>.
+        // Test by Ori Lahav.
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            let z = static_atomic(0);
+            let k = static_atomic(0);
+            let j1 = thread::spawn(move || {
+                x.store(1, Relaxed);
+                fence(SeqCst);
+                k.store(1, Relaxed);
+            });
+            let j2 = thread::spawn(move || {
+                y.store(1, Relaxed);
+                fence(SeqCst);
+                z.store(1, Relaxed);
+            });
+            let j3 = thread::spawn(move || {
+                let kval = k.load(Acquire); // bad case: loads 1
+                let yval = y.load(Relaxed); // bad case: loads 0
+                (kval, yval)
+            });
+            let j4 = thread::spawn(move || {
+                let zval = z.load(Acquire); // bad case: loads 1
+                let xval = x.load(Relaxed); // bad case: loads 0
+                (zval, xval)
+            });
+            j1.join().unwrap();
+            j2.join().unwrap();
+            let (kval, yval) = j3.join().unwrap();
+            let (zval, xval) = j4.join().unwrap();
+            (kval, yval, zval, xval)
+        });
+        assert!(!seen.contains(&(1, 0, 1, 0)), "{seen:?}");
+    }
+
+    #[test]
+    fn sc_fence_access() {
+        // Test that SC fences and accesses sync correctly with each other.
+        // Test by Ori Lahav.
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            let j1 = thread::spawn(move || {
+                x.store(1, SeqCst);
+                y.load(SeqCst)
+            });
+            let j2 = thread::spawn(move || {
+                y.store(1, Relaxed);
+                fence(SeqCst);
+                // If this sees a 0, the fence must have been *before* the x.store(1).
+                x.load(Relaxed)
+            });
+            let yval = j1.join().unwrap();
+            let xval = j2.join().unwrap();
+            (yval, xval)
+        });
+        assert!(!seen.contains(&(0, 0)), "{seen:?}");
+    }
+
+    #[test]
+    fn sc_fence_access_relacq() {
+        // Test that SC fences and accesses sync correctly with each other
+        // when mediated by a release-acquire pair.
+        // Test by Ori Lahav (https://github.com/rust-lang/miri/pull/4057#issuecomment-2525268730).
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            let z = static_atomic(0);
+            let j1 = thread::spawn(move || {
+                x.store(1, SeqCst);
+                y.load(SeqCst) // bad case: loads 0
+            });
+            let j2 = thread::spawn(move || {
+                y.store(1, Relaxed);
+                z.store(1, Release)
+            });
+            let j3 = thread::spawn(move || {
+                let zval = z.load(Acquire); // bad case: loads 1
+
+                // If we see 1 here, the rel-acq pair makes the fence happen after the z.store(1).
+                fence(SeqCst);
+                // If this sees a 0, the fence must have been *before* the x.store(1).
+                let xval = x.load(Relaxed); // bad case: loads 0
+                (zval, xval)
+            });
+            let yval = j1.join().unwrap();
+            j2.join().unwrap();
+            let (zval, xval) = j3.join().unwrap();
+            (yval, zval, xval)
+        });
+        assert!(!seen.contains(&(0, 1, 0)), "{seen:?}");
+    }
+
+    #[test]
+    fn sc_multi_fence() {
+        // A test that involves multiple SC fences and accesses.
+        // Test by Ori Lahav (https://github.com/rust-lang/miri/pull/4057#issuecomment-2525268730).
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            let z = static_atomic(0);
+            let j1 = thread::spawn(move || {
+                x.store(1, SeqCst);
+                y.load(SeqCst) // bad case: loads 0
+            });
+            let j2 = thread::spawn(move || {
+                y.store(1, Relaxed);
+                // In the bad case this fence is *after* the j1 y.load, since
+                // otherwise that load would pick up the 1 we just stored.
+                fence(SeqCst);
+                z.load(Relaxed) // bad case: loads 0
+            });
+            let j3 = thread::spawn(move || z.store(1, Relaxed));
+            let j4 = thread::spawn(move || {
+                let zval = z.load(Relaxed); // bad case: loads 1
+
+                // In the bad case this fence is *after* the one above since
+                // otherwise, the j2 load of z would load 1.
+                fence(SeqCst);
+                // Since that fence is in turn after the j1 y.load, our fence is
+                // after the j1 x.store, which means we must pick up that store.
+                let xval = x.load(Relaxed); // bad case: loads 0
+                (zval, xval)
+            });
+            let yval = j1.join().unwrap();
+            let zval1 = j2.join().unwrap();
+            j3.join().unwrap();
+            let (zval2, xval) = j4.join().unwrap();
+            (yval, zval1, zval2, xval)
+        });
+        assert!(!seen.contains(&(0, 0, 1, 0)), "{seen:?}");
+    }
+
+    #[test]
+    fn sc_relaxed() {
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            let z = static_atomic(0);
+            let j1 = thread::spawn(move || {
+                y.store(1, Relaxed);
+                fence(SeqCst);
+                // If the relaxed load here is removed, then the "bad" behavior becomes allowed
+                // by C++20 (and by RC11 / scfix as well).
+                let _a = x.load(Relaxed);
+                fence(Acquire);
+                // If we see 0 here this means in some sense we are "before" the store to z below.
+                z.load(Relaxed)
+            });
+            let j2 = thread::spawn(move || {
+                z.store(1, Relaxed);
+                x.store(1, SeqCst);
+                // If we see 0 here, this means in some sense we are "before" the store to y above.
+                y.load(SeqCst)
+            });
+            let b = j1.join().unwrap();
+            let c = j2.join().unwrap();
+            (b, c)
+        });
+        assert!(!seen.contains(&(0, 0)), "{seen:?}");
+    }
+
+    #[test]
+    fn cob_due_to_mo() {
+        // Test that coherence-ordered-before established by modification order prevents
+        // an SC load from reading before the last-in-mo store.
+        // Test by Joseph Perez (https://github.com/rust-lang/miri/issues/5104#issue-4644401606)
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            x.store(0, Relaxed);
+            y.store(0, Relaxed);
+            let t1 = thread::spawn(move || x.store(1, Release));
+            let t2 = thread::spawn(move || {
+                let r0 = x.load(Relaxed);
+                x.store(2, SeqCst);
+                let r1 = y.load(SeqCst);
+                (r0, r1)
+            });
+            let t3 = thread::spawn(move || {
+                y.store(1, SeqCst);
+                x.load(SeqCst)
+            });
+            let (r0, r1) = t2.join().unwrap();
+            let r2 = t3.join().unwrap();
+            t1.join().unwrap();
+            (r0, r1, r2)
+        });
+        // This is bad because: T2's SC load of Y read 0, which means that
+        // T2's SC operations all precede T3's SC operations in the SC order.
+        // But in X's modification order, we must have T1's store before T2's store
+        // (since T2 observed a 1). As a result, T3's X.load reading from T1's store
+        // means it is coherence-ordered before and precedes in SC T2's X.store.
+        // This causes a cycle in SC.
+        assert!(!seen.contains(&(1, 0, 1)), "{seen:?}");
+    }
+
+    #[test]
+    fn cob_due_to_mo_hb() {
+        // Variant of the test above, where the modification order is established by
+        // happens-before across three threads (t1, t2, and t3).
+        let seen = all_outcomes(|| {
+            let x = static_atomic(0);
+            let y = static_atomic(0);
+            let gate = static_atomic(0);
+            x.store(0, Relaxed);
+            y.store(0, Relaxed);
+            gate.store(0, Relaxed);
+            let t1 = thread::spawn(move || x.store(1, Release));
+            let t2 = thread::spawn(move || {
+                let r0 = x.load(Acquire);
+                gate.store(1, Release);
+                r0
+            });
+            let t3 = thread::spawn(move || {
+                let gateval = gate.load(Acquire);
+                x.store(2, SeqCst);
+                let r1 = y.load(SeqCst);
+                (gateval, r1)
+            });
+            let t4 = thread::spawn(move || {
+                y.store(1, SeqCst);
+                x.load(SeqCst)
+            });
+            let r0 = t2.join().unwrap();
+            let (gateval, r1) = t3.join().unwrap();
+            let r2 = t4.join().unwrap();
+            t1.join().unwrap();
+            (r0, gateval, r1, r2)
+        });
+        // This is bad because: T3's SC load of Y read 0 means that
+        // T3's SC operations all precede T4's SC operations in the SC order.
+        // But in X's modification order, we must have T1's store before T3's store
+        // (since T1's store happens-before T3's store).
+        // As a result, T4's X.load reading from T1's store means it is
+        // coherence-ordered before and precedes in SC T3's X.store.
+        // This causes a cycle in SC.
+        assert!(!seen.contains(&(1, 1, 0, 1)), "{seen:?}");
+    }
+}
+
 // Static atomics outlive an execution.
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);

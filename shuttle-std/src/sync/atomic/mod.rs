@@ -90,8 +90,6 @@
 //!   that the schedule has already run, so outcomes that need a load to read a later store, such
 //!   as "load buffering", never show up. SeqCst fences synchronize with each other, which is
 //!   stronger than C++20 requires.
-//! - It can produce a few outcomes that C++20 forbids for SeqCst operations, as Miri's can
-//!   (<https://github.com/rust-lang/miri/issues/2301>).
 //! - It applies only to Shuttle's atomics. Memory that isn't atomic always holds the latest write,
 //!   so a bug in which a too-weak ordering publishes non-atomic data shows up only if the data is
 //!   read through an atomic.
