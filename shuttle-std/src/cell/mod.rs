@@ -38,6 +38,10 @@
 //! );
 //! ```
 
+mod ref_cell;
 mod unsafe_cell;
 
+pub use ref_cell::{Ref, RefCell, RefMut};
 pub use unsafe_cell::{Ptr, PtrRef, PtrRefMut, UnsafeCell};
+
+pub use std::cell::{BorrowError, BorrowMutError};
