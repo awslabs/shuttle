@@ -38,6 +38,8 @@
 //! );
 //! ```
 
+mod lazy_cell;
 mod unsafe_cell;
 
+pub use lazy_cell::LazyCell;
 pub use unsafe_cell::{Ptr, PtrRef, PtrRefMut, UnsafeCell};
