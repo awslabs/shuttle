@@ -38,6 +38,8 @@
 //! );
 //! ```
 
+mod once_cell;
 mod unsafe_cell;
 
+pub use once_cell::OnceCell;
 pub use unsafe_cell::{Ptr, PtrRef, PtrRefMut, UnsafeCell};

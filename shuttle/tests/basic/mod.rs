@@ -13,6 +13,7 @@ mod metrics;
 mod mpsc;
 mod mutex;
 mod once;
+mod once_cell;
 mod panic;
 mod pct;
 mod portfolio;
