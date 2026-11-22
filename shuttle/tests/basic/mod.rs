@@ -27,3 +27,4 @@ mod thread;
 mod timeout;
 mod tracing;
 mod uncontrolled_nondeterminism;
+mod unsafe_cell;

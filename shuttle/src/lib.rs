@@ -185,6 +185,7 @@ pub use shuttle_engine::annotations;
 pub use shuttle_engine::current;
 pub use shuttle_engine::hint;
 
+pub use shuttle_std::cell;
 pub mod future;
 pub mod lazy_static;
 pub mod rand;
