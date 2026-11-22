@@ -290,24 +290,27 @@ impl<T> Default for HashSet<T> {
     }
 }
 
+// The set operators collect through this crate's `FromIterator`, so the result keeps the
+// fixed hasher state. std's operators build their result with `RandomState::default()`,
+// whose iteration order changes from one call to the next.
 impl<T: Eq + Hash + Clone> BitAnd<&HashSet<T>> for &HashSet<T> {
     type Output = HashSet<T>;
     fn bitand(self, rhs: &HashSet<T>) -> HashSet<T> {
-        HashSet(self.0.bitand(&rhs.0))
+        self.0.intersection(&rhs.0).cloned().collect()
     }
 }
 
 impl<T: Eq + Hash + Clone> BitOr<&HashSet<T>> for &HashSet<T> {
     type Output = HashSet<T>;
     fn bitor(self, rhs: &HashSet<T>) -> HashSet<T> {
-        HashSet(self.0.bitor(&rhs.0))
+        self.0.union(&rhs.0).cloned().collect()
     }
 }
 
 impl<T: Eq + Hash + Clone> BitXor<&HashSet<T>> for &HashSet<T> {
     type Output = HashSet<T>;
     fn bitxor(self, rhs: &HashSet<T>) -> HashSet<T> {
-        HashSet(self.0.bitxor(&rhs.0))
+        self.0.symmetric_difference(&rhs.0).cloned().collect()
     }
 }
 
@@ -364,7 +367,7 @@ impl<T: Eq + Hash> PartialEq for HashSet<T> {
 impl<T: Eq + Hash + Clone> Sub<&HashSet<T>> for &HashSet<T> {
     type Output = HashSet<T>;
     fn sub(self, rhs: &HashSet<T>) -> HashSet<T> {
-        HashSet(self.0.sub(&rhs.0))
+        self.0.difference(&rhs.0).cloned().collect()
     }
 }
 
@@ -510,6 +513,26 @@ mod test {
         for _ in 0..8 {
             assert_eq!(deserialize(), expected);
         }
+    }
+
+    #[test]
+    fn test_set_operators_keep_iteration_order() {
+        let a: HashSet<u32> = (0..64).collect();
+        let b: HashSet<u32> = (32..96).collect();
+        let orders = || {
+            [&a & &b, &a | &b, &a ^ &b, &a - &b]
+                .into_iter()
+                .map(|set| set.into_iter().collect::<Vec<_>>())
+                .collect::<Vec<_>>()
+        };
+        let expected = orders();
+        for _ in 0..8 {
+            assert_eq!(orders(), expected);
+        }
+        assert_eq!(&a & &b, (32..64).collect());
+        assert_eq!(&a | &b, (0..96).collect());
+        assert_eq!(&a ^ &b, (0..32).chain(64..96).collect());
+        assert_eq!(&a - &b, (0..32).collect());
     }
 
     #[test]
