@@ -27,5 +27,6 @@ mod thread;
 mod timeout;
 mod tracing;
 mod uncontrolled_nondeterminism;
+mod unsafe_cell;
 #[cfg(feature = "weak-memory")]
 mod weak_memory;
