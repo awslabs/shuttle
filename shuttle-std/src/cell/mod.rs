@@ -8,14 +8,15 @@
 //!
 //! # Checks
 //!
-//! With the `checked-cell` feature, Shuttle checks every access to the memory in an `UnsafeCell`
-//! for a data race with Shuttle's vector clocks, as the race detector of
-//! [Miri](https://github.com/rust-lang/miri) does. It also reports a use of the cell's pointers
-//! after the cell is dropped, and an access out of its bounds. The first violation panics with a
-//! report, so the test fails with a schedule that replays it. A violation while a panic unwinds
-//! can't panic, because that would abort the process. If that panic fails the test, Shuttle prints
-//! the report with it. If the code catches the panic, the execution fails with the report when it
-//! ends, and so it does after a violation whose own panic the code catches.
+//! With the `checked-cell` feature, Shuttle checks the memory in an `UnsafeCell` for Tree Borrows
+//! violations and data races. Each reference made from the cell gets a tag, and Shuttle applies the
+//! rules of Tree Borrows, ported from [Miri](https://github.com/rust-lang/miri), to every access.
+//! It also checks every access for a data race with Shuttle's vector clocks, as Miri's race detector
+//! does. The first violation panics with a report, so the test fails with a schedule that replays
+//! it. A violation while a panic unwinds can't panic, because that would abort the process. If that
+//! panic fails the test, Shuttle prints the report with it. If the code catches the panic, the
+//! execution fails with the report when it ends, and so it does after a violation whose own panic
+//! the code catches.
 //!
 //! Every atomic operation orders memory as SeqCst does, so a race that a too-weak ordering causes
 //! isn't reported.
@@ -34,8 +35,8 @@
 //! impl Counter {
 //!     fn increment(&self) {
 //!         let _guard = self.lock.lock().unwrap();
-//!         // Made and used under the lock. Making it before the lock would race with the other
-//!         // thread's write, and Shuttle reports that.
+//!         // Made and used under the lock. Making it before the lock would be UB under Tree
+//!         // Borrows, once another thread writes in between, and Shuttle reports that.
 //!         let mut value = unsafe { self.value.get().as_mut() };
 //!         *value += 1;
 //!     }
@@ -65,8 +66,8 @@
 //!   passes. Only the access that took it out is checked.
 //! - Which part of the value a guard's code uses. A dereference of a guard reads all of `T`, and
 //!   a `DerefMut` writes all of it, even if the code uses one field or writes nothing. So Shuttle
-//!   reports some code that Miri accepts, such as a guard to a struct that reads one field while
-//!   another thread writes another field. For an access to one field, use
+//!   reports some code that Miri accepts, such as a guard to a struct that reads one field after a
+//!   write through the cell to another field. For an access to one field, use
 //!   [`PtrRefMut::as_ptr`] or [`PtrRef::as_ptr`] with [`Ptr::project`].
 //! - A hand-off through something that doesn't keep Shuttle's vector clocks. Shuttle can then
 //!   report a data race that isn't one. Examples are std's `Arc`, which `shuttle::sync::Arc` is
@@ -82,8 +83,10 @@
 //! - A checked cell in a static, which two executions use at once, as parallel tests do. The cell
 //!   holds one registration, for the execution that used it last, so the checks miss violations.
 //!   Run tests that share a static checked cell one at a time.
-//! - Aliasing: a reference that the code keeps and uses after another access made it invalid.
-//! - Accesses to an atomic inside the cell, which don't go through the cell.
+//! - Function calls, so no tag is protected. Miri's protectors make some code UB at once that is
+//!   UB here only when a disabled reference is used again.
+//! - Interior mutability inside the cell. A `&T` is `Frozen` even if `T` has an atomic in it.
+//!   Accesses to such an atomic don't go through the cell, so they aren't checked here.
 //! - Reads of uninitialized memory, and memory that isn't in a checked cell.
 
 mod checks;

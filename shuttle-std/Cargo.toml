@@ -18,5 +18,5 @@ shuttle-schedulers = { path = "../shuttle-schedulers" }
 
 [features]
 default = []
-# Data race checks on the memory in `cell::UnsafeCell`
+# Tree Borrows and data race checks on the memory in `cell::UnsafeCell`
 checked-cell = ["shuttle-engine/checked-cell"]

@@ -27,7 +27,7 @@ impl<T> UnsafeCell<T> {
     pub fn get(&self) -> Ptr<T> {
         Ptr {
             raw: self.value.get(),
-            track: self.alloc.track::<T>(),
+            track: self.alloc.track::<T>(false),
         }
     }
 
@@ -35,7 +35,7 @@ impl<T> UnsafeCell<T> {
     /// loom's `UnsafeCell::with`.
     #[track_caller]
     pub fn with<R>(&self, f: impl FnOnce(*const T) -> R) -> R {
-        checks::access::<T>(self.alloc.track::<T>(), Access::Read, Location::caller());
+        checks::access::<T>(self.alloc.track::<T>(false), Access::Read, Location::caller());
         f(self.value.get())
     }
 
@@ -43,25 +43,26 @@ impl<T> UnsafeCell<T> {
     /// loom's `UnsafeCell::with_mut`.
     #[track_caller]
     pub fn with_mut<R>(&self, f: impl FnOnce(*mut T) -> R) -> R {
-        checks::access::<T>(self.alloc.track::<T>(), Access::Write, Location::caller());
+        checks::access::<T>(self.alloc.track::<T>(false), Access::Write, Location::caller());
         f(self.value.get())
     }
 
     /// A mutable reference to the value, as [`std::cell::UnsafeCell::get_mut`] returns. This counts
-    /// as a write. It isn't checked for a data race: the caller has the cell to itself, which a hand-off
+    /// as a write through the cell itself, which disables every reference made from the cell
+    /// before. It isn't checked for a data race: the caller has the cell to itself, which a hand-off
     /// that Shuttle doesn't see may have arranged, such as the last drop of a std `Arc`. The write
     /// is recorded, so a later access by another task must still happen after it.
     #[track_caller]
     pub fn get_mut(&mut self) -> &mut T {
-        checks::access_unordered::<T>(self.alloc.track::<T>(), Access::Write, Location::caller());
+        checks::access_unordered::<T>(self.alloc.track::<T>(true), Access::Write, Location::caller());
         self.value.get_mut()
     }
 
-    /// Unwraps the value. This counts as a read. As with `get_mut`, it isn't
+    /// Unwraps the value. This counts as a read through the cell itself. As with `get_mut`, it isn't
     /// checked for a data race, but it is recorded.
     #[track_caller]
     pub fn into_inner(self) -> T {
-        checks::access_unordered::<T>(self.alloc.track::<T>(), Access::Read, Location::caller());
+        checks::access_unordered::<T>(self.alloc.track::<T>(true), Access::Read, Location::caller());
         self.alloc.free();
         let this = ManuallyDrop::new(self);
         // SAFETY: `this` is never used or dropped again.
@@ -88,8 +89,8 @@ impl<T> fmt::Debug for UnsafeCell<T> {
     }
 }
 
-/// A raw pointer into an [`UnsafeCell`]. It is `Copy` and neither `Send` nor `Sync`, as a raw
-/// pointer is.
+/// A raw pointer into an [`UnsafeCell`], which carries its tag. It is `Copy` and neither `Send`
+/// nor `Sync`, as a raw pointer is.
 pub struct Ptr<T> {
     raw: *mut T,
     track: Option<Track>,
@@ -105,7 +106,10 @@ impl<T> Copy for Ptr<T> {}
 
 impl<T> fmt::Debug for Ptr<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Ptr({:?})", self.raw)
+        match checks::tag(self.track) {
+            Some(tag) => write!(f, "Ptr({:?}, tag #{tag})", self.raw),
+            None => write!(f, "Ptr({:?})", self.raw),
+        }
     }
 }
 
@@ -115,7 +119,7 @@ impl<T> Ptr<T> {
         self.raw
     }
 
-    /// The same pointer, to a `U`.
+    /// The same pointer, to a `U`. It keeps its tag.
     pub fn cast<U>(self) -> Ptr<U> {
         Ptr {
             raw: self.raw.cast(),
@@ -123,7 +127,7 @@ impl<T> Ptr<T> {
         }
     }
 
-    /// A pointer to a part of the value, such as a field. `f` gets the raw
+    /// A pointer to a part of the value, such as a field, with the same tag. `f` gets the raw
     /// pointer and returns one into the same value, as `&raw mut (*p).field` does. That makes no
     /// reference, so nothing is checked until an access through the new pointer.
     ///
@@ -222,30 +226,34 @@ impl<T> Ptr<T> {
         unsafe { self.raw.replace(value) }
     }
 
-    /// Makes a shared reference, as `&*ptr` does. With the checks, this counts as a read.
+    /// Makes a shared reference, as `&*ptr` does. With the checks, it gets a new tag, which starts
+    /// `Frozen`.
     ///
     /// # Safety
     ///
-    /// As for `&*ptr`, except that Shuttle reports a data race.
+    /// As for `&*ptr`, except that Shuttle reports a violation of Tree Borrows or a data race.
     #[track_caller]
     pub unsafe fn as_ref<'a>(self) -> PtrRef<'a, T> {
         PtrRef {
             raw: self.raw,
             track: checks::retag::<T>(self.track, Reference::Shared, Location::caller()),
+            raw_made: std::cell::Cell::new(false),
             _marker: PhantomData,
         }
     }
 
-    /// Makes a mutable reference, as `&mut *ptr` does. With the checks, this counts as a read.
+    /// Makes a mutable reference, as `&mut *ptr` does. With the checks, it gets a new tag, which
+    /// starts `Reserved`.
     ///
     /// # Safety
     ///
-    /// As for `&mut *ptr`, except that Shuttle reports a data race.
+    /// As for `&mut *ptr`, except that Shuttle reports a violation of Tree Borrows or a data race.
     #[track_caller]
     pub unsafe fn as_mut<'a>(self) -> PtrRefMut<'a, T> {
         PtrRefMut {
             raw: self.raw,
             track: checks::retag::<T>(self.track, Reference::Mut, Location::caller()),
+            raw_made: false,
             _marker: PhantomData,
         }
     }
@@ -256,13 +264,15 @@ impl<T> Ptr<T> {
 pub struct PtrRef<'a, T> {
     raw: *const T,
     track: Option<Track>,
+    raw_made: std::cell::Cell<bool>,
     _marker: PhantomData<&'a T>,
 }
 
 impl<T> PtrRef<'_, T> {
-    /// A raw pointer from this reference, as `r as *const T` gives. Writing through it is UB, as it
-    /// is for the raw pointer.
+    /// A raw pointer with this reference's tag, as `r as *const T` gives. Writing through it is UB,
+    /// as it is for the raw pointer.
     pub fn as_ptr(this: &Self) -> Ptr<T> {
+        this.raw_made.set(true);
         Ptr {
             raw: this.raw.cast_mut(),
             track: this.track,
@@ -281,6 +291,14 @@ impl<T> Deref for PtrRef<'_, T> {
     }
 }
 
+impl<T> Drop for PtrRef<'_, T> {
+    fn drop(&mut self) {
+        if !self.raw_made.get() {
+            checks::release(self.track);
+        }
+    }
+}
+
 impl<T: fmt::Debug> fmt::Debug for PtrRef<'_, T> {
     #[track_caller]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -293,12 +311,14 @@ impl<T: fmt::Debug> fmt::Debug for PtrRef<'_, T> {
 pub struct PtrRefMut<'a, T> {
     raw: *mut T,
     track: Option<Track>,
+    raw_made: bool,
     _marker: PhantomData<&'a mut T>,
 }
 
 impl<T> PtrRefMut<'_, T> {
-    /// A raw pointer from this reference, as `r as *mut T` gives.
+    /// A raw pointer with this reference's tag, as `r as *mut T` gives.
     pub fn as_ptr(this: &mut Self) -> Ptr<T> {
+        this.raw_made = true;
         Ptr {
             raw: this.raw,
             track: this.track,
@@ -323,6 +343,14 @@ impl<T> DerefMut for PtrRefMut<'_, T> {
         checks::access::<T>(self.track, Access::Write, Location::caller());
         // SAFETY: `Ptr::as_mut`'s caller promised that this is a valid reference.
         unsafe { &mut *self.raw }
+    }
+}
+
+impl<T> Drop for PtrRefMut<'_, T> {
+    fn drop(&mut self) {
+        if !self.raw_made {
+            checks::release(self.track);
+        }
     }
 }
 
