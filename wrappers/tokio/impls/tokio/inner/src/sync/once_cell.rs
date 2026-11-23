@@ -44,6 +44,14 @@ impl<T> UnsafeCell<T> {
 // The reverse does not necessarily hold — but if not, the semaphore may not
 // have any available permits.
 //
+// In Shuttle this invariant can break. `BatchSemaphore` also closes itself when
+// a permit is released while `ExecutionState::should_stop()` is true (see
+// `BatchSemaphore::release`), for example after the execution stopped or
+// failed, or outside an execution. If the permit of an unfinished
+// `get_or_init` is released that way, the semaphore is closed while
+// `value_set` is false. The SAFETY comments in `get_or_init` and
+// `get_or_try_init` say what then goes wrong.
+//
 // A thread with a `&mut OnceCell` may modify the value in any way it wants as
 // long as the invariants are upheld.
 
@@ -83,6 +91,15 @@ impl<T: Eq> Eq for OnceCell<T> {}
 impl<T> Drop for OnceCell<T> {
     fn drop(&mut self) {
         if self.initialized_mut() {
+            // SAFETY:
+            // In order for the call to be safe, we need to ensure:
+            // * `value` holds an initialized `T`.
+            // * nothing uses that `T` after it is dropped.
+            //
+            // `value_set` is true, and it is true only once `value` holds a `T` (see `set_value`,
+            // `From<T>` and `const_new_with`). `into_inner` sets it to false before it moves the
+            // `T` out.
+            // The cell is being dropped, and `&mut self` means that no reference into it is live.
             unsafe {
                 self.value.with_mut(|ptr| ptr::drop_in_place((*ptr).as_mut_ptr()));
             };
@@ -157,18 +174,65 @@ impl<T> OnceCell<T> {
         *self.value_set.get_mut()
     }
 
-    // SAFETY: The OnceCell must not be empty.
+    /// # Safety
+    ///
+    /// The caller must ensure:
+    /// * `value` holds an initialized `T`.
+    /// * the write that stored it happens before this call. For example, the caller saw
+    ///   `value_set` as true with an acquire load.
+    ///
+    /// The caller does not have to ensure that the value stays, or that no `&mut T` is made while
+    /// the returned reference lives. The returned reference borrows `self`, and each method that
+    /// removes the value or makes a `&mut T` takes `&mut self`. And `set_value` never writes a cell
+    /// that holds a value, as only the holder of the semaphore's only permit calls it, before
+    /// `value_set` is true.
     unsafe fn get_unchecked(&self) -> &T {
-        &*self.value.with(|ptr| (*ptr).as_ptr())
+        // SAFETY:
+        // In order for the two dereferences to be safe, we need to ensure:
+        // * `ptr` points to a live, aligned `MaybeUninit<T>` that no `&mut` aliases.
+        // * the `T` in it is initialized, and the write that stored it happens before this read.
+        //
+        // `with` passes the pointer of the `UnsafeCell` in `value`, which `self` keeps alive. Only
+        // `get_unchecked_mut` makes a `&mut` into it, and it takes `&mut self`, which the borrow of
+        // `self` here excludes. `set_value` only writes through a raw pointer.
+        // The caller ensures the second, so `&*` makes a reference to an initialized `T`.
+        unsafe { &*self.value.with(|ptr| (*ptr).as_ptr()) }
     }
 
-    // SAFETY: The OnceCell must not be empty.
+    /// # Safety
+    ///
+    /// The caller must ensure:
+    /// * `value` holds an initialized `T`.
+    ///
+    /// The returned reference borrows `self` mutably, so no other reference into the cell is live
+    /// while it is.
     unsafe fn get_unchecked_mut(&mut self) -> &mut T {
-        &mut *self.value.with_mut(|ptr| (*ptr).as_mut_ptr())
+        // SAFETY:
+        // In order for the two dereferences to be safe, we need to ensure:
+        // * `ptr` points to a live, aligned `MaybeUninit<T>`, and no other reference to it is live.
+        // * the `T` in it is initialized.
+        //
+        // `with_mut` passes the pointer of the `UnsafeCell` in `value`, which `self` keeps alive.
+        // `&mut self` means that no other reference into the cell is live.
+        // The caller ensures the second, so `&mut *` makes a reference to an initialized `T`.
+        unsafe { &mut *self.value.with_mut(|ptr| (*ptr).as_mut_ptr()) }
     }
 
     fn set_value(&self, value: T, permit: SemaphorePermit<'_>) -> &T {
-        // SAFETY: We are holding the only permit on the semaphore.
+        // SAFETY:
+        // In order for the write to be safe, we need to ensure:
+        // * no other task reads or writes `value` at the same time.
+        // * `value` holds no `T` that the write would overwrite.
+        //
+        // The caller holds `permit`, the semaphore's only permit. `new` and `const_new` make the
+        // semaphore with one permit, and the cells that `From<T>` and `const_new_with` make hold a
+        // value from the start, so no caller gets a permit for them. Another task writes `value`
+        // only in this function, so only with the permit. A task reads `value` only after it sees
+        // `value_set` as true, and that is set only below, after the write. The `Err` arms of
+        // `get_or_init` and `get_or_try_init` are the exception, see their SAFETY comments.
+        // `value_set` is false. It becomes true only below, and then the semaphore is closed and
+        // the permit forgotten, so no later caller gets a permit. While it is false, `value` holds
+        // no `T`: `into_inner` sets it to false only when it moves the `T` out.
         unsafe {
             self.value.with_mut(|ptr| (*ptr).as_mut_ptr().write(value));
         }
@@ -179,7 +243,12 @@ impl<T> OnceCell<T> {
         self.semaphore.close();
         permit.forget();
 
-        // SAFETY: We just initialized the cell.
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure:
+        // * `value` holds an initialized `T`.
+        // * the write that stored it happens before this call.
+        //
+        // The write above stored it, in this task.
         unsafe { self.get_unchecked() }
     }
 
@@ -187,7 +256,16 @@ impl<T> OnceCell<T> {
     /// `None` if the `OnceCell` is empty.
     pub fn get(&self) -> Option<&T> {
         if self.initialized() {
-            Some(unsafe { self.get_unchecked() })
+            // SAFETY:
+            // In order for the call to be safe, we need to ensure:
+            // * `value` holds an initialized `T`.
+            // * the write that stored it happens before this call.
+            //
+            // `initialized` read `value_set` as true. `set_value` sets it with release ordering,
+            // after it writes the value, and `initialized` reads it with acquire ordering. So the
+            // value is there, and the write happens before this call.
+            let value = unsafe { self.get_unchecked() };
+            Some(value)
         } else {
             None
         }
@@ -201,7 +279,13 @@ impl<T> OnceCell<T> {
     /// no other references exist.
     pub fn get_mut(&mut self) -> Option<&mut T> {
         if self.initialized_mut() {
-            Some(unsafe { self.get_unchecked_mut() })
+            // SAFETY:
+            // In order for the call to be safe, we need to ensure:
+            // * `value` holds an initialized `T`.
+            //
+            // `value_set` is true, which it is only once `value` holds a `T` (see `Drop`).
+            let value = unsafe { self.get_unchecked_mut() };
+            Some(value)
         } else {
             None
         }
@@ -264,7 +348,13 @@ impl<T> OnceCell<T> {
         Fut: Future<Output = T>,
     {
         if self.initialized() {
-            // SAFETY: The OnceCell has been fully initialized.
+            // SAFETY:
+            // In order for the call to be safe, we need to ensure:
+            // * `value` holds an initialized `T`.
+            // * the write that stored it happens before this call.
+            //
+            // `initialized` read `value_set` as true with acquire ordering, so both hold (see
+            // `get`).
             unsafe { self.get_unchecked() }
         } else {
             // Here we try to acquire the semaphore permit. Holding the permit
@@ -287,8 +377,21 @@ impl<T> OnceCell<T> {
                 Err(_) => {
                     debug_assert!(self.initialized());
 
-                    // SAFETY: The semaphore has been closed. This only happens
-                    // when the OnceCell is fully initialized.
+                    // SAFETY:
+                    // In order for the call to be safe, we need to ensure:
+                    // * `value` holds an initialized `T`.
+                    // * the write that stored it happens before this call.
+                    //
+                    // `acquire` fails only if the semaphore is closed. In tokio, only `set_value`
+                    // closes it, after it stores the value, so the value is there, and the store
+                    // happens before the close that this `acquire` saw. In Shuttle that does not
+                    // always hold. `BatchSemaphore` also closes itself when a permit is released
+                    // while `ExecutionState::should_stop()` is true (see
+                    // `BatchSemaphore::release`), for example after the execution stopped or
+                    // failed, or outside an execution. If that permit was the one of an unfinished
+                    // `get_or_init` or `get_or_try_init`, the cell is still empty, and this reads
+                    // a `T` that was never written. The `debug_assert!` above catches that only in
+                    // debug builds.
                     unsafe { self.get_unchecked() }
                 }
             }
@@ -314,8 +417,15 @@ impl<T> OnceCell<T> {
         Fut: Future<Output = Result<T, E>>,
     {
         if self.initialized() {
-            // SAFETY: The OnceCell has been fully initialized.
-            unsafe { Ok(self.get_unchecked()) }
+            // SAFETY:
+            // In order for the call to be safe, we need to ensure:
+            // * `value` holds an initialized `T`.
+            // * the write that stored it happens before this call.
+            //
+            // `initialized` read `value_set` as true with acquire ordering, so both hold (see
+            // `get`).
+            let value = unsafe { self.get_unchecked() };
+            Ok(value)
         } else {
             // Here we try to acquire the semaphore permit. Holding the permit
             // will allow us to set the value of the OnceCell, and prevents
@@ -342,9 +452,23 @@ impl<T> OnceCell<T> {
                 Err(_) => {
                     debug_assert!(self.initialized());
 
-                    // SAFETY: The semaphore has been closed. This only happens
-                    // when the OnceCell is fully initialized.
-                    unsafe { Ok(self.get_unchecked()) }
+                    // SAFETY:
+                    // In order for the call to be safe, we need to ensure:
+                    // * `value` holds an initialized `T`.
+                    // * the write that stored it happens before this call.
+                    //
+                    // `acquire` fails only if the semaphore is closed. In tokio, only `set_value`
+                    // closes it, after it stores the value, so the value is there, and the store
+                    // happens before the close that this `acquire` saw. In Shuttle that does not
+                    // always hold. `BatchSemaphore` also closes itself when a permit is released
+                    // while `ExecutionState::should_stop()` is true (see
+                    // `BatchSemaphore::release`), for example after the execution stopped or
+                    // failed, or outside an execution. If that permit was the one of an unfinished
+                    // `get_or_init` or `get_or_try_init`, the cell is still empty, and this reads
+                    // a `T` that was never written. The `debug_assert!` above catches that only in
+                    // debug builds.
+                    let value = unsafe { self.get_unchecked() };
+                    Ok(value)
                 }
             }
         }
@@ -356,7 +480,18 @@ impl<T> OnceCell<T> {
         if self.initialized_mut() {
             // Set to uninitialized for the destructor of `OnceCell` to work properly
             *self.value_set.get_mut() = false;
-            Some(unsafe { self.value.with(|ptr| ptr::read(ptr).assume_init()) })
+
+            // SAFETY:
+            // In order for the read to be safe, we need to ensure:
+            // * `value` holds an initialized `T`.
+            // * nothing uses or drops that `T` in the cell after it is moved out.
+            //
+            // `value_set` was true, which it is only once `value` holds a `T` (see `Drop`).
+            // `value_set` is false now, so the cell's `drop`, which runs when `self` goes out of
+            // scope below, does not drop the `T` again. `self` is owned here, so nothing else uses
+            // the cell.
+            let value = unsafe { self.value.with(|ptr| ptr::read(ptr).assume_init()) };
+            Some(value)
         } else {
             None
         }
@@ -369,17 +504,35 @@ impl<T> OnceCell<T> {
     }
 }
 
-// Since `get` gives us access to immutable references of the OnceCell, OnceCell
-// can only be Sync if T is Sync, otherwise OnceCell would allow sharing
-// references of !Sync values across threads. We need T to be Send in order for
-// OnceCell to by Sync because we can use `set` on `&OnceCell<T>` to send values
-// (of type T) across threads.
+// SAFETY:
+// In order for `OnceCell<T>` to be `Sync`, we need to ensure:
+// * threads that share a `&OnceCell<T>` can share the `T`.
+// * a `T` that one thread stores may move to another thread.
+// * reads of `value` never race with its write.
+// * no two OS threads use the cell's semaphore at the same time.
+//
+// `get` gives each thread a `&T`, so `T` must be `Sync`. `set` and `get_or_init` store a `T` that
+// the calling thread made, and the thread that drops the cell drops that `T`, so `T` must be `Send`.
+// The bound requires both.
+// `value` is written once, by the holder of the only permit, before `value_set` is set with release
+// ordering. Every read comes after an acquire load of `value_set` that sees true, except the reads
+// in the `Err` arms of `get_or_init` and `get_or_try_init`. Their SAFETY comments say when those
+// read a cell that was never written.
+// The semaphore is this crate's `Semaphore`, which holds a `BatchSemaphore`, so the last property
+// relies on the `Sync` impl of `BatchSemaphore` (see its SAFETY comment). That impl does not hold
+// when two OS threads use one semaphore at the same time, for example two tests that run at the
+// same time and share one cell through a `static`. So this impl does not hold then either.
 unsafe impl<T: Sync + Send> Sync for OnceCell<T> {}
 
-// Access to OnceCell's value is guarded by the semaphore permit
-// and atomic operations on `value_set`, so as long as T itself is Send
-// it's safe to send it to another thread
-unsafe impl<T: Send> Send for OnceCell<T> {}
+// `OnceCell<T>` is `Send` when `T` is, without an `unsafe impl` of its own, because each of its
+// fields is `Send` then. This checks that it stays so, for every `T: Send`.
+const _: () = {
+    const fn assert_send<T: Send + ?Sized>() {}
+    #[allow(dead_code)]
+    const fn once_cell_is_send<T: Send>() {
+        assert_send::<OnceCell<T>>();
+    }
+};
 
 /// Errors that can be returned from [`OnceCell::set`].
 ///

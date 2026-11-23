@@ -10,7 +10,21 @@ use core::task::{Context, Poll};
 pub struct Pending<T>(PhantomData<T>);
 
 impl<T> Unpin for Pending<T> {}
+
+// SAFETY:
+// In order for `Pending<T>` to be `Send` for every `T`, we need to ensure:
+// * moving a `Pending<T>` to another thread moves no value whose type is not `Send`.
+//
+// A `Pending<T>` holds only a `PhantomData<T>`, which holds no data. It never makes a `T`, as
+// `poll_next` always returns `Poll::Pending`.
 unsafe impl<T> Send for Pending<T> {}
+
+// SAFETY:
+// In order for `Pending<T>` to be `Sync` for every `T`, we need to ensure:
+// * threads that share a `&Pending<T>` get no access to a value whose type is not `Sync`.
+//
+// A `Pending<T>` holds no data, and its `&self` methods, `size_hint` and the derived `Debug`, read
+// none.
 unsafe impl<T> Sync for Pending<T> {}
 
 /// Creates a stream that is never ready

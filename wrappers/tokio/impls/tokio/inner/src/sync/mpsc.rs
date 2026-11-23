@@ -357,9 +357,19 @@ impl<T> ReceiverInternal<T> {
         // so the waiter stays registered in the semaphore queue.
         if self.pending_acquire.is_none() {
             let acquire = self.chan.recv_semaphore.acquire(1);
-            // Safety: Acquire borrows recv_semaphore which lives in self.chan
-            // (behind Arc). We clear pending_acquire on completion, on close,
-            // and in Drop — so the borrow never outlives the semaphore.
+
+            // SAFETY:
+            // In order for the transmute to be safe, we need to ensure:
+            // * `Acquire<'_>` and `Acquire<'static>` have the same layout.
+            // * the semaphore that `acquire` borrows lives as long as `acquire` does.
+            //
+            // The two types differ only in a lifetime, and lifetimes don't change layout.
+            // `acquire` borrows `recv_semaphore`, a `BatchSemaphore` in its own `Arc`, which the
+            // `Channel` in `self.chan` holds. Nothing replaces `self.chan` or `recv_semaphore`, so
+            // the semaphore lives at least as long as `self.chan`. `acquire` lives only in
+            // `self.pending_acquire`, which is private and never handed out. `drop` clears it
+            // before the fields are dropped, so it goes before `self.chan`. If the receiver is
+            // forgotten, both leak.
             let acquire: Acquire<'static> = unsafe { std::mem::transmute(acquire) };
             self.pending_acquire = Some(Box::pin(acquire));
         }

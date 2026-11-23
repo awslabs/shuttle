@@ -330,27 +330,42 @@ impl core::fmt::Debug for WaitForCancellationFutureOwned {
 
 impl WaitForCancellationFutureOwned {
     fn new(cancellation_token: CancellationToken) -> Self {
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure:
+        // * the returned future is dropped before `cancellation_token` is.
+        // * the future's reference stays valid when `cancellation_token` moves.
+        // * the compiler does not assume that the future's `'static` reference stays valid.
+        //
+        // The future goes in the `future` field, and the token in `cancellation_token`. The
+        // fields are dropped in the order they are declared, and `future` comes first. No method
+        // moves the token out of the struct.
+        // cancellation_token holds a heap allocation and is guaranteed to have a
+        // stable deref, thus it would be ok to move the cancellation_token while
+        // the future holds a reference to it. It moves into the struct below, after the future is
+        // made, and the struct can move later.
+        // The future goes in a `MaybeDangling`, which tells the compiler that the reference may not
+        // be valid (see the comment on the `future` field).
+        let future = unsafe { Self::new_future(&cancellation_token) };
         WaitForCancellationFutureOwned {
-            // cancellation_token holds a heap allocation and is guaranteed to have a
-            // stable deref, thus it would be ok to move the cancellation_token while
-            // the future holds a reference to it.
-            //
-            // # Safety
-            //
-            // cancellation_token is dropped after future due to the field ordering.
-            future: MaybeDangling::new(unsafe { Self::new_future(&cancellation_token) }),
+            future: MaybeDangling::new(future),
             cancellation_token,
         }
     }
 
     /// # Safety
-    /// The returned future must be destroyed before the cancellation token is
-    /// destroyed.
+    ///
+    /// The caller must ensure:
+    /// * the returned future is dropped before `cancellation_token` is dropped.
     unsafe fn new_future(cancellation_token: &CancellationToken) -> tokio::sync::futures::Notified<'static> {
         let inner_ptr = Arc::as_ptr(&cancellation_token.inner);
-        // SAFETY: The `Arc::as_ptr` method guarantees that `inner_ptr` remains
-        // valid until the strong count of the Arc drops to zero, and the caller
-        // guarantees that they will drop the future before that happens.
+
+        // SAFETY:
+        // In order for the dereference to be safe, we need to ensure:
+        // * `inner_ptr` stays valid for as long as the returned future, which borrows the node for
+        //   `'static`.
+        //
+        // `Arc::as_ptr` gives a pointer that stays valid while a strong reference to the node
+        // exists. `cancellation_token` holds one, and the caller drops the future before it.
         (*inner_ptr).notified()
     }
 }
@@ -374,11 +389,18 @@ impl Future for WaitForCancellationFutureOwned {
                 return Poll::Pending;
             }
 
-            // # Safety
+            // SAFETY:
+            // In order for the call to be safe, we need to ensure:
+            // * the returned future is dropped before `cancellation_token` is.
+            // * the future's reference stays valid when the struct moves.
+            // * the compiler does not assume that the future's `'static` reference stays valid.
             //
-            // cancellation_token is dropped after future due to the field ordering.
-            this.future
-                .set(MaybeDangling::new(unsafe { Self::new_future(this.cancellation_token) }));
+            // The future goes in the `future` field, which is dropped before `cancellation_token`
+            // (see `new`). `set` drops the old future in place before it stores this one.
+            // The reference points into the token's heap node, which does not move with the
+            // struct, and the future goes in a `MaybeDangling` (see `new`).
+            let future = unsafe { Self::new_future(this.cancellation_token) };
+            this.future.set(MaybeDangling::new(future));
         }
     }
 }

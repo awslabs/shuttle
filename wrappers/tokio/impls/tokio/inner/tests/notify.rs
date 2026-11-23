@@ -125,8 +125,7 @@ fn notify_mpmc_channel() {
         }
 
         pub async fn recv(&self) -> T {
-            let mut future = self.notify_on_sent.notified();
-            let mut future = unsafe { std::pin::Pin::new_unchecked(&mut future) };
+            let mut future = std::pin::pin!(self.notify_on_sent.notified());
 
             loop {
                 // Make sure that no wakeup is lost if we get
@@ -232,8 +231,7 @@ fn notify_mpmc_channel_2_test(do_enable: bool) {
         }
 
         pub async fn recv(&self) -> T {
-            let mut future = self.notify_on_sent.notified();
-            let mut future = unsafe { std::pin::Pin::new_unchecked(&mut future) };
+            let mut future = std::pin::pin!(self.notify_on_sent.notified());
 
             loop {
                 if self.do_enable {
