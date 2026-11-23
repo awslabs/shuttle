@@ -138,10 +138,41 @@ impl<'scope> Scope<'scope, '_> {
         // This logic is expected to run atomically with scoped thread termination, so there *cannot* be a switch after the atomic store.
         // To avoid violating this invariant, we pass `switch_before_exit = false` (below). Instead, we provide our own context switch on exit
         // (above) in the `scope_closure` *before* setting `finished` to be `true`.
-        // SAFETY: the main task is blocked until every scoped thread's `RunningScopedThread` is dropped,
-        // which is after the thread's closure and its result, so all captured references remain valid
+
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure:
+        // * The references that `scope_closure` captures stay valid for as long as the spawned
+        //   thread can use them, as `spawn_named_unchecked` requires.
+        // * The same holds for the references in its result, which the thread holds, and drops
+        //   itself when nobody can join it.
+        //
+        // `scope_closure` captures `f`, and the `Arc`s `finished` and `data`, which own what they
+        // point to. `F` and `T` are `'scope`, so `f` and its result can only borrow what lives for
+        // `'scope`, which is at least until `scope` returns or unwinds. So both properties hold if
+        // the thread is done with what it borrows before `scope` returns or unwinds.
+        //
+        // The thread is done with what it borrows once its `RunningScopedThread` is dropped. After
+        // `f` returns, `scope_closure` makes the guard and returns it with the result. The guard is
+        // dropped after the result: by the thread when nobody can join it, by `join` after it moves
+        // the result out to its caller, or with the handle. Once `join` has returned the result, the
+        // borrow checker checks its uses, as for any other value of type `T`.
+        //
+        // `scope` returns only after every guard is dropped. `num_running_threads` counts the
+        // threads whose guard isn't dropped yet. `spawn` adds the thread above, before the thread
+        // exists, and only the drop of its guard takes it away. At its end, `scope` blocks until the
+        // count is 0. It blocks with `block(false)`, so the block can't end spuriously, and only the
+        // drop of the last guard ends it. If `f` panics, `scope` catches the panic and waits in the
+        // same way before the panic goes on.
+        //
+        // The execution can end before every guard is dropped (see `ExecutionState::tear_down`). If
+        // a task panics, or the execution stops, Shuttle leaks the stacks of the unfinished tasks,
+        // so it frees nothing that the thread borrows. A finished execution has no unfinished
+        // thread, but its teardown can unwind a future task that waits in `scope` for the guard of
+        // a forgotten handle. Nothing can use the result of a forgotten handle.
+        let handle = unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) };
+
         ScopedJoinHandle {
-            handle: unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) },
+            handle,
             finished,
             _marker: PhantomData,
         }
@@ -149,12 +180,12 @@ impl<'scope> Scope<'scope, '_> {
 }
 
 /// Counts a scoped thread as running until it is dropped. The thread returns it with its result,
-/// which is dropped first, so the scope can't end while the result's destructor still runs. The
-/// result can borrow from the scope's environment, which is also why std counts a scoped thread as
-/// running until its result is gone.
+/// and it goes after the result, so the scope can't end while the result's destructor still runs.
+/// The result can borrow from the scope's environment, which is also why std counts a scoped thread
+/// as running until its result is gone.
 ///
-/// It is dropped with the result: by the thread when its handle is gone, or else by `join`, or with
-/// the handle.
+/// It is dropped after the result: by the thread when its handle is gone, by `join` once it has
+/// taken the result out, or with the handle.
 #[derive(Debug)]
 struct RunningScopedThread {
     scope: std::sync::Arc<ScopeData>,
