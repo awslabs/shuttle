@@ -22,19 +22,51 @@ impl<T> From<*mut T> for AtomicPtr<T> {
 
 impl<T> std::fmt::Debug for AtomicPtr<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        std::fmt::Debug::fmt(unsafe { &self.raw_load() }, f)
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure, as `raw_load` asks:
+        // * nothing that the test checks depends on the value that the load returns.
+        //
+        // This does not hold in general. Formatting is safe, so a test can check the text it writes, as in
+        // `assert_eq!(format!("{a:?}"), "1")`. The cost is only that Shuttle doesn't explore the
+        // interleavings around this load. The load itself has no memory-safety risk.
+        let value = unsafe { self.raw_load() };
+        std::fmt::Debug::fmt(&value, f)
     }
 }
 
 impl<T> std::fmt::Pointer for AtomicPtr<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        std::fmt::Pointer::fmt(unsafe { &self.raw_load() }, f)
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure, as `raw_load` asks:
+        // * nothing that the test checks depends on the value that the load returns.
+        //
+        // This does not hold in general. Formatting is safe, so a test can check the text it writes, as in
+        // `assert_eq!(format!("{a:?}"), "1")`. The cost is only that Shuttle doesn't explore the
+        // interleavings around this load. The load itself has no memory-safety risk.
+        let value = unsafe { self.raw_load() };
+        std::fmt::Pointer::fmt(&value, f)
     }
 }
 
-// Atomic operations make it safe to Send + Sync this shared raw pointer (establishing the safety of
-// *using* the raw pointer is still up to the caller)
+// SAFETY:
+// In order for `AtomicPtr<T>` to be `Send`, we need to ensure:
+// * moving it to another OS thread moves nothing that the old thread still uses.
+//
+// An `AtomicPtr<T>` owns its `Atomic<*mut T>`, and moving it moves the atomic, with its `RefCell`s,
+// to the new thread. The atomic only stores and loads the pointer, and never reads through it, so
+// what it points to doesn't matter here. Using the pointer is up to the caller's own `unsafe` code,
+// as for `std::sync::atomic::AtomicPtr`, which is `Send` for every `T` too.
 unsafe impl<T> Send for AtomicPtr<T> {}
+
+// SAFETY:
+// In order for `AtomicPtr<T>` to be `Sync`, we need to ensure:
+// * no two OS threads use the atomic's `RefCell`s at the same time.
+//
+// This holds for the tasks of one execution, but it does not hold in general, as for the `Sync`
+// impl of `Atomic`. So this impl is not sound for code that shares an `AtomicPtr` between two OS
+// threads, for example two tests that run at the same time and use one `static`, or the executions
+// of a `PortfolioRunner`. The atomic never
+// reads through the pointer, so what it points to doesn't matter here.
 unsafe impl<T> Sync for AtomicPtr<T> {}
 
 impl<T> AtomicPtr<T> {
@@ -218,11 +250,18 @@ impl<T> AtomicPtr<T> {
     ///
     /// # Safety
     ///
-    /// Shuttle does not consider potential concurrent interleavings of this function call,
-    /// and so it should be used when those interleavings aren't important (primarily in
-    /// debugging scenarios where we might want to just print this atomic's value).
+    /// The load has no memory-safety requirement of its own. It is `unsafe` because Shuttle does not
+    /// consider potential concurrent interleavings of this function call. So the caller needs to
+    /// ensure:
+    /// * nothing that the test checks depends on the value that the load returns. Use it where those
+    ///   interleavings aren't important, primarily in debugging, to print this atomic's value.
     pub unsafe fn raw_load(&self) -> *mut T {
-        self.inner.raw_load()
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure, as `Atomic::raw_load` asks:
+        // * nothing that the test checks depends on the value that the load returns.
+        //
+        // That is what our caller ensures (see `# Safety`).
+        unsafe { self.inner.raw_load() }
     }
 
     #[cfg(test)]

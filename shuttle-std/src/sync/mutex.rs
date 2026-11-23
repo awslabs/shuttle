@@ -161,11 +161,30 @@ impl<T: ?Sized> Mutex<T> {
     }
 }
 
-// Safety: Mutex is never actually passed across true threads, only across continuations. The
-// Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
-// TODO we shouldn't need to do this, but RefCell is not Send, and anything we put within a Mutex
-// TODO needs to be Send.
-unsafe impl<T: Send + ?Sized> Send for Mutex<T> {}
+// `Mutex<T>` is `Send` when `T` is, without an `unsafe impl` of its own, because each of its fields
+// is `Send` then. This checks that it stays so, for every `T: Send`.
+const _: () = {
+    const fn assert_send<T: Send + ?Sized>() {}
+    #[allow(dead_code)]
+    const fn mutex_is_send<T: Send + ?Sized>() {
+        assert_send::<Mutex<T>>();
+    }
+};
+
+// SAFETY:
+// In order for `Mutex<T>` to be `Sync`, we need to ensure:
+// * no two OS threads use the mutex's `RefCell`s at the same time, including the one in its
+//   `BatchSemaphore`.
+// * a `&Mutex<T>` lets an OS thread reach a `T` that another OS thread made, so `T: Send`, as for
+//   `std::sync::Mutex`.
+//
+// The second holds because of the `T: Send` bound. The `T` is in a `std::sync::Mutex<T>`, which is
+// `Sync` when `T: Send`.
+//
+// The first holds for the tasks of one execution, but it does not hold in general, as for the
+// `Sync` impl of `BatchSemaphore`. So this impl is not sound for code that shares a mutex between
+// two OS threads, for example two tests that run at the same time and use one `static`, or the
+// executions of a `PortfolioRunner`.
 unsafe impl<T: Send + ?Sized> Sync for Mutex<T> {}
 
 // TODO this is the RefCell biting us again

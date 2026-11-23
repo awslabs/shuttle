@@ -310,9 +310,24 @@ fn poll_in_place<F: Future>(slot: &RefCell<Option<F>>, cx: &mut Context<'_>) -> 
     let future = slot
         .as_mut()
         .expect("a future task drops its future only when it stops polling it");
-    // SAFETY: nothing moves the future out of the slot, whose allocation stays where it is, so the
-    // future stays where it is until it is dropped there.
-    unsafe { Pin::new_unchecked(future) }.poll(cx)
+
+    // SAFETY:
+    // In order for `Pin::new_unchecked` to be safe, we need to ensure:
+    // * the future never moves from here on, until it is dropped.
+    // * the future's memory is not freed or used for something else before the future is dropped.
+    //
+    // The future lives in a `RefCell<Option<F>>` in an `Rc` allocation of its own, which
+    // `Task::from_future` makes. Only the loop in `Task::from_future` and the task's weak reference
+    // to the slot (`Task::future`) reach it. The loop polls the future in place here, and drops it in place, with `*slot = None`,
+    // when execution teardown cancels the task. `FutureSlot::is_being_polled` only tries to borrow
+    // the slot. Nothing takes, replaces or swaps the `Option`, and nothing takes the `RefCell` out
+    // of the `Rc`, so the future never moves.
+    //
+    // The allocation is freed only when its last `Rc` is dropped, and that drops the future in place
+    // first. If teardown leaks the task's stack instead, the loop's `Rc` is leaked with it, and the
+    // allocation is never freed.
+    let future = unsafe { Pin::new_unchecked(future) };
+    future.poll(cx)
 }
 
 /// A `Task` represents a user-level unit of concurrency. Each task has an `id` that is unique within

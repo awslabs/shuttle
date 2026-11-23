@@ -52,9 +52,23 @@ impl<T: Sync> Lazy<T> {
 
     /// Get a reference to the lazy value, initializing it first if necessary.
     pub fn get(&'static self) -> &'static T {
-        // Safety: see the usage below
+        /// Extend the lifetime of `t` to `'static`.
+        ///
+        /// # Safety
+        ///
+        /// The caller needs to ensure:
+        /// * what `t` points to stays valid, and nothing makes a `&mut` to it, for as long as the
+        ///   returned reference is used.
         unsafe fn extend_lt<T>(t: &T) -> &'static T {
-            std::mem::transmute(t)
+            // SAFETY:
+            // In order for the transmute to be safe, we need to ensure:
+            // * the two types have the same layout.
+            // * the returned reference is used only while what it points to is valid, and while
+            //   nothing makes a `&mut` to it.
+            //
+            // The two types are both `&T`, and differ only in their lifetimes, so they have the
+            // same layout. The second is what our caller ensures (see `# Safety`).
+            unsafe { std::mem::transmute(t) }
         }
 
         // We implement lazy statics by using a `Once` to mediate initialization of the static, just
@@ -78,17 +92,30 @@ impl<T: Sync> Lazy<T> {
         // At this point we're guaranteed that a value exists for this static, so read it
         ExecutionState::with(|state| {
             let drop_guard: &DropGuard<T> = state.get_storage(self).expect("should be initialized");
-            // Safety: this *isn't* safe. We are promoting to a `'static` lifetime here, but this
-            // object does not actually live that long. It would be possible for this reference to
-            // escape the client code and be used after it becomes invalid when the execution ends.
-            // But there's not really any way around this -- the semantics of static values and
-            // Shuttle executions are incompatible.
+
+            // SAFETY:
+            // In order for the call to be safe, we need to ensure, as `extend_lt` asks:
+            // * the value stays valid, and nothing makes a `&mut` to it, for as long as the returned
+            //   reference is used.
             //
-            // In reality, this should be safe because any code that uses a Shuttle `lazy_static`
-            // probably uses a regular `lazy_static` in its non-test version, and if that version
-            // compiles then the Shuttle version is also safe. We choose this unsafe path because
-            // it's intended to be used only in testing code, which we want to remain as compatible
-            // with real-world code as possible and so needs to preserve the semantics of statics.
+            // The value lives in the execution's storage, a `StorageMap`, which keeps each value in
+            // a `Box` of its own. So the value doesn't move when the map grows. Nothing makes a
+            // `&mut` to the value. The value stays valid until execution teardown drops it.
+            //
+            // But the property does not hold in general, because the caller gets a `&'static T`,
+            // which safe code can use after teardown drops the value. It can keep the reference past
+            // the end of the execution, in a `std` static say. It can also keep it in a thread-local
+            // of a task that is still in the middle of its code when a stopped or failed execution
+            // ends. Teardown of such an execution drops the statics first, and drops the task's
+            // thread-locals after it leaks the task's stack, so a destructor of that thread-local
+            // reads freed memory, during teardown.
+            //
+            // There's not really any way around this -- the semantics of static values and Shuttle
+            // executions are incompatible. Code that uses a Shuttle `lazy_static` probably uses a
+            // regular `lazy_static` in its non-test version, where the value does live for the rest
+            // of the program. We choose this unsafe path because it's intended to be used only in
+            // testing code, which we want to remain as compatible with real-world code as possible
+            // and so needs to preserve the semantics of statics.
             //
             // See also https://github.com/tokio-rs/loom/pull/125
             unsafe { extend_lt(&drop_guard.value) }

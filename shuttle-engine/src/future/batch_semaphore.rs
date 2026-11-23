@@ -1020,11 +1020,30 @@ impl BatchSemaphore {
     }
 }
 
-// Safety: Semaphore is never actually passed across true threads, only across continuations. The
-// RefCell<_> type therefore can't be preempted mid-bookkeeping-operation.
-// TODO we shouldn't need to do this, but RefCell is not Send, and anything we put within a Semaphore
-// TODO needs to be Send.
-unsafe impl Send for BatchSemaphore {}
+// `BatchSemaphore` is `Send` without an `unsafe impl` of its own, because each of its fields is
+// `Send`. This checks that it stays so.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<BatchSemaphore>();
+};
+
+// SAFETY:
+// In order for `BatchSemaphore` to be `Sync`, we need to ensure:
+// * no two OS threads use the semaphore's `RefCell` at the same time. `RefCell` keeps its borrow
+//   count without any synchronization, so two OS threads that use it at the same time race.
+//
+// This holds for the tasks of one execution, but it does not hold in general. Shuttle runs all the
+// tasks of an execution on one OS thread, and only one task runs at a time. So two tasks never use
+// the `RefCell` at the same time. If a task switches out while it holds a borrow, and another task
+// then borrows the `RefCell`, the `RefCell` panics, which is safe.
+//
+// But two executions can run at the same time on two OS threads and share one semaphore. Two tests
+// that run at the same time, as `cargo test` runs them, can use one semaphore in a `static`. A
+// `PortfolioRunner` runs several executions of one test at the same time, on OS threads of its own,
+// and the test's closure can hold one semaphore in an `Arc`. Then the OS threads race on the
+// `RefCell`, which is undefined behavior. Shuttle does not prevent this, so this impl is not sound
+// for such code. The same holds for each Shuttle primitive that keeps its state in a `RefCell` and
+// is `Sync`.
 unsafe impl Sync for BatchSemaphore {}
 
 impl Default for BatchSemaphore {

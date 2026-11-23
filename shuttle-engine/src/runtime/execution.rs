@@ -2174,11 +2174,27 @@ impl ExecutionState {
         let is_yielding = std::mem::replace(&mut self.has_yielded, false);
 
         // Cast the slice of raw pointers to a slice of references in place to provide schedulers with a safe API
+
+        // SAFETY:
+        // In order for the transmute to be safe, we need to ensure:
+        // * `&[*const Task]` and `&[&Task]` have the same layout.
+        // * each pointer in `runnable_tasks` is a valid `&Task` for as long as `task_refs` is used:
+        //   it is aligned, it points to a live `Task`, and nothing changes that `Task` meanwhile.
         //
-        // SAFETY: This is safe because the tasks themselves are only being accessed through this shared reference by the
-        // schedulers, and all references are always cleared from the runnable_tasks Vec at the end of this function.
-        // The transmute itself is safe because *const and & have the same layout, and the pointer is created from a
-        // reference earlier in this function.
+        // `*const Task` and `&Task` have the same size and alignment, so slices of them have the same
+        // layout, and so do references to such slices.
+        //
+        // Each pointer in `runnable_tasks` comes from a `&Task` into `self.tasks` that the loop above
+        // made in this call. `runnable_tasks` holds no pointer from an earlier call: each call clears
+        // it at its end. The exceptions are the early return above that finishes the execution, after
+        // which the execution never schedules again, and a panic out of the scheduler, after which
+        // teardown follows.
+        //
+        // No code between the loop and the `trace!` below, the last use of `task_refs`, changes
+        // `self.tasks` or makes a `&mut` to it. The scheduler can't reach `self.tasks` either:
+        // `schedule` runs inside `ExecutionState::with`, so a call of `ExecutionState::with` from the
+        // scheduler panics. The scheduler gets the slice for one call of `next_task`, and the
+        // lifetimes in that signature don't let it keep the references after the call.
         let task_refs = unsafe { std::mem::transmute::<&[*const Task], &[&Task]>(&self.runnable_tasks) };
 
         self.next_task = self

@@ -193,10 +193,27 @@ impl Barrier {
     }
 }
 
-// Safety: Barrier is never actually passed across threads, only across continuations. The
-// Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
-// TODO we shouldn't need to do this, but RefCell is not Send, and Barrier needs to be Send.
+// SAFETY:
+// In order for `Barrier` to be `Send`, we need to ensure:
+// * moving a barrier to another OS thread moves nothing that the old thread still uses.
+// * what the barrier holds can move to another OS thread.
+//
+// The barrier's state is in an `Rc`, which is not `Send`, because other clones of it could stay on
+// the old thread. But `Barrier::new` makes the only `Rc`, and nothing clones it, so moving the
+// barrier moves the only handle to its state.
+//
+// The state holds counts, task IDs and a vector clock, which are `Send`. The other field, the
+// barrier's signature, is `Send` too.
 unsafe impl Send for Barrier {}
+
+// SAFETY:
+// In order for `Barrier` to be `Sync`, we need to ensure:
+// * no two OS threads use the barrier's `RefCell` at the same time.
+//
+// This holds for the tasks of one execution, but it does not hold in general, as for the `Sync`
+// impl of `BatchSemaphore`. So this impl is not sound for code that shares a barrier between two
+// OS threads, for example two tests that run at the same time and use one `static`, or the
+// executions of a `PortfolioRunner`.
 unsafe impl Sync for Barrier {}
 
 #[cfg(test)]
