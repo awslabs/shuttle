@@ -38,4 +38,7 @@ annotation = ["vector-clocks", "dep:serde", "dep:serde_json", "dep:regex"]
 # Weak-memory emulation for the atomics, which `Config::weak_memory` turns on. It tracks
 # happens-before with the vector clocks, so `weak-memory` implies `vector-clocks`.
 weak-memory = ["vector-clocks"]
+# Data race checks on the memory in `shuttle::cell::UnsafeCell`. They
+# use the vector clocks, so `checked-cell` implies `vector-clocks`.
+checked-cell = ["vector-clocks"]
 bench-no-vector-clocks = []

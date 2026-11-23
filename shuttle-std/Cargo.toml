@@ -20,3 +20,5 @@ shuttle-schedulers = { path = "../shuttle-schedulers" }
 default = []
 # Weak-memory emulation for the atomics, which `Config::weak_memory` turns on
 weak-memory = ["shuttle-engine/weak-memory"]
+# Data race checks on the memory in `cell::UnsafeCell`
+checked-cell = ["shuttle-engine/checked-cell"]
