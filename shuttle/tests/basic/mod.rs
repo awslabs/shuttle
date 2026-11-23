@@ -2,6 +2,8 @@
 mod annotation;
 mod atomic;
 mod barrier;
+#[cfg(feature = "checked-cell")]
+mod checked_cell;
 pub(crate) mod clocks;
 mod condvar;
 mod config;

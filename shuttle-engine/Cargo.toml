@@ -35,4 +35,7 @@ vector-clocks = []
 # Annotated schedules record each task's vector clock so that Shuttle Explorer can
 # show causal dependence between tasks, so `annotation` implies `vector-clocks`.
 annotation = ["vector-clocks", "dep:serde", "dep:serde_json", "dep:regex"]
+# Data race checks on the memory in `shuttle::cell::UnsafeCell`. They
+# use the vector clocks, so `checked-cell` implies `vector-clocks`.
+checked-cell = ["vector-clocks"]
 bench-no-vector-clocks = []

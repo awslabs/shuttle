@@ -1,3 +1,5 @@
+#[cfg(feature = "checked-cell")]
+pub mod checked_cell;
 pub mod execution;
 mod failure;
 pub mod runner;
