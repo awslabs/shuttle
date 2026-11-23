@@ -696,3 +696,161 @@ fn ring_test(publish: Ordering, free: Ordering) -> impl Fn() + Send + Sync + 'st
 fn ring_with_release_stores_passes() {
     passes_with(Config::new(), ring_test(Ordering::Release, Ordering::Release));
 }
+
+#[cfg(feature = "weak-memory")]
+mod weak_memory {
+    use super::*;
+    use shuttle::sync::atomic::{AtomicBool, AtomicPtr};
+    use test_log::test;
+
+    fn weak_memory() -> Config {
+        let mut config = Config::new();
+        config.weak_memory = true;
+        config
+    }
+
+    struct Message {
+        data: UnsafeCell<u64>,
+        ready: AtomicBool,
+    }
+
+    // SAFETY: `ready` publishes `data`, if the orderings are right.
+    unsafe impl Sync for Message {}
+
+    fn message_test(publish: Ordering, receive: Ordering) -> impl Fn() + Send + Sync + 'static {
+        move || {
+            let message = Arc::new(Message {
+                data: UnsafeCell::new(0),
+                ready: AtomicBool::new(false),
+            });
+            let writer = {
+                let message = Arc::clone(&message);
+                thread::spawn(move || {
+                    unsafe { message.data.get().write(42) };
+                    message.ready.store(true, publish);
+                })
+            };
+            if message.ready.load(receive) {
+                // Always true when it runs: Shuttle's non-atomic memory always holds the latest
+                // write. The bug shows up only as a race.
+                assert_eq!(unsafe { message.data.get().read() }, 42);
+            }
+            writer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn relaxed_publish_races_under_weak_memory() {
+        let report = failure_with(weak_memory(), message_test(Ordering::Relaxed, Ordering::Acquire));
+        assert!(report.contains("Data race"), "{report}");
+    }
+
+    #[test]
+    fn relaxed_receive_races_under_weak_memory() {
+        let report = failure_with(weak_memory(), message_test(Ordering::Release, Ordering::Relaxed));
+        assert!(report.contains("Data race"), "{report}");
+    }
+
+    #[test]
+    fn release_acquire_publish_passes() {
+        passes_with(weak_memory(), message_test(Ordering::Release, Ordering::Acquire));
+    }
+
+    // Without the emulation, Shuttle runs every atomic as SeqCst, so the Relaxed store orders the
+    // write and this bug goes unseen.
+    #[test]
+    fn relaxed_publish_passes_without_weak_memory() {
+        passes_with(Config::new(), message_test(Ordering::Relaxed, Ordering::Acquire));
+    }
+
+    // Without the emulation, both Relaxed index stores order the slots as SeqCst would, so the bugs
+    // of the two tests below go unseen.
+    #[test]
+    fn ring_with_relaxed_stores_passes_without_weak_memory() {
+        passes_with(Config::new(), ring_test(Ordering::Relaxed, Ordering::Relaxed));
+    }
+
+    struct Node {
+        value: UnsafeCell<u64>,
+    }
+
+    /// A thread makes a node and publishes a pointer to it with `publish`. The main thread reads the
+    /// node's value if it sees the pointer. If `write_after` is set, the main thread makes the node
+    /// and hands it to the thread at the spawn, and the thread writes the value with `get_mut`
+    /// before it publishes the node.
+    fn node_test(publish: Ordering, write_after: bool) -> impl Fn() + Send + Sync + 'static {
+        move || {
+            let slot = Arc::new(AtomicPtr::<Node>::new(std::ptr::null_mut()));
+            let made_here = write_after.then(|| {
+                Box::new(Node {
+                    value: UnsafeCell::new(0),
+                })
+            });
+            let writer = {
+                let slot = Arc::clone(&slot);
+                thread::spawn(move || {
+                    let node = match made_here {
+                        Some(mut node) => {
+                            *node.value.get_mut() = 42;
+                            node
+                        }
+                        None => Box::new(Node {
+                            value: UnsafeCell::new(42),
+                        }),
+                    };
+                    slot.store(Box::into_raw(node), publish);
+                })
+            };
+            let node = slot.load(Ordering::Acquire);
+            if !node.is_null() {
+                assert_eq!(unsafe { (*node).value.get().read() }, 42);
+            }
+            writer.join().unwrap();
+            drop(unsafe { Box::from_raw(slot.load(Ordering::Acquire)) });
+        }
+    }
+
+    // Making a cell writes its value, as in Miri (tests/fail/data_race/alloc_read_race.rs). A
+    // Relaxed store of a pointer to a new node doesn't publish that write.
+    #[test]
+    fn a_new_cell_published_with_relaxed_races() {
+        let report = failure_with(weak_memory(), node_test(Ordering::Relaxed, false));
+        assert!(report.contains("Data race"), "{report}");
+    }
+
+    // A write through `get_mut` isn't checked for a race, but it is recorded, so the read of a task
+    // that a Relaxed store didn't order after it races with it.
+    #[test]
+    fn a_get_mut_write_published_with_relaxed_races() {
+        let report = failure_with(weak_memory(), node_test(Ordering::Relaxed, true));
+        assert!(report.contains("Data race"), "{report}");
+        assert!(report.contains("an earlier write in task 1"), "{report}");
+    }
+
+    #[test]
+    fn a_new_cell_published_with_release_passes() {
+        passes_with(weak_memory(), node_test(Ordering::Release, false));
+        passes_with(weak_memory(), node_test(Ordering::Release, true));
+    }
+
+    #[test]
+    fn ring_with_release_stores_passes_under_weak_memory() {
+        passes_with(weak_memory(), ring_test(Ordering::Release, Ordering::Release));
+    }
+
+    // The consumer can read a slot before the producer's write to it is visible.
+    #[test]
+    fn ring_with_relaxed_publish_races() {
+        let report = failure_with(weak_memory(), ring_test(Ordering::Relaxed, Ordering::Release));
+        assert!(report.contains("Data race"), "{report}");
+        assert!(report.contains("a read in task"), "{report}");
+    }
+
+    // The producer can overwrite a slot that the consumer's read isn't ordered before.
+    #[test]
+    fn ring_with_relaxed_free_races() {
+        let report = failure_with(weak_memory(), ring_test(Ordering::Release, Ordering::Relaxed));
+        assert!(report.contains("Data race"), "{report}");
+        assert!(report.contains("a write in task"), "{report}");
+    }
+}

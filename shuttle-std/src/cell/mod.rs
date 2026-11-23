@@ -18,8 +18,10 @@
 //! execution fails with the report when it ends, and so it does after a violation whose own panic
 //! the code catches.
 //!
-//! Every atomic operation orders memory as SeqCst does, so a race that a too-weak ordering causes
-//! isn't reported.
+//! With the `weak-memory` feature and [`Config::weak_memory`](shuttle_engine::Config) set, the
+//! atomics order memory only as much as their orderings say. A non-atomic access that a too-weak
+//! ordering leaves unordered is then a data race here. Without the emulation, every atomic
+//! operation orders memory as SeqCst does.
 //!
 //! ```
 //! use shuttle_std::cell::UnsafeCell;

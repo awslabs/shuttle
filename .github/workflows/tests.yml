@@ -70,7 +70,7 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@nextest
       - name: cargo nextest
-        run: cargo nextest run --release --workspace --features checked-cell
+        run: cargo nextest run --release --workspace --features checked-cell,weak-memory
       - name: cargo test --doc
         run: cargo test --release --doc -p shuttle-std --features checked-cell
 
@@ -103,6 +103,8 @@ jobs:
         run: cargo clippy --all-targets --features weak-memory -- -D clippy::all
       - name: clippy (checked-cell)
         run: cargo clippy --all-targets --features checked-cell -- -D clippy::all
+      - name: clippy (checked-cell, weak-memory)
+        run: cargo clippy --all-targets --features checked-cell,weak-memory -- -D clippy::all
 
   docs:
     name: Docs
