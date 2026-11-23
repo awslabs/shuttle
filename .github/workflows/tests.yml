@@ -29,6 +29,8 @@ jobs:
         run: cargo nextest run --release --workspace
       - name: cargo test --doc
         run: cargo test --release --doc --workspace
+      - name: cargo check shuttle_enabler --features shuttle
+        run: cargo check -p shuttle_enabler --features shuttle
 
   test-annotation:
     env:
