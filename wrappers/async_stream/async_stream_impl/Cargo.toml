@@ -8,7 +8,9 @@ description = "Shuttle's internal implementation of the `async-stream` crate. Do
 repository = "https://github.com/awslabs/shuttle"
 
 [dependencies]
-async-stream-impl = { version = "0.3" }
+# 0.3.6 is the first release whose macros add the labeled `break` that the SAFETY comment in
+# `yielder.rs` relies on.
+async-stream-impl = { version = "0.3.6" }
 futures-core = "0.3"
 pin-project-lite = "0.2"
 shuttle = { path = "../../../shuttle", version = "<0.10" }

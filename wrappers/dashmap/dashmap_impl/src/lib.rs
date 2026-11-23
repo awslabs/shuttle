@@ -18,18 +18,19 @@
 //!
 //! # Unsafe usage
 //!
-//! Unsafe is used in two specific places, each matching patterns used by
-//! real dashmap and the standard library:
+//! Unsafe is used in two places. The `SAFETY` comment at each one says what
+//! it needs and why that holds:
 //!
-//! - **`Send`/`Sync` impls** on `DashMap`, `Ref`, and `RefMut`: the inner
-//!   `RwLockReadGuard`/`RwLockWriteGuard` may not auto-derive these traits.
-//!   We manually assert them with the same bounds as real dashmap.
+//! - **`Sync` impl** on `DashMap`, and **`Send`/`Sync` impls** on `Ref` and
+//!   `RefMut`. The guards that `Ref` and `RefMut` hold are not `Send`, and
+//!   `DashMap` gets narrower bounds than the compiler would give it.
 //!
-//! - **Pointer casts in `Iter::next` and `IterMut::next`**: iterator items
-//!   hold references into the `HashMap` that must outlive the `next()` call.
-//!   The `RwLockWriteGuard` (owned by the iterator struct) keeps the `HashMap` alive
-//!   for the iterator's lifetime `'a`, so extending the references to `'a` is
-//!   sound. `IterMut` visits each key exactly once, preventing mutable aliasing.
+//! - **Pointer casts in `Iter::next` and `IterMut::next`**, which make the
+//!   items' references live for the map's borrow `'a`. These casts are not
+//!   sound. The lock is a field of the iterator, which can be dropped while
+//!   its items are still in use. `IterMut` also gives two items `&mut` to one
+//!   value if two clones of the keys find the same entry, and under Stacked
+//!   Borrows its `get_mut` makes the key pointer invalid before the cast.
 
 use deterministic_collections::HashMap;
 use shuttle::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -46,8 +47,33 @@ pub struct DashMap<K, V> {
     inner: RwLock<HashMap<K, V>>,
 }
 
-// SAFETY: RwLock provides the synchronization. These match real DashMap's bounds.
-unsafe impl<K: Send, V: Send> Send for DashMap<K, V> {}
+// `DashMap<K, V>` is `Send` when `K` and `V` are, without an `unsafe impl` of its own, because its
+// only field, a Shuttle `RwLock<HashMap<K, V>>`, is `Send` then. This checks that it stays so, for
+// every `K: Send` and `V: Send`.
+const _: () = {
+    const fn assert_send<T: Send + ?Sized>() {}
+    #[allow(dead_code)]
+    const fn dashmap_is_send<K: Send, V: Send>() {
+        assert_send::<DashMap<K, V>>();
+    }
+};
+
+// SAFETY:
+// In order for `DashMap<K, V>` to be `Sync` when `K` and `V` are `Send + Sync`, we need to ensure:
+// * Threads that share a `&DashMap` can't race on the map.
+// * The keys and values that they share are `Sync`, and the ones that they move between them are
+//   `Send`.
+//
+// Every method reaches the map through `inner`, which lets one writer or several readers in at a
+// time. Shuttle's `RwLock<T>` is `Sync` when `T` is `Send`, so `inner` is `Sync` here.
+// The first property holds only for the threads that Shuttle runs. Shuttle's `RwLock` is not sound
+// when two OS threads share it (see its `Sync` impl), so neither is a `DashMap` that two OS threads
+// share.
+// Readers share `&K` and `&V`, and `insert` and `remove` move keys and values between threads. The
+// bounds ask for `Sync` and `Send` for both.
+// The compiler would make `DashMap` `Sync` for only `K: Send` and `V: Send`, because Shuttle's
+// `RwLock<T>` asks only for `T: Send`. This impl narrows the bounds to those of `std::sync::RwLock`
+// and the real `DashMap`. The `Send` impl of `Ref` relies on these bounds.
 unsafe impl<K: Send + Sync, V: Send + Sync> Sync for DashMap<K, V> {}
 
 impl<K: std::fmt::Debug, V: std::fmt::Debug> std::fmt::Debug for DashMap<K, V> {
@@ -351,8 +377,42 @@ pub struct Ref<'a, K, V> {
     key: K,
 }
 
-// SAFETY: the RwLock provides synchronization. These match real DashMap's Ref bounds.
+// SAFETY:
+// In order for `Ref<K, V>` to be `Send` when `K` and `V` are, we need to ensure:
+// * The read guard in `guard` is released on the OS thread that took it. std's
+//   `RwLockReadGuard`, which Shuttle's guard holds, is not `Send` for this reason.
+// * The thread that gets the `Ref` can use the `key` it owns, and the `&K` and `&V` that it gives
+//   out.
+//
+// Shuttle runs all the threads of an execution on one OS thread. So a `Ref` that moves to another
+// Shuttle thread is still dropped on the OS thread that took the guard. This does not hold if safe
+// code sends the `Ref` to a thread that Shuttle doesn't run, such as one from `std::thread::spawn`.
+// Shuttle's own primitives make the same assumption, for example the `Sync` impl of
+// `shuttle::sync::RwLock`.
+// `key` is a clone that the `Ref` owns, and `K: Send` lets it move. The `&K` and `&V` point into the
+// map. Another task can read them at the same time only if it takes a read lock of its own. The
+// task that sent the `Ref` can't do that while the `Ref` lives. Shuttle's `RwLock` still counts that
+// task as the holder, so `read` panics there and `try_read` fails. Other tasks need a `&DashMap` to
+// take a lock. A `&DashMap` can move to another thread only if `DashMap` is `Sync`, and that needs
+// `K: Sync` and `V: Sync`.
+// The second property does not hold in two cases:
+// * A task that `shuttle::future::spawn_local` starts needs no `Send`, so it can hold a map that is
+//   not `Sync`, for example through an `Rc` or a `&'static`. It can take its own read lock while
+//   another thread holds the `Ref`. Then the two threads share `&V` even if `V` is not `Sync`, for
+//   example a `Cell<u64>`.
+// * The items of `iter` and `iter_mut` can outlive the lock of their iterator (see `Iter::next`).
+// The real `Ref` is `Send` when `K` and `V` are `Sync`, so these bounds differ from it.
 unsafe impl<K: Send, V: Send> Send for Ref<'_, K, V> {}
+
+// SAFETY:
+// In order for `Ref<K, V>` to be `Sync` when `K` and `V` are, we need to ensure:
+// * Threads that share a `&Ref` only read through it, and what they read is `Sync`.
+//
+// Every method of `Ref` takes `&self` and gives out `&K` or `&V`: `key` from the `key` field, and
+// `value` through the read guard, which gives `&HashMap<K, V>`. `K` and `V` are `Sync`, so threads
+// can share these. The guard's other fields, the `&RwLock` and the task id, are used only when the
+// guard is dropped, which needs the `Ref` itself. The compiler doesn't derive this impl, because the
+// guard's `&RwLock` is `Sync` only when the map is `Send`.
 unsafe impl<K: Sync, V: Sync> Sync for Ref<'_, K, V> {}
 
 impl<K: Eq + Hash, V> Ref<'_, K, V> {
@@ -384,8 +444,30 @@ pub struct RefMut<'a, K, V> {
     key: K,
 }
 
-// SAFETY: the RwLock provides synchronization. These match real DashMap's RefMut bounds.
+// SAFETY:
+// In order for `RefMut<K, V>` to be `Send` when `K` and `V` are, we need to ensure:
+// * The write guard in `guard` is released on the OS thread that took it. std's
+//   `RwLockWriteGuard`, which Shuttle's guard holds, is not `Send` for this reason.
+// * The thread that gets the `RefMut` can use the `key` it owns, and the `&K`, `&V` and `&mut V`
+//   that it gives out.
+//
+// The first property holds as for `Ref`, with the same exception for threads that Shuttle doesn't
+// run. The `RefMut` holds the write lock, so no other task can read or write the map while it lives,
+// also a task from `spawn_local`. The items of `iter` and `iter_mut` are the exception, because they
+// can outlive the lock of their iterator (see `Iter::next`). So the thread that gets the `RefMut`
+// has the only access to the map, as with a `&mut HashMap<K, V>`, which is `Send` when `K` and `V`
+// are.
+// The real `RefMut` is `Send` when `K` and `V` are `Sync`, so these bounds differ from it.
 unsafe impl<K: Send, V: Send> Send for RefMut<'_, K, V> {}
+
+// SAFETY:
+// In order for `RefMut<K, V>` to be `Sync` when `K` and `V` are, we need to ensure:
+// * Threads that share a `&RefMut` only read through it, and what they read is `Sync`.
+//
+// The methods of `RefMut` that take `&self` (`key`, `value`, `pair` and `deref`) give out `&K` and
+// `&V`. The ones that give out `&mut V` take `&mut self`, which a thread that shares a `&RefMut`
+// doesn't have. `K` and `V` are `Sync`, so threads can share the `&K` and `&V`. As for `Ref`, the
+// guard's other fields are used only when the guard is dropped.
 unsafe impl<K: Sync, V: Sync> Sync for RefMut<'_, K, V> {}
 
 impl<K: Eq + Hash, V> RefMut<'_, K, V> {
@@ -588,10 +670,18 @@ impl<'a, K: Eq + Hash, V> Iterator for Iter<'a, K, V> {
         let i = self.index;
         self.index += 1;
         let (k, v) = self.guard.get_key_value(&self.keys[i]).unwrap();
-        // SAFETY: the references are valid for 'a because the RwLockReadGuard
-        // (which keeps the HashMap alive) lives for 'a in this struct.
-        let k: &'a K = unsafe { &*(k as *const K) };
-        let v: &'a V = unsafe { &*(v as *const V) };
+
+        // SAFETY:
+        // In order for the casts to be safe, we need to ensure:
+        // * The key and the value stay in the map, and nobody changes them, for as long as the item
+        //   can be used, which is all of `'a`.
+        //
+        // This does not hold. The read lock that keeps writers out is `guard`, a field of the
+        // iterator, and the iterator can be dropped before `'a` ends. Safe code can then take the
+        // write lock, with `get_mut`, `insert` or `remove`, and change or drop the value while it
+        // still holds the item. The real dashmap gives each item a clone of an `Arc` that holds the
+        // guard.
+        let (k, v): (&'a K, &'a V) = unsafe { (&*(k as *const K), &*(v as *const V)) };
         Some(RefMulti { key: k, value: v })
     }
 }
@@ -615,10 +705,26 @@ impl<'a, K: Eq + Hash, V> Iterator for IterMut<'a, K, V> {
         self.index += 1;
         let k = self.guard.get_key_value(&self.keys[i]).unwrap().0 as *const K;
         let v = self.guard.get_mut(&self.keys[i]).unwrap() as *mut V;
-        // SAFETY: guard keeps HashMap alive for 'a. Each key is visited
-        // exactly once, so no mutable aliasing occurs.
-        let k: &'a K = unsafe { &*k };
-        let v: &'a mut V = unsafe { &mut *v };
+
+        // SAFETY:
+        // In order for the casts to be safe, we need to ensure:
+        // * `k` and `v` are still valid pointers when they are cast.
+        // * The key and the value stay in the map, and nobody else uses them, for as long as the
+        //   item can be used, which is all of `'a`.
+        // * No two items of the iterator point to the same value.
+        //
+        // None of these hold.
+        // The first fails under Stacked Borrows. `k` comes from a shared borrow of the entry. The
+        // `get_mut` after it makes a `&mut` to the same entry, and under Stacked Borrows that
+        // `&mut` makes `k` invalid. Miri reports undefined behavior at the cast of `k` on the first
+        // call, with correct keys and with the iterator alive. Tree Borrows accepts it.
+        // The second fails as in `Iter::next`: the write lock is `guard`, a field of the iterator,
+        // which can be dropped while its items are still in use.
+        // The third rests on `keys` holding each key of the map once. `iter_mut` fills it with
+        // clones of the map's keys, and `next` looks up each clone. `Clone`, `Eq` and `Hash` are
+        // safe traits, so their impls can be wrong. If two clones find the same entry, two items
+        // hold `&mut` to its value.
+        let (k, v): (&'a K, &'a mut V) = unsafe { (&*k, &mut *v) };
         Some(RefMutMulti { key: k, value: v })
     }
 }

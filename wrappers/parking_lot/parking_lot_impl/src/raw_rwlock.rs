@@ -86,9 +86,26 @@ impl RawRwLock {
     }
 }
 
-// Safety: exclusivity is guaranteed because a writer acquires all `MAX_READERS` permits of `sem`,
-// which cannot succeed while any reader holds a permit, and a reader cannot acquire a permit while a
-// writer holds them all.
+// SAFETY:
+// In order for this impl to be safe, we need to ensure:
+// * An exclusive lock can't be taken while an exclusive or a shared lock exists.
+// * A shared lock can't be taken while an exclusive lock exists.
+// * With `send_guard`, the `unlock_*` methods work from another thread than the one that locked.
+//
+// The lock is one `BatchSemaphore` with `MAX_READERS` permits, which `INIT` makes. A shared lock
+// takes 1 permit and an exclusive lock takes all `MAX_READERS`. lock_api gives back what a lock took,
+// through the `unlock_*` methods, only for a lock that is held, as their `# Safety` sections ask. So
+// the permits that are out are what the held locks took.
+// An exclusive lock can be granted only when all `MAX_READERS` permits are free, which is when no
+// lock of any kind is held. A shared lock needs one free permit, and while an exclusive lock is held
+// none are free. So both properties hold.
+// The third property holds as for `RawMutex`: the semaphore doesn't care which Shuttle task gives
+// permits back. Also as for `RawMutex`, it holds only for the threads that Shuttle runs. A guard
+// that `send_guard` lets safe code move into a thread that Shuttle doesn't run, for example one
+// from `std::thread::scope`, uses the semaphore's `RefCell` from that OS thread when it is dropped.
+// As for `RawMutex`, the first two properties do not hold once the semaphore is closed: then
+// `lock_shared` and `lock_exclusive` return without permits if the thread is panicking (see
+// `RawRwLock::acquire`).
 unsafe impl lock_api::RawRwLock for RawRwLock {
     #[allow(clippy::declare_interior_mutable_const)]
     const INIT: RawRwLock = RawRwLock {
@@ -129,8 +146,15 @@ unsafe impl lock_api::RawRwLock for RawRwLock {
     }
 }
 
-// Safety: Shuttle's semaphore is strictly fair, so a plain `release` already hands permits to the
-// next eligible waiter in FIFO order. Fair unlocking is therefore identical to a normal unlock.
+// SAFETY:
+// In order for this impl to be safe, we need to ensure:
+// * The fair unlocks keep the lock exclusive, as the plain ones do.
+//
+// `unlock_shared_fair` and `unlock_exclusive_fair` give back the same permits as `unlock_shared` and
+// `unlock_exclusive`. The semaphore is strictly fair, so a plain release already grants the permits
+// to the waiters in queue order. It passes over only an upgradable request that it can't grant yet
+// (see `unblock_waiters_from_front` in `BatchSemaphore`). The default `bump_shared` and
+// `bump_exclusive` unlock fairly and then lock again, so they keep the lock exclusive too.
 unsafe impl lock_api::RawRwLockFair for RawRwLock {
     unsafe fn unlock_shared_fair(&self) {
         self.sem.release(1);
@@ -141,8 +165,15 @@ unsafe impl lock_api::RawRwLockFair for RawRwLock {
     }
 }
 
-// Safety: downgrading only ever releases permits, so it cannot violate exclusivity; the caller
-// still holds a shared permit afterwards.
+// SAFETY:
+// In order for this impl to be safe, we need to ensure:
+// * `downgrade` turns an exclusive lock into a shared one, and no other context can take an
+//   exclusive lock in between.
+//
+// The caller holds an exclusive lock, as the `# Safety` section of `downgrade` asks, so it holds all
+// `MAX_READERS` permits. `downgrade` gives back all but one in one release, so the caller then holds
+// what a shared lock holds. One permit stays out the whole time, so an exclusive lock, which needs
+// all of them, can't be granted in between.
 unsafe impl lock_api::RawRwLockDowngrade for RawRwLock {
     unsafe fn downgrade(&self) {
         // Exclusive holds all `MAX_READERS` permits; a shared lock holds 1. Release the difference,
@@ -152,9 +183,21 @@ unsafe impl lock_api::RawRwLockDowngrade for RawRwLock {
     }
 }
 
-// Safety: an upgradable lock holds a strict majority of the permits, so it excludes writers (which
-// need all of them) and other upgradable readers (which would need another majority), while still
-// permitting plain shared readers.
+// SAFETY:
+// In order for this impl to be safe, we need to ensure:
+// * An upgradable lock excludes exclusive locks and other upgradable locks.
+// * `upgrade` and `try_upgrade` turn an upgradable lock into an exclusive one, and no other context
+//   can take an exclusive or an upgradable lock in between.
+//
+// An upgradable lock takes `UPGRADABLE_READER` permits, which is more than half of `MAX_READERS`. An
+// exclusive lock needs all of them, and a second upgradable lock would need more than half again, so
+// neither can be granted while it is held.
+// `upgrade` and `try_upgrade` keep the `UPGRADABLE_READER` permits that the caller holds and take the
+// rest (see `BatchSemaphore::upgrade` and `BatchSemaphore::try_upgrade`). So the caller holds more
+// than half of the permits the whole time, and all of them at the end. The caller holds an
+// upgradable lock, as their `# Safety` sections ask.
+// As for `RawRwLock`, the properties do not hold once the semaphore is closed: then
+// `lock_upgradable` and `upgrade` return without the permits if the thread is panicking.
 unsafe impl lock_api::RawRwLockUpgrade for RawRwLock {
     fn lock_upgradable(&self) {
         trace!("acquiring parking_lot rwlock {:p} (upgradable)", self);
@@ -192,8 +235,16 @@ unsafe impl lock_api::RawRwLockUpgrade for RawRwLock {
     }
 }
 
-// Safety: both conversions only *release* permits, keeping at least one, so the lock is never left
-// unheld mid-transition and no illegal overlap is possible.
+// SAFETY:
+// In order for this impl to be safe, we need to ensure:
+// * `downgrade_upgradable` turns an upgradable lock into a shared one, and
+//   `downgrade_to_upgradable` turns an exclusive lock into an upgradable one.
+// * No other context can take a lock that conflicts with the caller's in between.
+//
+// The caller holds the old lock, as the `# Safety` sections ask. Both methods only give back
+// permits, in one release, and keep what the new lock holds: 1 permit for a shared lock, and
+// `UPGRADABLE_READER` for an upgradable one. What the caller holds never drops below what the new
+// lock needs, so no lock that conflicts with the new one can be granted in between.
 unsafe impl lock_api::RawRwLockUpgradeDowngrade for RawRwLock {
     unsafe fn downgrade_upgradable(&self) {
         // Upgradable (`UPGRADABLE_READER`) -> shared (1). Keep one permit so no writer can slip in
@@ -213,7 +264,14 @@ unsafe impl lock_api::RawRwLockUpgradeDowngrade for RawRwLock {
     }
 }
 
-// Safety: fair unlocking is identical to normal unlocking for a strictly fair semaphore.
+// SAFETY:
+// In order for this impl to be safe, we need to ensure:
+// * `unlock_upgradable_fair` keeps the lock exclusive, as `unlock_upgradable` does.
+//
+// It gives back the same `UPGRADABLE_READER` permits as `unlock_upgradable`. The semaphore is
+// strictly fair, so a plain release already grants them to the waiters in queue order, and passes
+// over only an upgradable request that it can't grant yet (see `RawRwLockFair` above). The default
+// `bump_upgradable` unlocks fairly and then locks again.
 unsafe impl lock_api::RawRwLockUpgradeFair for RawRwLock {
     unsafe fn unlock_upgradable_fair(&self) {
         self.sem.release(UPGRADABLE_READER);
