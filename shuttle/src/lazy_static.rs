@@ -60,8 +60,9 @@ impl<T: Sync> Lazy<T> {
         // We implement lazy statics by using a `Once` to mediate initialization of the static, just
         // as the real implementation does. If two threads race on initializing the static, they
         // will race on the `Once::call_once`, and only one of them will initialize the static. Once
-        // it's initialized, all future accesses can bypass the `Once` entirely and just access the
-        // storage cell.
+        // it's initialized, later accesses still call the completed `Once`, which takes no
+        // scheduling point. It makes the accessing task inherit the clock of the task that ran the
+        // initializer, as the Acquire load on the fast path of the real implementation does.
 
         let initialize = ExecutionState::with(|state| state.get_storage::<_, DropGuard<T>>(self).is_none());
 
@@ -73,6 +74,11 @@ impl<T: Sync> Lazy<T> {
                     state.init_storage(self, DropGuard::new(value, state.config.silence_warnings))
                 });
             });
+        } else {
+            // The storage is set inside the closure above, in the same step that completes the
+            // `Once`, so the `Once` is complete here and doesn't run the closure.
+            self.cell
+                .call_once(|| unreachable!("a lazy static whose value exists was initialized"));
         }
 
         // At this point we're guaranteed that a value exists for this static, so read it

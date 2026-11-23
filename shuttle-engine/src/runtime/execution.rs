@@ -212,6 +212,14 @@ impl Execution {
                 TeardownKind::Finished
             };
             let teardown_failure = ExecutionState::tear_down(kind);
+            // A violation of a checked `UnsafeCell` that couldn't panic, because the panic that fails
+            // the execution was unwinding.
+            #[cfg(feature = "checked-cell")]
+            if failure.is_some() || teardown_failure.is_some() {
+                if let Some(report) = ExecutionState::with(|state| state.checked_cell.take_unraised()) {
+                    eprintln!("a checked UnsafeCell also found a violation while the panic unwound:\n{report}");
+                }
+            }
             match failure {
                 Some(Failure::Unwind(payload)) => panic::resume_unwind(payload),
                 Some(Failure::Panic(message)) => panic::panic_any(message),
@@ -228,7 +236,16 @@ impl Execution {
                         panic::resume_unwind(payload);
                     }
                     Some(TeardownFailure::Panic(message)) => panic::panic_any(message),
-                    None => {}
+                    None => {
+                        // A violation of a checked `UnsafeCell` whose panic couldn't fail the
+                        // execution, because a panic was unwinding or the code caught it.
+                        #[cfg(feature = "checked-cell")]
+                        if let Some(report) = ExecutionState::with(|state| state.checked_cell.take_report()) {
+                            persist_failure(config);
+                            eprintln!("test failed with a violation of a checked UnsafeCell that a caught or unwinding panic hid");
+                            panic::panic_any(report);
+                        }
+                    }
                 },
             }
         });
@@ -488,6 +505,10 @@ pub struct ExecutionState {
     // the clocks of the weak-memory emulation of atomics (see `weak_memory`)
     #[cfg(feature = "weak-memory")]
     weak_memory: crate::runtime::weak_memory::WeakMemoryState,
+
+    // the allocations of the checked `UnsafeCell`s (see `checked_cell`)
+    #[cfg(feature = "checked-cell")]
+    checked_cell: crate::runtime::checked_cell::CheckedCellState,
 
     // The `Span` which the `ExecutionState` was created under. Will be the parent of all `Task` `Span`s
     pub top_level_span: Span,
@@ -810,6 +831,8 @@ impl ExecutionState {
             has_cleaned_up: false,
             #[cfg(feature = "weak-memory")]
             weak_memory: crate::runtime::weak_memory::WeakMemoryState::new(),
+            #[cfg(feature = "checked-cell")]
+            checked_cell: crate::runtime::checked_cell::CheckedCellState::new(),
             top_level_span: tracing::Span::current(),
             top_level_dispatch,
             top_level_dispatch_global_ptr,
@@ -2102,6 +2125,21 @@ impl ExecutionState {
         let id = self.current_task.id().expect("there is no current task");
         let clock = &mut self.tasks.get_mut(id.0).unwrap().clock;
         (id, clock, &mut self.weak_memory)
+    }
+
+    /// The current task's id and clock, and the allocations of the checked `UnsafeCell`s. `None` if
+    /// there is no current task, as between the steps of teardown.
+    #[cfg(feature = "checked-cell")]
+    pub fn checked_cell(
+        &mut self,
+    ) -> Option<(
+        TaskId,
+        &mut VectorClock,
+        &mut crate::runtime::checked_cell::CheckedCellState,
+    )> {
+        let id = self.current_task.id()?;
+        let clock = &mut self.tasks.get_mut(id.0)?.clock;
+        Some((id, clock, &mut self.checked_cell))
     }
 
     /// Set the number of steps used, with respect to the step bound, to 0 (see

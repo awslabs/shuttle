@@ -58,6 +58,22 @@ jobs:
       - name: cargo nextest
         run: cargo nextest run --release --workspace --features weak-memory
 
+  test-checked-cell:
+    env:
+      RUST_LOG: off
+    name: Tests (checked-cell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      - name: cargo nextest
+        run: cargo nextest run --release --workspace --features checked-cell,weak-memory
+      - name: cargo test --doc
+        run: cargo test --release --doc -p shuttle-std --features checked-cell
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -85,6 +101,10 @@ jobs:
         run: cargo clippy --all-targets --features annotation -- -D clippy::all
       - name: clippy (weak-memory)
         run: cargo clippy --all-targets --features weak-memory -- -D clippy::all
+      - name: clippy (checked-cell)
+        run: cargo clippy --all-targets --features checked-cell -- -D clippy::all
+      - name: clippy (checked-cell, weak-memory)
+        run: cargo clippy --all-targets --features checked-cell,weak-memory -- -D clippy::all
 
   docs:
     name: Docs
