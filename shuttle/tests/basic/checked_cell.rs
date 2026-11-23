@@ -1,6 +1,8 @@
-//! Tests for the checked `UnsafeCell` of `shuttle::cell`, with its data race checks.
+//! Tests for the checked `UnsafeCell` of `shuttle::cell`, with its Tree Borrows and data race
+//! checks. Five of them are ports of Miri's tests (tests/fail/tree_borrows and
+//! tests/fail/both_borrows in <https://github.com/rust-lang/miri>), as their comments say.
 
-use shuttle::cell::{Ptr, UnsafeCell};
+use shuttle::cell::{Ptr, PtrRef, PtrRefMut, UnsafeCell};
 use shuttle::scheduler::{PctScheduler, RandomScheduler};
 use shuttle::sync::atomic::{AtomicUsize, Ordering};
 use shuttle::sync::{Arc, Mutex};
@@ -63,6 +65,155 @@ struct Shared<T>(UnsafeCell<T>);
 // SAFETY: the tests are about the accesses this allows.
 unsafe impl<T: Send> Sync for Shared<T> {}
 
+// Miri's tests/fail/tree_borrows/alternate-read-write.rs: Tree Borrows tolerates foreign reads of
+// a mutable reference before its first write, but not after.
+#[test]
+fn alternate_read_write() {
+    let report = failure(|| {
+        let cell = UnsafeCell::new(0u8);
+        let mut x = unsafe { cell.get().as_mut() };
+        let mut y = unsafe { PtrRefMut::as_ptr(&mut x).as_mut() };
+        // A foreign read for y, which stays Reserved.
+        let _val = *x;
+        // So y can be written through. This makes it Unique.
+        *y += 1;
+        // This foreign read makes y Frozen.
+        let _val = *x;
+        *y += 1;
+    });
+    assert!(report.contains("a write access through tag #3"), "{report}");
+    assert!(report.contains("The tag has permission Frozen"), "{report}");
+    assert!(report.contains("It became Frozen"), "{report}");
+}
+
+// Miri's tests/fail/tree_borrows/parent_read_freezes_raw_mut.rs: a read through the parent freezes
+// a mutable reference and the raw pointers made from it.
+#[test]
+fn parent_read_freezes_raw_mut() {
+    let report = failure(|| {
+        let cell = UnsafeCell::new(6u8);
+        let mut mref = unsafe { cell.get().as_mut() };
+        let ptr = PtrRefMut::as_ptr(&mut mref);
+        unsafe { ptr.write(0) };
+        assert_eq!(unsafe { cell.get().read() }, 0);
+        unsafe { ptr.write(0) };
+    });
+    assert!(report.contains("a write access through tag #2"), "{report}");
+    assert!(report.contains("permission Frozen"), "{report}");
+}
+
+// Miri's tests/fail/tree_borrows/frozen-lazy-write-to-surrounding.rs: a shared reference to a
+// zero-sized field still gets a tag, which is Frozen on the bytes around it.
+#[test]
+fn zero_sized_reference_freezes_the_bytes_around_it() {
+    let report = failure(|| {
+        let pair = UnsafeCell::new(((), 1i32));
+        let x = unsafe { pair.get().project(|p| &raw mut (*p).0).as_ref() };
+        let ptr = PtrRef::as_ptr(&x).cast::<i32>();
+        unsafe { ptr.write(0) };
+    });
+    assert!(report.contains("a write access through tag #2"), "{report}");
+    assert!(report.contains("permission Frozen"), "{report}");
+}
+
+// Two mutable references made from one raw pointer: a write through one disables the other.
+#[test]
+fn aliasing_mutable_references() {
+    let report = failure(|| {
+        let cell = UnsafeCell::new(0u32);
+        let p = cell.get();
+        let mut a = unsafe { p.as_mut() };
+        let mut b = unsafe { p.as_mut() };
+        *a = 1;
+        *b = 2;
+    });
+    assert!(report.contains("a write access through tag #3"), "{report}");
+    assert!(report.contains("permission Disabled"), "{report}");
+    assert!(report.contains("a foreign write through tag #2"), "{report}");
+}
+
+// Miri's tests/fail/both_borrows/shr_frozen_violation1.rs, in short: a write through a shared
+// reference.
+#[test]
+fn write_through_shared_reference() {
+    let report = failure(|| {
+        let cell = UnsafeCell::new(0u32);
+        let r = unsafe { cell.get().as_ref() };
+        unsafe { PtrRef::as_ptr(&r).write(1) };
+    });
+    assert!(report.contains("a write access through tag #2"), "{report}");
+    assert!(report.contains("permission Frozen"), "{report}");
+}
+
+// A write through the cell's raw pointer disables a shared reference made before it.
+#[test]
+fn read_through_disabled_shared_reference() {
+    let report = failure(|| {
+        let cell = UnsafeCell::new(0u32);
+        let r = unsafe { cell.get().as_ref() };
+        unsafe { cell.get().write(1) };
+        let _val = *r;
+    });
+    assert!(report.contains("a read access through tag #2"), "{report}");
+    assert!(report.contains("permission Disabled"), "{report}");
+}
+
+// A write through the cell's raw pointer disables a mutable reference made before it.
+#[test]
+fn raw_write_disables_reference() {
+    let report = failure(|| {
+        let cell = UnsafeCell::new(0u32);
+        let mut a = unsafe { cell.get().as_mut() };
+        *a = 1;
+        unsafe { cell.get().write(2) };
+        let _val = *a;
+    });
+    assert!(report.contains("a read access through tag #2"), "{report}");
+    assert!(report.contains("permission Disabled"), "{report}");
+}
+
+// What Tree Borrows allows: a foreign read before a mutable reference's first write, several
+// shared references, references to different elements, and a reference made after a raw write.
+#[test]
+fn allowed_accesses() {
+    check_dfs(
+        || {
+            let cell = UnsafeCell::new([0u32; 4]);
+            let p = cell.get().cast::<u32>();
+            let mut a = unsafe { p.as_mut() };
+            assert_eq!(unsafe { p.read() }, 0);
+            *a = 1;
+            drop(a);
+            let r1 = unsafe { p.as_ref() };
+            let r2 = unsafe { p.as_ref() };
+            assert_eq!(*r1 + *r2, 2);
+            unsafe { p.write(3) };
+            let r3 = unsafe { p.as_ref() };
+            assert_eq!(*r3, 3);
+            let mut b = unsafe { p.as_mut() };
+            let mut c = unsafe { p.add(1).as_mut() };
+            *b = 4;
+            *c = 5;
+            *b += 1;
+            assert_eq!(unsafe { cell.get().read() }, [5, 5, 0, 0]);
+            // A foreign read froze b, which can still be read.
+            assert_eq!(*b, 5);
+            // A raw pointer made from a reference outlives it.
+            let raw = {
+                let mut d = unsafe { p.add(3).as_mut() };
+                PtrRefMut::as_ptr(&mut d)
+            };
+            unsafe { raw.write(7) };
+            assert_eq!(unsafe { raw.read() }, 7);
+            // `get_mut` and `into_inner` go through the cell itself.
+            let mut cell = cell;
+            cell.get_mut()[2] = 6;
+            assert_eq!(cell.into_inner(), [5, 5, 6, 7]);
+        },
+        None,
+    );
+}
+
 /// Two fields, at bytes 0..4 and 4..8.
 #[repr(C)]
 struct Pair {
@@ -86,6 +237,23 @@ fn different_fields_dont_race() {
     );
 }
 
+// A write to one field through the cell's raw pointer disables a reference to the whole value only
+// at that field's bytes.
+#[test]
+fn write_to_a_field_disables_only_that_field() {
+    let report = failure(|| {
+        let cell = UnsafeCell::new(Pair { a: 0, b: 0 });
+        let mut whole = unsafe { cell.get().as_mut() };
+        let whole_ptr = PtrRefMut::as_ptr(&mut whole);
+        unsafe { cell.get().project(|p| &raw mut (*p).b).write(2) };
+        unsafe { whole_ptr.project(|p| &raw mut (*p).a).write(1) };
+        let _val = unsafe { whole_ptr.project(|p| &raw mut (*p).b).read() };
+    });
+    assert!(report.contains("a read access through tag #2"), "{report}");
+    assert!(report.contains("at bytes 4..8"), "{report}");
+    assert!(report.contains("permission Disabled"), "{report}");
+}
+
 #[test]
 fn use_after_free() {
     let report = failure(|| {
@@ -104,6 +272,19 @@ fn out_of_bounds() {
         let _val = unsafe { cell.get().cast::<u8>().add(4).read() };
     });
     assert!(report.contains("is out of bounds"), "{report}");
+}
+
+// A reference to a zero-sized value accesses no bytes, so as in Miri, making one out of bounds or
+// after the cell is dropped isn't UB.
+#[test]
+fn zero_sized_reference_out_of_bounds_or_after_free_passes() {
+    passes_random(|| {
+        let pair = UnsafeCell::new(((), 1i32));
+        let p = pair.get().project(|p| unsafe { &raw mut (*p).0 });
+        let _out_of_bounds = unsafe { p.project(|p| p.wrapping_byte_add(8)).as_ref() };
+        drop(pair);
+        let _after_free = unsafe { p.as_ref() };
+    });
 }
 
 struct Counter {
@@ -131,6 +312,16 @@ impl Counter {
     /// Makes the reference before it takes the lock.
     fn increment_reference_first(&self) {
         let mut value = unsafe { self.value.get().as_mut() };
+        let _guard = self.lock.lock().unwrap();
+        *value += 1;
+    }
+
+    /// Keeps the reference after it releases the lock, and uses it again under the lock.
+    fn increment_twice_with_one_reference(&self) {
+        let guard = self.lock.lock().unwrap();
+        let mut value = unsafe { self.value.get().as_mut() };
+        *value += 1;
+        drop(guard);
         let _guard = self.lock.lock().unwrap();
         *value += 1;
     }
@@ -168,6 +359,23 @@ fn reference_made_before_the_lock_races() {
     });
     assert!(report.contains("Data race"), "{report}");
     assert!(report.contains("reference creation"), "{report}");
+}
+
+// Every access is under the lock, so there is no race. But the other task's increment between
+// the two critical sections disables the reference that the first one made.
+#[test]
+fn reference_kept_after_the_unlock_is_ub() {
+    let report = failure(|| {
+        let counter = Arc::new(Counter::new());
+        let other = Arc::clone(&counter);
+        let t = thread::spawn(move || other.increment());
+        counter.increment_twice_with_one_reference();
+        t.join().unwrap();
+        assert_eq!(counter.get(), 3);
+    });
+    assert!(report.contains("Undefined Behavior (Tree Borrows)"), "{report}");
+    assert!(report.contains("permission Disabled"), "{report}");
+    assert!(report.contains("a foreign write"), "{report}");
 }
 
 #[test]

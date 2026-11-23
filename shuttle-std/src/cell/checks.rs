@@ -1,5 +1,6 @@
 //! The hooks through which Shuttle checks the accesses to the value of an `UnsafeCell`. With the
-//! `checked-cell` feature, they apply the data race checks. Without it, they do nothing.
+//! `checked-cell` feature, they apply Tree Borrows and the data race checks. Without it, they do
+//! nothing.
 
 /// An access to a value.
 #[derive(Clone, Copy)]
@@ -47,7 +48,12 @@ mod checked {
         }
     }
 
-    /// The same allocation, `bytes` further on in the value.
+    /// The pointer's tag, for its `Debug` output.
+    pub(in crate::cell) fn tag(track: Option<Track>) -> Option<usize> {
+        track.map(|track| track.prov.tag)
+    }
+
+    /// The same tag, `bytes` further on in the value.
     pub(in crate::cell) fn offset(track: Option<Track>, bytes: usize) -> Option<Track> {
         track.map(|track| Track {
             offset: track.offset.wrapping_add(bytes),
@@ -74,7 +80,7 @@ mod checked {
             if size_of::<T>() != 0 {
                 let _ = ExecutionState::try_with(|state| {
                     if let Some((task, clock, tb)) = state.checked_cell() {
-                        let alloc = tb.new_alloc(size_of::<T>(), std::any::type_name::<T>(), this.created_at);
+                        let alloc = tb.new_alloc(size_of::<T>(), std::any::type_name::<T>(), this.created_at, task);
                         tb.record_init(alloc, task, clock, this.created_at);
                         this.alloc.set((tb.execution, alloc));
                     }
@@ -83,25 +89,26 @@ mod checked {
             this
         }
 
-        /// The cell's allocation in the current execution. The cell is registered at its first use
-        /// in an execution, so a cell that outlives one execution starts over in the next.
-        pub(in crate::cell) fn track<T>(&self) -> Option<Track> {
+        /// The cell's allocation in the current execution, through the cell itself (`root`) or
+        /// through its raw pointer. The cell is registered at its first use in an execution, so a
+        /// cell that outlives one execution starts over in the next.
+        pub(in crate::cell) fn track<T>(&self, root: bool) -> Option<Track> {
             if size_of::<T>() == 0 {
                 return None;
             }
             ExecutionState::try_with(|state| {
-                let (_, _, tb) = state.checked_cell()?;
+                let (task, _, tb) = state.checked_cell()?;
                 let (execution, alloc) = self.alloc.get();
                 let alloc = if execution == tb.execution {
                     alloc
                 } else {
-                    let alloc = tb.new_alloc(size_of::<T>(), std::any::type_name::<T>(), self.created_at);
+                    let alloc = tb.new_alloc(size_of::<T>(), std::any::type_name::<T>(), self.created_at, task);
                     self.alloc.set((tb.execution, alloc));
                     alloc
                 };
                 Some(Track {
                     execution: tb.execution,
-                    prov: Prov { alloc },
+                    prov: if root { Prov::root(alloc) } else { Prov::cell(alloc) },
                     offset: 0,
                 })
             })
@@ -156,6 +163,14 @@ mod checked {
         }
     }
 
+    /// Records that a reference's tag can't be used again.
+    pub(in crate::cell) fn release(track: Option<Track>) {
+        let _ = with_state(track, |tb, _, _, track, _| {
+            tb.release(track.prov);
+            Ok(())
+        });
+    }
+
     /// Checks an access through `track`.
     #[track_caller]
     pub(in crate::cell) fn access<T>(track: Option<Track>, kind: Access, at: &'static Location<'static>) {
@@ -183,16 +198,14 @@ mod checked {
         });
     }
 
-    /// Checks the read that making a reference through `track` does.
+    /// Makes the tag of a new reference through `track`. A reference to a zero-sized `T` gets one
+    /// too, as in Miri, because its pointer can still access the bytes around it.
     #[track_caller]
     pub(in crate::cell) fn retag<T>(
         track: Option<Track>,
         kind: Reference,
         at: &'static Location<'static>,
     ) -> Option<Track> {
-        if size_of::<T>() == 0 {
-            return None;
-        }
         let kind = match kind {
             Reference::Shared => RefKind::Shared,
             Reference::Mut => RefKind::Mut,
@@ -215,6 +228,10 @@ mod unchecked {
     #[derive(Clone, Copy, Debug)]
     pub(in crate::cell) enum Track {}
 
+    pub(in crate::cell) fn tag(_track: Option<Track>) -> Option<usize> {
+        None
+    }
+
     pub(in crate::cell) fn offset(track: Option<Track>, _bytes: usize) -> Option<Track> {
         track
     }
@@ -226,12 +243,14 @@ mod unchecked {
             Self
         }
 
-        pub(in crate::cell) fn track<T>(&self) -> Option<Track> {
+        pub(in crate::cell) fn track<T>(&self, _root: bool) -> Option<Track> {
             None
         }
 
         pub(in crate::cell) fn free(&self) {}
     }
+
+    pub(in crate::cell) fn release(_track: Option<Track>) {}
 
     pub(in crate::cell) fn access<T>(_track: Option<Track>, _kind: Access, _at: &'static Location<'static>) {}
 

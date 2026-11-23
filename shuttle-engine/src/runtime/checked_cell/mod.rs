@@ -1,122 +1,59 @@
-//! Per-execution state of the data race checks of Shuttle's checked `UnsafeCell` (`shuttle::cell`).
+//! Per-execution state of the Tree Borrows and data race checks of Shuttle's checked `UnsafeCell`
+//! (`shuttle::cell`).
 //!
-//! Each checked cell is an allocation here, with the accesses to each range of its bytes. The
-//! cell's API in `shuttle-std` reports each access to the cell's memory, and each reference it
-//! makes, which reads the memory. It panics with the report of the first violation. The race
-//! detection follows Miri's detector for non-atomic accesses (<https://github.com/rust-lang/miri>).
+//! Each checked cell is an allocation here, with a tree of the tags made from it (see `tree`).
+//! The cell's API in `shuttle-std` reports each reference it makes and each access to the cell's
+//! memory, and panics with the report of the first violation. The Tree Borrows rules are a port of
+//! Miri's (<https://github.com/rust-lang/miri>, `src/borrow_tracker/tree_borrows`), and the race
+//! detection follows Miri's detector for non-atomic accesses.
 
+mod perms;
 mod race;
+mod tree;
+
+pub use perms::{AccessKind, Permission};
+pub use tree::TagKind;
 
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::TaskId;
-use race::{AccessRecord, RaceAccess, RaceClocks};
-use std::fmt;
+use race::RaceAccess;
 use std::ops::Range;
 use std::panic::Location;
+use tree::{Access, Tree, CELL, ROOT};
 
-/// The kind of an access.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AccessKind {
-    /// A read.
-    Read,
-    /// A write.
-    Write,
-}
-
-impl fmt::Display for AccessKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AccessKind::Read => write!(f, "read"),
-            AccessKind::Write => write!(f, "write"),
-        }
-    }
-}
-
-/// A pointer's provenance: the allocation it points into.
+/// A pointer's provenance: the allocation it points into and its tag there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Prov {
     /// The allocation, which is one checked cell.
     pub alloc: usize,
+    /// The tag in the allocation's tree.
+    pub tag: usize,
+}
+
+impl Prov {
+    /// The provenance of the cell itself, which `get_mut`, `into_inner` and the cell's `Drop` use.
+    pub fn root(alloc: usize) -> Self {
+        Self { alloc, tag: ROOT }
+    }
+
+    /// The provenance of the cell's raw pointers.
+    pub fn cell(alloc: usize) -> Self {
+        Self { alloc, tag: CELL }
+    }
 }
 
 /// The kind of reference that a retag makes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefKind {
-    /// `&T`.
+    /// `&T`. It starts `Frozen`.
     Shared,
-    /// `&mut T`.
+    /// `&mut T`. It starts `Reserved`.
     Mut,
-}
-
-/// The accesses to the bytes of one checked allocation, in ranges of bytes that have had the same
-/// accesses.
-#[derive(Debug)]
-struct Memory {
-    /// The ranges, sorted by their start. Each one ends where the next starts, and the last ends at
-    /// `size`.
-    locs: Vec<(usize, RaceClocks)>,
-    size: usize,
-}
-
-impl Memory {
-    fn new(size: usize) -> Self {
-        let locs = if size == 0 {
-            Vec::new()
-        } else {
-            vec![(0, RaceClocks::default())]
-        };
-        Self { locs, size }
-    }
-
-    /// Makes sure a range of locations starts at `offset`.
-    fn split_at(&mut self, offset: usize) {
-        if offset >= self.size {
-            return;
-        }
-        if let Err(i) = self.locs.binary_search_by_key(&offset, |(start, _)| *start) {
-            let data = self.locs[i - 1].1.clone();
-            self.locs.insert(i, (offset, data));
-        }
-    }
-
-    fn entry_range(&self, i: usize) -> Range<usize> {
-        self.locs[i].0..self.locs.get(i + 1).map_or(self.size, |(start, _)| *start)
-    }
-
-    /// Checks an access to `range` for a data race, if `check` says so, and records it.
-    fn access(
-        &mut self,
-        range: Range<usize>,
-        record: AccessRecord,
-        check: bool,
-        clock: &VectorClock,
-        alloc: &str,
-    ) -> Result<(), String> {
-        self.split_at(range.start);
-        self.split_at(range.end);
-        let first = self.locs.partition_point(|(start, _)| *start < range.start);
-        let last = self.locs.partition_point(|(start, _)| *start < range.end);
-        for i in first..last {
-            let loc_range = self.entry_range(i);
-            let data = &mut self.locs[i].1;
-            if check {
-                data.access(record, clock).map_err(|race| {
-                    format!(
-                        "Data race on bytes {loc_range:?} of {alloc}: {}. Happens-before orders neither one before the other.\n",
-                        race.describe()
-                    )
-                })?;
-            } else {
-                data.record(record);
-            }
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
 enum AllocSlot {
-    Live { memory: Memory, name: String },
+    Live { tree: Tree, name: String },
     Freed { name: String, by: TaskId },
 }
 
@@ -149,28 +86,26 @@ impl CheckedCellState {
     }
 
     /// Registers a checked cell of `size` bytes, holding a `type_name`, and returns its allocation.
-    pub fn new_alloc(&mut self, size: usize, type_name: &str, created_at: &'static Location<'static>) -> usize {
+    pub fn new_alloc(
+        &mut self,
+        size: usize,
+        type_name: &str,
+        created_at: &'static Location<'static>,
+        task: TaskId,
+    ) -> usize {
         let alloc = self.allocs.len();
         self.allocs.push(AllocSlot::Live {
-            memory: Memory::new(size),
+            tree: Tree::new(size, created_at, task),
             name: format!("the `UnsafeCell<{type_name}>` made at {created_at}"),
         });
         alloc
     }
 
-    /// Records the write of the value that a cell is made with, by the current task, at every
-    /// location. Miri counts the allocation the same way.
+    /// Records the write of the value that a cell is made with, by the current task.
     pub fn record_init(&mut self, alloc: usize, task: TaskId, clock: &mut VectorClock, at: &'static Location<'static>) {
         let time = tick(task, clock);
-        if let AllocSlot::Live { memory, .. } = &mut self.allocs[alloc] {
-            for (_, data) in &mut memory.locs {
-                data.record(AccessRecord {
-                    task,
-                    time,
-                    kind: RaceAccess::Write,
-                    at,
-                });
-            }
+        if let AllocSlot::Live { tree, .. } = &mut self.allocs[alloc] {
+            tree.record_init(task, time, at);
         }
     }
 
@@ -193,40 +128,28 @@ impl CheckedCellState {
         self.unraised.take()
     }
 
-    /// Checks an access to `range` of the allocation of `prov` and records it. `what` names the
-    /// access in a report, and `races` says whether to check it for a data race.
-    #[allow(clippy::too_many_arguments)]
-    fn check(
-        &mut self,
-        task: TaskId,
-        clock: &mut VectorClock,
-        prov: Prov,
-        range: Range<usize>,
-        kind: RaceAccess,
-        what: &str,
-        races: bool,
-        at: &'static Location<'static>,
-    ) -> Result<(), String> {
-        let time = tick(task, clock);
+    /// The tree of a live allocation, and the report of a violation that a freed or out-of-bounds
+    /// access is. An empty range is never out of bounds, because it accesses no bytes.
+    fn tree(&mut self, prov: Prov, range: &Range<usize>, what: &str) -> Result<(&mut Tree, &str), String> {
         match &mut self.allocs[prov.alloc] {
             AllocSlot::Freed { name, by } => Err(format!(
                 "Undefined Behavior: {what}, at bytes {range:?} of {name}, is a use after free: task {by} dropped the cell.\n"
             )),
-            AllocSlot::Live { memory, name } => {
-                if range.end > memory.size {
+            AllocSlot::Live { tree, name } => {
+                if range.end > tree.size() && !range.is_empty() {
                     return Err(format!(
                         "Undefined Behavior: {what}, at bytes {range:?} of {name}, is out of bounds: the cell has {} bytes.\n",
-                        memory.size
+                        tree.size()
                     ));
                 }
-                let record = AccessRecord { task, time, kind, at };
-                memory.access(range, record, races, clock, name)
+                assert!(tree.contains(prov.tag), "a removed tag was used");
+                Ok((tree, name.as_str()))
             }
         }
     }
 
     /// Checks an access through `prov` to `range` of its allocation, in the current task. `races`
-    /// says whether to check it for a data race. An access that isn't checked is still recorded,
+    /// says whether to check it for a data race too. An access that isn't checked is still recorded,
     /// so that later accesses are checked against it.
     #[allow(clippy::too_many_arguments)]
     pub fn access(
@@ -239,16 +162,25 @@ impl CheckedCellState {
         races: bool,
         at: &'static Location<'static>,
     ) -> Result<(), String> {
-        let race = match kind {
-            AccessKind::Read => RaceAccess::Read,
-            AccessKind::Write => RaceAccess::Write,
+        let (tree, name) = self.tree(prov, &range, &format!("a {kind} access"))?;
+        let access = Access {
+            kind,
+            race: match kind {
+                AccessKind::Read => RaceAccess::Read,
+                AccessKind::Write => RaceAccess::Write,
+            },
+            check_race: races,
+            retag: false,
+            task,
+            time: tick(task, clock),
+            at,
         };
-        self.check(task, clock, prov, range, race, &format!("a {kind} access"), races, at)
+        tree.access(prov.tag, range, &access, clock)
+            .map_err(|violation| tree.describe(&violation, name))
     }
 
     /// Makes a reference to `range` from `prov`, in the current task, and returns its provenance.
-    /// Making a reference reads the memory, as in Miri. `races` says whether to check that read for
-    /// a data race.
+    /// `races` says whether to check the read that this makes for a data race too.
     #[allow(clippy::too_many_arguments)]
     pub fn retag(
         &mut self,
@@ -256,21 +188,43 @@ impl CheckedCellState {
         clock: &mut VectorClock,
         prov: Prov,
         range: Range<usize>,
-        _kind: RefKind,
+        kind: RefKind,
         races: bool,
         at: &'static Location<'static>,
     ) -> Result<Prov, String> {
-        self.check(
+        // A reference to a zero-sized value accesses no bytes, so it isn't a use after free, as in
+        // Miri. A dropped cell has no tree left for a new tag, so the reference keeps the pointer's
+        // tag, and an access through it is still a use after free.
+        if range.is_empty() && matches!(self.allocs[prov.alloc], AllocSlot::Freed { .. }) {
+            return Ok(prov);
+        }
+        let (tree, name) = self.tree(prov, &range, "making a reference")?;
+        let (tag_kind, initial) = match kind {
+            RefKind::Shared => (TagKind::Shared, Permission::Frozen),
+            RefKind::Mut => (TagKind::Mut, Permission::Reserved { conflicted: false }),
+        };
+        let access = Access {
+            kind: AccessKind::Read,
+            race: RaceAccess::RetagRead,
+            check_race: races,
+            retag: true,
             task,
-            clock,
-            prov,
-            range,
-            RaceAccess::RetagRead,
-            "making a reference",
-            races,
+            time: tick(task, clock),
             at,
-        )?;
-        Ok(prov)
+        };
+        let tag = tree
+            .retag(prov.tag, range, tag_kind, initial, &access, clock)
+            .map_err(|violation| tree.describe(&violation, name))?;
+        Ok(Prov { alloc: prov.alloc, tag })
+    }
+
+    /// Records that a reference's tag can't be used again.
+    pub fn release(&mut self, prov: Prov) {
+        if let AllocSlot::Live { tree, .. } = &mut self.allocs[prov.alloc] {
+            if tree.contains(prov.tag) {
+                tree.release(prov.tag);
+            }
+        }
     }
 
     /// Records that a checked cell was dropped. A later access through one of its pointers is a use

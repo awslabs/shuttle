@@ -54,7 +54,7 @@ default = []
 vector-clocks = ["shuttle-engine/vector-clocks"]
 # Weak-memory emulation for the atomics, which `Config::weak_memory` turns on (see `sync::atomic`)
 weak-memory = ["vector-clocks", "shuttle-engine/weak-memory", "shuttle-std/weak-memory"]
-# Data race checks on the memory in `shuttle::cell::UnsafeCell`
+# Tree Borrows and data race checks on the memory in `shuttle::cell::UnsafeCell`
 checked-cell = ["vector-clocks", "shuttle-engine/checked-cell", "shuttle-std/checked-cell"]
 annotation = ["vector-clocks", "shuttle-engine/annotation", "shuttle-schedulers/annotation", "dep:serde", "dep:serde_json", "dep:regex"]
 # The following feature overrides the `vector-clocks` feature. It SHOULD NOT be used in production.
