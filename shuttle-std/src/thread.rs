@@ -198,7 +198,9 @@ where
         scope: PhantomData,
     };
 
-    let ret = f(&scope);
+    // If `f` panics, the scope still waits for its threads before the panic goes on, as in std. The
+    // threads can borrow what the panic drops as it unwinds.
+    let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&scope)));
 
     if scope.data.num_running_threads.load(Ordering::Relaxed) != 0 {
         tracing::info!("thread blocked, waiting for completion of scoped threads");
@@ -209,7 +211,10 @@ where
 
     ExecutionState::with(|s| s.update_clock(&scope.data.clock.lock().unwrap()));
 
-    ret
+    match ret {
+        Ok(ret) => ret,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 /// Spawn a new thread, returning a JoinHandle for it.

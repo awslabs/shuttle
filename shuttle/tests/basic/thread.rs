@@ -211,6 +211,50 @@ fn thread_scope_end_does_not_end_an_inner_scope() {
     );
 }
 
+// A scope waits for its threads even when its function panics, as in std, because the panic drops
+// what the threads borrow as it unwinds. Here a destructor takes a scheduling point after the value
+// that the thread borrows is dropped, so a scope that didn't wait could let the thread see it dropped.
+#[test]
+fn thread_scope_waits_for_threads_when_its_function_panics() {
+    struct MarkDropped(AtomicBool);
+
+    impl Drop for MarkDropped {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    struct YieldOnDrop;
+
+    impl Drop for YieldOnDrop {
+        fn drop(&mut self) {
+            thread::yield_now();
+        }
+    }
+
+    check_dfs(
+        || {
+            let used_after_drop = AtomicBool::new(false);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _yield = YieldOnDrop;
+                let borrowed = MarkDropped(AtomicBool::new(false));
+                thread::scope(|s| {
+                    s.spawn(|| {
+                        thread::yield_now();
+                        if borrowed.0.load(Ordering::SeqCst) {
+                            used_after_drop.store(true, Ordering::SeqCst);
+                        }
+                    });
+                    panic!("the scope's function panicked");
+                });
+            }));
+            assert!(result.is_err());
+            assert!(!used_after_drop.load(Ordering::SeqCst));
+        },
+        None,
+    );
+}
+
 #[test]
 fn thread_join() {
     check_random(
