@@ -1231,16 +1231,23 @@ impl ExecutionState {
                 TeardownJob::TaskLocals(id) => Self::drop_leftover_task_locals(id, &mut report),
                 TeardownJob::Static(value) => Self::drop_static(value, &mut report),
                 TeardownJob::Stuck => {
-                    let (deadlocked, blocked_tasks) = Self::with(|state| {
+                    let deadlocked = Self::with(|state| {
                         let teardown = state.teardown();
-                        let deadlocked = !teardown.kind.abandons() && teardown.exceeded_step_bound.is_none();
+                        !teardown.kind.abandons() && teardown.exceeded_step_bound.is_none()
+                    });
+                    // The destructors that blocked are still suspended on their own stacks, so each
+                    // can capture its own backtrace now, as at a deadlock during the execution.
+                    if deadlocked && backtrace_enabled() {
+                        Execution::capture_blocked_task_backtraces();
+                    }
+                    let blocked_tasks = Self::with(|state| {
                         let blocked = plan
                             .suspended
                             .iter()
                             .map(|&(id, _)| state.get(id).format_for_deadlock());
                         let blocked = blocked.collect::<Vec<_>>();
                         state.abandon_teardown();
-                        (deadlocked, blocked)
+                        blocked
                     });
                     TEARDOWN_IGNORES_PANICS.set(true);
                     if deadlocked {
