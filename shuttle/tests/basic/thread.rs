@@ -209,7 +209,22 @@ fn use_stack(depth: usize) -> u8 {
     }
 }
 
-/// A thread built with a larger stack than the default gets one, even when the smaller stack of a
+/// The default stack is as large as a std thread's (2 MiB), so code that fits on a std thread also
+/// fits on a Shuttle thread and the main task.
+#[test]
+fn default_stack_is_as_large_as_std() {
+    check_dfs(
+        || {
+            // 640 frames is ~660 KiB at `-O` and ~1.3 MiB unoptimized: under 2 MiB in both
+            // profiles, and far over the 60 KiB default Shuttle had before.
+            use_stack(640);
+            thread::spawn(|| use_stack(640)).join().unwrap();
+        },
+        None,
+    );
+}
+
+/// A thread built with a larger stack than another thread's gets one, even when the smaller stack of a
 /// thread that already finished in the same execution is waiting in the pool.
 ///
 /// A regression here overflows the builder thread's stack, which faults on the coroutine's guard
@@ -220,10 +235,15 @@ fn use_stack(depth: usize) -> u8 {
 fn thread_builder_stack_size() {
     check_dfs(
         || {
-            thread::spawn(|| {}).join().unwrap();
+            thread::Builder::new()
+                .stack_size(1 << 16)
+                .spawn(|| {})
+                .unwrap()
+                .join()
+                .unwrap();
 
-            // 128 frames is ~132 KiB at `-O` and ~269 KiB unoptimized: over the 60 KiB default
-            // stack in both profiles, and well under the 1 MiB this thread asks for.
+            // 128 frames is ~132 KiB at `-O` and ~269 KiB unoptimized: over the 64 KiB stack of
+            // the first thread in both profiles, and well under the 1 MiB this thread asks for.
             thread::Builder::new()
                 .stack_size(1 << 20)
                 .spawn(|| use_stack(128))

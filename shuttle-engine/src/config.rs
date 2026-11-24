@@ -136,7 +136,9 @@ impl Config {
     /// Create a new default configuration
     pub fn new() -> Self {
         Self {
-            stack_size: 0xf000,
+            // 2 MiB, the same as a thread from `std::thread::spawn`, so that code under test runs
+            // out of stack where it would on a std thread.
+            stack_size: 2 * 1024 * 1024,
             failure_persistence: FailurePersistence::Print,
             max_steps: MaxSteps::FailAfter(DEFAULT_MAX_STEPS),
             max_time: None,
