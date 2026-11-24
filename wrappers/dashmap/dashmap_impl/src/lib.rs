@@ -346,13 +346,49 @@ impl<R> TryResult<R> {
 
 // ── Ref (immutable guard) ───────────────────────────────────────
 
+/// A reference to an entry of a [`DashMap`]. It holds the map's read lock while it lives.
+///
+/// Other tasks can read the value while a `Ref` lives. So a `Ref` is `Send` only if the value is
+/// `Sync`:
+///
+/// ```
+/// fn assert_send<T: Send>() {}
+/// assert_send::<shuttle_dashmap_impl::Ref<'static, u64, u64>>();
+/// ```
+///
+/// ```compile_fail,E0277
+/// fn assert_send<T: Send>() {}
+/// assert_send::<shuttle_dashmap_impl::Ref<'static, u64, std::cell::Cell<u64>>>();
+/// ```
 pub struct Ref<'a, K, V> {
     guard: RwLockReadGuard<'a, HashMap<K, V>>,
     key: K,
 }
 
+// SAFETY:
+// In order for `Ref<K, V>` to be `Send`, we need to ensure:
+// * The read guard in `guard` is released on the OS thread that took it. std's
+//   `RwLockReadGuard`, which Shuttle's guard holds, is not `Send` for this reason.
+// * The thread that gets the `Ref` can own `key`, and it can share the map's keys and the value
+//   with other threads.
+//
+// Shuttle runs all the threads of an execution on one OS thread. So a `Ref` that moves to another
+// Shuttle thread is still dropped on the OS thread that took the guard. This does not hold if safe
+// code sends the `Ref` to a thread that Shuttle doesn't run, such as one from `std::thread::spawn`.
+// Shuttle's own primitives make the same assumption, for example the `Sync` impl of
+// `shuttle::sync::RwLock`.
+// `key` is a clone that the `Ref` owns, and `K: Send` lets it move. `value` looks up `key` in the
+// map through the read guard, so the thread that gets the `Ref` reads the map's keys and the value.
+// Other tasks can read them at the same time, with read locks of their own. Such a task needs only
+// a reference to the map. A task that `shuttle::future::spawn_local` started can hold one even if
+// `DashMap` is not `Sync`, because its future needs no `Send`. `K: Sync` and `V: Sync` let threads
+// share the keys and the value. No task can change them while the `Ref` lives, because that needs
+// the write lock.
+// The second property does not hold for the items of `iter` and `iter_mut`, which can outlive the
+// lock of their iterator (see `Iter::next`).
+unsafe impl<K: Send + Sync, V: Sync> Send for Ref<'_, K, V> {}
+
 // SAFETY: the RwLock provides synchronization. These match real DashMap's Ref bounds.
-unsafe impl<K: Send, V: Send> Send for Ref<'_, K, V> {}
 unsafe impl<K: Sync, V: Sync> Sync for Ref<'_, K, V> {}
 
 impl<K: Eq + Hash, V> Ref<'_, K, V> {
