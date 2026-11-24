@@ -321,7 +321,7 @@ impl<T: ?Sized> RwLock<T> {
 // TODO we shouldn't need to do this, but RefCell is not Send, and anything we put within a RwLock
 // TODO needs to be Send.
 unsafe impl<T: Send + ?Sized> Send for RwLock<T> {}
-unsafe impl<T: Send + ?Sized> Sync for RwLock<T> {}
+unsafe impl<T: Send + Sync + ?Sized> Sync for RwLock<T> {}
 
 // TODO this is the RefCell biting us again
 impl<T: ?Sized> UnwindSafe for RwLock<T> {}
