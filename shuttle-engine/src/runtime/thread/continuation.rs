@@ -1,7 +1,10 @@
 use crate::config::UNGRACEFUL_SHUTDOWN_CONFIG;
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::backtrace::{OnStack, StackBounds};
+use crate::runtime::task::TaskBacktrace;
+use corosensei::stack::{DefaultStack, Stack};
 use corosensei::Yielder;
-use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
+use corosensei::{Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -28,6 +31,8 @@ pub struct Continuation {
     pub yielder: *const Yielder<ContinuationInput, ContinuationOutput>,
     // The stack size this continuation was created with. Its stack is at least this large.
     stack_size: usize,
+    /// Where the coroutine's stack is, so that a backtrace captured on it knows what it may read.
+    stack: StackBounds,
 }
 
 impl std::fmt::Debug for Continuation {
@@ -70,7 +75,7 @@ thread_local! {
     /// `ExecutionState::current_task` is `ScheduledTask::Finished`, so the resumed continuation
     /// cannot call `current_mut()` — it would panic. The driver moves the value into the right
     /// `Task` after the resume returns, where it has the `TaskId` to hand.
-    pub static BACKTRACE_CAPTURE_SLOT: RefCell<Option<std::backtrace::Backtrace>> = const { RefCell::new(None) };
+    pub static BACKTRACE_CAPTURE_SLOT: RefCell<Option<TaskBacktrace>> = const { RefCell::new(None) };
 }
 
 /// Outputs that a continuation can pass back to us
@@ -95,11 +100,13 @@ enum ContinuationState {
 impl Continuation {
     pub fn new(stack_size: usize) -> Self {
         let function = ContinuationFunction(Rc::new(Cell::new(None)));
+        let stack = DefaultStack::new(stack_size).unwrap();
+        let (stack_limit, stack_base) = (stack.limit().get(), stack.base().get());
 
         let mut coroutine = {
             let function = function.clone();
 
-            Coroutine::with_stack(DefaultStack::new(stack_size).unwrap(), move |yielder, input| {
+            Coroutine::with_stack(stack, move |yielder, input| {
                 if let ContinuationInput::Exit = input {
                     return ContinuationOutput::Exited;
                 }
@@ -153,6 +160,8 @@ impl Continuation {
             function,
             stack_size,
             state: ContinuationState::NotReady,
+            // corosensei keeps the `Yielder` in the parent link, the root frame record of the stack.
+            stack: StackBounds::new(stack_limit, stack_base, yielder as usize),
         }
     }
 
@@ -279,6 +288,8 @@ impl Continuation {
 
     fn resume_with_input(&mut self, input: ContinuationInput) -> ContinuationOutput {
         self.state = ContinuationState::Running;
+        // Until the coroutine yields, this thread runs on its stack.
+        let _on_stack = OnStack::enter(self.stack);
         match self.coroutine.resume(input) {
             CoroutineResult::Yield(output) => {
                 self.state = match output {
@@ -590,8 +601,8 @@ fn suspend() -> ContinuationInput {
             ContinuationInput::CaptureBacktrace => {
                 // We are on the blocked task's own stack here, so this walks the frames that
                 // actually blocked (`Mutex::lock` -> ... -> `switch`).
-                BACKTRACE_CAPTURE_SLOT
-                    .with(|slot| *slot.borrow_mut() = Some(std::backtrace::Backtrace::force_capture()));
+                let backtrace = TaskBacktrace::capture();
+                BACKTRACE_CAPTURE_SLOT.with(|slot| *slot.borrow_mut() = Some(backtrace));
             }
             input => break input,
         }
