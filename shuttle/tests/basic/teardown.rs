@@ -1905,6 +1905,31 @@ fn stopped_execution_drops_scoped_threads_before_the_stack_of_a_task_unwinding_a
     assert_eq!(READ.load(StdOrdering::SeqCst), 0xC0FFEE);
 }
 
+/// The same for the stack of a task that catches a panic in a scope, once the execution has stopped
+/// while a destructor in the unwind switched out: the task then blocks at the end of the scope.
+#[test]
+fn stopped_execution_drops_scoped_threads_before_the_stack_of_a_task_that_caught_a_panic() {
+    static READ: StdAtomicUsize = StdAtomicUsize::new(0);
+
+    let mut config = Config::new();
+    // The execution stops once the main thread switches out while it unwinds the panic, before the
+    // scoped thread runs.
+    config.max_steps = MaxSteps::ContinueAfter(2);
+    Runner::new(RandomScheduler::new(1), config).run(|| {
+        let canary = StdAtomicUsize::new(0xC0FFEE);
+        thread::scope(|s| {
+            let canary = &canary;
+            let reads_on_drop = on_drop(move || READ.store(canary.load(StdOrdering::SeqCst), StdOrdering::SeqCst));
+            s.spawn(move || drop(reads_on_drop));
+            let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+                let _yields_on_drop = on_drop(thread::yield_now);
+                panic!("expected panic");
+            }));
+        });
+    });
+    assert_eq!(READ.load(StdOrdering::SeqCst), 0xC0FFEE);
+}
+
 /// A panic out of the executor, here from a scheduler, still tears the execution down, and is what
 /// fails the test.
 #[test]
