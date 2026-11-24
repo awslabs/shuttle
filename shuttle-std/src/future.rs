@@ -369,6 +369,10 @@ where
 
 /// Run a future to completion on the current thread.
 pub fn block_on<F: Future>(future: F) -> F::Output {
+    // Keep the future on the heap. It is often the whole test, and in a release build `pin!` would
+    // add its size to the task's stack. `unknown_lints` is for Clippy before 1.101, which doesn't
+    // have this lint.
+    #[allow(unknown_lints, clippy::unnecessary_box_pin)]
     let mut future = Box::pin(future);
     let waker = ExecutionState::with(|state| state.current_mut().waker());
     let cx = &mut Context::from_waker(&waker);

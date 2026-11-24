@@ -223,7 +223,7 @@ mod api {
         check_dfs(
             || {
                 let fut = KEY.scope(1, async {});
-                let mut pinned = Box::pin(fut);
+                let mut pinned = std::pin::pin!(fut);
                 assert_eq!(pinned.as_mut().take_value(), Some(1));
                 assert_eq!(pinned.as_mut().take_value(), None);
             },
@@ -519,7 +519,7 @@ mod api {
 
         check_dfs(
             || {
-                let mut fut = Box::pin(KEY.scope(1, async {}));
+                let mut fut = std::pin::pin!(KEY.scope(1, async {}));
                 assert_eq!(fut.as_mut().now_or_never(), Some(()));
                 fut.as_mut().now_or_never();
             },

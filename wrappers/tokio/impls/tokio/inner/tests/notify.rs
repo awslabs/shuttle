@@ -533,7 +533,7 @@ fn notify_one_to_completed_waiter_is_not_passed_on() {
             first.as_mut().await;
             drop(first);
 
-            let mut second = Box::pin(notify.notified());
+            let mut second = std::pin::pin!(notify.notified());
             assert!(!second.as_mut().enable(), "permit stored by a dropped waiter");
         });
     });
@@ -568,7 +568,7 @@ fn notify_one_to_waiter_dropped_during_panic_is_passed_on() {
         {
             let notify = notify.clone();
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                let mut notified = Box::pin(notify.notified());
+                let mut notified = std::pin::pin!(notify.notified());
                 assert!(!notified.as_mut().enable());
                 notify.notify_one();
                 panic!("expected");
@@ -635,7 +635,7 @@ fn first_enable_after_store_is_a_separate_step() {
             })
         };
 
-        let mut notified = Box::pin(notify.notified());
+        let mut notified = std::pin::pin!(notify.notified());
         ready.store(true, Ordering::SeqCst);
         // BUG (in this test program): assumes the notifier can't run before `enable()`.
         assert!(!notified.as_mut().enable(), "notified between the store and enable");
@@ -660,7 +660,7 @@ fn notified_between_two_enables() {
             shuttle::thread::spawn(move || notify.notify_one())
         };
 
-        let mut notified = Box::pin(notify.notified());
+        let mut notified = std::pin::pin!(notify.notified());
         let first = notified.as_mut().enable();
         let second = notified.as_mut().enable();
         // BUG (in this test program): assumes no notification arrives between the two calls.
@@ -731,7 +731,7 @@ fn poll_after_enable_and_store_is_a_separate_step() {
             })
         };
 
-        let mut notified = Box::pin(notify.notified());
+        let mut notified = std::pin::pin!(notify.notified());
         assert!(!notified.as_mut().enable());
         ready.store(true, Ordering::SeqCst);
         let mut cx = Context::from_waker(Waker::noop());
@@ -763,7 +763,7 @@ fn drop_of_unnotified_waiter_after_store_is_a_separate_step() {
         let notifier = {
             let (notify, ready) = (notify.clone(), ready.clone());
             shuttle::thread::spawn(move || {
-                let mut next = Box::pin(notify.notified());
+                let mut next = std::pin::pin!(notify.notified());
                 if ready.load(Ordering::SeqCst) {
                     notify.notify_one();
                     // BUG (in this test program): assumes the dropped waiter is gone.
@@ -885,7 +885,7 @@ fn outcomes(
             .map(|waiter| waiter.as_mut().enable())
             .filter(|&ready| ready)
             .count();
-        let permit = Box::pin(notify.notified()).as_mut().enable();
+        let permit = std::pin::pin!(notify.notified()).enable();
         seen_in_test
             .lock()
             .unwrap()

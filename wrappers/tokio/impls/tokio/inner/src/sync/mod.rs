@@ -97,7 +97,7 @@ mod test {
             let h = shuttle::future::spawn(async move {
                 let mut receiver = rx2.lock().unwrap().take().unwrap();
                 {
-                    let mut recv = Box::pin(receiver.recv());
+                    let mut recv = std::pin::pin!(receiver.recv());
                     // Channel is empty: the first poll enqueues a waiter for *this* task.
                     assert!(futures::poll!(recv.as_mut()).is_pending());
                     // Cancel the `recv()` (as `select!` would).
@@ -138,7 +138,7 @@ mod test {
 
             let h = shuttle::future::spawn(async move {
                 {
-                    let mut recv = Box::pin(receiver.recv());
+                    let mut recv = std::pin::pin!(receiver.recv());
                     assert!(futures::poll!(recv.as_mut()).is_pending());
                     // Cancel the `recv()` ...
                 }
@@ -184,7 +184,7 @@ mod test {
             let a = shuttle::future::spawn(async move {
                 let mut receiver = rx_a.lock().unwrap().take().unwrap();
                 {
-                    let mut recv = Box::pin(receiver.recv());
+                    let mut recv = std::pin::pin!(receiver.recv());
                     // Nothing has been sent yet, so this enqueues a waiter for
                     // task A rather than completing.
                     assert!(futures::poll!(recv.as_mut()).is_pending());

@@ -84,7 +84,7 @@ fn cancelling_waiter_behind_bypassable_waiter_unblocks_later_acquires() {
         || {
             future::block_on(async {
                 let sem = BatchSemaphore::new(0, Fairness::StrictlyFair);
-                let mut large = Box::pin(sem.acquire_bypassable(3));
+                let mut large = std::pin::pin!(sem.acquire_bypassable(3));
                 assert!(futures::poll!(large.as_mut()).is_pending());
                 let mut ordinary = Box::pin(sem.acquire(2));
                 assert!(futures::poll!(ordinary.as_mut()).is_pending());
