@@ -1106,6 +1106,29 @@ fn mpsc_reserve_owned_holds_sender_slot() {
     );
 }
 
+// A `reserve_owned` that is dropped while it waits for room gives back its sender's slot, so the
+// channel closes when the last sender is dropped, as in tokio.
+#[test]
+fn mpsc_dropped_reserve_owned_gives_back_its_sender_slot() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+                tx.send(0).await.unwrap();
+
+                let mut reserve = Box::pin(tx.clone().reserve_owned());
+                assert!(futures::poll!(reserve.as_mut()).is_pending());
+                drop(reserve);
+                drop(tx);
+
+                assert_eq!(rx.recv().await, Some(0));
+                assert_eq!(rx.recv().await, None);
+            });
+        },
+        None,
+    );
+}
+
 // The same, but the permit is dropped from another task while the receiver is waiting: the receiver
 // must be woken rather than deadlocking.
 #[test]

@@ -484,22 +484,19 @@ impl<T> SenderInternal<T> {
     /// permit. Once capacity to send one message is available, it is reserved
     /// for the caller.
     pub async fn reserve_owned(self) -> Result<OwnedPermit<T>, SendError<()>> {
-        // An `OwnedPermit` holds a sender slot for as long as it lives, so claim one up front.
-        // `self` is dropped when this function returns, giving its own slot back, so
-        // `known_senders` is unchanged overall. Claiming before the `await` rather than after
-        // matters: it keeps the count from dipping to zero (which would close the channel) while
-        // we are waiting for capacity.
+        // `self` holds a sender slot while this waits for capacity, so the count can't drop to zero
+        // (which would close the channel) then.
+        self.chan.acquire_capacity().await?;
+
+        // An `OwnedPermit` holds a sender slot for as long as it lives, so claim one for it. `self`
+        // is dropped when this function returns, giving its own slot back, so `known_senders` is
+        // unchanged overall. Claiming after the `await` rather than before matters: a future that
+        // is dropped while it waits for capacity then leaves no slot behind.
         self.claim_sender_slot();
-        let chan = Arc::clone(&self.chan);
 
-        if let Err(err) = chan.acquire_capacity().await {
-            // Hand the slot we just claimed back. `self` still holds one, so this cannot be the
-            // drop that closes the channel.
-            chan.drop_sender();
-            return Err(err);
-        }
-
-        Ok(OwnedPermit { chan: Some(chan) })
+        Ok(OwnedPermit {
+            chan: Some(Arc::clone(&self.chan)),
+        })
     }
 
     /// Tries to acquire a slot in the channel without waiting for the slot to
