@@ -42,3 +42,35 @@ fn iter_mut_item_holds_the_write_lock() {
         None,
     );
 }
+
+// A key whose `Clone` returns another key. `Clone` is a safe trait, so the map can't rely on a
+// clone being equal to the original.
+#[derive(Hash, PartialEq, Eq, Debug)]
+struct Key(u32);
+
+impl Clone for Key {
+    fn clone(&self) -> Self {
+        Key(0)
+    }
+}
+
+// Each item of `iter_mut` points to a value of its own, also when the keys' `Clone` is wrong.
+#[test]
+fn iter_mut_items_point_to_different_values() {
+    check_dfs(
+        || {
+            let map = DashMap::new();
+            map.insert(Key(0), 0u64);
+            map.insert(Key(1), 1u64);
+            let mut it = map.iter_mut();
+            let a = it.next().unwrap();
+            let b = it.next().unwrap();
+            assert!(
+                !std::ptr::eq(a.value(), b.value()),
+                "two items of `iter_mut()` point to the same value"
+            );
+            assert!(it.next().is_none());
+        },
+        None,
+    );
+}

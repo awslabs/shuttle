@@ -29,7 +29,8 @@
 //!   and `iter_mut`, and their `Send`/`Sync` impls. Each item points to a key
 //!   and a value in the `HashMap`. As in real dashmap, it holds a clone of an
 //!   `Arc` of the iterator's lock guard, so the map stays locked for as long as
-//!   the item lives.
+//!   the item lives. `IterMut` takes its entries in one pass of the map's own
+//!   `iter_mut`, so no two items point to the same value.
 
 use deterministic_collections::HashMap;
 use shuttle::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -246,17 +247,9 @@ impl<K: Eq + Hash, V> DashMap<K, V> {
         K: Clone,
     {
         let mut guard = self.inner.write().unwrap();
-        let keys: Vec<K> = guard.keys().cloned().collect();
         // The items share the guard through an `Arc`, which gives no `&mut` access to the map. So
         // the entries are found now, while the guard still gives it.
-        let entries: Vec<(*const K, *mut V)> = keys
-            .iter()
-            .map(|key| {
-                let k = guard.get_key_value(key).unwrap().0 as *const K;
-                let v = guard.get_mut(key).unwrap() as *mut V;
-                (k, v)
-            })
-            .collect();
+        let entries: Vec<(*const K, *mut V)> = guard.iter_mut().map(|(k, v)| (k as *const K, v as *mut V)).collect();
         IterMut {
             guard: Arc::new(guard),
             entries: entries.into_iter(),
@@ -714,8 +707,8 @@ pub struct RefMutMulti<'a, K, V> {
 // The first property holds as for `RefMulti`, with the same exception for threads that Shuttle
 // doesn't run.
 // `K: Sync` lets threads share the key. `pair_mut` says why nobody else can reach the value while
-// the item lives, and when this fails. So the thread that gets the item has the value to itself,
-// and `V: Send` allows that. These are the bounds of a `(&K, &mut V)`.
+// the item lives. So the thread that gets the item has the value to itself, and `V: Send` allows
+// that. These are the bounds of a `(&K, &mut V)`.
 unsafe impl<K: Sync, V: Send> Send for RefMutMulti<'_, K, V> {}
 
 // SAFETY:
@@ -747,8 +740,8 @@ impl<K, V> RefMutMulti<'_, K, V> {
         // * `key` and `value` are valid pointers to a key and its value in the map.
         // * Nobody changes them while the returned references live.
         //
-        // Both hold as in `pair_mut`, with the same exceptions. `&self` keeps this item from giving
-        // out a `&mut V` while the returned references live.
+        // Both hold as in `pair_mut`. `&self` keeps this item from giving out a `&mut V` while the
+        // returned references live.
         unsafe { (&*self.key, &*self.value) }
     }
 
@@ -766,13 +759,10 @@ impl<K, V> RefMutMulti<'_, K, V> {
         // can't outlive `self`. While the write lock is held, no other task can read or change the
         // map, and the task that holds it can't take the lock again. `&mut self` keeps this item
         // from giving out other references to the value at the same time.
-        // Other items must point to other values. This holds only if `iter_mut` found each entry
-        // once. It looks up clones of the map's keys. `Clone`, `Eq` and `Hash` are safe traits, so
-        // their impls can be wrong. If two clones find the same entry, two items point to its
-        // value.
-        // The first property also fails for `key` under Stacked Borrows. `iter_mut` takes `key`
-        // from a shared borrow of the entry. Then `get_mut` makes a `&mut` to the same entry,
-        // which makes `key` invalid under Stacked Borrows. Tree Borrows accepts it.
+        // `iter_mut` took the pointers in one pass of the map's own `iter_mut`, which gives each
+        // entry once. So no other item points to this value. Nothing used an entry after the pass
+        // gave out its `&K` and `&mut V`, so the pointers made from them are still valid, also
+        // under Stacked Borrows.
         unsafe { (&*self.key, &mut *self.value) }
     }
 }
