@@ -2,6 +2,7 @@ use shuttle::current::{me, set_label_for_task};
 use shuttle::{check_dfs, check_random, future};
 use shuttle_tokio_impl_inner::sync::{mpsc, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use shuttle_tokio_impl_inner::time::{clear_triggers, timeout, trigger_timeouts};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -134,6 +135,52 @@ fn async_rwlock_owned_guards_return_their_lock() {
                 let r = w.downgrade();
                 assert!(Arc::ptr_eq(&lock, OwnedRwLockReadGuard::rwlock(&r)));
             });
+        },
+        None,
+    );
+}
+
+// A `tracing` subscriber that panics on the events of the `RwLock` module.
+struct PanicOnRwLockEvent;
+
+impl tracing::Subscriber for PanicOnRwLockEvent {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if event.metadata().target() == "shuttle_tokio_impl_inner::sync::rwlock" {
+            panic!("a tracing subscriber panicked");
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+// If the `trace!` in `OwnedRwLockWriteGuard::downgrade` panics, the guard must drop its `Arc` once.
+#[test]
+fn async_rwlock_owned_downgrade_drops_its_arc_once_on_a_panic() {
+    check_dfs(
+        || {
+            let lock = Arc::new(RwLock::new(0usize));
+            // This second `Arc` keeps the lock alive if the guard's `Arc` is dropped twice.
+            let extra = Arc::clone(&lock);
+            let guard = future::block_on(Arc::clone(&lock).write_owned());
+            let before = Arc::strong_count(&lock);
+            let result = tracing::subscriber::with_default(PanicOnRwLockEvent, || {
+                catch_unwind(AssertUnwindSafe(move || drop(guard.downgrade())))
+            });
+            assert!(result.is_err());
+            let after = Arc::strong_count(&lock);
+            if after != before - 1 {
+                // `lock` and `extra` share one count now. Dropping both would free the lock twice.
+                std::mem::forget(extra);
+            }
+            assert_eq!(after, before - 1, "downgrade dropped the guard's Arc twice");
         },
         None,
     );
