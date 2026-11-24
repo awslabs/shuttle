@@ -285,6 +285,12 @@ impl<T: ?Sized> RwLock<T> {
                 _ => (),
             };
             drop(state);
+
+            // If the acquisition failed, give back the permit that `try_acquire` took. That call
+            // already took the scheduling point of this operation, so don't take a second one.
+            if !acquired {
+                self.semaphore.release_no_scheduling_point(typ.num_permits());
+            }
         }
 
         trace!(
