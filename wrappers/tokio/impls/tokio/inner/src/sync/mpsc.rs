@@ -164,7 +164,14 @@ impl<T> Channel<T> {
         self.close();
 
         // need to drop after releasing lock and closing semaphore to avoid deadlocks
-        let _unreceived_messages_to_drop = std::mem::take(&mut self.state.try_lock().unwrap().messages);
+        let unreceived_messages_to_drop = std::mem::take(&mut self.state.try_lock().unwrap().messages);
+
+        // The messages leave the channel, so their room is free again. tokio's receiver also gives
+        // back a permit for each message that it drops.
+        if self.is_bounded() {
+            self.send_semaphore
+                .release_no_scheduling_point(unreceived_messages_to_drop.len());
+        }
     }
 
     fn drop_sender(&self) {

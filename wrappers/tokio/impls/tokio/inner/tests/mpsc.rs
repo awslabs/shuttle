@@ -626,6 +626,25 @@ fn drop_unreceived_messages_when_receiver_drops() {
     );
 }
 
+// When the receiver is dropped, the messages it never received leave the channel, so their room is
+// free again, as in tokio.
+#[test]
+fn capacity_returns_when_receiver_drops_with_messages() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, rx) = mpsc::channel::<u32>(2);
+                tx.send(0).await.unwrap();
+                assert_eq!(tx.capacity(), 1);
+
+                drop(rx);
+                assert_eq!(tx.capacity(), 2);
+            });
+        },
+        None,
+    );
+}
+
 // Sanity test for `is_closed()`. Tests that `close` closes the channel.
 #[test]
 fn mpsc_close_closes_channel() {
