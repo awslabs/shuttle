@@ -73,6 +73,65 @@ fn rwlock_poison() {
     )
 }
 
+#[test]
+fn is_poisoned_reports_what_a_panicking_holder_left() {
+    check_dfs(
+        || {
+            let mutex = Arc::new(Mutex::new(()));
+            let rwlock = Arc::new(RwLock::new(()));
+            assert!(!mutex.is_poisoned());
+            assert!(!rwlock.is_poisoned());
+
+            let jh = {
+                let (mutex, rwlock) = (mutex.clone(), rwlock.clone());
+                thread::spawn(move || {
+                    let _err = catch_unwind(AssertUnwindSafe(|| {
+                        let _lock = mutex.lock().unwrap();
+                        panic!();
+                    }))
+                    .unwrap_err();
+                    let _err = catch_unwind(AssertUnwindSafe(|| {
+                        let _lock = rwlock.write().unwrap();
+                        panic!();
+                    }))
+                    .unwrap_err();
+                })
+            };
+            jh.join().unwrap();
+
+            assert!(mutex.is_poisoned());
+            assert!(rwlock.is_poisoned());
+            // A reader sees the poisoning too, and `clear_poison` takes it away.
+            assert!(rwlock.read().is_err());
+            mutex.clear_poison();
+            rwlock.clear_poison();
+            assert!(!mutex.is_poisoned());
+            assert!(!rwlock.is_poisoned());
+            assert!(mutex.lock().is_ok());
+            assert!(rwlock.write().is_ok());
+        },
+        None,
+    )
+}
+
+/// `is_poisoned` takes no scheduling point, as std's relaxed load of the flag cannot be observed.
+#[test]
+fn is_poisoned_is_not_a_scheduling_point() {
+    check_dfs(
+        || {
+            let mutex = Mutex::new(());
+            let rwlock = RwLock::new(());
+            let before = shuttle::current::context_switches();
+            for _ in 0..5 {
+                assert!(!mutex.is_poisoned());
+                assert!(!rwlock.is_poisoned());
+            }
+            assert_eq!(shuttle::current::context_switches(), before);
+        },
+        None,
+    )
+}
+
 /// Releases a semaphore's permit when dropped, as a lock guard does.
 struct ReleaseOnDrop<'a>(&'a BatchSemaphore);
 

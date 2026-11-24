@@ -155,6 +155,17 @@ impl<T: ?Sized> Mutex<T> {
         self.inner.into_inner()
     }
 
+    /// Determines whether the mutex is poisoned.
+    ///
+    /// If another thread is active, the mutex can still become poisoned at any time. You should
+    /// not trust a `false` value for program correctness without additional synchronization.
+    ///
+    /// Not a scheduling point: it reads whether another task left the mutex poisoned, which that
+    /// task cannot observe, exactly as std's relaxed load of the poison flag cannot.
+    pub fn is_poisoned(&self) -> bool {
+        self.inner.is_poisoned()
+    }
+
     /// Clear the poisoned state from a mutex.
     pub fn clear_poison(&self) {
         self.inner.clear_poison()
