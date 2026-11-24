@@ -1875,6 +1875,36 @@ fn stopped_execution_drops_scoped_threads_before_their_parents_stack() {
     assert_eq!(bad_reads.load(StdOrdering::SeqCst), 0);
 }
 
+/// The same for the stack of a task that is unwinding a panic when the execution stops, and that a
+/// destructor blocked at the end of a scope.
+#[test]
+fn stopped_execution_drops_scoped_threads_before_the_stack_of_a_task_unwinding_a_panic() {
+    static READ: StdAtomicUsize = StdAtomicUsize::new(0);
+
+    let message = panic_message_on_own_thread(|| {
+        let mut config = Config::new();
+        // The execution stops once the main thread blocks at the end of the scope, before the scoped
+        // thread runs.
+        config.max_steps = MaxSteps::ContinueAfter(2);
+        Runner::new(RandomScheduler::new(1), config).run(|| {
+            let _scope_on_drop = on_drop(|| {
+                let canary = StdAtomicUsize::new(0xC0FFEE);
+                thread::scope(|s| {
+                    let canary = &canary;
+                    let reads_on_drop =
+                        on_drop(move || READ.store(canary.load(StdOrdering::SeqCst), StdOrdering::SeqCst));
+                    s.spawn(move || drop(reads_on_drop));
+                });
+            });
+            panic!("task failed");
+        });
+    });
+    let message = message.expect("the test fails");
+    let expected = "was unwinding a panic when the execution stopped, and blocked before it had finished";
+    assert!(message.contains(expected), "{message}");
+    assert_eq!(READ.load(StdOrdering::SeqCst), 0xC0FFEE);
+}
+
 /// A panic out of the executor, here from a scheduler, still tears the execution down, and is what
 /// fails the test.
 #[test]
