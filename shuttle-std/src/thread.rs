@@ -141,34 +141,17 @@ impl<'scope> Scope<'scope, '_> {
 
         // SAFETY:
         // In order for the call to be safe, we need to ensure:
-        // * The references that `scope_closure` captures stay valid for as long as the spawned
-        //   thread can use them, as `spawn_named_unchecked` requires.
-        // * The same holds for the references in its result, which the thread holds, and drops
-        //   itself when nobody can join it.
+        // * What `scope_closure` and its result borrow stays valid while the thread can use it.
         //
-        // `scope_closure` captures `f`, and the `Arc`s `finished` and `data`, which own what they
-        // point to. `F` and `T` are `'scope`, so `f` and its result can only borrow what lives for
-        // `'scope`, which is at least until `scope` returns or unwinds. So both properties hold if
-        // the thread is done with what it borrows before `scope` returns or unwinds.
+        // `scope_closure` captures only `f` and two `Arc`s, and `F` and `T` are `'scope`. So what
+        // `scope_closure` and its result borrow is valid at least until `scope` returns or unwinds.
+        // `spawn` counts the thread in `num_running_threads` before it spawns it. Only the drop of
+        // its `RunningScopedThread` takes it off the count, after the result of `f` is dropped or
+        // moved out by `join`. If the count isn't 0 when `scope` would return or resume a panic, it
+        // blocks with `block(false)` until the drop that takes the count to 0 unblocks it.
         //
-        // The thread is done with what it borrows once its `RunningScopedThread` is dropped. After
-        // `f` returns, `scope_closure` makes the guard and returns it with the result. The guard is
-        // dropped after the result: by the thread when nobody can join it, by `join` after it moves
-        // the result out to its caller, or with the handle. Once `join` has returned the result, the
-        // borrow checker checks its uses, as for any other value of type `T`.
-        //
-        // `scope` returns only after every guard is dropped. `num_running_threads` counts the
-        // threads whose guard isn't dropped yet. `spawn` adds the thread above, before the thread
-        // exists, and only the drop of its guard takes it away. At its end, `scope` blocks until the
-        // count is 0. It blocks with `block(false)`, so the block can't end spuriously, and only the
-        // drop of the last guard ends it. If `f` panics, `scope` catches the panic and waits in the
-        // same way before the panic goes on.
-        //
-        // The execution can end before every guard is dropped (see `ExecutionState::tear_down`). If
-        // a task panics, or the execution stops, Shuttle leaks the stacks of the unfinished tasks,
-        // so it frees nothing that the thread borrows. A finished execution has no unfinished
-        // thread, but its teardown can unwind a future task that waits in `scope` for the guard of
-        // a forgotten handle. Nothing can use the result of a forgotten handle.
+        // If the execution ends before the count is 0, as when `f` panics, teardown frees nothing
+        // that the thread can still use (see `ExecutionState::tear_down`).
         let handle = unsafe { spawn_named_unchecked(scope_closure, None, None, false, Location::caller()) };
 
         ScopedJoinHandle {
