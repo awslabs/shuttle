@@ -18,10 +18,15 @@ to compile under the Shuttle feature.
 
 ## Limitations
 
+Shuttle has no clock to measure a timeout against, so the timed operations never time out: the
+`*_for` and `*_until` lock methods wait until they get the lock and return `true`. A task that would
+time out in a real run waits instead, and if nothing ever releases the lock, Shuttle reports a
+deadlock.
+
 Shuttle's `parking_lot` functionality currently covers the `Mutex` and `RwLock` primitives (and
-their guards, including the `Arc`-based and mapped guards). Other `parking_lot` types (for example
-`ReentrantMutex` and `Condvar`), the `*Timed` lock APIs, and recursive read locks
-(`RwLock::read_recursive`) are not yet provided. As in `parking_lot`, guards are `!Send` by default
+their guards, including the `Arc`-based and mapped guards), with the timed and recursive lock
+methods. Other `parking_lot` types (for example `ReentrantMutex` and `Condvar`) are not yet
+provided. As in `parking_lot`, guards are `!Send` by default
 and become `Send` (when the data allows) under the `send_guard` feature. If your project needs
 functionality which is not currently supported, please file an issue or, better yet, open a PR to
 contribute the functionality.
