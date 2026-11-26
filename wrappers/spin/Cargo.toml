@@ -1,0 +1,43 @@
+[package]
+name = "shuttle-spin"
+# Wrappers mirror the version of the crate they wrap, so that a downstream crate can depend on the
+# wrapper with the same `version = "0.10"` requirement it would have used for spin.
+version = "0.10.1"
+edition = "2024"
+license = "Apache-2.0"
+description = "spin wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+shuttle = [ "dep:shuttle-spin-inner" ]
+
+# spin's features. Each one is forwarded to spin, and to the inner crate when `shuttle` is enabled.
+default = [ "spin-orig/default", "shuttle-spin-inner?/default" ]
+barrier = [ "spin-orig/barrier", "shuttle-spin-inner?/barrier" ]
+fair_mutex = [ "spin-orig/fair_mutex", "shuttle-spin-inner?/fair_mutex" ]
+lazy = [ "spin-orig/lazy", "shuttle-spin-inner?/lazy" ]
+lock_api = [ "spin-orig/lock_api", "shuttle-spin-inner?/lock_api" ]
+mutex = [ "spin-orig/mutex", "shuttle-spin-inner?/mutex" ]
+once = [ "spin-orig/once", "shuttle-spin-inner?/once" ]
+portable-atomic = [ "spin-orig/portable-atomic", "shuttle-spin-inner?/portable-atomic" ]
+portable_atomic = [ "spin-orig/portable_atomic", "shuttle-spin-inner?/portable_atomic" ]
+rwlock = [ "spin-orig/rwlock", "shuttle-spin-inner?/rwlock" ]
+spin_mutex = [ "spin-orig/spin_mutex", "shuttle-spin-inner?/spin_mutex" ]
+std = [ "spin-orig/std", "shuttle-spin-inner?/std" ]
+ticket_mutex = [ "spin-orig/ticket_mutex", "shuttle-spin-inner?/ticket_mutex" ]
+use_ticket_mutex = [ "spin-orig/use_ticket_mutex", "shuttle-spin-inner?/use_ticket_mutex" ]
+
+[dependencies]
+cfg-if = "1.0"
+# Without default features, so that `default-features = false` on this crate reaches spin too.
+spin-orig = { package = "spin", version = "0.10", default-features = false }
+shuttle-spin-inner = { path = "./shuttle_spin_inner", version = "0.1", optional = true, default-features = false }
+
+[dev-dependencies]
+# The tests use every type.
+shuttle-spin = { path = ".", features = ["fair_mutex", "ticket_mutex", "std"] }
+# For the tests that run under `--features shuttle`.
+shuttle = { path = "../../shuttle", version = "0.9" }
+
+[package.metadata.docs.rs]
+all-features = true

@@ -1,14 +1,15 @@
 // This file is 99% copy-paste from tokio and Loom.
 // This means that it should be a true model, but it uses `shuttle_tokio::sync::Semaphore`s instead of `tokio::sync::Semaphore`s.
 use super::{Semaphore, SemaphorePermit, TryAcquireError};
+use shuttle_engine::runtime::per_execution::PerExecution;
 use shuttle_engine::runtime::thread;
+use std::cell::Cell;
 use std::error::Error;
 use std::fmt;
 use std::future::Future;
 use std::mem::MaybeUninit;
 use std::ops::Drop;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 // Loom's `UnsafeCell` verbatim.
 // Not `pub` in Tokio, so reimplemented here.
@@ -47,10 +48,62 @@ impl<T> UnsafeCell<T> {
 // A thread with a `&mut OnceCell` may modify the value in any way it wants as
 // long as the invariants are upheld.
 
-/// A thread-safe cell that can be written to only once.
-pub struct OnceCell<T> {
-    value_set: AtomicBool,
+/// A cell's value in one execution (see [`PerExecution`]).
+struct CellSlot<T> {
+    /// Whether `value` holds a value. A `Cell` rather than an atomic, because a slot belongs to one
+    /// execution, which runs on one thread.
+    value_set: Cell<bool>,
     value: UnsafeCell<MaybeUninit<T>>,
+}
+
+impl<T> CellSlot<T> {
+    /// The slot of an execution that has not set a value yet.
+    const fn empty() -> Self {
+        Self {
+            value_set: Cell::new(false),
+            value: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    /// The slot of a cell that was created with a value, which every execution shares: such a cell
+    /// is initialized from the start and never changes.
+    const fn with_value(value: T) -> Self {
+        Self {
+            value_set: Cell::new(true),
+            value: UnsafeCell::new(MaybeUninit::new(value)),
+        }
+    }
+}
+
+impl<T> Drop for CellSlot<T> {
+    fn drop(&mut self) {
+        if self.value_set.get() {
+            // SAFETY: the slot holds a value, and this is the last use of the slot.
+            unsafe { self.value.with_mut(|ptr| ptr::drop_in_place((*ptr).as_mut_ptr())) };
+        }
+    }
+}
+
+/// A thread-safe cell that can be written to only once.
+///
+/// # Differences from `tokio`
+///
+/// A cell that was created empty is empty again at the start of every execution, so that a cell in
+/// a `static` does not pass the value one execution set on to the next, which would make the
+/// executions depend on each other and a failing schedule hard to replay. The value lives in the
+/// current execution's storage, which brings the rest of the differences:
+///
+/// * the methods that reach the value require `T: 'static`, which that storage requires;
+/// * they have to run inside a Shuttle execution, including those of [`Clone`], [`PartialEq`] and
+///   [`fmt::Debug`], which read the value. The constructors run anywhere, as tokio's do;
+/// * a value is dropped when the execution ends, not when the cell is dropped, so a cell that goes
+///   out of scope part way through an execution keeps its value until the end of it.
+///
+/// A cell created with a value ([`OnceCell::const_new_with`], [`OnceCell::new_with`] of a `Some`,
+/// and `From<T>`) holds that one value in every execution: it is initialized from the start, so no
+/// execution can change it, and nothing carries over.
+pub struct OnceCell<T> {
+    slot: PerExecution<CellSlot<T>>,
     semaphore: Semaphore,
 }
 
@@ -60,42 +113,31 @@ impl<T> Default for OnceCell<T> {
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for OnceCell<T> {
+impl<T: fmt::Debug + 'static> fmt::Debug for OnceCell<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("OnceCell").field("value", &self.get()).finish()
     }
 }
 
-impl<T: Clone> Clone for OnceCell<T> {
+impl<T: Clone + 'static> Clone for OnceCell<T> {
     fn clone(&self) -> OnceCell<T> {
         OnceCell::new_with(self.get().cloned())
     }
 }
 
-impl<T: PartialEq> PartialEq for OnceCell<T> {
+impl<T: PartialEq + 'static> PartialEq for OnceCell<T> {
     fn eq(&self, other: &OnceCell<T>) -> bool {
         self.get() == other.get()
     }
 }
 
-impl<T: Eq> Eq for OnceCell<T> {}
-
-impl<T> Drop for OnceCell<T> {
-    fn drop(&mut self) {
-        if self.initialized_mut() {
-            unsafe {
-                self.value.with_mut(|ptr| ptr::drop_in_place((*ptr).as_mut_ptr()));
-            };
-        }
-    }
-}
+impl<T: Eq + 'static> Eq for OnceCell<T> {}
 
 impl<T> From<T> for OnceCell<T> {
     fn from(value: T) -> Self {
         OnceCell {
-            value_set: AtomicBool::new(true),
-            value: UnsafeCell::new(MaybeUninit::new(value)),
-            semaphore: Semaphore::new(0), // `new_closed` in tokio
+            slot: PerExecution::shared(CellSlot::with_value(value)),
+            semaphore: Semaphore::const_new(0), // `new_closed` in tokio
         }
     }
 }
@@ -104,8 +146,7 @@ impl<T> OnceCell<T> {
     /// Creates a new empty `OnceCell` instance.
     pub fn new() -> Self {
         OnceCell {
-            value_set: AtomicBool::new(false),
-            value: UnsafeCell::new(MaybeUninit::uninit()),
+            slot: PerExecution::new(),
             semaphore: Semaphore::new(1),
         }
     }
@@ -129,53 +170,51 @@ impl<T> OnceCell<T> {
 
     pub const fn const_new_with(value: T) -> Self {
         OnceCell {
-            value_set: AtomicBool::new(true),
-            value: UnsafeCell::new(MaybeUninit::new(value)),
+            slot: PerExecution::shared(CellSlot::with_value(value)),
             semaphore: Semaphore::const_new(0), // `const_new_closed` in tokio
         }
     }
 
     pub const fn const_new() -> Self {
         OnceCell {
-            value_set: AtomicBool::new(false),
-            value: UnsafeCell::new(MaybeUninit::uninit()),
+            slot: PerExecution::new(),
             semaphore: Semaphore::const_new(1),
         }
+    }
+}
+
+impl<T: 'static> OnceCell<T> {
+    /// The cell's slot in the current execution, which the execution creates, empty, when it first
+    /// uses a cell that was created empty.
+    fn slot(&self) -> &CellSlot<T> {
+        self.slot.get(CellSlot::empty)
     }
 
     /// Returns `true` if the `OnceCell` currently contains a value, and `false`
     /// otherwise.
     pub fn initialized(&self) -> bool {
-        // Using acquire ordering so any threads that read a true from this
-        // atomic is able to read the value.
-        self.value_set.load(Ordering::Acquire)
-    }
-
-    /// Returns `true` if the `OnceCell` currently contains a value, and `false`
-    /// otherwise.
-    fn initialized_mut(&mut self) -> bool {
-        *self.value_set.get_mut()
+        self.slot().value_set.get()
     }
 
     // SAFETY: The OnceCell must not be empty.
     unsafe fn get_unchecked(&self) -> &T {
-        &*self.value.with(|ptr| (*ptr).as_ptr())
+        &*self.slot().value.with(|ptr| (*ptr).as_ptr())
     }
 
     // SAFETY: The OnceCell must not be empty.
     unsafe fn get_unchecked_mut(&mut self) -> &mut T {
-        &mut *self.value.with_mut(|ptr| (*ptr).as_mut_ptr())
+        &mut *self.slot().value.with_mut(|ptr| (*ptr).as_mut_ptr())
     }
 
     fn set_value(&self, value: T, permit: SemaphorePermit<'_>) -> &T {
-        // SAFETY: We are holding the only permit on the semaphore.
+        let slot = self.slot();
+        // SAFETY: We are holding the only permit on the semaphore, and the slot is empty, so
+        // nothing refers to its value.
         unsafe {
-            self.value.with_mut(|ptr| (*ptr).as_mut_ptr().write(value));
+            slot.value.with_mut(|ptr| (*ptr).as_mut_ptr().write(value));
         }
 
-        // Using release ordering so any threads that read a true from this
-        // atomic is able to read the value we just stored.
-        self.value_set.store(true, Ordering::Release);
+        slot.value_set.set(true);
         self.semaphore.close();
         permit.forget();
 
@@ -200,7 +239,7 @@ impl<T> OnceCell<T> {
     /// value inside the `OnceCell` — the mutable borrow statically guarantees
     /// no other references exist.
     pub fn get_mut(&mut self) -> Option<&mut T> {
-        if self.initialized_mut() {
+        if self.initialized() {
             Some(unsafe { self.get_unchecked_mut() })
         } else {
             None
@@ -352,11 +391,14 @@ impl<T> OnceCell<T> {
 
     /// Takes the value from the cell, destroying the cell in the process.
     /// Returns `None` if the cell is empty.
-    pub fn into_inner(mut self) -> Option<T> {
-        if self.initialized_mut() {
-            // Set to uninitialized for the destructor of `OnceCell` to work properly
-            *self.value_set.get_mut() = false;
-            Some(unsafe { self.value.with(|ptr| ptr::read(ptr).assume_init()) })
+    pub fn into_inner(self) -> Option<T> {
+        let slot = self.slot();
+        if slot.value_set.get() {
+            // Set to uninitialized so that the slot's destructor does not drop the value too
+            slot.value_set.set(false);
+            // SAFETY: the slot held a value, and `&mut self` rules out any reference to it. A slot
+            // that every execution shares is only reached through `&self`, so it cannot get here.
+            Some(unsafe { slot.value.with(|ptr| ptr::read(ptr).assume_init()) })
         } else {
             None
         }

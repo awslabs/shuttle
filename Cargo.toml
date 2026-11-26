@@ -24,6 +24,8 @@ members = [
     "wrappers/async_stream",
     "wrappers/dashmap",
     "wrappers/dashmap/dashmap_impl",
+    "wrappers/spin",
+    "wrappers/spin/shuttle_spin_inner",
 ]
 
 resolver = "2"
