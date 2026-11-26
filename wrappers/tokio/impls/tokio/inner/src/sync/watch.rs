@@ -55,14 +55,16 @@
 //! [`Sender::is_closed`]: crate::sync::watch::Sender::is_closed
 //! [`Sender::closed`]: crate::sync::watch::Sender::closed
 
-use crate::sync::notify::Notify;
 use crate::sync::{RwLock, RwLockReadGuard};
 use shuttle_engine::runtime::thread;
+use std::future::Future;
 use std::mem;
 use std::ops;
 use std::panic;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 /// Receives values from the associated [`Sender`](struct@Sender).
 ///
@@ -135,10 +137,10 @@ struct Shared<T> {
     ref_count_tx: AtomicUsize,
 
     /// Notifies waiting receivers that the value changed.
-    notify_rx: Notify,
+    notify_rx: Waiters,
 
     /// Notifies any task listening for `Receiver` dropped events.
-    notify_tx: Notify,
+    notify_tx: Waiters,
 }
 
 pub mod error {
@@ -274,8 +276,8 @@ pub fn channel<T>(init: T) -> (Sender<T>, Receiver<T>) {
         state: AtomicState::new(),
         ref_count_rx: AtomicUsize::new(1),
         ref_count_tx: AtomicUsize::new(1),
-        notify_rx: Notify::new(),
-        notify_tx: Notify::new(),
+        notify_rx: Waiters::default(),
+        notify_tx: Waiters::default(),
     });
 
     let tx = Sender { shared: shared.clone() };
@@ -597,18 +599,94 @@ fn maybe_changed<T>(shared: &Shared<T>, version: &mut Version) -> Option<Result<
 }
 
 async fn changed_impl<T>(shared: &Shared<T>, version: &mut Version) -> Result<(), error::RecvError> {
-    loop {
-        // In order to avoid a race condition, we first request a notification,
-        // **then** check the current value's version. If a new version exists,
-        // the notification request is dropped.
-        let notified = shared.notify_rx.notified();
+    WaitUntil::new(&shared.notify_rx, || maybe_changed(shared, version)).await
+}
 
-        if let Some(ret) = maybe_changed(shared, version) {
-            return ret;
+/// The wakers of the tasks waiting on one side of the channel.
+///
+/// tokio waits on a `Notify`, and creates the `Notified` before it checks the state, so that a
+/// change between the check and the wait is not lost. Under Shuttle, a task runs alone between
+/// scheduling points, so a wait checks the state and stores its waker in one step instead (see
+/// `WaitUntil`). This crate's `Notify` would take more scheduling points, which add schedules but
+/// no outcomes: when it creates the `Notified`, at the first poll, when it drops a `Notified` that
+/// never completed, and in `notify_waiters`.
+#[derive(Debug, Default)]
+struct Waiters {
+    next_id: AtomicUsize,
+    wakers: Mutex<Vec<(usize, Waker)>>,
+}
+
+impl Waiters {
+    fn register(&self, id: &mut Option<usize>, waker: &Waker) {
+        self.remove(*id);
+        let new_id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.wakers.lock().unwrap().push((new_id, waker.clone()));
+        *id = Some(new_id);
+    }
+
+    fn remove(&self, id: Option<usize>) {
+        if let Some(id) = id {
+            self.wakers.lock().unwrap().retain(|(i, _)| *i != id);
         }
+    }
 
-        notified.await;
-        // loop around again in case the wake-up was spurious
+    /// Wakes every waiting task. The caller has taken the scheduling point for the change that it
+    /// wakes them for. The wake-up itself is not visible, as a woken task reads the state only when
+    /// it next runs.
+    fn notify_waiters(&self) {
+        let wakers = mem::take(&mut *self.wakers.lock().unwrap());
+        for (_, waker) in wakers {
+            waker.wake();
+        }
+    }
+}
+
+/// A future that waits until `check` returns `Some`.
+///
+/// A poll takes a scheduling point, checks, and stores its waker if the check fails, all in one
+/// step. As in `Notified`, a poll after one that returned `Pending` runs after a wake-up, at the
+/// start of a step, so it takes no scheduling point.
+struct WaitUntil<'a, F> {
+    waiters: &'a Waiters,
+    check: F,
+    id: Option<usize>,
+    poll_pending: bool,
+}
+
+impl<'a, F> WaitUntil<'a, F> {
+    fn new(waiters: &'a Waiters, check: F) -> Self {
+        Self {
+            waiters,
+            check,
+            id: None,
+            poll_pending: false,
+        }
+    }
+}
+
+impl<R, F: FnMut() -> Option<R> + Unpin> Future for WaitUntil<'_, F> {
+    type Output = R;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<R> {
+        let this = &mut *self;
+        // Scheduling point precedes the check, except after a wake-up
+        if !this.poll_pending {
+            thread::switch();
+        }
+        if let Some(ret) = (this.check)() {
+            this.waiters.remove(this.id.take());
+            return Poll::Ready(ret);
+        }
+        this.waiters.register(&mut this.id, cx.waker());
+        this.poll_pending = true;
+        Poll::Pending
+    }
+}
+
+impl<F> Drop for WaitUntil<'_, F> {
+    fn drop(&mut self) {
+        // No scheduling point: removing the waker is not visible to other tasks
+        self.waiters.remove(self.id.take());
     }
 }
 
@@ -888,17 +966,8 @@ impl<T> Sender<T> {
     /// }
     /// ```
     pub async fn closed(&self) {
-        loop {
-            let notified = self.shared.notify_tx.notified();
-
-            if self.receiver_count() == 0 {
-                return;
-            }
-
-            notified.await;
-            // The channel could have been reopened in the meantime by calling
-            // `subscribe`, so we loop again.
-        }
+        // The channel can be reopened by calling `subscribe`, so a woken wait checks again.
+        WaitUntil::new(&self.shared.notify_tx, || (self.receiver_count() == 0).then_some(())).await
     }
 
     /// Creates a new [`Receiver`] connected to this `Sender`.
