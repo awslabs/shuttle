@@ -1,5 +1,6 @@
 //! A counting semaphore supporting both async and sync operations.
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::per_execution::PerExecution;
 use crate::runtime::task::{clock::VectorClock, TaskId};
 use crate::runtime::thread;
 use crate::sync_types::{ResourceSignature, ResourceType};
@@ -295,6 +296,30 @@ struct BatchSemaphoreState {
 }
 
 impl BatchSemaphoreState {
+    /// The state of a semaphore that the current task creates now, with `num_permits` permits,
+    /// which take causality from the creator.
+    fn new(num_permits: usize) -> Self {
+        Self {
+            id: Some(crate::annotations::record_semaphore_created()),
+            waiters: VecDeque::new(),
+            reservation: None,
+            permits_available: PermitsAvailable::new(num_permits),
+            closed: false,
+        }
+    }
+
+    /// The state of a semaphore that an execution starts to use without having created it, as one in
+    /// a `static`: `num_permits` permits that depend on no event.
+    const fn const_new(num_permits: usize) -> Self {
+        Self {
+            id: None,
+            waiters: VecDeque::new(),
+            reservation: None,
+            permits_available: PermitsAvailable::const_new(num_permits),
+            closed: false,
+        }
+    }
+
     /// The permits that a request can take now. While a reservation holds the
     /// semaphore, that is none, except for the holder itself.
     fn available(&self) -> usize {
@@ -489,12 +514,31 @@ fn unblock_unless_stale(waiter: &Waiter) -> bool {
 }
 
 /// Counting semaphore
-#[derive(Debug)]
+///
+/// A semaphore keeps its state once for each execution (see [`PerExecution`]): an execution that
+/// uses a semaphore it didn't create, such as one in a `static`, starts with its initial permits,
+/// and nothing that another execution did to it.
 pub struct BatchSemaphore {
-    state: RefCell<BatchSemaphoreState>,
+    state: PerExecution<RefCell<BatchSemaphoreState>>,
+    /// The permits that an execution which starts to use the semaphore without having created it
+    /// finds in it.
+    initial_permits: usize,
     fairness: Fairness,
     #[allow(unused)]
     signature: ResourceSignature,
+}
+
+impl fmt::Debug for BatchSemaphore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_struct("BatchSemaphore");
+        match self.try_state() {
+            Some(state) => d.field("state", state),
+            None => d.field("state", &format_args!("<unavailable>")),
+        };
+        d.field("fairness", &self.fairness)
+            .field("signature", &self.signature)
+            .finish()
+    }
 }
 
 /// Error returned from the [`BatchSemaphore::try_acquire`] function.
@@ -540,17 +584,27 @@ impl BatchSemaphore {
     }
 
     pub fn new_with_signature(num_permits: usize, fairness: Fairness, signature: ResourceSignature) -> Self {
-        let state = RefCell::new(BatchSemaphoreState {
-            id: Some(crate::annotations::record_semaphore_created()),
-            waiters: VecDeque::new(),
-            reservation: None,
-            permits_available: PermitsAvailable::new(num_permits),
-            closed: false,
-        });
         Self {
-            state,
+            state: PerExecution::new_in_current_execution(|| RefCell::new(BatchSemaphoreState::new(num_permits))),
+            initial_permits: num_permits,
             fairness,
             signature,
+        }
+    }
+
+    /// Creates a new semaphore with the initial number of permits, which keeps one state for every
+    /// execution that uses it, rather than one per execution (see [`PerExecution::shared`]).
+    ///
+    /// This is for a semaphore inside a structure that keeps state of its own across executions, and
+    /// that the semaphore has to stay in step with: the semaphores of a channel, whose permits count
+    /// the messages in its buffer and the room left in it.
+    #[track_caller]
+    pub fn new_shared(num_permits: usize, fairness: Fairness) -> Self {
+        Self {
+            state: PerExecution::shared(RefCell::new(BatchSemaphoreState::new(num_permits))),
+            initial_permits: num_permits,
+            fairness,
+            signature: ExecutionState::new_resource_signature(ResourceType::BatchSemaphore),
         }
     }
 
@@ -569,46 +623,83 @@ impl BatchSemaphore {
         fairness: Fairness,
         signature: ResourceSignature,
     ) -> Self {
-        let state = RefCell::new(BatchSemaphoreState {
-            id: None,
-            waiters: VecDeque::new(),
-            reservation: None,
-            permits_available: PermitsAvailable::const_new(num_permits),
-            closed: false,
-        });
         Self {
-            state,
+            state: PerExecution::new(),
+            initial_permits: num_permits,
             fairness,
             signature,
         }
+    }
+
+    /// Like `state`, and gives the semaphore an object id if it does not have one yet (see
+    /// `try_state_with_id`).
+    #[inline]
+    fn state_with_id(&self) -> &RefCell<BatchSemaphoreState> {
+        self.try_state_with_id()
+            .expect("the per-execution state of a Shuttle semaphore was used while Shuttle holds its own state")
+    }
+
+    /// The current execution's state of the semaphore, which the execution creates when it first
+    /// uses a semaphore that it didn't create.
+    #[inline]
+    fn state(&self) -> &RefCell<BatchSemaphoreState> {
+        self.state
+            .get(|| RefCell::new(BatchSemaphoreState::const_new(self.initial_permits)))
+    }
+
+    /// Like `state`, but `None` where the state can't be reached: in an execution's storage while
+    /// Shuttle holds its own state borrowed (see [`PerExecution::try_get`]).
+    #[inline]
+    fn try_state(&self) -> Option<&RefCell<BatchSemaphoreState>> {
+        self.state
+            .try_get(|| RefCell::new(BatchSemaphoreState::const_new(self.initial_permits)))
     }
 
     /// Returns the current number of available permits. While a reservation
     /// holds the semaphore (see [`BatchSemaphore::acquire_reserving`]), this is
     /// zero: the available permits are kept for the holder.
     pub fn available_permits(&self) -> usize {
-        let state = self.state.borrow();
-        state.available()
+        match self.try_state() {
+            Some(state) => state.borrow().available(),
+            // Where the execution's state can't be reached, what the execution starts with.
+            None => self.initial_permits,
+        }
     }
 
     fn init_object_id(&self) {
-        let mut state = self.state.borrow_mut();
-        if state.id.is_none() {
-            state.id = Some(crate::annotations::record_semaphore_created());
+        self.try_state_with_id();
+    }
+
+    /// Like `try_state`, and gives the semaphore an object id for the annotations if it does not
+    /// have one yet, in the same lookup. For a `static` semaphore the lookup goes through the
+    /// execution's storage (see `PerExecution`), so an operation does it once.
+    #[inline]
+    fn try_state_with_id(&self) -> Option<&RefCell<BatchSemaphoreState>> {
+        let state = self.try_state()?;
+        if state.borrow().id.is_none() {
+            state.borrow_mut().id = Some(crate::annotations::record_semaphore_created());
         }
+        Some(state)
     }
 
     /// Closes the semaphore. This prevents the semaphore from issuing new
     /// permits and notifies all pending waiters.
     pub fn close(&self) {
-        thread::switch();
+        // The destructors of the primitives built on this one close their semaphores, and can run
+        // where the current task can't switch: outside of an execution, or after it stopped (see
+        // `thread::switch_if_not_stopping`). There is nothing to close there either.
+        thread::switch_if_not_stopping();
         self.close_no_scheduling_point();
     }
 
     /// Closes the semaphore without invoking `thread::switch`
     pub fn close_no_scheduling_point(&self) {
-        self.init_object_id();
-        let mut state = self.state.borrow_mut();
+        // Where the execution's state can't be reached, there is nothing to close (see
+        // `ExecutionState::should_stop`).
+        let Some(state) = self.try_state_with_id() else {
+            return;
+        };
+        let mut state = state.borrow_mut();
         if state.closed {
             return;
         }
@@ -642,8 +733,8 @@ impl BatchSemaphore {
 
     /// Returns true iff the semaphore is closed.
     pub fn is_closed(&self) -> bool {
-        let state = self.state.borrow();
-        state.closed
+        // Where the execution's state can't be reached, what the execution starts with.
+        self.try_state().is_some_and(|state| state.borrow().closed)
     }
 
     /// Try to acquire the specified number of permits from the Semaphore.
@@ -653,8 +744,7 @@ impl BatchSemaphore {
     pub fn try_acquire(&self, num_permits: usize) -> Result<(), TryAcquireError> {
         thread::switch();
 
-        self.init_object_id();
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state_with_id().borrow_mut();
         let id = state.id.unwrap();
         let res = state
             .acquire_permits(num_permits, self.fairness, Priority::Back)
@@ -695,7 +785,7 @@ impl BatchSemaphore {
     /// the permits remaining in the semaphore.
     fn reblock_if_unfair(&self) {
         if self.fairness == Fairness::Unfair {
-            let state = self.state.borrow_mut();
+            let state = self.state().borrow_mut();
             ExecutionState::with(|s| {
                 let me = s.try_current().map(|task| task.id());
                 for waiter in &state.waiters {
@@ -720,7 +810,7 @@ impl BatchSemaphore {
     }
 
     fn enqueue_waiter(&self, waiter: &Arc<Waiter>, priority: Priority) {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state().borrow_mut();
 
         trace!(
             "enqueuing waiter {:?} ({priority:?}) for semaphore {:p}",
@@ -741,7 +831,12 @@ impl BatchSemaphore {
     }
 
     fn remove_waiter(&self, waiter: &Arc<Waiter>) {
-        let mut state = self.state.borrow_mut();
+        // Only an `Acquire`'s destructor can call this where the execution's state can't be reached,
+        // and it skips its bookkeeping there (see `ExecutionState::should_stop`).
+        let Some(state) = self.try_state() else {
+            return;
+        };
+        let mut state = state.borrow_mut();
 
         trace!(waiters = ?state.waiters, "removing waiter {:?} from semaphore {:p}", waiter, &self.state);
 
@@ -782,7 +877,11 @@ impl BatchSemaphore {
     /// dropped before it was granted. The permits that the reservation kept
     /// were never taken, so they are available again at once.
     fn cancel_reservation(&self, waiter: &Arc<Waiter>) {
-        let mut state = self.state.borrow_mut();
+        // As in `remove_waiter`.
+        let Some(state) = self.try_state() else {
+            return;
+        };
+        let mut state = state.borrow_mut();
 
         trace!("cancelling reservation {:?} of semaphore {:p}", waiter, &self.state);
 
@@ -873,7 +972,10 @@ impl BatchSemaphore {
             }
         }
         let release_on_unwind = ReleaseOnUnwind(self, num_permits);
-        thread::switch();
+        // A lock guard that outlives its execution releases its permits in its destructor, where the
+        // current task can't switch (see `thread::switch_if_not_stopping`). The release then only
+        // does the bookkeeping that `should_stop` allows.
+        thread::switch_if_not_stopping();
         std::mem::forget(release_on_unwind);
 
         self.release_no_scheduling_point(num_permits);
@@ -884,12 +986,16 @@ impl BatchSemaphore {
     /// then releases a permit for the receiver, as one step after one scheduling point.
     #[inline]
     pub fn release_no_scheduling_point(&self, num_permits: usize) {
-        self.init_object_id();
         if num_permits == 0 {
             return;
         }
 
-        let mut state = self.state.borrow_mut();
+        // Where the execution's state can't be reached, the release skips its bookkeeping, as it
+        // does where Shuttle holds its state borrowed (see `ExecutionState::should_stop`).
+        let Some(state) = self.try_state_with_id() else {
+            return;
+        };
+        let mut state = state.borrow_mut();
 
         crate::annotations::record_semaphore_release(state.id.unwrap(), num_permits);
 
@@ -993,9 +1099,8 @@ impl BatchSemaphore {
 
         thread::switch();
 
-        self.init_object_id();
         let num_permits = permits_to_be_held - permits_currently_held;
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state_with_id().borrow_mut();
         let id = state.id.unwrap();
         let res = state
             .acquire_permits(num_permits, self.fairness, Priority::Front)
@@ -1113,9 +1218,11 @@ impl<'a> Acquire<'a> {
 
     /// Does this acquire hold the semaphore's reservation?
     fn is_reserving(&self) -> bool {
-        self.waiter
-            .as_ref()
-            .is_some_and(|waiter| self.semaphore.state.borrow().is_reserved_by(waiter))
+        self.waiter.as_ref().is_some_and(|waiter| {
+            self.semaphore
+                .try_state()
+                .is_some_and(|state| state.borrow().is_reserved_by(waiter))
+        })
     }
 
     /// Have permits been granted to this acquire? Once a `Waiter` exists the
@@ -1173,7 +1280,7 @@ impl<'a> Acquire<'a> {
             self
         );
 
-        let mut state = semaphore.state.borrow_mut();
+        let mut state = semaphore.state().borrow_mut();
         let id = state.id.unwrap();
         let available = state.permits_available.available();
 
@@ -1252,7 +1359,7 @@ impl<'a> Acquire<'a> {
         } else {
             crate::annotations::record_semaphore_acquire_blocked(id, self.num_permits);
         }
-        semaphore.state.borrow_mut().reservation = Some(waiter);
+        semaphore.state().borrow_mut().reservation = Some(waiter);
         trace!("Acquire::poll for {:?} that reserved the semaphore", self);
         // No waiter can take a permit now.
         semaphore.reblock_if_unfair();
@@ -1274,7 +1381,7 @@ impl Future for Acquire<'_> {
         // the semaphore changes its state as much as one that will succeed, so
         // it compares against the permits at which it reserves.
         let will_succeed = self.has_permits() || {
-            let state = self.semaphore.state.borrow();
+            let state = self.semaphore.state().borrow();
             state.closed || state.available() >= self.min_permits()
         };
 
@@ -1365,7 +1472,7 @@ impl Future for Acquire<'_> {
                 // Access the semaphore state directly instead of `try_acquire`,
                 // because in case of `NoPermits`, we do not want to update the
                 // clock, as this thread will be blocked below.
-                let mut state = self.semaphore.state.borrow_mut();
+                let mut state = self.semaphore.state().borrow_mut();
                 let id = state.id.unwrap();
                 let acquire_result = state.acquire_permits(self.num_permits, self.semaphore.fairness, self.priority);
                 drop(state);
@@ -1486,7 +1593,7 @@ impl Drop for Acquire<'_> {
 impl crate::annotations::WithName for &BatchSemaphore {
     fn with_name_and_kind(self, name: Option<&str>, kind: Option<&str>) -> Self {
         self.init_object_id();
-        crate::annotations::record_name_for_object(self.state.borrow().id.unwrap(), name, kind);
+        crate::annotations::record_name_for_object(self.state().borrow().id.unwrap(), name, kind);
         self
     }
 }

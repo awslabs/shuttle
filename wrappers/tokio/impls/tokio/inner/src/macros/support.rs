@@ -18,6 +18,11 @@ pub fn poll_budget_available(_: &mut Context<'_>) -> Poll<()> {
 #[doc(hidden)]
 pub use shuttle_engine::thread_support::DestroyedLastKey as __ShuttleDestroyedLastKey;
 
+// SHUTTLE_CHANGES: Used by `task_local!`, for the thread-local storage it falls back to whenever
+// Shuttle has no current task.
+#[doc(hidden)]
+pub use crate::task::fallback_key::FallbackKey as __ShuttleFallbackKey;
+
 pub use std::future::{Future, IntoFuture};
 pub use std::pin::Pin;
 pub use std::task::{Context, Poll};

@@ -1,11 +1,20 @@
 use crate::sync::atomic::Atomic;
 #[cfg(test)]
 use crate::sync::ResourceSignature;
+use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 
 /// A raw pointer type which can be safely shared between threads.
 pub struct AtomicPtr<T> {
-    inner: Atomic<*mut T>,
+    // The pointer without its pointee type, which is all the same to an atomic. An execution keeps
+    // its value in its storage, which only holds `'static` types, and `T` need not be.
+    inner: Atomic<*mut ()>,
+    _pointee: PhantomData<*mut T>,
+}
+
+/// The two `Result`s of `try_update` with their pointee type.
+fn restore<T>(result: Result<*mut (), *mut ()>) -> Result<*mut T, *mut T> {
+    result.map(<*mut ()>::cast).map_err(<*mut ()>::cast)
 }
 
 impl<T> Default for AtomicPtr<T> {
@@ -41,32 +50,37 @@ impl<T> AtomicPtr<T> {
     /// Creates a new `AtomicPtr`.
     #[track_caller]
     pub const fn new(v: *mut T) -> Self {
-        Self { inner: Atomic::new(v) }
+        Self {
+            inner: Atomic::new(v.cast()),
+            _pointee: PhantomData,
+        }
     }
 
     /// Returns a mutable reference to the underlying pointer.
     pub fn get_mut(&mut self) -> &mut *mut T {
-        self.inner.get_mut()
+        let erased: *mut *mut () = self.inner.get_mut();
+        // Safety: `*mut T` and `*mut ()` have the same layout, as `T: Sized`.
+        unsafe { &mut *erased.cast::<*mut T>() }
     }
 
     /// Consumes the atomic and returns the contained value.
     pub fn into_inner(self) -> *mut T {
-        self.inner.into_inner()
+        self.inner.into_inner().cast()
     }
 
     /// Loads a value from the pointer.
     pub fn load(&self, order: Ordering) -> *mut T {
-        self.inner.load(order)
+        self.inner.load(order).cast()
     }
 
     /// Stores a value into the pointer.
     pub fn store(&self, val: *mut T, order: Ordering) {
-        self.inner.store(val, order)
+        self.inner.store(val.cast(), order)
     }
 
     /// Stores a value into the atomic pointer, returning the previous value.
     pub fn swap(&self, val: *mut T, order: Ordering) -> *mut T {
-        self.inner.swap(val, order)
+        self.inner.swap(val.cast(), order).cast()
     }
 
     /// Fetches the value, and applies a function to it that returns an optional new value.
@@ -134,8 +148,10 @@ impl<T> AtomicPtr<T> {
         success: Ordering,
         failure: Ordering,
     ) -> Result<*mut T, *mut T> {
-        self.inner
-            .try_update(success, failure, |val| (val == current).then_some(new))
+        restore(
+            self.inner
+                .try_update(success, failure, |val| (val == current.cast()).then_some(new.cast())),
+        )
     }
 
     /// Stores a value into the atomic pointer if the current value is the same as the
@@ -176,42 +192,52 @@ impl<T> AtomicPtr<T> {
     ///
     /// This operation wraps around on overflow, like `<*mut T>::wrapping_byte_add`.
     pub fn fetch_byte_add(&self, val: usize, order: Ordering) -> *mut T {
-        self.inner
-            .try_update(order, order, |old| Some(old.wrapping_byte_add(val)))
-            .unwrap()
+        restore::<T>(
+            self.inner
+                .try_update(order, order, |old| Some(old.wrapping_byte_add(val))),
+        )
+        .unwrap()
     }
 
     /// Offsets the pointer's address by subtracting `val` bytes. Returns the previous pointer.
     ///
     /// This operation wraps around on overflow, like `<*mut T>::wrapping_byte_sub`.
     pub fn fetch_byte_sub(&self, val: usize, order: Ordering) -> *mut T {
-        self.inner
-            .try_update(order, order, |old| Some(old.wrapping_byte_sub(val)))
-            .unwrap()
+        restore::<T>(
+            self.inner
+                .try_update(order, order, |old| Some(old.wrapping_byte_sub(val))),
+        )
+        .unwrap()
     }
 
     /// Bitwise "or" of the pointer's address with `val`, keeping the pointer's provenance.
     /// Returns the previous pointer.
     pub fn fetch_or(&self, val: usize, order: Ordering) -> *mut T {
-        self.inner
-            .try_update(order, order, |old| Some(old.map_addr(|addr| addr | val)))
-            .unwrap()
+        restore::<T>(
+            self.inner
+                .try_update(order, order, |old| Some(old.map_addr(|addr| addr | val))),
+        )
+        .unwrap()
     }
 
     /// Bitwise "and" of the pointer's address with `val`, keeping the pointer's provenance.
     /// Returns the previous pointer.
     pub fn fetch_and(&self, val: usize, order: Ordering) -> *mut T {
-        self.inner
-            .try_update(order, order, |old| Some(old.map_addr(|addr| addr & val)))
-            .unwrap()
+        restore::<T>(
+            self.inner
+                .try_update(order, order, |old| Some(old.map_addr(|addr| addr & val))),
+        )
+        .unwrap()
     }
 
     /// Bitwise "xor" of the pointer's address with `val`, keeping the pointer's provenance.
     /// Returns the previous pointer.
     pub fn fetch_xor(&self, val: usize, order: Ordering) -> *mut T {
-        self.inner
-            .try_update(order, order, |old| Some(old.map_addr(|addr| addr ^ val)))
-            .unwrap()
+        restore::<T>(
+            self.inner
+                .try_update(order, order, |old| Some(old.map_addr(|addr| addr ^ val))),
+        )
+        .unwrap()
     }
 
     /// Load the atomic value directly without triggering any Shuttle context switches.
@@ -222,7 +248,7 @@ impl<T> AtomicPtr<T> {
     /// and so it should be used when those interleavings aren't important (primarily in
     /// debugging scenarios where we might want to just print this atomic's value).
     pub unsafe fn raw_load(&self) -> *mut T {
-        self.inner.raw_load()
+        self.inner.raw_load().cast()
     }
 
     #[cfg(test)]

@@ -1,3 +1,6 @@
+mod barrier;
+pub use barrier::{Barrier, BarrierWaitResult};
+
 mod mutex;
 pub use mutex::{Mutex, MutexGuard, OwnedMutexGuard, TryLockError};
 
@@ -30,6 +33,9 @@ pub mod futures {
 
 mod once_cell;
 pub use self::once_cell::OnceCell;
+
+mod set_once;
+pub use set_once::{SetOnce, SetOnceError};
 
 #[cfg(test)]
 mod test {

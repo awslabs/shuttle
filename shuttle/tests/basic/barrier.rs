@@ -1,5 +1,6 @@
+use shuttle::sync::atomic::AtomicBool;
 use shuttle::sync::{mpsc::channel, Barrier};
-use shuttle::{check_dfs, thread};
+use shuttle::{check_dfs, check_random_with_seed, thread};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -77,9 +78,19 @@ fn barrier_test(n: usize, c: usize) {
     }
 }
 
+// Every arrival at a barrier is now a scheduling point of its own (see
+// `every_arrival_is_a_separate_step`), which multiplies the schedules of a test where several
+// threads meet at one. Exhausting them for four threads took 57 s, against 1.5 s before, so this
+// runs three threads exhaustively and four under a seeded random scheduler, as the barrier tests of
+// `shuttle-tokio` do.
 #[test]
 fn barrier_test_many_ok() {
-    check_dfs(|| barrier_test(4, 4), None);
+    check_dfs(|| barrier_test(3, 3), None);
+}
+
+#[test]
+fn barrier_test_many_ok_random() {
+    check_random_with_seed(|| barrier_test(4, 4), 0x5EED, 10_000);
 }
 
 #[test]
@@ -198,4 +209,45 @@ fn barrier_test_nondeterministic_leader_2() {
 #[test]
 fn barrier_test_nondeterministic_leader_4() {
     barrier_test_nondeterministic_leader(4, 4);
+}
+
+/// Every arrival takes a scheduling point, including one that will wait, so that the orderings in
+/// which a thread's earlier operation becomes visible before another thread arrives are all
+/// explored. Two arrivals that both wait commute, but an arrival that waits does not commute with
+/// the arrival that releases the generation after it, because the last arrival is the leader.
+///
+/// One thread stores a flag and then waits, the other loads the flag and then waits. Real threads
+/// produce all four (flag seen, leader) outcomes. Without a scheduling point before an arrival that
+/// waits, Shuttle explores two of them: `(false, true)` and `(true, false)`.
+#[test]
+fn every_arrival_is_a_separate_step() {
+    let outcomes = Arc::new(std::sync::Mutex::new(HashSet::new()));
+    let seen = Arc::clone(&outcomes);
+
+    check_dfs(
+        move || {
+            let barrier = Arc::new(Barrier::new(2));
+            let flag = Arc::new(AtomicBool::new(false));
+
+            let loader = {
+                let (barrier, flag) = (Arc::clone(&barrier), Arc::clone(&flag));
+                thread::spawn(move || {
+                    let saw_flag = flag.load(Ordering::SeqCst);
+                    barrier.wait();
+                    saw_flag
+                })
+            };
+
+            flag.store(true, Ordering::SeqCst);
+            let storer_is_leader = barrier.wait().is_leader();
+            let saw_flag = loader.join().unwrap();
+            seen.lock().unwrap().insert((saw_flag, storer_is_leader));
+        },
+        None,
+    );
+
+    assert_eq!(
+        *outcomes.lock().unwrap(),
+        HashSet::from([(false, false), (false, true), (true, false), (true, true)])
+    );
 }

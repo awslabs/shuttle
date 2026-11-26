@@ -901,6 +901,103 @@ mod api {
         assert!(KEY.try_get().is_err());
     }
 
+    /// Outside of a Shuttle test the slots come from one registry, keyed by the key's static and
+    /// held in a thread-local of the implementation (see `task::fallback_key`). Each key must
+    /// still have a slot of its own, and each OS thread its own set of them.
+    #[test]
+    fn fallback_slots_are_per_key_and_per_thread() {
+        task_local! {
+            static ONE: u32;
+            static TWO: u32;
+            static OTHER_TYPE: String;
+        }
+
+        ONE.sync_scope(1, || {
+            TWO.sync_scope(2, || {
+                OTHER_TYPE.sync_scope("three".to_owned(), || {
+                    assert_eq!(ONE.get(), 1);
+                    assert_eq!(TWO.get(), 2);
+                    assert_eq!(OTHER_TYPE.get(), "three");
+
+                    // Another OS thread's slots are its own, and start out empty even though this
+                    // thread is inside a scope of each key.
+                    std::thread::spawn(|| {
+                        assert!(ONE.try_get().is_err());
+                        assert!(TWO.try_get().is_err());
+                        assert!(OTHER_TYPE.try_get().is_err());
+                        assert_eq!(ONE.sync_scope(10, || ONE.get()), 10);
+                        assert!(ONE.try_get().is_err());
+                    })
+                    .join()
+                    .unwrap();
+
+                    // ... and left this thread's alone.
+                    assert_eq!(ONE.get(), 1);
+                    assert_eq!(TWO.get(), 2);
+                    assert_eq!(OTHER_TYPE.get(), "three");
+                })
+            })
+        });
+
+        assert!(ONE.try_get().is_err());
+        assert!(TWO.try_get().is_err());
+        assert!(OTHER_TYPE.try_get().is_err());
+    }
+
+    /// Entering a scope of a key the thread has never used from inside a scope of another key
+    /// creates a slot while the first key's is in use, which the registry has to allow.
+    #[test]
+    fn fallback_slot_is_created_inside_another_keys_scope() {
+        task_local! {
+            static OUTER: u32;
+            static INNER: u32;
+        }
+
+        let seen = OUTER.sync_scope(1, || {
+            OUTER.with(|outer| {
+                // Creates `INNER`'s slot while `OUTER`'s is borrowed.
+                INNER.sync_scope(2, || (*outer, INNER.get()))
+            })
+        });
+        assert_eq!(seen, (1, 2));
+    }
+
+    /// A thread-local destructor may read a task-local while the thread exits, as it may with
+    /// tokio's. Whether it still finds the slot depends on the order the thread's thread-locals are
+    /// destroyed in, which is unspecified; either way it must not panic, and must report the key as
+    /// unset rather than hand out a destroyed slot.
+    #[test]
+    fn fallback_slot_in_a_thread_local_destructor() {
+        task_local! {
+            static KEY: u32;
+        }
+
+        static READS: std::sync::Mutex<Vec<Option<u32>>> = std::sync::Mutex::new(Vec::new());
+
+        struct ReadsKeyOnDrop;
+
+        impl Drop for ReadsKeyOnDrop {
+            fn drop(&mut self) {
+                READS.lock().unwrap().push(KEY.try_get().ok());
+            }
+        }
+
+        std::thread_local! {
+            static READS_KEY_ON_DROP: ReadsKeyOnDrop = const { ReadsKeyOnDrop };
+        }
+
+        std::thread::spawn(|| {
+            READS_KEY_ON_DROP.with(|_| ());
+            // Uses the key, so that the thread has a slot for it to begin with.
+            assert_eq!(KEY.sync_scope(1, || KEY.get()), 1);
+        })
+        .join()
+        .unwrap();
+
+        // The destructor ran, and found no value either way: it is outside of every scope.
+        assert_eq!(*READS.lock().unwrap(), [None]);
+    }
+
     /// A `tracing` subscriber that reads a task-local on every event. Besides the events of the
     /// test, it gets Shuttle's own (at every level down to TRACE), some of which Shuttle emits
     /// outside of any task, or while it is updating its own state. None of those must panic.
