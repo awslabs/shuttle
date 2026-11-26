@@ -141,3 +141,30 @@ mod timeout_tests {
         );
     }
 }
+
+/// Regression test: a trigger applies only in the execution that adds it.
+///
+/// The first execution adds a trigger that matches every task, and doesn't clear it. The second
+/// execution's timeout must not expire.
+#[test]
+fn trigger_does_not_outlive_its_execution() {
+    use shuttle_tokio_impl_inner::time::{timeout, trigger_timeouts};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let executions = Arc::new(AtomicUsize::new(0));
+    shuttle::check_random(
+        move || {
+            if executions.fetch_add(1, Ordering::SeqCst) == 0 {
+                trigger_timeouts(|_| true);
+            } else {
+                let result = shuttle::future::block_on(timeout(Duration::from_secs(1), async {}));
+                assert!(
+                    result.is_ok(),
+                    "the trigger of an earlier execution expired the timeout"
+                );
+            }
+        },
+        2,
+    );
+}

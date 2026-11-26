@@ -2,6 +2,8 @@
 
 use pin_project::{pin_project, pinned_drop};
 use shuttle::current::{get_current_task, with_labels_for_task, Labels, TaskId};
+use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::storage::StorageKey;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -17,11 +19,26 @@ pub fn pause() {}
 // test frameworks to selectively force timeouts.  This is achieved by
 // remembering the tag (if any) of the task that requested a timeout.
 
-// The following global table records (1) the set of all currently active
+// The following table records (1) the set of all currently active
 // timeouts, as well as (2) the set of all registered expiry triggers.
+// It lives in the execution's storage, so that each execution starts
+// with no timeouts and no triggers.
 
-thread_local! {
-    static TIMEOUT_TABLE: Map = Map::default();
+// The address of this static identifies the table in the execution's storage
+static TIMEOUT_TABLE: u8 = 0;
+
+fn with_timeout_table<R>(f: impl FnOnce(&Map) -> R) -> R {
+    let key = StorageKey(&TIMEOUT_TABLE as *const u8 as usize, 0x5);
+    let table = ExecutionState::with(|state| {
+        if state.get_storage::<_, Map>(key).is_none() {
+            state.init_storage(key, Map::default());
+        }
+        state.get_storage::<_, Map>(key).unwrap() as *const Map
+    });
+    // SAFETY: The storage keeps the table at the same address until the end of the execution,
+    // as for a `lazy_static` value. `f` runs outside of `ExecutionState::with`, so it can call
+    // `with_labels_for_task`.
+    f(unsafe { &*table })
 }
 
 #[derive(Default)]
@@ -60,11 +77,16 @@ unsafe impl Sync for Map {}
 
 /// Expire all current and future timeouts requested by tasks whose tags match the
 /// given predicate.
+///
+/// The trigger lasts until the end of the execution, or until [`clear_triggers`]. It
+/// takes effect in the same step as the caller's previous operation. To have Shuttle
+/// explore the trigger at different points of the other tasks, call this function
+/// from a task of its own.
 pub fn trigger_timeouts<F>(trigger: F)
 where
     F: Fn(&Labels) -> bool + 'static,
 {
-    let wakers = TIMEOUT_TABLE.with(|table| {
+    let wakers = with_timeout_table(|table| {
         let mut map = table.inner.lock().unwrap();
         let mut wakers = vec![];
         for TimeoutEntry { task_id, state } in map.entries.values_mut() {
@@ -93,9 +115,10 @@ where
     }
 }
 
-/// Clear all timeout triggers
+/// Clear all timeout triggers. Like [`trigger_timeouts`], this takes effect in the
+/// same step as the caller's previous operation.
 pub fn clear_triggers() {
-    TIMEOUT_TABLE.with(|table| {
+    with_timeout_table(|table| {
         table.inner.lock().unwrap().triggers.clear();
     });
 }
@@ -120,7 +143,7 @@ where
         // If the future returns `Pending`, we poll it again in case we
         // invoked the trigger while the future was being polled.
         let slot = self.slot;
-        let timed_out = TIMEOUT_TABLE.with(|table| {
+        let timed_out = with_timeout_table(|table| {
             let map = table.inner.lock().unwrap();
             let entry = map.entries.get(&slot).unwrap();
             matches!(entry.state, TimeoutState::Expired)
@@ -131,7 +154,7 @@ where
         let this = self.project();
         match this.future.poll(cx) {
             Poll::Ready(r) => Poll::Ready(Ok(r)),
-            Poll::Pending => TIMEOUT_TABLE.with(|table| {
+            Poll::Pending => with_timeout_table(|table| {
                 let mut map = table.inner.lock().unwrap();
                 let TimeoutEntry { state, .. } = map.entries.get_mut(&slot).unwrap();
                 match state {
@@ -149,8 +172,12 @@ where
 #[pinned_drop]
 impl<F> PinnedDrop for Timeout<F> {
     fn drop(self: Pin<&mut Self>) {
-        // On drop, remove the associated entry from the `TIMEOUT_TABLE`
-        TIMEOUT_TABLE.with(|table| {
+        // On drop, remove the associated entry from the timeout table, which only exists while the
+        // execution runs
+        if ExecutionState::should_stop() {
+            return;
+        }
+        with_timeout_table(|table| {
             let mut map = table.inner.lock().unwrap();
             if let Some(e) = map.entries.remove(&self.slot) {
                 trace!("removed entry {:?} at slot {}", e, self.slot);
@@ -169,7 +196,7 @@ where
         // underlying Label storage in Shuttle (needed for `with_labels_for_task`).
         let task_name = format!("{task_id:?}");
         with_labels_for_task(task_id, |labels| {
-            TIMEOUT_TABLE.with(|table| {
+            with_timeout_table(|table| {
                 let mut map = table.inner.lock().unwrap();
                 let state = if map.triggers.iter().any(|trigger| trigger(labels)) {
                     TimeoutState::Expired
