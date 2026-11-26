@@ -1,12 +1,12 @@
 use crate::sync::{ResourceSignature, ResourceType};
 use shuttle_engine::runtime::execution::ExecutionState;
+use shuttle_engine::runtime::per_execution::PerExecution;
 use shuttle_engine::runtime::task::clock::VectorClock;
 use shuttle_engine::runtime::task::TaskId;
 use shuttle_engine::runtime::thread;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt;
-use std::rc::Rc;
 use tracing::trace;
 
 #[derive(Clone, Copy, Debug)]
@@ -70,8 +70,13 @@ impl fmt::Debug for BarrierState {
 
 #[derive(Debug)]
 /// A barrier enables multiple threads to synchronize the beginning of some computation.
+///
+/// Its waiters and generations are kept once for each execution, so that a `static` barrier starts
+/// every execution with none, whatever an earlier execution left waiting on it.
 pub struct Barrier {
-    state: Rc<RefCell<BarrierState>>,
+    state: PerExecution<RefCell<BarrierState>>,
+    /// The number of threads that every generation of waiters must have.
+    bound: usize,
     #[allow(unused)]
     signature: ResourceSignature,
 }
@@ -80,43 +85,50 @@ impl Barrier {
     /// Creates a new barrier that can block a given number of threads.
     /// A barrier will block n-1 threads which call `wait()` and then wake up all threads
     /// at once when the nth thread calls `wait()`.
+    #[must_use]
     #[track_caller]
-    pub fn new(n: usize) -> Self {
-        let state = BarrierState {
+    pub const fn new(n: usize) -> Self {
+        Self {
+            state: PerExecution::new(),
             bound: n,
+            signature: ResourceSignature::new_const(ResourceType::Barrier),
+        }
+    }
+
+    /// The waiters of the current execution, which the execution creates when it first uses the
+    /// barrier.
+    fn state(&self) -> &RefCell<BarrierState> {
+        self.state.get(|| self.fresh_state())
+    }
+
+    /// The state of an execution that hasn't used the barrier yet.
+    fn fresh_state(&self) -> RefCell<BarrierState> {
+        RefCell::new(BarrierState {
+            bound: self.bound,
             epoch: 0,
             waiters: HashSet::new(),
             leader_tokens: HashSet::new(),
             clock: VectorClock::new(),
-        };
-
-        Self {
-            state: Rc::new(RefCell::new(state)),
-            signature: ExecutionState::new_resource_signature(ResourceType::Barrier),
-        }
+        })
     }
 
     /// Blocks the current thread until all threads have rendezvoused here.
     pub fn wait(&self) -> BarrierWaitResult {
-        let state = self.state.borrow_mut();
-        // The barrier will block if the number of current waiters *plus* an additional waiter
-        // for this thread is less than the bound
-        let will_block = state.waiters.len() + 1 < state.bound;
-        drop(state);
-
-        // If all tasks have already rendezvoused, we need to context switch once to allow the
-        // previous event to become visible before the epoch changes. Otherwise, we can omit the
-        // scheduling point if the wait commutes with other blocking waits (double-yield optimization,
-        // reasoning below).
+        // The scheduling point precedes the arrival, whether this thread will wait for the
+        // generation or release it.
         //
-        // Blocking waits Y1 and Z on threads T1 and T2 always commute with each other because
-        // the waiters for a barrier are represented by an unordered set. Thus for both orderings
-        // `Y1 Z` and `Z Y1`, the state of the barrier is {T1, T2}. As a result, we never need to
-        // switch before blocking on a barrier wait.
-        if !will_block {
-            thread::switch();
-        }
-        let mut state = self.state.borrow_mut();
+        // Two arrivals that both wait do commute: the waiters of a generation are an unordered set,
+        // so after `Y Z` and after `Z Y` the barrier holds the same two waiters. But an arrival that
+        // waits does not commute with the arrival that releases the generation after it, because the
+        // last arrival is the leader. Without a scheduling point here, an arrival runs in the same
+        // step as its thread's previous operation, so no other thread can observe that operation and
+        // still arrive first. In a test where one thread stores a flag and then waits, and the other
+        // loads the flag and then waits, real threads produce all four (flag seen, leader) outcomes,
+        // and an arrival without a scheduling point explores two of them (see
+        // `basic::barrier::every_arrival_is_a_separate_step`).
+        thread::switch();
+
+        let mut state = self.state().borrow_mut();
         let my_epoch = state.epoch;
 
         trace!(waiters=?state.waiters, epoch=my_epoch, "waiting on barrier {:p}", self);
@@ -141,7 +153,11 @@ impl Barrier {
             struct StopWaitingOnUnwind<'a>(&'a Barrier, TaskId);
             impl Drop for StopWaitingOnUnwind<'_> {
                 fn drop(&mut self) {
-                    self.0.state.borrow_mut().waiters.remove(&self.1);
+                    // Where the execution's state can't be reached, there is no bookkeeping to do
+                    // (see `ExecutionState::should_stop`).
+                    if let Some(state) = self.0.state.try_get(|| self.0.fresh_state()) {
+                        state.borrow_mut().waiters.remove(&self.1);
+                    }
                 }
             }
             let stop_waiting_on_unwind = StopWaitingOnUnwind(self, me);
@@ -185,7 +201,7 @@ impl Barrier {
 
         // Try to remove the leader token for this epoch. If true, then the token was present and
         // we are the leader. Any future attempts to remove the token will return false.
-        let is_leader = self.state.borrow_mut().leader_tokens.remove(&my_epoch);
+        let is_leader = self.state().borrow_mut().leader_tokens.remove(&my_epoch);
 
         trace!(epoch=?my_epoch, is_leader, "returning from barrier {:?}", self);
 
@@ -194,8 +210,9 @@ impl Barrier {
 }
 
 // Safety: Barrier is never actually passed across threads, only across continuations. The
-// Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
-// TODO we shouldn't need to do this, but RefCell is not Send, and Barrier needs to be Send.
+// RefCell<_> type therefore can't be preempted mid-bookkeeping-operation. An execution on another
+// thread keeps its own state (see `PerExecution`).
+// TODO we shouldn't need to do this, but RefCell is not Sync, and Barrier needs to be Sync.
 unsafe impl Send for Barrier {}
 unsafe impl Sync for Barrier {}
 

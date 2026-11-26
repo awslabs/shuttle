@@ -52,6 +52,22 @@ impl StorageMap {
         self.last.push_back(key);
     }
 
+    /// Like `init_destructed_last`, but a slot that has been destructed already is initialized
+    /// again, and destructed again later, rather than refused. Returns the slot's value.
+    ///
+    /// This is for state that something may still use while the slots are being destructed: the
+    /// state of a primitive in a `static`, say, that another slot's destructor uses after the
+    /// primitive's own slot is gone.
+    pub fn init_or_reinit_destructed_last<T: 'static>(&mut self, key: StorageKey, value: T) -> &T {
+        let slot = self.locals.entry(key).or_insert(None);
+        assert!(slot.is_none(), "cannot reinitialize a storage slot that is in use");
+        let value: &dyn Any = &**slot.insert(Box::new(value));
+        self.last.push_back(key);
+        value
+            .downcast_ref::<T>()
+            .expect("a slot holds the type it was initialized with")
+    }
+
     fn insert<T: 'static>(&mut self, key: StorageKey, value: T) {
         let result = self.locals.insert(key, Some(Box::new(value)));
         assert!(result.is_none(), "cannot reinitialize a storage slot");
