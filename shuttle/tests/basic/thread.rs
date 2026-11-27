@@ -110,6 +110,107 @@ fn thread_scope_join() {
     );
 }
 
+/// Sets its flag when it is dropped, after a scheduling point, so that a scope that ends while the
+/// value is being dropped finds the flag unset.
+struct SetOnDrop<'a>(&'a AtomicBool);
+
+impl Drop for SetOnDrop<'_> {
+    fn drop(&mut self) {
+        thread::yield_now();
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+// The result of a scoped thread whose handle is gone is dropped before the scope ends, as in std,
+// because the result can borrow from the scope's environment (#448).
+#[test]
+fn thread_scope_waits_for_unjoined_result() {
+    check_dfs(
+        || {
+            let dropped = AtomicBool::new(false);
+            thread::scope(|s| {
+                s.spawn(|| SetOnDrop(&dropped));
+            });
+            assert!(dropped.load(Ordering::SeqCst));
+        },
+        None,
+    );
+}
+
+// The same holds when the handle is dropped while the thread drops its thread-local values.
+#[test]
+fn thread_scope_waits_for_result_of_handle_dropped_late() {
+    struct YieldOnDrop;
+
+    impl Drop for YieldOnDrop {
+        fn drop(&mut self) {
+            thread::yield_now();
+        }
+    }
+
+    shuttle::thread_local! {
+        static LOCAL: YieldOnDrop = const { YieldOnDrop };
+    }
+
+    check_dfs(
+        || {
+            let dropped = AtomicBool::new(false);
+            thread::scope(|s| {
+                let handle = s.spawn(|| {
+                    LOCAL.with(|_| ());
+                    SetOnDrop(&dropped)
+                });
+                thread::yield_now();
+                drop(handle);
+            });
+            assert!(dropped.load(Ordering::SeqCst));
+        },
+        None,
+    );
+}
+
+// The last scoped thread to finish wakes the scope's owner only when the owner waits for the scope
+// to end. Here the owner waits in `join` for another thread instead, and gets that thread's result
+// (#449).
+#[test]
+fn thread_scope_end_does_not_wake_a_join() {
+    check_dfs(
+        || {
+            thread::scope(|s| {
+                s.spawn(|| {});
+                let handle = thread::spawn(|| {
+                    thread::yield_now();
+                    42
+                });
+                assert_eq!(handle.join().unwrap(), 42);
+            });
+        },
+        None,
+    );
+}
+
+// Nor does an outer scope's last thread end an inner scope of the same owner while the inner
+// scope's thread still uses what it borrowed.
+#[test]
+fn thread_scope_end_does_not_end_an_inner_scope() {
+    check_dfs(
+        || {
+            let mut done = false;
+            thread::scope(|outer| {
+                outer.spawn(|| {});
+                thread::scope(|inner| {
+                    inner.spawn(|| {
+                        thread::yield_now();
+                        done = true;
+                    });
+                });
+                assert!(done);
+            });
+        },
+        None,
+    );
+}
+
 #[test]
 fn thread_join() {
     check_random(
