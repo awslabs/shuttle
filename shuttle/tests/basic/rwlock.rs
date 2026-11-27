@@ -507,6 +507,21 @@ fn read_try_read() {
     )
 }
 
+/// The failed `try_read` must not keep a permit, or the `write` can never take the lock.
+#[test]
+fn write_after_failed_try_read() {
+    check_dfs(
+        || {
+            let rwlock = RwLock::new(());
+            let guard = rwlock.read().unwrap();
+            assert!(matches!(rwlock.try_read(), Err(TryLockError::WouldBlock)));
+            drop(guard);
+            let _guard = rwlock.write().unwrap();
+        },
+        None,
+    )
+}
+
 #[test]
 fn double_try_write() {
     check_dfs(
