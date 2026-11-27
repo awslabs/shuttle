@@ -52,6 +52,8 @@ bench = false
 [features]
 default = []
 vector-clocks = ["shuttle-engine/vector-clocks"]
+# Data race checks on the memory in `shuttle::cell::UnsafeCell`
+checked-cell = ["vector-clocks", "shuttle-engine/checked-cell", "shuttle-std/checked-cell"]
 annotation = ["vector-clocks", "shuttle-engine/annotation", "shuttle-schedulers/annotation", "dep:serde", "dep:serde_json", "dep:regex"]
 # The following feature overrides the `vector-clocks` feature. It SHOULD NOT be used in production.
 # Its purpose is solely to allow `cargo bench` to be run without vector clocks enabled, as they

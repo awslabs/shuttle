@@ -426,6 +426,49 @@ fn clock_threads_pct() {
     check_pct(|| clock_threads(20), 10_000, 3);
 }
 
+// The end of a scope happens after each of its threads ends, so the scope's owner gets their
+// clocks without joining them.
+fn clock_scoped_threads(num_threads: usize) {
+    let flag = AtomicBool::new(false);
+    thread::scope(|s| {
+        for k in 1..num_threads + 1 {
+            let flag = &flag;
+            s.spawn(move || {
+                assert_eq!(me(), k);
+                assert!(!flag.load(Ordering::SeqCst));
+            });
+        }
+    });
+    check_clock(|i, c| (c > 0) == (i <= num_threads));
+}
+
+#[test]
+fn clock_scoped_threads_dfs() {
+    check_dfs(|| clock_scoped_threads(2), None);
+}
+
+#[test]
+fn clock_scoped_threads_pct() {
+    check_pct(|| clock_scoped_threads(20), 10_000, 3);
+}
+
+// The same when the owner drops a handle without joining it, which can be after the thread ended.
+#[test]
+fn clock_scoped_thread_with_dropped_handle() {
+    check_dfs(
+        || {
+            let flag = AtomicBool::new(false);
+            thread::scope(|s| {
+                let handle = s.spawn(|| assert!(!flag.load(Ordering::SeqCst)));
+                thread::yield_now();
+                drop(handle);
+            });
+            check_clock(|i, c| (c > 0) == (i <= 1));
+        },
+        None,
+    );
+}
+
 #[test]
 fn clock_try_update() {
     // Ensure that when a try_update fails, the caller does not inherit the clock from the register.
@@ -482,4 +525,71 @@ fn clock_once_dfs() {
 #[test]
 fn clock_once_pct() {
     check_pct(|| clock_once(20), 10_000, 3);
+}
+
+// Awaiting a future's `JoinHandle` makes the awaiting task inherit the clock of the finished task, as
+// a thread join does.
+#[test]
+fn clock_future_join() {
+    check_dfs(
+        || {
+            let handle = shuttle::future::spawn(async {
+                // A store ticks the task's own entry, so its clock isn't covered by its parent's.
+                AtomicU32::new(0).store(1, Ordering::SeqCst);
+                current::clock()
+            });
+            let child = shuttle::future::block_on(handle).unwrap();
+            let mine = current::clock();
+            assert!(child <= mine, "{child:?} should happen before {mine:?}");
+        },
+        None,
+    );
+}
+
+// Reading a `lazy_static` that another task initialized makes the reader inherit the clock of the
+// initializer, as the Acquire load on the fast path of the real `lazy_static` does. The reader
+// waits for the initializer through a std atomic, which Shuttle doesn't see, so that it takes the
+// fast path.
+#[test]
+fn clock_lazy_static() {
+    static INIT_CLOCK: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+    shuttle::lazy_static! {
+        static ref VALUE: u32 = {
+            // A store ticks the initializer's own entry, so its clock isn't covered by its parent's.
+            AtomicU32::new(0).store(1, Ordering::SeqCst);
+            *INIT_CLOCK.lock().unwrap() = current::clock().to_vec();
+            7
+        };
+    }
+
+    check_random(
+        || {
+            let initialized = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let initializer = {
+                let initialized = Arc::clone(&initialized);
+                thread::spawn(move || {
+                    assert_eq!(*VALUE, 7);
+                    initialized.store(true, std::sync::atomic::Ordering::SeqCst);
+                })
+            };
+            let reader = {
+                let initialized = Arc::clone(&initialized);
+                thread::spawn(move || {
+                    while !initialized.load(std::sync::atomic::Ordering::SeqCst) {
+                        thread::yield_now();
+                    }
+                    assert_eq!(*VALUE, 7);
+                    let mine = current::clock();
+                    let theirs = INIT_CLOCK.lock().unwrap().clone();
+                    for (task, &time) in theirs.iter().enumerate() {
+                        assert!(mine.get(task) >= time, "{theirs:?} should happen before {mine:?}");
+                    }
+                })
+            };
+            initializer.join().unwrap();
+            reader.join().unwrap();
+        },
+        100,
+    );
 }

@@ -1,4 +1,4 @@
-Shuttle includes code derived from the Tokio and Loom projects and from the Rust standard library.
+Shuttle includes code derived from the Tokio and Loom projects, the Rust standard library and Miri.
 
 ** Tokio; version 0.3 -- https://github.com/tokio-rs/tokio
 
@@ -51,4 +51,9 @@ SOFTWARE.
 ** Rust; version 1.50.0 -- https://github.com/rust-lang/rust
 
 Rust is licensed under the Apache License, Version 2.0 <http://www.apache.org/licenses/LICENSE-2.0>
+or the MIT license <http://opensource.org/licenses/MIT>, at your option.
+
+** Miri -- https://github.com/rust-lang/miri
+
+Miri is licensed under the Apache License, Version 2.0 <http://www.apache.org/licenses/LICENSE-2.0>
 or the MIT license <http://opensource.org/licenses/MIT>, at your option.
