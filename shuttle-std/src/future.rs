@@ -110,8 +110,12 @@ impl AbortHandle {
     }
 }
 
-unsafe impl Send for AbortHandle {}
-unsafe impl Sync for AbortHandle {}
+// `AbortHandle` is `Send` and `Sync` without `unsafe impl`s of its own, because each of its fields
+// is. This checks that it stays so.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<AbortHandle>();
+};
 
 /// An owned permission to join on an async task (await its termination).
 #[derive(Debug)]

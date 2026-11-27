@@ -125,8 +125,21 @@ struct Atomic<T> {
     signature: ResourceSignature,
 }
 
-// Safety: Atomic is never actually passed across true threads, only across continuations. The
-// RefCell<_> type therefore can't be preempted mid-bookkeeping-operation.
+// SAFETY:
+// In order for `Atomic<T>` to be `Sync`, we need to ensure:
+// * no two OS threads use the atomic's `RefCell`s at the same time.
+// * a `T` that one OS thread stores can be loaded on another, so `T: Send`, as the value moves
+//   between OS threads.
+//
+// The bound is `T: Sync`, which doesn't give `T: Send`. But `Atomic` is private, and it is only
+// used with `bool`, the integer types and `*mut T`. `bool` and the integer types are `Send`. The
+// `T: Sync` bound leaves out `*mut T`, for which `AtomicPtr` has its own impl. So the second holds.
+//
+// The first holds for the tasks of one execution, but it does not hold in general, as for the
+// `Sync` impl of `BatchSemaphore`. Two tests that run at the same time can use one atomic in a
+// `static`, as code under test often does, and the executions of a `PortfolioRunner` can share one.
+// Then the OS threads race on the `RefCell`s, which is undefined behavior. So this impl is not sound
+// for such code.
 unsafe impl<T: Sync> Sync for Atomic<T> {}
 impl<T: RefUnwindSafe> RefUnwindSafe for Atomic<T> {}
 
@@ -214,6 +227,12 @@ impl<T: Copy + Eq> Atomic<T> {
         ret
     }
 
+    /// Load the value without a scheduling point, for the `raw_load` of each public atomic type.
+    ///
+    /// # Safety
+    ///
+    /// The caller needs to ensure what the public `raw_load`s ask for:
+    /// * nothing that the test checks depends on the value that the load returns.
     unsafe fn raw_load(&self) -> T {
         *self.inner.borrow()
     }

@@ -43,11 +43,6 @@ impl std::fmt::Debug for Continuation {
 #[derive(Clone)]
 struct ContinuationFunction(Rc<Cell<Option<Box<dyn FnOnce()>>>>);
 
-// Safety: we arrange for the `function` field of `Continuation` to only be accessed by one thread
-// at a time: Shuttle tests are single threaded, and continuations are never shared across threads
-// by the ContinuationPool, which is thread-local.
-unsafe impl Send for ContinuationFunction {}
-
 /// Inputs that we can pass to a continuation.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ContinuationInput {
@@ -209,11 +204,23 @@ impl Continuation {
     /// panicked out of it: nothing on it is dropped, and the stack is freed with the continuation.
     pub(crate) fn leak_stack(&mut self) {
         debug_assert!(self.state == ContinuationState::Ready || self.state == ContinuationState::Running);
-        // SAFETY: this leaks the objects on the coroutine's stack without dropping them, so anything
-        // that still refers into the stack is left dangling (see `Coroutine::force_reset`). Shuttle
-        // has accepted that for stopped and failed executions, whose tasks never run again (see
-        // `ExecutionState::tear_down`). Teardown drops the functions of the tasks that never ran,
-        // which can borrow from another task's stack (scoped threads), before it leaks any stack.
+
+        // SAFETY:
+        // In order for `force_reset` to be safe, we need to ensure, as its docs say:
+        // * no object on the coroutine's stack needs its `Drop` code to run.
+        //
+        // This does not hold in general, and Shuttle accepts that. Only execution teardown calls
+        // `leak_stack`, for the unfinished tasks of a stopped or failed execution, which never run
+        // again (see `ExecutionState::tear_down`). Their stacks can hold any object of the test, and
+        // the objects are leaked: their destructors never run. Teardown keeps scoped threads safe:
+        // it drops the functions of the tasks that never ran, which can borrow from another task's
+        // stack, before it leaks any stack.
+        //
+        // Leaking is safe for most objects. It is not safe for an object that other code relies on
+        // to be dropped before its memory goes away, such as a pinned future that is linked into a
+        // list outside the stack. The stack is freed with the continuation, so such a list is left
+        // with a dangling pointer. Code that uses the list later, such as a destructor that teardown
+        // runs, then reads freed memory.
         unsafe {
             self.coroutine.force_reset();
         }
@@ -270,11 +277,18 @@ impl Drop for Continuation {
                 // which are still in-flight: unwinding them runs drop handlers, which can then panic
                 // if they interact with shuttle atomics, causing a panic-on-drop abort.
                 //
-                // SAFETY: `force_reset` leaks the coroutine. However, given that the execution is *already* aborting
-                // at this point and will soon exit, this is unlikely to cause issues. Leaking the coroutine here also
-                // avoids most tricky issues with scheduling points in drop handlers during a panic, which can often
-                // result in difficult-to-debug aborts from double-panics.
+                // Leaking the coroutine here also avoids most tricky issues with scheduling points in drop
+                // handlers during a panic, which can often result in difficult-to-debug aborts from
+                // double-panics.
                 if std::thread::panicking() || ExecutionState::execution_stopped() {
+                    // SAFETY:
+                    // In order for `force_reset` to be safe, we need to ensure, as its docs say:
+                    // * no object on the coroutine's stack needs its `Drop` code to run.
+                    //
+                    // This does not hold in general, as for `leak_stack`, whose comment says what can go
+                    // wrong. Shuttle accepts it here too. The continuation is dropped while it is
+                    // suspended in user code, during a panic or after the execution stopped, so its task
+                    // never runs again, and unwinding the stack instead could panic again and abort.
                     unsafe {
                         self.coroutine.force_reset();
                     }
@@ -426,7 +440,21 @@ impl std::fmt::Debug for PooledContinuation {
     }
 }
 
-// Safety: these aren't sent across real threads
+// SAFETY:
+// In order for `PooledContinuation` to be `Send`, we need to ensure:
+// * no two OS threads use the pool's `Rc<RefCell<_>>` at the same time. A `PooledContinuation`
+//   shares that `Rc` with the `ContinuationPool` it came from, and puts its continuation back into
+//   the pool when it is dropped.
+// * the continuation is resumed and dropped only on the OS thread that runs its execution. Its
+//   stack can hold any value of the test, including values that are not `Send`, and refer to the
+//   thread-local values of that thread. corosensei allows a coroutine to be sent only if all the
+//   data on its stack is `Send`.
+//
+// These hold for Shuttle itself, which never sends a `PooledContinuation` to another OS thread, and
+// nothing in Shuttle needs this impl. But they do not hold in general. `ContinuationPool::acquire`
+// is public, so safe code in a test can take a `PooledContinuation` and send it to another OS
+// thread, and dropping it there races with the pool's use on the test's OS thread. So this impl is
+// not sound for such code.
 unsafe impl Send for PooledContinuation {}
 
 /// Possibly yield back to the executor to perform a context switch.  This function should be
@@ -503,13 +531,30 @@ fn suspend() -> ContinuationInput {
     let yielder = ExecutionState::with(|state| state.current().yielder);
     assert!(!yielder.is_null(), "a task without a stack cannot switch");
 
-    // SAFETY: A yielder reference is valid for the lifetime of the continuation (see
-    // `corosensei::Coroutine::with_stack`), and the task's `yielder` is its continuation's. A task
-    // owns its continuation until execution teardown takes it, to unwind or leak its stack, and
-    // teardown clears `yielder` once the stack is gone. `maybe_yield` only asks a task to switch
-    // while it runs on its continuation, which a task whose stack teardown unwinds still does. There
-    // are no mutable references to the yielder.
-    unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded)
+    // SAFETY:
+    // In order for the dereference to be safe, we need to ensure:
+    // * `yielder` points to a live `Yielder`, and nothing holds a `&mut` to it.
+    // * we call `suspend` from inside the coroutine that the `Yielder` belongs to, as
+    //   `Yielder::suspend` must be called.
+    //
+    // `yielder` is not null, as the assert above checks. It is the current task's `yielder`, which
+    // `Task::new` copies from the task's continuation. The continuation got it from the `&Yielder`
+    // that corosensei passes to the coroutine's function (see `Continuation::new`), and that
+    // `Yielder` lives as long as the coroutine's function runs. The function is a loop that only
+    // ends when the continuation exits.
+    //
+    // A task owns its continuation until execution teardown takes it, to unwind or leak its stack,
+    // and teardown clears the task's `yielder` once the stack is gone (see `Task::lose_stack`).
+    // corosensei only hands out a `&Yielder`, and Shuttle never makes a `&mut` to one.
+    //
+    // Only `switch` and `switch_between_polls` call `suspend`, and only when `maybe_yield` says to
+    // switch. In a running execution, tasks run their code on their own continuations. Code that
+    // Shuttle runs on the executor's stack, such as a `tracing` subscriber that a task's span calls,
+    // runs while Shuttle holds the `ExecutionState`, so `maybe_yield` panics there before it can say
+    // to switch. In teardown, `maybe_yield_in_teardown` says to switch only for a task that runs on
+    // its own stack.
+    let yielder = unsafe { &*yielder };
+    yielder.suspend(ContinuationOutput::Yielded)
 }
 
 #[cfg(test)]
@@ -540,11 +585,21 @@ mod tests {
 
         let mut c = pool.acquire_inner(config.stack_size);
         c.initialize(Box::new(move || {
-            // SAFETY: We must use the yielder directly here because we are not in a Shuttle execution
-            // for `continuation::switch`, which requires access to `ExecutionState`. This is safe because
-            // the yielder's lifetime is valid as long as the continuation has not `Exited`, and the
-            // continuation cannot have exited if it is executing its current function.
-            unsafe { &(*yielder) }.suspend(ContinuationOutput::Yielded);
+            // We must use the yielder directly here because we are not in a Shuttle execution for
+            // `continuation::switch`, which requires access to `ExecutionState`.
+
+            // SAFETY:
+            // In order for the dereference to be safe, we need to ensure:
+            // * `yielder` points to a live `Yielder`, and nothing holds a `&mut` to it.
+            // * we call `suspend` from inside the coroutine that the `Yielder` belongs to.
+            //
+            // `yielder` is the yielder of the continuation that the test took first. The test gave
+            // that continuation back to the pool, and the assert above checks that the pool holds
+            // only it, so `acquire_inner` took the same continuation again. This closure is that
+            // continuation's function, so it runs inside its coroutine, and the `Yielder` lives as
+            // long as the coroutine's function runs. corosensei only hands out a `&Yielder`.
+            let yielder = unsafe { &*yielder };
+            yielder.suspend(ContinuationOutput::Yielded);
             let _ = 1 + 1;
         }));
 

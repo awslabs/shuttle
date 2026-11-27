@@ -43,7 +43,29 @@ pub use siphasher::sip::SipHasher13 as DefaultHasher;
 /// we rely on the fact that the [`RandomState`] struct consists of two `u64` values
 /// and transmute from a pair of `u64`s. This is unsafe, but we accept it for now,
 /// while we try to get a deterministic constructor into the standard library.
-const DETERMINISTIC_RANDOM_STATE: RandomState = unsafe { std::mem::transmute((0u64, 0u64)) };
+const DETERMINISTIC_RANDOM_STATE: RandomState = {
+    // `RandomState` has no niche. It would almost always have one if std gave one of its fields a
+    // type that can't be zero, such as a reference or a `NonZeroU64`.
+    assert!(std::mem::size_of::<Option<RandomState>>() > std::mem::size_of::<RandomState>());
+
+    // SAFETY:
+    // In order for the transmute to be safe, we need to ensure:
+    // * `(u64, u64)` and `RandomState` have the same size.
+    // * Sixteen zero bytes are a valid `RandomState`.
+    // * A `RandomState` with these bytes keeps the invariants that std's code relies on.
+    //
+    // `transmute` checks the sizes at compile time, so the first property holds whenever this
+    // compiles.
+    // In std, `RandomState` is a struct of two `u64` fields, `k0` and `k1` (see
+    // library/std/src/hash/random.rs). Zero is a valid `u64`, so zero bytes are a valid
+    // `RandomState`. If std changes a field to a type that can't be zero, `RandomState` almost
+    // always gets a niche, and the assertion above fails the build. The exception is a field whose
+    // type hides its niche, such as a `Cell<NonZeroU64>`.
+    // The two fields are the SipHash keys that `BuildHasher::build_hasher` gives to the hasher. Any
+    // pair of keys, zero too, makes a working hasher, and no unsafe code in std depends on their
+    // values.
+    unsafe { std::mem::transmute::<(u64, u64), RandomState>((0u64, 0u64)) }
+};
 
 // Note that previously we did not use `RandomState` but `SipHasher13` (which `RandomState`
 // uses under the hood) with fixed keys. This is fine within a code base that uses our

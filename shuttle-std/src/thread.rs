@@ -176,12 +176,26 @@ where
     F: Send + 'static,
     T: Send + 'static,
 {
-    // SAFETY: F is static so all captured references must be `static and therefore
-    // will outlive the spawned continuation
+    // SAFETY:
+    // In order for the call to be safe, we need to ensure, as `spawn_named_unchecked` asks:
+    // * what `f` borrows, and what the value it returns borrows, stays valid for as long as the
+    //   spawned thread can use it.
+    //
+    // `F: 'static` and `T: 'static`, so `f` and the value it returns borrow only what is valid for
+    // the rest of the program.
     unsafe { spawn_named_unchecked(f, name, stack_size, true, caller) }
 }
 
-/// Must ensure all captured references in f are valid for at least as long as the spawned continuation will run
+/// Spawn a thread that runs `f`, without the `'static` bounds of [`spawn`].
+///
+/// # Safety
+///
+/// The caller needs to ensure:
+/// * what `f` borrows, and what the value it returns borrows, stays valid for as long as the
+///   spawned thread can use it. The thread uses `f` while it runs it. If the thread never runs, the
+///   engine drops `f` or leaks it. The thread holds the value that `f` returns until it drops the
+///   value, when the thread's `JoinHandle` is gone, or hands it to the `JoinHandle<T>`, whose type
+///   carries the value's borrows.
 unsafe fn spawn_named_unchecked<F, T>(
     f: F,
     name: Option<String>,
@@ -202,6 +216,18 @@ where
 
         // Allocate `thread_fn` on the heap and assume a `'static` bound.
         let f: Box<dyn FnOnce()> = Box::new(move || thread_fn(f, switch_before_exit, result));
+
+        // SAFETY:
+        // In order for the transmute to be safe, we need to ensure:
+        // * the two types have the same layout.
+        // * the closure is used only while what it borrows is valid, as its new type no longer says
+        //   how long that is.
+        //
+        // The two types differ only in the lifetime bound of the trait object, so they have the same
+        // layout. The closure owns `f` and `result`, and `result` gets the value that `f` returns, so
+        // the closure borrows what `f` and that value borrow. The engine uses the closure only while
+        // the thread runs, or drops or leaks it if the thread never runs. Our caller ensures that what
+        // `f` and its value borrow stays valid for as long as the thread can use it (see `# Safety`).
         let f: Box<dyn FnOnce() + 'static> = unsafe { std::mem::transmute(f) };
 
         ExecutionState::spawn_thread(f, stack_size, name.clone(), None, caller)
@@ -260,7 +286,26 @@ pub struct JoinHandle<T> {
     result: std::sync::Arc<std::sync::Mutex<Option<Result<T>>>>,
 }
 
+// SAFETY:
+// In order for `JoinHandle<T>` to be `Send`, we need to ensure:
+// * what the handle shares with the old OS thread is thread safe.
+// * the `T` that the handle can hold can move to another OS thread, so `T: Send`.
+//
+// The handle's fields are a `TaskId`, a `Thread` and an `Arc<std::sync::Mutex<_>>` that holds the
+// thread's result. The spawned task keeps a clone of that `Arc`, and writes the result into the
+// mutex, which makes that thread safe. The fields are `Send` when `T: Send`. This impl holds for every `T`, as std's does, but
+// every `JoinHandle<T>` that exists has `T: Send`: `spawn_named_unchecked` makes them all, and it
+// requires `T: Send`.
 unsafe impl<T> Send for JoinHandle<T> {}
+
+// SAFETY:
+// In order for `JoinHandle<T>` to be `Sync`, we need to ensure:
+// * a `&JoinHandle<T>` gives OS threads no access to anything that is not thread safe.
+//
+// Through a `&JoinHandle<T>`, an OS thread can reach the handle's `Thread`, which is `Sync`, and its
+// result, which is in a `std::sync::Mutex`. The mutex lets one OS thread at a time reach the `T`
+// (to format it, say), so `T: Send` is enough, as for `std::sync::Mutex`. As for the `Send` impl,
+// every `JoinHandle<T>` that exists has `T: Send`.
 unsafe impl<T> Sync for JoinHandle<T> {}
 
 impl<T> JoinHandle<T> {

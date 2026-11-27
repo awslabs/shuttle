@@ -70,11 +70,6 @@ enum TimeoutState {
     Expired,
 }
 
-// SAFETY: We are running single-threaded, and all accesses to the InnerMap are guarded
-// by a std::sync::Mutex.
-unsafe impl Send for Map {}
-unsafe impl Sync for Map {}
-
 /// Expire all current and future timeouts requested by tasks whose tags match the
 /// given predicate.
 ///

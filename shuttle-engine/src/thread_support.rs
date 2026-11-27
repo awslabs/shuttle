@@ -155,16 +155,54 @@ impl<T: 'static> LocalKey<T> {
     }
 
     fn get(&'static self) -> Option<std::result::Result<&'static T, AccessError>> {
-        // Safety: see the usage below
+        /// Extend the lifetime of `t` to `'b`.
+        ///
+        /// # Safety
+        ///
+        /// The caller needs to ensure:
+        /// * what `t` points to stays valid, and nothing makes a `&mut` to it, for as long as the
+        ///   returned reference is used.
         unsafe fn extend_lt<'b, T>(t: &'_ T) -> &'b T {
-            std::mem::transmute(t)
+            // SAFETY:
+            // In order for the transmute to be safe, we need to ensure:
+            // * the two types have the same layout.
+            // * the returned reference is used only while what it points to is valid, and while
+            //   nothing makes a `&mut` to it.
+            //
+            // The two types are both `&T`, and differ only in their lifetimes, so they have the same
+            // layout. The second is what our caller ensures (see `# Safety`).
+            unsafe { std::mem::transmute(t) }
         }
 
         ExecutionState::with(|state| {
             if let Ok(value) = state.current().local(self)? {
-                // Safety: the `ExecutionState` outlives any thread, including the caller, and so
-                // it's safe to give the caller the lifetime it's asking for here.
-                Some(Ok(unsafe { extend_lt(value) }))
+                // SAFETY:
+                // In order for the call to be safe, we need to ensure, as `extend_lt` asks:
+                // * the thread-local value stays valid, and nothing makes a `&mut` to it, for as
+                //   long as the returned reference is used.
+                //
+                // The only caller of `get` is `try_with_slot`, which passes the reference to its
+                // closure `f`. `f` takes a `&T` of any lifetime, so it can't keep the reference
+                // after it returns. So the reference is used only while `f` runs.
+                //
+                // `value` points into the current task's `StorageMap`, which keeps each value in a
+                // `Box` of its own. So the value doesn't move when the map grows, as it can while
+                // `f` runs, if `f` uses another thread-local for the first time. Nothing makes a
+                // `&mut` to a slot's value.
+                //
+                // The map drops a value only when its slot is destructed (see `StorageMap::pop`).
+                // Shuttle does that when a task finishes, and in execution teardown once the task's
+                // stack is gone. Teardown of a stopped or failed execution leaks the task's stack and
+                // then drops its thread-locals, but a reference left on that stack is never used,
+                // because the stack never runs again. So the value is valid while `f` runs, unless
+                // `f` drops it itself.
+                //
+                // But safe code can make `f` drop it. `ExecutionState::drop_task_locals` is a public
+                // safe function, because `shuttle-std` calls it. So `f` can call it, which drops the
+                // value, and then read the value through the reference, which reads freed memory.
+                // So the property does not hold in general, and this is not sound for such code.
+                let value = unsafe { extend_lt(value) };
+                Some(Ok(value))
             } else {
                 Some(Err(AccessError))
             }

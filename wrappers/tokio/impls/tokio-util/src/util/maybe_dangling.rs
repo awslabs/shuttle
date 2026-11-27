@@ -29,7 +29,15 @@ pub(crate) struct MaybeDangling<T>(MaybeUninit<T>);
 
 impl<T> Drop for MaybeDangling<T> {
     fn drop(&mut self) {
-        // Safety: `0` is always initialized.
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure:
+        // * `self.0` holds an initialized `T`.
+        // * nothing uses that `T` after it is dropped.
+        //
+        // `new` is the only way to make a `MaybeDangling`, and it stores a `T`. No method moves
+        // the `T` out or drops it. So `self.0` holds it until this destructor runs, which is the
+        // invariant in the type's docs.
+        // The `MaybeDangling` is being dropped, so nothing uses it afterwards.
         unsafe { core::ptr::drop_in_place(self.0.as_mut_ptr()) };
     }
 }
@@ -44,7 +52,16 @@ impl<F: Future> Future for MaybeDangling<F> {
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Safety: `0` is always initialized.
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure:
+        // * `self.0` holds an initialized `F`.
+        // * the `F` stays where it is until it is dropped, and the closure moves nothing out.
+        //
+        // `self.0` holds an `F`, for the reason that `drop` gives.
+        // The `F` is a field of the pinned `MaybeDangling`, so it does not move while the
+        // `MaybeDangling` does not. `drop` drops it in place, and no method moves it out. The
+        // closure only borrows it. `MaybeDangling<F>` is `Unpin` only if `F` is, because
+        // `MaybeUninit<F>` is.
         let fut = unsafe { self.map_unchecked_mut(|this| this.0.assume_init_mut()) };
         fut.poll(cx)
     }

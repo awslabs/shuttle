@@ -449,10 +449,32 @@ impl<T> Channel<T> {
     }
 }
 
-// Safety: A Channel is never actually passed across true threads, only across continuations. The
-// Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
-// TODO We use this workaround in several places in Shuttle.  Maybe there's a cleaner solution.
+// SAFETY:
+// In order for `Channel<T>` to be `Send`, we need to ensure:
+// * moving a channel to another OS thread moves nothing that the old thread still uses.
+// * what the channel holds can move to another OS thread: the messages, of type `T`, and the rest
+//   of its state.
+//
+// The channel's state is in an `Rc`, which is not `Send`, because other clones of it could stay on
+// the old thread. But `Channel::new` makes the only `Rc`, and nothing clones it: the senders and the
+// receiver share the channel through an `Arc<Channel<T>>`. So moving the channel moves the only
+// handle to its state.
+//
+// The `T: Send` bound lets the messages move. The rest of the state holds vector clocks, counts and
+// task IDs, which are `Send`, and so is the channel's signature.
 unsafe impl<T: Send> Send for Channel<T> {}
+
+// SAFETY:
+// In order for `Channel<T>` to be `Sync`, we need to ensure:
+// * no two OS threads use the channel's `RefCell` at the same time.
+// * a message that one OS thread sends can be received on another, so `T: Send`.
+//
+// The second holds because of the `T: Send` bound, as for std's channels.
+//
+// The first holds for the tasks of one execution, but it does not hold in general, as for the
+// `Sync` impl of `BatchSemaphore`. So this impl is not sound for code that shares a channel between
+// two OS threads, for example two tests that run at the same time and use one `static`, or the
+// executions of a `PortfolioRunner`.
 unsafe impl<T: Send> Sync for Channel<T> {}
 
 /// The receiving half of Rust's [`channel`] (or [`sync_channel`]) type.

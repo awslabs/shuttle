@@ -309,10 +309,21 @@ impl Condvar {
     }
 }
 
-// Safety: Condvar is never actually passed across true threads, only across continuations. The
-// Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
-// TODO we shouldn't need to do this, but RefCell is not Send
-unsafe impl Send for Condvar {}
+// `Condvar` is `Send` without an `unsafe impl` of its own, because each of its fields is `Send`.
+// This checks that it stays so.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<Condvar>();
+};
+
+// SAFETY:
+// In order for `Condvar` to be `Sync`, we need to ensure:
+// * no two OS threads use the condition variable's `RefCell` at the same time.
+//
+// This holds for the tasks of one execution, but it does not hold in general, as for the `Sync`
+// impl of `BatchSemaphore`. So this impl is not sound for code that shares a condition variable
+// between two OS threads, for example two tests that run at the same time and use one `static`, or
+// the executions of a `PortfolioRunner`.
 unsafe impl Sync for Condvar {}
 
 impl Default for Condvar {

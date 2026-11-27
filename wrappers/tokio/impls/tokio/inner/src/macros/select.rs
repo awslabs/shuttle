@@ -138,8 +138,19 @@ macro_rules! select {
                                 // tuple
                                 let ( $($skip,)* fut, .. ) = &mut *futures;
 
-                                // Safety: future is stored on the stack above
-                                // and never moved.
+                                // SAFETY:
+                                // In order for the call to be safe, we need to ensure:
+                                // * `fut` is not moved, and its memory is not reused, until it is
+                                //   dropped.
+                                //
+                                // `fut` is a field of the tuple `futures`, a local of the `async`
+                                // context that `select!` runs in, since the macro uses `.await`.
+                                // That context is pinned from its first poll until it is dropped,
+                                // so the tuple stays in place across the `.await`. A `&mut` to
+                                // the tuple shadows its name, and the code here only borrows its
+                                // fields, so nothing moves it. It is dropped in place at the end of
+                                // the block that holds the `poll_fn`, before the branch handlers
+                                // run.
                                 let mut fut = unsafe { Pin::new_unchecked(fut) };
 
                                 // Try polling it

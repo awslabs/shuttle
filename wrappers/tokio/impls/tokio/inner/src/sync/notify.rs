@@ -137,8 +137,13 @@ pub struct Notified<'a> {
     done: bool,
 }
 
-unsafe impl Send for Notified<'_> {}
-unsafe impl Sync for Notified<'_> {}
+// `Notified<'_>` is `Send` and `Sync` without an `unsafe impl` of its own, because each of its
+// fields is. tokio's `Notified` needs such impls because it holds raw pointers, but this one holds
+// none. This checks that it stays so.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Notified<'static>>();
+};
 
 impl Notify {
     /// Create a new `Notify`, initialized without a permit.

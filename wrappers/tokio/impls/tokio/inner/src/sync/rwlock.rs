@@ -75,8 +75,14 @@ impl<T: ?Sized> RwLock<T> {
         trace!("rwlock {:p} read", self);
         let inner = self.sem.acquire(1);
         inner.await.unwrap_or_else(|_| {
-            // The semaphore was closed. but, we never explicitly close it, and we have a
-            // handle to it through the Arc, which means that this can never happen.
+            // The semaphore was closed. We never close it, but `BatchSemaphore` closes itself when
+            // a permit is released while `ExecutionState::should_stop()` is true (see
+            // `BatchSemaphore::release`), for example after the execution stopped or failed, or
+            // outside an execution. If `std::thread::panicking()` is true then, this closure
+            // returns, and this function makes a guard right below without the permits. In Shuttle
+            // `std::thread::panicking()` is true while any task on this OS thread is unwinding, not
+            // only this one. The guards' SAFETY comments rely on the permits, so such a guard
+            // breaks them.
             if !std::thread::panicking() {
                 unreachable!()
             }
@@ -116,8 +122,14 @@ impl<T: ?Sized> RwLock<T> {
         trace!("rwlock {:p} read_owned", self);
         let inner = self.sem.acquire(1);
         inner.await.unwrap_or_else(|_| {
-            // The semaphore was closed. but, we never explicitly close it, and we have a
-            // handle to it through the Arc, which means that this can never happen.
+            // The semaphore was closed. We never close it, but `BatchSemaphore` closes itself when
+            // a permit is released while `ExecutionState::should_stop()` is true (see
+            // `BatchSemaphore::release`), for example after the execution stopped or failed, or
+            // outside an execution. If `std::thread::panicking()` is true then, this closure
+            // returns, and this function makes a guard right below without the permits. In Shuttle
+            // `std::thread::panicking()` is true while any task on this OS thread is unwinding, not
+            // only this one. The guards' SAFETY comments rely on the permits, so such a guard
+            // breaks them.
             if !std::thread::panicking() {
                 unreachable!()
             }
@@ -200,6 +212,14 @@ impl<T: ?Sized> RwLock<T> {
     pub async fn write(&self) -> RwLockWriteGuard<'_, T> {
         trace!("rwlock {:p} write", self);
         self.sem.acquire(self.max_readers).await.unwrap_or_else(|_| {
+            // The semaphore was closed. We never close it, but `BatchSemaphore` closes itself when
+            // a permit is released while `ExecutionState::should_stop()` is true (see
+            // `BatchSemaphore::release`), for example after the execution stopped or failed, or
+            // outside an execution. If `std::thread::panicking()` is true then, this closure
+            // returns, and this function makes a guard right below without the permits. In Shuttle
+            // `std::thread::panicking()` is true while any task on this OS thread is unwinding, not
+            // only this one. The guards' SAFETY comments rely on the permits, so such a guard
+            // breaks them.
             if !std::thread::panicking() {
                 unreachable!()
             }
@@ -236,8 +256,14 @@ impl<T: ?Sized> RwLock<T> {
     pub async fn write_owned(self: Arc<Self>) -> OwnedRwLockWriteGuard<T> {
         tracing::trace!("rwlock {:p} write_owned", self);
         self.sem.acquire(self.max_readers).await.unwrap_or_else(|_| {
-            // The semaphore was closed. but, we never explicitly close it, and we have a
-            // handle to it through the Arc, which means that this can never happen.
+            // The semaphore was closed. We never close it, but `BatchSemaphore` closes itself when
+            // a permit is released while `ExecutionState::should_stop()` is true (see
+            // `BatchSemaphore::release`), for example after the execution stopped or failed, or
+            // outside an execution. If `std::thread::panicking()` is true then, this closure
+            // returns, and this function makes a guard right below without the permits. In Shuttle
+            // `std::thread::panicking()` is true while any task on this OS thread is unwinding, not
+            // only this one. The guards' SAFETY comments rely on the permits, so such a guard
+            // breaks them.
             if !std::thread::panicking() {
                 unreachable!()
             }
@@ -317,10 +343,7 @@ impl<T: ?Sized> RwLock<T> {
     /// Since this call borrows the `RwLock` mutably, no actual locking needs to
     /// take place -- the mutable borrow statically guarantees no locks exist.
     pub fn get_mut(&mut self) -> &mut T {
-        unsafe {
-            // Safety: This is https://github.com/rust-lang/rust/pull/76936
-            &mut *self.inner.get()
-        }
+        self.inner.get_mut()
     }
 
     /// Consumes the lock, returning the underlying data.
@@ -347,38 +370,144 @@ where
     }
 }
 
-// As long as T: Send + Sync, it's fine to send and share RwLock<T> between threads.
-// If T were not Send, sending and sharing a RwLock<T> would be bad, since you can access T through
-// RwLock<T>.
-unsafe impl<T> Send for RwLock<T> where T: ?Sized + Send {}
+// The guards' impls below are the same as tokio's. The guards hold raw pointers, so the compiler
+// would make none of them `Send` or `Sync` by itself.
+//
+// Every guard holds either all of `sem`'s permits (a write guard) or one of them (a read guard),
+// and `sem` starts with `max_readers` permits. So while a write guard exists, no other guard does,
+// and while a read guard exists, no write guard does. Each impl below relies on this rule. The
+// `unwrap_or_else` in `read`, `read_owned`, `write` and `write_owned` breaks it, see the comment
+// there.
+//
+// A thread that shares the lock, or gets a guard, uses the lock's `BatchSemaphore`: to lock, and
+// to release the permits when it drops a guard. `BatchSemaphore` is `Sync` by an `unsafe impl` in
+// shuttle-engine (see its SAFETY comment). That impl does not hold when two OS threads use one
+// semaphore at the same time, for example two tests that run at the same time and share one lock
+// through a `static`. So the impls below that say they rely on it do not hold then either.
+
+// `RwLock<T>` is `Send` when `T` is, without an `unsafe impl` of its own, because each of its
+// fields is `Send` then. This checks that it stays so, for every `T: Send`.
+const _: () = {
+    const fn assert_send<T: Send + ?Sized>() {}
+    #[allow(dead_code)]
+    const fn rwlock_is_send<T: Send + ?Sized>() {
+        assert_send::<RwLock<T>>();
+    }
+};
+
+// SAFETY:
+// In order for `RwLock<T>` to be `Sync`, we need to ensure:
+// * threads that share a `&RwLock<T>` can share the `T`.
+// * the `T` may move to another thread.
+// * no two OS threads use the lock's `BatchSemaphore` at the same time.
+//
+// Many threads can hold read guards at the same time, and each gets a `&T`. So `T` must be `Sync`.
+// A thread that holds a write guard has the only guard (see above), and can move the `T` out
+// through `&mut T`. Another thread can then drop it. So `T` must be `Send`.
+// The third relies on the `Sync` impl of `BatchSemaphore`, and does not always hold (see above).
 unsafe impl<T> Sync for RwLock<T> where T: ?Sized + Send + Sync {}
-// NB: These impls need to be explicit since we're storing a raw pointer.
-// Safety: Stores a raw pointer to `T`, so if `T` is `Sync`, the lock guard over
-// `T` is `Send`.
+
+// SAFETY:
+// In order for `RwLockReadGuard<'_, T>` to be `Send`, we need to ensure:
+// * the thread that gets the guard can share the `T` with the threads that hold other read guards.
+// * that thread may use the lock's `BatchSemaphore`.
+//
+// The guard gives only a `&T`, and other read guards can exist on other threads at the same time.
+// So `T: Sync` is enough, which the bound requires.
+// Dropping the guard releases a permit through the `&BatchSemaphore` it holds. This relies on the
+// `Sync` impl of `BatchSemaphore`, and does not always hold (see above).
 unsafe impl<T> Send for RwLockReadGuard<'_, T> where T: ?Sized + Sync {}
+
+// SAFETY:
+// In order for `RwLockReadGuard<'_, T>` to be `Sync`, we need to ensure:
+// * threads that share a `&RwLockReadGuard<'_, T>` can share the `T`.
+//
+// A shared read guard gives each thread only a `&T`, so `T: Sync` is enough. The bound also
+// requires `T: Send`, which is stricter than needed. No `&self` method of the guard uses the
+// semaphore.
 unsafe impl<T> Sync for RwLockReadGuard<'_, T> where T: ?Sized + Send + Sync {}
-// T is required to be `Send` because an OwnedRwLockReadGuard can be used to drop the value held in
-// the RwLock, unlike RwLockReadGuard.
+
+// SAFETY:
+// In order for `OwnedRwLockReadGuard<T, U>` to be `Send`, we need to ensure:
+// * the thread that gets the guard can share the `U` with the threads that hold other read guards.
+// * the `Arc<RwLock<T>>` in the guard may move to another thread.
+//
+// The guard gives only a `&U`, so `U: Sync` is enough for the first property. The guard holds an
+// `Arc<RwLock<T>>`, which is `Send` only if `RwLock<T>` is `Send` and `Sync`, that is if `T` is
+// `Send` and `Sync`. Unlike `RwLockReadGuard`, the guard can drop the last `Arc`, and with it the
+// `T`, on the other thread. The bounds require all of this. This file makes these guards only with
+// `U` the same as `T`.
+// `RwLock<T>: Sync` relies on the `Sync` impl of `BatchSemaphore`, and does not always hold (see
+// above).
 unsafe impl<T, U> Send for OwnedRwLockReadGuard<T, U>
 where
     T: ?Sized + Send + Sync,
     U: ?Sized + Sync,
 {
 }
+
+// SAFETY:
+// In order for `OwnedRwLockReadGuard<T, U>` to be `Sync`, we need to ensure:
+// * threads that share a `&OwnedRwLockReadGuard<T, U>` can share the `U`.
+// * those threads can share the `Arc<RwLock<T>>` in the guard.
+//
+// A shared guard gives each thread a `&U`, so `U` must be `Sync`. `rwlock` gives each thread a
+// `&Arc<RwLock<T>>`, which is `Sync` only if `T` is `Send` and `Sync`. The bounds require this, and
+// `U: Send` as well, which is stricter than needed.
+// `RwLock<T>: Sync` relies on the `Sync` impl of `BatchSemaphore`, and does not always hold (see
+// above).
 unsafe impl<T, U> Sync for OwnedRwLockReadGuard<T, U>
 where
     T: ?Sized + Send + Sync,
     U: ?Sized + Send + Sync,
 {
 }
+
+// SAFETY:
+// In order for `RwLockWriteGuard<'_, T>` to be `Sync`, we need to ensure:
+// * threads that share a `&RwLockWriteGuard<'_, T>` can share the `T`.
+//
+// A shared write guard gives each thread only a `&T`, because `deref_mut` needs `&mut self`. So
+// `T: Sync` is enough. The bound also requires `T: Send`, which is stricter than needed. No `&self`
+// method of the guard uses the semaphore.
 unsafe impl<T> Sync for RwLockWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
+
+// SAFETY:
+// In order for `OwnedRwLockWriteGuard<T>` to be `Sync`, we need to ensure:
+// * threads that share a `&OwnedRwLockWriteGuard<T>` can share the `T`.
+// * those threads can share the `Arc<RwLock<T>>` in the guard.
+//
+// A shared write guard gives each thread only a `&T`, so `T` must be `Sync`. `rwlock` gives each
+// thread a `&Arc<RwLock<T>>`, which is `Sync` only if `T` is `Send` and `Sync`. The bound requires
+// both. `RwLock<T>: Sync` relies on the `Sync` impl of `BatchSemaphore`, and does not always hold
+// (see above).
 unsafe impl<T> Sync for OwnedRwLockWriteGuard<T> where T: ?Sized + Send + Sync {}
 
-// Safety: Stores a raw pointer to `T`, so if `T` is `Sync`, the lock guard over
-// `T` is `Send` - but since this is also provides mutable access, we need to
-// make sure that `T` is `Send` since its value can be sent across thread
-// boundaries.
+// SAFETY:
+// In order for `RwLockWriteGuard<'_, T>` to be `Send`, we need to ensure:
+// * the `T` may move to the thread that gets the guard.
+// * that thread can share the `T` with other threads.
+// * that thread may use the lock's `BatchSemaphore`.
+//
+// That thread gets a `&mut T`, and can move the `T` out or put another `T` in. So `T` must be
+// `Send`.
+// `T` must also be `Sync`. `downgrade` makes the guard a read guard on the thread that got it, and
+// other threads can then take read guards too, so they share the `&T`. The bound requires both.
+// Dropping the guard releases the permits through the `&BatchSemaphore` it holds. This relies on
+// the `Sync` impl of `BatchSemaphore`, and does not always hold (see above).
 unsafe impl<T> Send for RwLockWriteGuard<'_, T> where T: ?Sized + Send + Sync {}
+
+// SAFETY:
+// In order for `OwnedRwLockWriteGuard<T>` to be `Send`, we need to ensure:
+// * the `T` may move to the thread that gets the guard.
+// * that thread can share the `T` with other threads.
+// * the `Arc<RwLock<T>>` in the guard may move to that thread.
+//
+// That thread gets a `&mut T`, so `T` must be `Send`. `downgrade` makes the guard a read guard on
+// that thread, and other threads can then take read guards too, so `T` must also be `Sync`. The
+// `Arc<RwLock<T>>` is `Send` only if `T` is `Send` and `Sync`. The bound requires both.
+// `RwLock<T>: Sync` relies on the `Sync` impl of `BatchSemaphore`, and does not always hold (see
+// above).
 unsafe impl<T> Send for OwnedRwLockWriteGuard<T> where T: ?Sized + Send + Sync {}
 
 /// RAII structure used to release the shared read access of a lock when
@@ -399,6 +528,15 @@ impl<T: ?Sized> ops::Deref for RwLockReadGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
+        // SAFETY:
+        // In order for the dereference to be safe, we need to ensure:
+        // * `data` is valid for as long as the returned reference.
+        // * no `&mut T` to the value is live while the returned reference is.
+        //
+        // `data` points into the lock, which the guard borrows for `'a`. The returned reference
+        // borrows the guard, so it can't outlive the lock.
+        // The guard holds a read permit, so no write guard exists (see the rule above the `Send`
+        // and `Sync` impls). Only a write guard makes a `&mut T`.
         unsafe { &*self.data }
     }
 }
@@ -444,6 +582,15 @@ impl<T: ?Sized, U: ?Sized> ops::Deref for OwnedRwLockReadGuard<T, U> {
     type Target = U;
 
     fn deref(&self) -> &U {
+        // SAFETY:
+        // In order for the dereference to be safe, we need to ensure:
+        // * `data` is valid for as long as the returned reference.
+        // * no `&mut` to the value is live while the returned reference is.
+        //
+        // `data` points into the lock that `self.lock`, an `Arc`, keeps alive. The guard drops that
+        // `Arc` only in its `drop`, and the returned reference borrows the guard.
+        // The guard holds a read permit, so no write guard exists (see the rule above the `Send`
+        // and `Sync` impls). Only a write guard makes a `&mut`.
         unsafe { &*self.data }
     }
 }
@@ -460,6 +607,14 @@ where
 impl<T: ?Sized, U: ?Sized> Drop for OwnedRwLockReadGuard<T, U> {
     fn drop(&mut self) {
         self.lock.sem.release(1);
+
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure:
+        // * `self.lock` is not used after this call, and was not dropped before it.
+        //
+        // This is the last use of `self.lock` in `drop`, and the guard's other fields have no drop
+        // glue. Nothing else drops `self.lock`: this file takes no `Arc` out of a read guard. If
+        // `release` panics, this call does not run, and the `Arc` leaks.
         unsafe { ManuallyDrop::drop(&mut self.lock) };
     }
 }
@@ -504,12 +659,30 @@ impl<T: ?Sized> ops::Deref for RwLockWriteGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
+        // SAFETY:
+        // In order for the dereference to be safe, we need to ensure:
+        // * `data` is valid for as long as the returned reference.
+        // * no `&mut T` to the value is live while the returned reference is.
+        //
+        // `data` points into the lock, which the guard borrows for `'a`. The returned reference
+        // borrows the guard, so it can't outlive the lock.
+        // The guard holds all of the lock's permits, so no other guard exists (see the rule above
+        // the `Send` and `Sync` impls). This guard makes a `&mut T` only in `deref_mut`, which
+        // takes `&mut self`, so that can't happen while the returned reference is live.
         unsafe { &*self.data }
     }
 }
 
 impl<T: ?Sized> ops::DerefMut for RwLockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
+        // SAFETY:
+        // In order for the dereference to be safe, we need to ensure:
+        // * `data` is valid for as long as the returned reference.
+        // * no other reference to the value is live while the returned reference is.
+        //
+        // `data` is valid for the reason that `deref` gives.
+        // No other guard exists, for the reason that `deref` gives. The returned reference borrows
+        // this guard mutably, so this guard makes no other reference while it is live.
         unsafe { &mut *self.data }
     }
 }
@@ -547,6 +720,18 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
     /// locks, since [`RwLock`] is fair and it is possible that a writer is next
     /// in line.
     pub fn downgrade(mut self) -> OwnedRwLockReadGuard<T> {
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure:
+        // * `self.lock` is not used or dropped after this call.
+        //
+        // The code below reads only `self.data` and `self.permits_acquired`, and formats the
+        // address of `self`. Then `mem::forget(self)` keeps the guard's `drop` from using
+        // `self.lock` again.
+        // This does not hold if the `trace!` below panics, which a `tracing` subscriber can do. The
+        // unwinding drops `lock`, which frees the lock if the guard held the last `Arc`. Then it
+        // runs the guard's `drop`, which calls `release` through `self.lock`, a use after free in
+        // that case, and drops the same `Arc` a second time. tokio forgets the guard before
+        // anything that can panic.
         let lock = unsafe { ManuallyDrop::take(&mut self.lock) };
 
         let data = self.data;
@@ -577,12 +762,31 @@ impl<T: ?Sized> ops::Deref for OwnedRwLockWriteGuard<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
+        // SAFETY:
+        // In order for the dereference to be safe, we need to ensure:
+        // * `data` is valid for as long as the returned reference.
+        // * no `&mut T` to the value is live while the returned reference is.
+        //
+        // `data` points into the lock that `self.lock`, an `Arc`, keeps alive. The guard drops that
+        // `Arc` only in its `drop` or `downgrade`, which take the guard, and the returned
+        // reference borrows the guard.
+        // No other guard exists, and this guard makes no `&mut T` while the returned reference is
+        // live, for the reasons that `RwLockWriteGuard::deref` gives.
         unsafe { &*self.data }
     }
 }
 
 impl<T: ?Sized> ops::DerefMut for OwnedRwLockWriteGuard<T> {
     fn deref_mut(&mut self) -> &mut T {
+        // SAFETY:
+        // In order for the dereference to be safe, we need to ensure:
+        // * `data` is valid for as long as the returned reference.
+        // * no other reference to the value is live while the returned reference is.
+        //
+        // `data` is valid for the reason that `deref` gives.
+        // No other guard exists, for the reason that `RwLockWriteGuard::deref` gives. The returned
+        // reference borrows this guard mutably, so this guard makes no other reference while it is
+        // live.
         unsafe { &mut *self.data }
     }
 }
@@ -599,6 +803,15 @@ where
 impl<T: ?Sized> Drop for OwnedRwLockWriteGuard<T> {
     fn drop(&mut self) {
         self.lock.sem.release(self.permits_acquired);
+
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure:
+        // * `self.lock` is not used after this call, and was not dropped before it.
+        //
+        // This is the last use of `self.lock` in `drop`, and the guard's other fields have no drop
+        // glue. The only other place that takes `self.lock` is `downgrade`, which forgets the guard
+        // so that this `drop` does not run, except on the panic that its SAFETY comment describes.
+        // If `release` panics, this call does not run, and the `Arc` leaks.
         unsafe { ManuallyDrop::drop(&mut self.lock) };
     }
 }

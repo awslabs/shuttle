@@ -12,6 +12,7 @@
 // SHUTTLE_CHANGES:
 // The only change that has been made with regards to `async-stream` is that the `thread-local` in `yielder.rs` has been made Shuttle-compatible,
 // and the [ui](https://github.com/tokio-rs/async-stream/tree/master/async-stream/tests/ui) tests have been removed, as they relied on `tokio::main`.
+// The safety comments in `yielder.rs` are also rewritten.
 
 mod async_stream;
 mod next;

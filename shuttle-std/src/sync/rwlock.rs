@@ -322,11 +322,30 @@ impl<T: ?Sized> RwLock<T> {
     }
 }
 
-// Safety: RwLock is never actually passed across true threads, only across continuations. The
-// Rc<RefCell<_>> type therefore can't be preempted mid-bookkeeping-operation.
-// TODO we shouldn't need to do this, but RefCell is not Send, and anything we put within a RwLock
-// TODO needs to be Send.
-unsafe impl<T: Send + ?Sized> Send for RwLock<T> {}
+// `RwLock<T>` is `Send` when `T` is, without an `unsafe impl` of its own, because each of its
+// fields is `Send` then. This checks that it stays so, for every `T: Send`.
+const _: () = {
+    const fn assert_send<T: Send + ?Sized>() {}
+    #[allow(dead_code)]
+    const fn rwlock_is_send<T: Send + ?Sized>() {
+        assert_send::<RwLock<T>>();
+    }
+};
+
+// SAFETY:
+// In order for `RwLock<T>` to be `Sync`, we need to ensure:
+// * no two OS threads use the lock's `RefCell`s at the same time, including the one in its
+//   `BatchSemaphore`.
+// * a `&RwLock<T>` lets an OS thread reach a `T` that another OS thread made, so `T: Send`, and lets
+//   several OS threads read the same `T` at once, so `T: Sync`, as for `std::sync::RwLock`.
+//
+// Both hold for the tasks of one execution, which all run on one OS thread, but neither holds in
+// general. The first fails as for the `Sync` impl of `BatchSemaphore`: two tests that run at the
+// same time can share a lock through a `static`, and so can the executions of a `PortfolioRunner`.
+// The second fails for a `T` that is `Send` but not
+// `Sync`, such as `Cell<i32>`, because this impl doesn't require `T: Sync`. Two OS threads that
+// hold read guards of one such lock at the same time share a `&T`, which `T` doesn't allow. So this
+// impl is not sound for code that shares a lock between two OS threads.
 unsafe impl<T: Send + ?Sized> Sync for RwLock<T> {}
 
 // TODO this is the RefCell biting us again

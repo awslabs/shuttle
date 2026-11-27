@@ -22,7 +22,15 @@ impl From<bool> for AtomicBool {
 
 impl std::fmt::Debug for AtomicBool {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        std::fmt::Debug::fmt(unsafe { &self.raw_load() }, f)
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure, as `raw_load` asks:
+        // * nothing that the test checks depends on the value that the load returns.
+        //
+        // This does not hold in general. `Debug` is safe, so a test can check the text it writes, as in
+        // `assert_eq!(format!("{a:?}"), "1")`. The cost is only that Shuttle doesn't explore the
+        // interleavings around this load. The load itself has no memory-safety risk.
+        let value = unsafe { self.raw_load() };
+        std::fmt::Debug::fmt(&value, f)
     }
 }
 
@@ -174,11 +182,18 @@ impl AtomicBool {
     ///
     /// # Safety
     ///
-    /// Shuttle does not consider potential concurrent interleavings of this function call,
-    /// and so it should be used when those interleavings aren't important (primarily in
-    /// debugging scenarios where we might want to just print this atomic's value).
+    /// The load has no memory-safety requirement of its own. It is `unsafe` because Shuttle does not
+    /// consider potential concurrent interleavings of this function call. So the caller needs to
+    /// ensure:
+    /// * nothing that the test checks depends on the value that the load returns. Use it where those
+    ///   interleavings aren't important, primarily in debugging, to print this atomic's value.
     pub unsafe fn raw_load(&self) -> bool {
-        self.inner.raw_load()
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure, as `Atomic::raw_load` asks:
+        // * nothing that the test checks depends on the value that the load returns.
+        //
+        // That is what our caller ensures (see `# Safety`).
+        unsafe { self.inner.raw_load() }
     }
 
     #[cfg(test)]
