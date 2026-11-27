@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 
 /// Run a future to completion on the current thread.
 pub fn block_on<F: Future>(future: F) -> F::Output {
-    let mut future = Box::pin(future);
+    let mut future = std::pin::pin!(future);
     let waker = ExecutionState::with(|state| state.current_mut().waker());
     let cx = &mut Context::from_waker(&waker);
 
