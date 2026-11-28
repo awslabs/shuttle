@@ -1,0 +1,30 @@
+[package]
+name = "shuttle-fastrand"
+# Wrappers mirror the major version of the crate they wrap, so that a downstream crate can depend on the
+# wrapper with the same `version = "2"` requirement it would have used for fastrand.
+version = "2.0.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "fastrand wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+shuttle = [ "dep:shuttle-fastrand-inner" ]
+
+# fastrand's features. Each one is forwarded to fastrand, and to the inner crate when `shuttle` is
+# enabled.
+default = [ "fastrand-orig/default", "shuttle-fastrand-inner?/default" ]
+alloc = [ "fastrand-orig/alloc", "shuttle-fastrand-inner?/alloc" ]
+js = [ "fastrand-orig/js", "shuttle-fastrand-inner?/js" ]
+std = [ "fastrand-orig/std", "shuttle-fastrand-inner?/std" ]
+
+[dependencies]
+cfg-if = "1.0"
+# Without default features, so that `default-features = false` on this crate reaches fastrand too.
+# Under `shuttle` this crate has fastrand 2.5's API, which 2.4 already has.
+fastrand-orig = { package = "fastrand", version = "2.4", default-features = false }
+shuttle-fastrand-inner = { path = "./shuttle_fastrand_inner", version = "0.1", optional = true, default-features = false }
+
+[dev-dependencies]
+# For the tests that run under `--features shuttle`.
+shuttle = { path = "../../shuttle", version = "0.9" }

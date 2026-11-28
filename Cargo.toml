@@ -5,6 +5,10 @@ members = [
     "shuttle-std",
     "shuttle",
     "wrappers/shuttle_rand_0.8",
+    "wrappers/shuttle_rand_0.9",
+    "wrappers/shuttle_rand_0.9/shuttle_rand_inner",
+    "wrappers/shuttle_rand_0.10",
+    "wrappers/shuttle_rand_0.10/shuttle_rand_inner",
     "wrappers/shuttle_sync",
     "wrappers/collections",
     "wrappers/collections/deterministic_collections",
@@ -24,6 +28,8 @@ members = [
     "wrappers/async_stream",
     "wrappers/dashmap",
     "wrappers/dashmap/dashmap_impl",
+    "wrappers/fastrand",
+    "wrappers/fastrand/shuttle_fastrand_inner",
 ]
 
 resolver = "2"
