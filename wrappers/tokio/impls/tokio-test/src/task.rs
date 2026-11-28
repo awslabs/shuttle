@@ -269,11 +269,18 @@ unsafe fn wake(raw: *const ()) {
 }
 
 unsafe fn wake_by_ref(raw: *const ()) {
-    let waker = from_raw(raw);
+    // SAFETY:
+    // In order for the call to be safe, we need to ensure:
+    // * `raw` is the data pointer of a live `RawWaker` that `to_raw` made.
+    // * the returned `Arc` is never dropped, as its reference belongs to that `RawWaker`.
+    //
+    // `wake_by_ref` is a function of `VTABLE`, and only `to_raw` makes a `RawWaker` with `VTABLE`.
+    // `Waker::wake_by_ref` calls it with the data pointer of the `Waker` that it borrows, so that
+    // `RawWaker` is live.
+    // `ManuallyDrop` keeps the `Arc` from being dropped, also if `ThreadWaker::wake` panics. It
+    // panics outside an execution, for example, where Shuttle's `Mutex` can't be locked.
+    let waker = mem::ManuallyDrop::new(unsafe { from_raw(raw) });
     waker.wake();
-
-    // We don't actually own a reference to the unparker
-    mem::forget(waker);
 }
 
 unsafe fn drop_waker(raw: *const ()) {
