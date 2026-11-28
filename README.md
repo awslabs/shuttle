@@ -72,6 +72,20 @@ trade-off: Shuttle is not sound (a passing Shuttle test does not prove the code
 is correct), but it scales to much larger test cases than Loom. Empirically,
 randomized testing is successful at finding most concurrency bugs, which tend
 not to be adversarial.
+
+## Documentation
+
+The [Shuttle Book](https://awslabs.github.io/shuttle/) is a guide to testing concurrent code with
+Shuttle. Its sources live in [book/](/book) and can be built locally with
+[mdBook](https://rust-lang.github.io/mdBook/):
+
+```sh
+cargo install mdbook
+mdbook serve book --open
+```
+
+API documentation is available on [docs.rs](https://docs.rs/shuttle).
+
 ## License
 
 This project is licensed under the Apache-2.0 License.
