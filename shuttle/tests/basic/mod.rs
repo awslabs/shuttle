@@ -19,6 +19,7 @@ mod portfolio;
 mod replay;
 mod resource_signatures;
 mod rwlock;
+mod scheduling_point_checker;
 mod shrink;
 mod tag;
 mod task;

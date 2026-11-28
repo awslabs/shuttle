@@ -36,3 +36,7 @@ vector-clocks = []
 # show causal dependence between tasks, so `annotation` implies `vector-clocks`.
 annotation = ["vector-clocks", "dep:serde", "dep:serde_json", "dep:regex"]
 bench-no-vector-clocks = []
+# Fail a test when a step (the code a task runs between two scheduling points) accesses two shared
+# resources, at least one of them for writing (see `ExecutionState::record_access`). For developers
+# of Shuttle primitives and wrappers.
+check-scheduling-points = []

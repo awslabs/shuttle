@@ -3,6 +3,16 @@ use std::fmt::{Debug, Display};
 use std::hash::{Hash, Hasher};
 use std::panic::Location;
 
+/// Whether an access to a shared resource reads or writes it (see
+/// [`ExecutionState::record_access`](crate::runtime::execution::ExecutionState::record_access)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AccessKind {
+    /// The access only reads the resource.
+    Read,
+    /// The access changes the resource.
+    Write,
+}
+
 const CONST_CONTEXT_SIGNATURE: u64 = 0;
 
 /// A stable signature for identifying resources in Shuttle tests.

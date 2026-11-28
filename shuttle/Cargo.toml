@@ -51,6 +51,9 @@ bench = false
 
 [features]
 default = []
+# Fail tests whose steps access two shared resources without a scheduling point in between (see
+# `ExecutionState::record_access`). For developers of Shuttle primitives and wrappers.
+check-scheduling-points = ["shuttle-engine/check-scheduling-points", "shuttle-std/check-scheduling-points"]
 vector-clocks = ["shuttle-engine/vector-clocks"]
 annotation = ["vector-clocks", "shuttle-engine/annotation", "shuttle-schedulers/annotation", "dep:serde", "dep:serde_json", "dep:regex"]
 # The following feature overrides the `vector-clocks` feature. It SHOULD NOT be used in production.

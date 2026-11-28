@@ -16,7 +16,7 @@ pub use config::{
     UNGRACEFUL_SHUTDOWN_CONFIG,
 };
 pub use runtime::runner::{PortfolioRunner, Runner};
-pub use sync_types::{ResourceSignature, ResourceType};
+pub use sync_types::{AccessKind, ResourceSignature, ResourceType};
 
 /// If this environment variable is set, then Shuttle will capture the backtrace of each task and display
 /// the backtraces in the panic message.

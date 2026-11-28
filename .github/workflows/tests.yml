@@ -44,6 +44,22 @@ jobs:
       - name: cargo nextest
         run: cargo nextest run --release --workspace --features annotation
 
+  test-check-scheduling-points:
+    env:
+      RUST_LOG: off
+    name: Tests (scheduling-point checker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        run: rustup update stable
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+      # The wrapper crates still have missing scheduling points (see #262), so only the core crates
+      # run with the checker on for now.
+      - name: cargo nextest
+        run: cargo nextest run --release -p shuttle -p shuttle-engine -p shuttle-std -p shuttle-schedulers --features shuttle/check-scheduling-points
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
@@ -69,6 +85,8 @@ jobs:
         run: cargo clippy --all-targets -- -D clippy::all
       - name: clippy (annotation)
         run: cargo clippy --all-targets --features annotation -- -D clippy::all
+      - name: clippy (check-scheduling-points)
+        run: cargo clippy --all-targets --features check-scheduling-points -- -D clippy::all
 
   docs:
     name: Docs
