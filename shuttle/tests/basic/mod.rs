@@ -2,6 +2,7 @@
 mod annotation;
 mod atomic;
 mod barrier;
+mod cell;
 pub(crate) mod clocks;
 mod condvar;
 mod config;
@@ -27,3 +28,4 @@ mod thread;
 mod timeout;
 mod tracing;
 mod uncontrolled_nondeterminism;
+mod unsafe_cell;
