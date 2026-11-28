@@ -44,6 +44,15 @@ impl<T> UnsafeCell<T> {
 // The reverse does not necessarily hold — but if not, the semaphore may not
 // have any available permits.
 //
+// In Shuttle this invariant can break. `BatchSemaphore` also closes itself when
+// a permit is released while `ExecutionState::should_stop()` is true (see
+// `BatchSemaphore::release_no_scheduling_point`), for example after the
+// execution stopped or failed, or outside an execution. If the permit of an
+// unfinished `get_or_init` or `get_or_try_init` is released that way, the
+// semaphore is closed while `value_set` is false, and nothing can set the value
+// any more. So `get_or_init` and `get_or_try_init` check `value_set` when they
+// find the semaphore closed.
+//
 // A thread with a `&mut OnceCell` may modify the value in any way it wants as
 // long as the invariants are upheld.
 
@@ -99,6 +108,13 @@ impl<T> From<T> for OnceCell<T> {
         }
     }
 }
+
+/// What `get_or_init` and `get_or_try_init` panic with when they find the semaphore closed and the
+/// cell empty (see the top of this file).
+const CLOSED_WHILE_EMPTY: &str =
+    "OnceCell is empty, but its semaphore is closed, so the cell can't be set. Shuttle closes the semaphore when an \
+     unfinished `get_or_init` or `get_or_try_init` is dropped outside an execution, or after its execution stopped or \
+     failed.";
 
 impl<T> OnceCell<T> {
     /// Creates a new empty `OnceCell` instance.
@@ -284,13 +300,9 @@ impl<T> OnceCell<T> {
                     thread::switch();
                     self.set_value(value, permit)
                 }
-                Err(_) => {
-                    debug_assert!(self.initialized());
-
-                    // SAFETY: The semaphore has been closed. This only happens
-                    // when the OnceCell is fully initialized.
-                    unsafe { self.get_unchecked() }
-                }
+                // The semaphore is closed. Usually `set_value` closed it, but in Shuttle the cell
+                // can also be empty, and then nothing can set it (see the top of this file).
+                Err(_) => self.get().expect(CLOSED_WHILE_EMPTY),
             }
         }
     }
@@ -339,13 +351,8 @@ impl<T> OnceCell<T> {
                         Err(e) => Err(e),
                     }
                 }
-                Err(_) => {
-                    debug_assert!(self.initialized());
-
-                    // SAFETY: The semaphore has been closed. This only happens
-                    // when the OnceCell is fully initialized.
-                    unsafe { Ok(self.get_unchecked()) }
-                }
+                // The semaphore is closed. The cell can be empty then (see `get_or_init`).
+                Err(_) => Ok(self.get().expect(CLOSED_WHILE_EMPTY)),
             }
         }
     }
