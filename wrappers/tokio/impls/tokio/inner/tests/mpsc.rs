@@ -626,6 +626,25 @@ fn drop_unreceived_messages_when_receiver_drops() {
     );
 }
 
+// When the receiver is dropped, the messages it never received leave the channel, so their room is
+// free again, as in tokio.
+#[test]
+fn capacity_returns_when_receiver_drops_with_messages() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, rx) = mpsc::channel::<u32>(2);
+                tx.send(0).await.unwrap();
+                assert_eq!(tx.capacity(), 1);
+
+                drop(rx);
+                assert_eq!(tx.capacity(), 2);
+            });
+        },
+        None,
+    );
+}
+
 // Sanity test for `is_closed()`. Tests that `close` closes the channel.
 #[test]
 fn mpsc_close_closes_channel() {
@@ -1100,6 +1119,29 @@ fn mpsc_reserve_owned_holds_sender_slot() {
                 drop(permit);
                 assert!(rx.is_closed());
                 assert_eq!(None, rx.recv().await);
+            });
+        },
+        None,
+    );
+}
+
+// A `reserve_owned` that is dropped while it waits for room gives back its sender's slot, so the
+// channel closes when the last sender is dropped, as in tokio.
+#[test]
+fn mpsc_dropped_reserve_owned_gives_back_its_sender_slot() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+                tx.send(0).await.unwrap();
+
+                let mut reserve = Box::pin(tx.clone().reserve_owned());
+                assert!(futures::poll!(reserve.as_mut()).is_pending());
+                drop(reserve);
+                drop(tx);
+
+                assert_eq!(rx.recv().await, Some(0));
+                assert_eq!(rx.recv().await, None);
             });
         },
         None,
