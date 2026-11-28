@@ -137,8 +137,10 @@ impl<T: ?Sized> Mutex<T> {
 
 impl<T: ?Sized + Debug> Debug for Mutex<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // SAFETY: Shuttle is running single-threaded, only we are able to access `inner` at the time of this call.
-        Debug::fmt(&unsafe { &*self.inner.get() }, f)
+        match self.try_lock() {
+            Ok(guard) => Debug::fmt(&*guard, f),
+            Err(_) => f.write_str("<locked>"),
+        }
     }
 }
 
@@ -165,7 +167,7 @@ impl<T: ?Sized> Drop for MutexGuard<'_, T> {
 
 impl<T: ?Sized + Debug> Debug for MutexGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&self.mutex, f)
+        Debug::fmt(&**self, f)
     }
 }
 
@@ -192,7 +194,7 @@ impl<T: ?Sized> DerefMut for OwnedMutexGuard<T> {
 
 impl<T: ?Sized + Debug> Debug for OwnedMutexGuard<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&self.mutex, f)
+        Debug::fmt(&**self, f)
     }
 }
 

@@ -1,7 +1,7 @@
 use shuttle::future;
 use shuttle::scheduler::PctScheduler;
 use shuttle::{check_dfs, Runner};
-use shuttle_tokio_impl_inner::sync::Mutex;
+use shuttle_tokio_impl_inner::sync::{oneshot, Mutex};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use test_log::test;
@@ -137,6 +137,51 @@ fn async_mutex_owned_2() {
             future::block_on(async move {
                 let v = owned_mutex_increment(5usize, vec![vec![0, 2, 4], vec![1, 2, 3]]).await;
                 assert_eq!(v, [1, 1, 2, 1, 1]);
+            });
+        },
+        None,
+    );
+}
+
+// `Debug for Mutex` must not read the value while another task holds the lock. Here the task that
+// holds it waits between its writes to `a` and `b`, with a `&mut` to the value live.
+#[test]
+fn async_mutex_debug_does_not_read_a_held_value() {
+    #[derive(Debug)]
+    struct Pair {
+        a: usize,
+        b: usize,
+    }
+
+    check_dfs(
+        || {
+            future::block_on(async {
+                let lock = Arc::new(Mutex::new(Pair { a: 0, b: 0 }));
+                let lock_clone = Arc::clone(&lock);
+                let (half_done_tx, half_done_rx) = oneshot::channel();
+                let (resume_tx, resume_rx) = oneshot::channel();
+
+                let holder = future::spawn(async move {
+                    let mut guard = lock_clone.lock().await;
+                    let pair: &mut Pair = &mut guard;
+                    pair.a = 1;
+                    half_done_tx.send(()).unwrap();
+                    resume_rx.await.unwrap();
+                    pair.b = 1;
+                });
+
+                half_done_rx.await.unwrap();
+                assert_eq!(format!("{lock:?}"), "<locked>");
+                resume_tx.send(()).unwrap();
+                holder.await.unwrap();
+
+                // Once the lock is free, the mutex and its guards print the value.
+                assert_eq!(format!("{lock:?}"), "Pair { a: 1, b: 1 }");
+                let guard = lock.lock().await;
+                assert_eq!(format!("{guard:?}"), "Pair { a: 1, b: 1 }");
+                drop(guard);
+                let guard = Arc::clone(&lock).lock_owned().await;
+                assert_eq!(format!("{guard:?}"), "Pair { a: 1, b: 1 }");
             });
         },
         None,
