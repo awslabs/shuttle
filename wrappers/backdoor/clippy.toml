@@ -1,0 +1,60 @@
+# The std primitives that Shuttle can't see, and the real parking_lot's locks,
+# for clippy's `disallowed_types` and `disallowed_methods` lints. Copy this file
+# to the root of a crate or workspace that is tested with Shuttle. This crate's
+# README says how to turn the lints on.
+#
+# Shuttle can explore and replay only what it controls. It can't interleave
+# tasks around a std lock, atomic or channel. A blocked std lock blocks the one
+# OS thread that runs every task of an execution, so the test hangs. And std's
+# hash maps iterate in an order drawn from the OS, so a failing schedule may not
+# replay.
+#
+# Each `reason` names the wrapper to use instead, and the `shuttle-backdoor`
+# item for a deliberate exception. A use of the backdoor carries a
+# `// Shuttle backdoor: <why>` comment where it introduces the primitive.
+#
+# Not listed yet: `OnceLock` and `LazyLock`, which `shuttle::sync` doesn't
+# model, and `std::thread` and `std::hint::spin_loop`, which have no wrapper.
+# The backdoor already has them. The methods of the listed types aren't listed
+# either: through a backdoor alias they resolve to the std definitions, so
+# listing them would reject the backdoor too.
+#
+# The `parking_lot` entries match the real parking_lot only, which
+# shuttle-parking_lot depends on. Code that takes parking_lot through the wrapper
+# gets Shuttle's types under the `shuttle` feature, so they pass. In a build
+# without parking_lot, clippy skips those entries without a warning.
+#
+# Clippy only warns about an entry whose item doesn't exist ("does not refer to
+# a reachable type"), even under `-D warnings`, and says nothing when the
+# entry's crate isn't in the build. So a misspelled entry bans nothing. Look for
+# that warning after you change the lists.
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "a std lock is invisible to Shuttle: use parking_lot::Mutex from shuttle-parking_lot, tokio::sync::Mutex from shuttle-tokio in async code, or shuttle_sync::sync::Mutex where a Condvar waits on it. Deliberate exception: shuttle_backdoor::sync::Mutex with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::RwLock", reason = "a std lock is invisible to Shuttle: use parking_lot::RwLock from shuttle-parking_lot, tokio::sync::RwLock from shuttle-tokio in async code, or shuttle_sync::sync::RwLock. Deliberate exception: shuttle_backdoor::sync::RwLock with a `// Shuttle backdoor: <why>` comment" },
+    { path = "parking_lot::Mutex", reason = "the real parking_lot is invisible to Shuttle: take parking_lot through shuttle-parking_lot (`parking_lot = { package = \"shuttle-parking_lot\", version = \"0.12\" }`, with `parking_lot/shuttle` in the crate's `shuttle` feature). Deliberate exception: shuttle_backdoor::sync::Mutex (std's lock, whose lock() returns a Result) with a `// Shuttle backdoor: <why>` comment" },
+    { path = "parking_lot::RwLock", reason = "the real parking_lot is invisible to Shuttle: take parking_lot through shuttle-parking_lot (`parking_lot = { package = \"shuttle-parking_lot\", version = \"0.12\" }`, with `parking_lot/shuttle` in the crate's `shuttle` feature). Deliberate exception: shuttle_backdoor::sync::RwLock (std's lock, whose read() and write() return a Result) with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::Condvar", reason = "a std condvar is invisible to Shuttle: use shuttle_sync::sync::Condvar, or tokio::sync::Notify from shuttle-tokio in async code. Deliberate exception: shuttle_backdoor::sync::Condvar with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::Barrier", reason = "a std barrier is invisible to Shuttle: use shuttle_sync::sync::Barrier. Deliberate exception: shuttle_backdoor::sync::Barrier with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::Once", reason = "std::sync::Once is invisible to Shuttle: use shuttle_sync::sync::Once, or lazy_static! from shuttle-lazy_static. Deliberate exception: shuttle_backdoor::sync::Once with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::mpsc::Sender", reason = "a std channel is invisible to Shuttle: use shuttle_sync::sync::mpsc, or tokio::sync::mpsc from shuttle-tokio in async code. Deliberate exception: shuttle_backdoor::sync::mpsc with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::mpsc::SyncSender", reason = "a std channel is invisible to Shuttle: use shuttle_sync::sync::mpsc, or tokio::sync::mpsc from shuttle-tokio in async code. Deliberate exception: shuttle_backdoor::sync::mpsc with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::mpsc::Receiver", reason = "a std channel is invisible to Shuttle: use shuttle_sync::sync::mpsc, or tokio::sync::mpsc from shuttle-tokio in async code. Deliberate exception: shuttle_backdoor::sync::mpsc with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicBool", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicBool. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicBool with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicI8", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicI8. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicI8 with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicI16", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicI16. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicI16 with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicI32", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicI32. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicI32 with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicI64", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicI64. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicI64 with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicIsize", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicIsize. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicIsize with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicU8", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicU8. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicU8 with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicU16", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicU16. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicU16 with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicU32", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicU32. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicU32 with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicU64", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicU64. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicU64 with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicUsize", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicUsize. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicUsize with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::atomic::AtomicPtr", reason = "a std atomic is invisible to Shuttle: use shuttle_sync::sync::atomic::AtomicPtr. Deliberate exception: shuttle_backdoor::sync::atomic::AtomicPtr with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::collections::HashMap", reason = "std's hash maps draw OS-random keys, so their iteration order differs between executions and a failing schedule may not replay: use determinizable_collections::HashMap with its `deterministic` feature on under `shuttle`, or BTreeMap when the order matters. Deliberate exception, such as a foreign signature that names std's type: shuttle_backdoor::collections::HashMap with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::collections::HashSet", reason = "std's hash sets draw OS-random keys, so their iteration order differs between executions and a failing schedule may not replay: use determinizable_collections::HashSet with its `deterministic` feature on under `shuttle`, or BTreeSet when the order matters. Deliberate exception, such as a foreign signature that names std's type: shuttle_backdoor::collections::HashSet with a `// Shuttle backdoor: <why>` comment" },
+]
+disallowed-methods = [
+    { path = "std::sync::mpsc::channel", reason = "a std channel is invisible to Shuttle: use shuttle_sync::sync::mpsc::channel, or tokio::sync::mpsc from shuttle-tokio in async code. Deliberate exception: shuttle_backdoor::sync::mpsc::channel with a `// Shuttle backdoor: <why>` comment" },
+    { path = "std::sync::mpsc::sync_channel", reason = "a std channel is invisible to Shuttle: use shuttle_sync::sync::mpsc::sync_channel, or tokio::sync::mpsc from shuttle-tokio in async code. Deliberate exception: shuttle_backdoor::sync::mpsc::sync_channel with a `// Shuttle backdoor: <why>` comment" },
+]

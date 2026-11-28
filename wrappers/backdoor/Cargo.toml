@@ -1,0 +1,14 @@
+[package]
+name = "shuttle-backdoor"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "The real std locks, atomics, channels and threads, for code that must stay invisible to the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+# No `shuttle` feature, on purpose: this crate hands out the std items under every feature.
+
+[dev-dependencies]
+# `tests/under_shuttle.rs` runs the backdoor items inside Shuttle tests. This is not a dependency
+# of the crate itself.
+shuttle = { path = "../../shuttle", version = "0.9" }
