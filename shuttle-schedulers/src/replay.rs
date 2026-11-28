@@ -76,7 +76,12 @@ impl Scheduler for ReplayScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[&Task], _current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
+    fn next_task<'a>(
+        &mut self,
+        runnable: &'a [&'a Task],
+        _current: Option<TaskId>,
+        _is_yielding: bool,
+    ) -> Option<&'a Task> {
         loop {
             if self.steps >= self.schedule.steps.len() {
                 assert!(self.allow_incomplete, "schedule ended early");
@@ -93,7 +98,7 @@ impl Scheduler for ReplayScheduler {
                             if task.clock <= *target_clock {
                                 // The target event causally depends on this
                                 // event, so we schedule it.
-                                return Some(next);
+                                return Some(*task);
                             } else {
                                 // The target event is concurrent with this
                                 // event, so it is irrelevant to the replay.
@@ -114,7 +119,7 @@ impl Scheduler for ReplayScheduler {
                                 continue;
                             }
                         } else {
-                            return Some(next);
+                            return Some(*task);
                         }
                     } else {
                         assert!(

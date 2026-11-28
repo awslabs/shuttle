@@ -33,9 +33,14 @@ impl Scheduler for RoundRobinScheduler {
         }
     }
 
-    fn next_task(&mut self, runnable: &[&Task], current: Option<TaskId>, _is_yielding: bool) -> Option<TaskId> {
+    fn next_task<'a>(
+        &mut self,
+        runnable: &'a [&'a Task],
+        current: Option<TaskId>,
+        _is_yielding: bool,
+    ) -> Option<&'a Task> {
         if current.is_none() {
-            return Some(runnable.first().unwrap().id());
+            return Some(runnable.first().unwrap());
         }
         let current = current.unwrap();
 
@@ -43,8 +48,7 @@ impl Scheduler for RoundRobinScheduler {
             runnable
                 .iter()
                 .find(|t| t.id() > current)
-                .unwrap_or_else(|| runnable.first().unwrap())
-                .id(),
+                .unwrap_or_else(|| runnable.first().unwrap()),
         )
     }
 
