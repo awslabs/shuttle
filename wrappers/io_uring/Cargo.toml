@@ -1,0 +1,28 @@
+[package]
+name = "shuttle-io-uring"
+version = "0.7.15"
+edition = "2024"
+license = "Apache-2.0"
+description = "io-uring wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+shuttle = [ "dep:shuttle-io-uring-impl" ]
+
+direct-syscall = [ "io-uring/direct-syscall" ]
+io_safety = [ "io-uring/io_safety" ]
+overwrite = [ "io-uring/overwrite" ]
+
+# io_uring is Linux's, and io-uring builds only there. On other targets this crate is empty, as the
+# impl crate is, so that a workspace that has it as a member still builds.
+[target.'cfg(target_os = "linux")'.dependencies]
+cfg-if = "1.0"
+io-uring = "0.7"
+shuttle-io-uring-impl = { path = "./io_uring_impl", version = "0.1.0", optional = true }
+
+[dev-dependencies]
+# For the parity probe, which names `libc` types as io-uring's signatures do.
+libc = "0.2"
+# For the consumer tests, which run the same code on the kernel and under Shuttle.
+shuttle = { path = "../../shuttle", version = ">=0.9.2, <0.10" }
+tempfile = "3"
