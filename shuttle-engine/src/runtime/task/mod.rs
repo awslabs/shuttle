@@ -24,6 +24,7 @@ use std::pin::Pin;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 use tracing::{error_span, event, field, Level, Span};
 
 pub mod clock;
@@ -342,6 +343,12 @@ pub struct Task {
 
     waiter: Option<TaskId>,
 
+    // While the task is blocked in a timed wait, the wait's deadline (see `block_with_timeout`).
+    timeout: Option<Duration>,
+
+    // Whether the task's last timed wait timed out (see `take_timed_out`).
+    timed_out: bool,
+
     // Remember whether the waker was invoked while we were running
     woken: bool,
 
@@ -419,6 +426,8 @@ impl Task {
             yielder,
             clock,
             waiter: None,
+            timeout: None,
+            timed_out: false,
             woken: false,
             detached: false,
             park_state: ParkState::default(),
@@ -643,6 +652,47 @@ impl Task {
 
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Blocked { allow_spurious_wakeups };
+        self.timeout = None;
+    }
+
+    /// Block the current thread, as `block(false)` does, until another task unblocks it or the wait
+    /// times out.
+    ///
+    /// A timed wait times out only when no task can run, and the execution would otherwise
+    /// deadlock: then Shuttle unblocks the tasks whose timed waits have the earliest `deadline`, and
+    /// [`Task::take_timed_out`] returns true for each of them. So a timeout never takes the place of
+    /// work that can still happen, and timeouts fire in the order of their deadlines.
+    ///
+    /// Shuttle does not interpret `deadline` otherwise: it only orders the timed waits, so the tasks
+    /// that wait this way have to measure their deadlines from the same origin. Shuttle's own
+    /// wrappers measure them from the start of `shuttle-time`'s clock.
+    pub fn block_with_timeout(&mut self, deadline: Duration) {
+        self.block(false);
+        self.timeout = Some(deadline);
+        self.timed_out = false;
+    }
+
+    /// The deadline of the timed wait the task is blocked in, if it is blocked in one (see
+    /// [`Task::block_with_timeout`]).
+    pub fn timeout(&self) -> Option<Duration> {
+        match self.state {
+            TaskState::Blocked { .. } => self.timeout,
+            _ => None,
+        }
+    }
+
+    /// Whether the task's last timed wait ended because it timed out, rather than because another
+    /// task unblocked it (see [`Task::block_with_timeout`]). Clears the answer, so that a second
+    /// call returns false.
+    pub fn take_timed_out(&mut self) -> bool {
+        std::mem::take(&mut self.timed_out)
+    }
+
+    /// Time out the task's timed wait (see [`Task::block_with_timeout`]).
+    pub(crate) fn time_out(&mut self) {
+        debug_assert!(self.timeout().is_some());
+        self.timed_out = true;
+        self.unblock();
     }
 
     pub fn sleep(&mut self) {
@@ -655,6 +705,8 @@ impl Task {
         // will not be blocked when this is called.
         assert!(self.state != TaskState::Finished);
         self.state = TaskState::Runnable;
+        // Whatever unblocked the task, it is no longer in a timed wait.
+        self.timeout = None;
 
         // When a task gets unblocked, it's definitely no longer blocked in a call to `park`. This
         // is necessary to do here because a parked task could be spuriously woken up outside of the
