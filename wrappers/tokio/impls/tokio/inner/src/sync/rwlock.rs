@@ -547,13 +547,20 @@ impl<T: ?Sized> OwnedRwLockWriteGuard<T> {
     /// locks, since [`RwLock`] is fair and it is possible that a writer is next
     /// in line.
     pub fn downgrade(mut self) -> OwnedRwLockReadGuard<T> {
-        let lock = unsafe { ManuallyDrop::take(&mut self.lock) };
-
         let data = self.data;
         let to_release = self.permits_acquired - 1;
 
         tracing::trace!("rwlock {:p} downgrading to OwnedReadGuard", &self);
 
+        // SAFETY:
+        // In order for the call to be safe, we need to ensure:
+        // * `self.lock` is not used or dropped after this call.
+        //
+        // The next statement, `mem::forget(self)`, keeps the guard's `drop` from using `self.lock`
+        // again. Nothing runs between the two. The `trace!` above can panic, because a `tracing`
+        // subscriber can. It runs before this call, while the guard still owns its `Arc`. So a
+        // panic there runs the guard's `drop` as usual, which drops the `Arc` once.
+        let lock = unsafe { ManuallyDrop::take(&mut self.lock) };
         // NB: Forget to avoid drop impl from being called.
         std::mem::forget(self);
 
