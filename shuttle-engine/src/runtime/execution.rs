@@ -302,7 +302,7 @@ impl Execution {
                 // A task that already has a backtrace captured it eagerly on `Poll::Pending`, with
                 // its await sites still on the stack. That is strictly more informative than the
                 // bare poll loop we would see now, so leave it alone.
-                .filter(|t| t.backtrace.is_none())
+                .filter(|t| t.backtraces.is_empty())
                 // A task whose continuation teardown has already taken has no stack left to walk.
                 .filter_map(|t| t.continuation.as_ref().map(|c| (t.id(), Rc::clone(c))))
                 .filter(|(_, continuation)| continuation.borrow().is_suspended_in_user_code())
@@ -319,7 +319,7 @@ impl Execution {
             .unwrap_or_default();
 
             if let Some(backtrace) = captured {
-                ExecutionState::with(|state| state.get_mut(tid).backtrace = Some(backtrace));
+                ExecutionState::with(|state| state.get_mut(tid).backtraces = vec![backtrace]);
             }
         }
     }

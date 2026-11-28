@@ -54,14 +54,19 @@ pub mod await_backtrace {
     //! obliged to arrange for a wakeup, and the ordinary way to do that is `cx.waker().clone()` —
     //! which runs *inside* the future's own `poll`, on the live stack, through a vtable Shuttle owns
     //! (see [`crate::runtime::task::waker`]). That works for arbitrary user futures, not just
-    //! Shuttle's own leaves.
+    //! Shuttle's own leaves. A poll keeps every clone of the task's own waker, so a task waiting
+    //! under `join!` or `select!` is shown at every branch that registered.
     //!
-    //! Not every `Pending` comes with a clone, though. A future that already holds a waker that
-    //! [`will_wake`](std::task::Waker::will_wake) the task may skip it, as `AtomicWaker::register`
-    //! does, so polling it again records nothing. [`AwaitSite`] then keeps the site recorded for the
-    //! task's previous park and marks it as coming from an earlier poll. Usually the task is still
-    //! waiting on that same future, but it may have moved on to a later await whose future skipped
-    //! the clone too, and the report says it may be stale.
+    //! A future that already holds a waker that [`will_wake`](std::task::Waker::will_wake) the task
+    //! may skip the clone, as `AtomicWaker::register` does. So every poll gets a waker of its own
+    //! (see [`make_poll_waker`](crate::runtime::task::waker::make_poll_waker)), which such a future
+    //! clones again, from where it waits now.
+    //!
+    //! Not every `Pending` comes with a clone, though: a future may register once and never again,
+    //! or not at all. [`AwaitSite`] then keeps the site recorded for the task's previous park and
+    //! marks it as coming from an earlier poll. Usually the task is still waiting on that same
+    //! future, but it may have moved on to a later await whose future skipped the clone too, and the
+    //! report says it may be stale.
     //!
     //! Three guards keep it honest:
     //! - [`PollGuard`] marks the dynamic extent of a driver-loop `poll` and gives it its own capture,
@@ -76,7 +81,8 @@ pub mod await_backtrace {
     //!   tasks then run on the same thread, so the guard sets the task's state aside until it is
     //!   switched back in.
 
-    use crate::runtime::task::Task;
+    use crate::runtime::execution::ExecutionState;
+    use crate::runtime::task::{Task, TaskId};
     use std::backtrace::Backtrace;
     use std::cell::{Cell, RefCell};
 
@@ -84,17 +90,22 @@ pub mod await_backtrace {
         // These describe the task running on this thread. See `SwitchGuard`.
         static IN_POLL_DEPTH: Cell<usize> = const { Cell::new(0) };
         static INTERNAL_BLOCK_ON_DEPTH: Cell<usize> = const { Cell::new(0) };
-        /// Await-site backtrace for the poll currently in progress, if one was captured.
-        static CAPTURED: RefCell<Option<Backtrace>> = const { RefCell::new(None) };
+        /// Await-site backtraces captured by the poll currently in progress, in the order they were
+        /// taken.
+        static CAPTURED: RefCell<Vec<Backtrace>> = const { RefCell::new(Vec::new()) };
     }
 
+    /// The most await sites one poll records. A task waits at more than one only under combinators
+    /// like `join!` and `select!`, and each one costs a stack walk.
+    const MAX_AWAIT_SITES: usize = 8;
+
     /// Marks the dynamic extent of a `Future::poll` call made by one of Shuttle's driver loops, and
-    /// collects the await site it captures. End it with [`finish`](Self::finish).
+    /// collects the await sites it captures. End it with [`finish`](Self::finish).
     #[derive(Debug)]
     pub struct PollGuard {
         /// What the poll enclosing this one had captured so far, if this one is nested in it. Set
         /// aside so this poll starts with nothing, and put back when it ends.
-        enclosing: Option<Backtrace>,
+        enclosing: Vec<Backtrace>,
     }
 
     impl PollGuard {
@@ -102,13 +113,14 @@ pub mod await_backtrace {
         pub fn new() -> Self {
             IN_POLL_DEPTH.set(IN_POLL_DEPTH.get() + 1);
             Self {
-                enclosing: CAPTURED.with(|slot| slot.borrow_mut().take()),
+                enclosing: CAPTURED.with(|slot| std::mem::take(&mut *slot.borrow_mut())),
             }
         }
 
-        /// End the poll, and return the await site it captured, if it cloned the waker.
-        pub fn finish(self) -> Option<Backtrace> {
-            CAPTURED.with(|slot| slot.borrow_mut().take())
+        /// End the poll, and return the await sites it captured: one for each clone of the task's
+        /// own waker, up to `MAX_AWAIT_SITES`.
+        pub fn finish(self) -> Vec<Backtrace> {
+            CAPTURED.with(|slot| std::mem::take(&mut *slot.borrow_mut()))
         }
     }
 
@@ -116,7 +128,7 @@ pub mod await_backtrace {
         fn drop(&mut self) {
             IN_POLL_DEPTH.set(IN_POLL_DEPTH.get() - 1);
             // Also discards anything this poll captured that `finish` did not take, e.g. if it panicked.
-            let enclosing = self.enclosing.take();
+            let enclosing = std::mem::take(&mut self.enclosing);
             CAPTURED.with(|slot| *slot.borrow_mut() = enclosing);
         }
     }
@@ -151,7 +163,7 @@ pub mod await_backtrace {
     pub struct SwitchGuard {
         in_poll_depth: usize,
         internal_block_on_depth: usize,
-        captured: Option<Backtrace>,
+        captured: Vec<Backtrace>,
     }
 
     impl SwitchGuard {
@@ -160,7 +172,7 @@ pub mod await_backtrace {
             Self {
                 in_poll_depth: IN_POLL_DEPTH.replace(0),
                 internal_block_on_depth: INTERNAL_BLOCK_ON_DEPTH.replace(0),
-                captured: CAPTURED.with(|slot| slot.borrow_mut().take()),
+                captured: CAPTURED.with(|slot| std::mem::take(&mut *slot.borrow_mut())),
             }
         }
     }
@@ -172,7 +184,7 @@ pub mod await_backtrace {
             // and undo it.
             IN_POLL_DEPTH.set(self.in_poll_depth);
             INTERNAL_BLOCK_ON_DEPTH.set(self.internal_block_on_depth);
-            let captured = self.captured.take();
+            let captured = std::mem::take(&mut self.captured);
             CAPTURED.with(|slot| *slot.borrow_mut() = captured);
         }
     }
@@ -182,17 +194,27 @@ pub mod await_backtrace {
         crate::backtrace_enabled() && IN_POLL_DEPTH.get() > 0 && INTERNAL_BLOCK_ON_DEPTH.get() == 0
     }
 
-    /// Called from the waker vtable's `clone`. If we are inside a user future's `poll`, this stack
-    /// contains the await chain, so record it.
+    /// Whether `owner`, whose waker is being cloned, is the task that is running. A task that
+    /// clones another task's waker, to wake it later, is not registering for a wakeup of its own.
+    ///
+    /// If the execution state is already borrowed, the clone is Shuttle's own bookkeeping rather
+    /// than a user future's, so it is not an await site either.
+    fn is_running(owner: TaskId) -> bool {
+        ExecutionState::try_with(|state| state.try_current().is_some_and(|task| task.id() == owner)).unwrap_or(false)
+    }
+
+    /// Called from the waker vtable's `clone` with the task the waker belongs to. If we are inside
+    /// that task's own `poll`, this stack contains its await chain, so record it alongside any the
+    /// poll has already recorded.
     ///
     /// Inlined because it sits on the waker-clone path, which every future that returns `Pending`
     /// exercises whether or not backtraces are enabled; inlining lets the `should_capture` check
     /// collapse to a load and a branch.
     #[inline]
-    pub fn note_waker_clone() {
-        if should_capture() {
+    pub fn note_waker_clone(owner: TaskId) {
+        if should_capture() && is_running(owner) && CAPTURED.with(|slot| slot.borrow().len()) < MAX_AWAIT_SITES {
             let backtrace = Backtrace::force_capture();
-            CAPTURED.with(|slot| *slot.borrow_mut() = Some(backtrace));
+            CAPTURED.with(|slot| slot.borrow_mut().push(backtrace));
         }
     }
 
@@ -200,34 +222,31 @@ pub mod await_backtrace {
     ///
     /// Each of Shuttle's driver loops keeps one, and calls [`park`](Self::park) once `poll` has
     /// returned `Pending` and [`unpark`](Self::unpark) once the task is switched back in. So the
-    /// task carries an await site only while it is parked in that loop. While it runs it may block
+    /// task carries await sites only while it is parked in that loop. While it runs it may block
     /// somewhere else, in a `Mutex::lock` inside its next poll or anywhere after `block_on`
     /// returns, and the deadlock handler only captures a backtrace for a task that has none.
     #[derive(Debug, Default)]
-    pub struct AwaitSite(Option<Backtrace>);
+    pub struct AwaitSite(Vec<Backtrace>);
 
     impl AwaitSite {
         /// Record where `task` is waiting, just before it parks after its future returned `Pending`:
-        /// `captured`, the await site that poll captured (see [`PollGuard::finish`]), if it cloned
-        /// the waker, and otherwise the one recorded for the task's previous park, marked as coming
+        /// `captured`, the await sites that poll captured (see [`PollGuard::finish`]), if it cloned
+        /// the waker, and otherwise the ones recorded for the task's previous park, marked as coming
         /// from an earlier poll.
-        pub fn park(&mut self, task: &mut Task, captured: Option<Backtrace>) {
-            match captured {
-                Some(backtrace) => {
-                    task.backtrace = Some(backtrace);
-                    task.await_site_from_earlier_poll = false;
-                }
-                None => {
-                    task.await_site_from_earlier_poll = self.0.is_some();
-                    task.backtrace = self.0.take();
-                }
+        pub fn park(&mut self, task: &mut Task, captured: Vec<Backtrace>) {
+            if captured.is_empty() {
+                task.await_site_from_earlier_poll = !self.0.is_empty();
+                task.backtraces = std::mem::take(&mut self.0);
+            } else {
+                task.backtraces = captured;
+                task.await_site_from_earlier_poll = false;
             }
         }
 
-        /// Take the await site back off `task` once it is switched back in, to keep for its next
+        /// Take the await sites back off `task` once it is switched back in, to keep for its next
         /// park.
         pub fn unpark(&mut self, task: &mut Task) {
-            self.0 = task.backtrace.take();
+            self.0 = std::mem::take(&mut task.backtraces);
             task.await_site_from_earlier_poll = false;
         }
     }
