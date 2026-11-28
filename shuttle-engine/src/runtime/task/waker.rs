@@ -21,6 +21,12 @@ pub fn make_waker(task_id: TaskId) -> Waker {
 }
 
 unsafe fn raw_waker_clone(data: *const ()) -> RawWaker {
+    // A future that is about to return `Pending` clones the waker it was handed so that whoever
+    // owns the resource can wake it later. That clone happens inside the future's own `poll`, which
+    // makes this the one point where Shuttle runs code while an arbitrary user future's await chain
+    // is still on the stack. Grab it while we can — see `crate::await_backtrace`.
+    crate::await_backtrace::note_waker_clone();
+
     // No resources associated with our wakers, so just duplicate the pointer
     RawWaker::new(data, &RAW_WAKER_VTABLE)
 }
