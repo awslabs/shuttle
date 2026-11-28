@@ -1026,18 +1026,178 @@ fn mpsc_reserve_after_receiver_dropped() {
     );
 }
 
-// A permit outlives the receiver being dropped. `Permit::send` returns `()`, so the message is
-// dropped rather than returned, but it must not panic.
+// A permit outlives the receiver being dropped, and it can still send, as in tokio. Nothing can
+// receive the message, so it stays in the channel until the last sender drops the channel.
 #[test]
 fn mpsc_permit_send_after_receiver_dropped() {
     check_dfs(
         || {
             future::block_on(async {
-                let (tx, rx) = mpsc::channel::<u32>(1);
+                let (tx, rx) = mpsc::channel::<std::sync::Arc<()>>(1);
+                let message = std::sync::Arc::new(());
                 let permit = tx.reserve().await.unwrap();
                 drop(rx);
-                permit.send(1);
+                permit.send(message.clone());
                 assert!(tx.is_closed());
+                assert_eq!(std::sync::Arc::strong_count(&message), 2);
+                drop(tx);
+                assert_eq!(std::sync::Arc::strong_count(&message), 1);
+            });
+        },
+        None,
+    );
+}
+
+// After `close`, a permit that was taken before the close can still send, as in tokio. `try_recv`
+// returns `Empty` until every such permit has sent or has been dropped.
+#[test]
+fn mpsc_close_waits_for_permits() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(2);
+                let permit = tx.reserve().await.unwrap();
+                let owned_permit = tx.clone().reserve_owned().await.unwrap();
+                rx.close();
+                assert_matches!(tx.try_send(3), Err(TrySendError::Closed(3)));
+                assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+
+                drop(permit);
+                assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+
+                drop(owned_permit.send(1));
+                assert_eq!(rx.try_recv(), Ok(1));
+                assert_eq!(rx.try_recv(), Err(TryRecvError::Disconnected));
+                assert_eq!(rx.recv().await, None);
+            });
+        },
+        None,
+    );
+}
+
+// A receiver that closes the channel and then reads it until `recv` returns `None` gets the message
+// of a permit that was taken before the close. If the permit is dropped instead, `recv` returns
+// `None` when the permit is dropped. If the channel starts full, the receiver's first `recv` gives
+// the room to the waiting `reserve`, which succeeds only if its task runs again before the close.
+#[test]
+fn mpsc_drain_after_close_waits_for_permit() {
+    for (full, send) in [(false, true), (false, false), (true, true), (true, false)] {
+        check_dfs(
+            move || {
+                future::block_on(async move {
+                    let (tx, mut rx) = mpsc::channel::<u32>(1);
+                    if full {
+                        tx.send(0).await.unwrap();
+                    }
+                    let sender = future::spawn(async move {
+                        let Ok(permit) = tx.reserve().await else {
+                            return false;
+                        };
+                        if send {
+                            permit.send(1);
+                        } else {
+                            drop(permit);
+                        }
+                        true
+                    });
+                    if full {
+                        assert_eq!(rx.recv().await, Some(0));
+                    }
+                    rx.close();
+                    let received = rx.recv().await;
+                    assert_eq!(rx.recv().await, None);
+                    let reserved = sender.await.unwrap();
+                    assert_eq!(received, (reserved && send).then_some(1));
+                });
+            },
+            None,
+        );
+    }
+}
+
+// A `send` or a `reserve` waits on a full channel. The receiver's `recv` gives it the room, and the
+// receiver then closes the channel before the waiting task runs again. As in tokio, the `send` or
+// the `reserve` then fails, and `recv` returns `None`.
+#[test]
+fn mpsc_waiting_send_given_room_fails_after_close() {
+    for reserve in [false, true] {
+        check_dfs(
+            move || {
+                future::block_on(async move {
+                    let (tx, mut rx) = mpsc::channel::<u32>(1);
+                    tx.send(0).await.unwrap();
+                    let mut send = Box::pin(async {
+                        if reserve {
+                            tx.reserve().await.map(|permit| permit.send(1)).map_err(|_| ())
+                        } else {
+                            tx.send(1).await.map_err(|_| ())
+                        }
+                    });
+                    assert!(futures::poll!(send.as_mut()).is_pending());
+                    assert_eq!(rx.recv().await, Some(0));
+                    rx.close();
+                    assert_eq!(send.await, Err(()));
+                    assert_eq!(rx.recv().await, None);
+                });
+            },
+            None,
+        );
+    }
+}
+
+// The receiver's `recv` gives the room of a full channel to a waiting `reserve`, closes the channel
+// and waits. The task of the `reserve` then drops it before it returns. The room is free again, so
+// the receiver must be woken, as in tokio. Another sender stays alive, so its drop can't wake it.
+#[test]
+fn mpsc_close_wakes_receiver_when_reserve_with_room_is_dropped() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<u32>(1);
+                let other_sender = tx.clone();
+                tx.send(0).await.unwrap();
+                let (queued_tx, queued_rx) = oneshot::channel::<()>();
+                let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+                let sender = future::spawn(async move {
+                    let mut reserve = Box::pin(tx.reserve());
+                    assert!(futures::poll!(reserve.as_mut()).is_pending());
+                    queued_tx.send(()).unwrap();
+                    cancel_rx.await.unwrap();
+                    drop(reserve);
+                });
+                queued_rx.await.unwrap();
+                assert_eq!(rx.recv().await, Some(0));
+                rx.close();
+                cancel_tx.send(()).unwrap();
+                assert_eq!(rx.recv().await, None);
+                sender.await.unwrap();
+                drop(other_sender);
+            });
+        },
+        None,
+    );
+}
+
+// A task sends a request that holds a reply channel, and then waits for the reply. The receiver
+// closes the channel and is dropped without reading it. If the send got its capacity before the
+// close and pushes its request after the drop, the request stays in the channel, and the task waits
+// forever, as it can in tokio. Shuttle must find that schedule.
+#[test]
+#[should_panic(expected = "deadlock")]
+fn mpsc_close_without_drain_can_strand_a_send() {
+    check_dfs(
+        || {
+            future::block_on(async {
+                let (tx, mut rx) = mpsc::channel::<oneshot::Sender<()>>(1);
+                let caller = future::spawn(async move {
+                    let (reply, done) = oneshot::channel();
+                    if tx.send(reply).await.is_ok() {
+                        let _ = done.await;
+                    }
+                });
+                rx.close();
+                drop(rx);
+                caller.await.unwrap();
             });
         },
         None,

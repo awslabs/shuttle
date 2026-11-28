@@ -22,12 +22,21 @@ const MAX_INLINE_MESSAGES: usize = 32;
 const PERMIT_ALREADY_USED: &str =
     "Internal Shuttle error. A permit was used after it had already been consumed. This should never happen.";
 
+const PERMIT_SEND_REFUSED: &str =
+    "Internal Shuttle error. A channel refused a message sent on a permit. This should never happen.";
+
 // === Base Channel ===
 
 struct Channel<T> {
     // If all senders have left and the channel is empty, we want to ensure that the receiver is
     // not blocked.  To ensure this, we'll maintain the following invariant
-    //     (state.known_senders == 0 && state.messages.is_empty()) == (recv_semaphore is closed)
+    //     (state.known_senders == 0 && state.messages.is_empty()) => (recv_semaphore is closed)
+    //
+    // After the receiver closes the channel, a permit taken before the close can still send. So the
+    // receiver gets no more messages only once the channel is empty and no permit is left
+    // (`is_closed_and_idle`). `poll_recv` checks this before it waits, and the drop of the last
+    // permit closes the recv_semaphore to wake a receiver that waits. The recv_semaphore is closed
+    // only in these cases, so a closed recv_semaphore means that no more messages will come.
     bound: Option<usize>, // None for an unbounded channel, Some(k) for bounded channel of size k
     recv_semaphore: Arc<BatchSemaphore>, // semaphore used to signal receivers
     send_semaphore: Arc<BatchSemaphore>, // semaphore used to block senders. Also tracks whether the channel is closed for sending messages.
@@ -76,8 +85,12 @@ impl<T> Channel<T> {
 
     // Send a message on the channel.  Note that callers of this method must ensure that
     // the channel has enough capacity for the send to be successful.
-    fn send(&self, message: T) -> Result<(), SendError<T>> {
-        if self.is_closed() {
+    //
+    // As in tokio, a message sent on a permit is pushed even if the channel was closed after the
+    // permit was taken, so that a receiver that reads the channel until `recv` returns `None` gets
+    // it. Any other message is refused once the channel is closed.
+    fn send(&self, message: T, on_permit: bool) -> Result<(), SendError<T>> {
+        if !on_permit && self.is_closed() {
             return Err(SendError(message));
         }
 
@@ -103,10 +116,10 @@ impl<T> Channel<T> {
     // The push and the release are one operation: a receiver that sees the message in `len` can also
     // receive it. So the release takes no scheduling point of its own. If the push fails because the
     // channel is closed, there is no message, and so no permit to release.
-    fn send_and_notify(&self, message: T) -> Result<(), SendError<T>> {
+    fn send_and_notify(&self, message: T, on_permit: bool) -> Result<(), SendError<T>> {
         // Scheduling point precedes the visible send operation
         thread::switch();
-        self.send(message)?;
+        self.send(message, on_permit)?;
         self.recv_semaphore.release_no_scheduling_point(1);
         Ok(())
     }
@@ -147,6 +160,21 @@ impl<T> Channel<T> {
 
     fn is_closed(&self) -> bool {
         self.send_semaphore.is_closed()
+    }
+
+    // Returns true if the receiver will get no more messages: the channel is closed and empty, and
+    // no permit that could still send is left. This is tokio's `rx_closed && semaphore.is_idle()`.
+    //
+    // As in tokio, the capacity that is neither free nor a message is held by permits. This also
+    // counts a `send` between its acquire and its push, and a `reserve` that the send_semaphore has
+    // given capacity to, but that has not returned yet. While the receiver is in `poll_recv`, between
+    // taking a message and giving its capacity back, this returns false.
+    fn is_closed_and_idle(&self) -> bool {
+        let no_permits = match self.bound {
+            Some(bound) => self.send_semaphore.available_permits() == bound,
+            None => true, // an unbounded channel has no permits
+        };
+        self.is_closed() && self.is_empty() && no_permits
     }
 
     fn close(&self) {
@@ -233,7 +261,30 @@ impl<T> Channel<T> {
     // not sending.
     async fn acquire_capacity(&self) -> Result<(), SendError<()>> {
         if self.is_bounded() {
-            self.send_semaphore.acquire(1).await.map_err(|_| SendError(()))
+            // If this future is dropped after the send_semaphore gave it capacity, its `Acquire`
+            // gives the capacity back. That can leave a closed channel idle, so wake the receiver
+            // then, as tokio does. On success the capacity goes to a permit, which does this itself.
+            struct WakeReceiverOnDrop<'a, T>(&'a Channel<T>);
+
+            impl<T> Drop for WakeReceiverOnDrop<'_, T> {
+                fn drop(&mut self) {
+                    self.0.wake_receiver_if_closed_and_idle();
+                }
+            }
+
+            let guard = WakeReceiverOnDrop(self);
+            self.send_semaphore.acquire(1).await.map_err(|_| SendError(()))?;
+
+            // The send_semaphore can give capacity to a waiting acquire, and the channel can then
+            // close before the acquire runs again. tokio's acquire checks for a close first, so it
+            // fails then. Do the same: give the capacity back, and let the guard wake the receiver.
+            if self.is_closed() {
+                self.send_semaphore.release_no_scheduling_point(1);
+                return Err(SendError(()));
+            }
+
+            std::mem::forget(guard);
+            Ok(())
         } else if self.is_closed() {
             // An unbounded channel does not take capacity from the `send_semaphore` (nothing ever
             // releases back into it), so the closed check that `acquire` would have done for free
@@ -266,6 +317,27 @@ impl<T> Channel<T> {
     fn release_capacity(&self) {
         if self.is_bounded() {
             self.send_semaphore.release(1);
+        }
+    }
+
+    // Returns the capacity of a `Permit` or `OwnedPermit` that is dropped or released without
+    // sending. If this was the last permit of a closed, empty channel, wake the receiver. As in
+    // tokio, this is one step with the release.
+    fn release_permit(&self) {
+        self.release_capacity();
+        self.wake_receiver_if_closed_and_idle();
+    }
+
+    // If the channel is closed and idle, no more messages will come, so close the recv_semaphore to
+    // wake a receiver that waits for one.
+    fn wake_receiver_if_closed_and_idle(&self) {
+        if self.is_closed_and_idle() {
+            trace!(
+                "closing semaphore {:p} of closed channel {:p} with no permits left",
+                self.recv_semaphore,
+                self
+            );
+            self.recv_semaphore.close_no_scheduling_point();
         }
     }
 }
@@ -348,7 +420,7 @@ impl<T> ReceiverInternal<T> {
     ///  * `Poll::Ready(None)` if the channel has been closed and all messages
     ///    sent before it was closed have been received.
     pub fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
-        if self.is_closed() && self.is_empty() {
+        if self.chan.is_closed_and_idle() {
             self.pending_acquire = None;
             return Poll::Ready(None);
         }
@@ -421,14 +493,19 @@ impl<T> SenderInternal<T> {
 
     /// Sends a value, waiting until there is capacity.
     pub async fn send(&self, message: T) -> Result<(), SendError<T>> {
-        if self.chan.is_bounded() {
-            match self.chan.send_semaphore.acquire(1).await {
-                Ok(()) => {}
-                Err(_) => return Err(SendError(message)),
-            }
+        if !self.chan.is_bounded() {
+            return self.chan.send_and_notify(message, false);
         }
 
-        self.chan.send_and_notify(message)
+        // As in tokio, a send on a bounded channel is a `reserve` and a `Permit::send`. So once it
+        // has the capacity, it succeeds, even if the channel is closed before the push.
+        match self.reserve().await {
+            Ok(permit) => {
+                permit.send(message);
+                Ok(())
+            }
+            Err(_) => Err(SendError(message)),
+        }
     }
 
     /// Completes when the receiver has dropped.
@@ -438,13 +515,14 @@ impl<T> SenderInternal<T> {
 
     /// Attempts to immediately send a message on this `Sender`
     pub fn try_send(&self, message: T) -> Result<(), TrySendError<T>> {
-        match self.chan.send_semaphore.try_acquire(1) {
-            Err(TryAcquireError::Closed) => Err(TrySendError::Closed(message)),
-            Err(TryAcquireError::NoPermits) => Err(TrySendError::Full(message)),
-            Ok(()) => self
-                .chan
-                .send_and_notify(message)
-                .map_err(|SendError(message)| TrySendError::Closed(message)),
+        // As `send`, a `try_reserve` and a `Permit::send`.
+        match self.try_reserve() {
+            Err(TrySendError::Closed(())) => Err(TrySendError::Closed(message)),
+            Err(TrySendError::Full(())) => Err(TrySendError::Full(message)),
+            Ok(permit) => {
+                permit.send(message);
+                Ok(())
+            }
         }
     }
 
@@ -830,10 +908,10 @@ impl<T> Permit<'_, T> {
     pub fn send(mut self, value: T) {
         let chan = self.chan.take().expect(PERMIT_ALREADY_USED);
 
-        // Unlike `Sender::send` this returns `()`, so a channel that closed after the permit was
-        // handed out simply drops the value. The capacity is not returned: a closed channel has no
-        // capacity to hand out, and nothing is waiting for it.
-        let _ = chan.send_and_notify(value);
+        // As in tokio, this succeeds even if the receiver has closed the channel or has been
+        // dropped since the permit was taken. With no receiver, the message stays in the channel
+        // until the last sender drops the channel.
+        chan.send_and_notify(value, true).expect(PERMIT_SEND_REFUSED);
     }
 }
 
@@ -841,7 +919,7 @@ impl<T> Drop for Permit<'_, T> {
     fn drop(&mut self) {
         // `None` here means `send` consumed the permit and the capacity became a message.
         if let Some(chan) = self.chan.take() {
-            chan.release_capacity();
+            chan.release_permit();
         }
     }
 }
@@ -870,8 +948,8 @@ impl<T> OwnedPermit<T> {
     pub fn send(mut self, value: T) -> Sender<T> {
         let chan = self.chan.take().expect(PERMIT_ALREADY_USED);
 
-        // See `Permit::send` for why the error is swallowed.
-        let _ = chan.send_and_notify(value);
+        // See `Permit::send`.
+        chan.send_and_notify(value, true).expect(PERMIT_SEND_REFUSED);
 
         Sender {
             inner: SenderInternal { chan },
@@ -882,7 +960,7 @@ impl<T> OwnedPermit<T> {
     /// [`Sender`] the permit was created from.
     pub fn release(mut self) -> Sender<T> {
         let chan = self.chan.take().expect(PERMIT_ALREADY_USED);
-        chan.release_capacity();
+        chan.release_permit();
 
         Sender {
             inner: SenderInternal { chan },
@@ -914,7 +992,7 @@ impl<T> Drop for OwnedPermit<T> {
         if let Some(chan) = self.chan.take() {
             // Return the capacity before giving up the sender slot: `drop_sender` may close the
             // channel, and a task blocked waiting for capacity should see it first.
-            chan.release_capacity();
+            chan.release_permit();
             chan.drop_sender();
         }
     }
