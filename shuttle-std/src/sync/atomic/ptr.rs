@@ -55,16 +55,19 @@ impl<T> AtomicPtr<T> {
     }
 
     /// Loads a value from the pointer.
+    #[track_caller]
     pub fn load(&self, order: Ordering) -> *mut T {
         self.inner.load(order)
     }
 
     /// Stores a value into the pointer.
+    #[track_caller]
     pub fn store(&self, val: *mut T, order: Ordering) {
         self.inner.store(val, order)
     }
 
     /// Stores a value into the atomic pointer, returning the previous value.
+    #[track_caller]
     pub fn swap(&self, val: *mut T, order: Ordering) -> *mut T {
         self.inner.swap(val, order)
     }
@@ -72,6 +75,7 @@ impl<T> AtomicPtr<T> {
     /// Fetches the value, and applies a function to it that returns an optional new value.
     /// Returns a `Result` of `Ok(previous_value)` if the function returned `Some(_)`, else
     /// `Err(previous_value)`.
+    #[track_caller]
     pub fn try_update(
         &self,
         set_order: Ordering,
@@ -92,6 +96,7 @@ impl<T> AtomicPtr<T> {
     ///
     /// Since Rust 1.95 this is an alias for [`try_update`](Self::try_update). Deprecated since
     /// Rust 1.99.
+    #[track_caller]
     pub fn fetch_update<F>(&self, set_order: Ordering, fetch_order: Ordering, f: F) -> Result<*mut T, *mut T>
     where
         F: FnMut(*mut T) -> Option<*mut T>,
@@ -101,6 +106,7 @@ impl<T> AtomicPtr<T> {
 
     /// Fetches the value, applies a function to it that returns a new value, and stores the new
     /// value. Returns the previous value.
+    #[track_caller]
     pub fn update(&self, set_order: Ordering, fetch_order: Ordering, mut f: impl FnMut(*mut T) -> *mut T) -> *mut T {
         let mut prev = self.load(fetch_order);
         loop {
@@ -114,6 +120,7 @@ impl<T> AtomicPtr<T> {
     /// Stores a value into the atomic pointer if the current value is the same as the
     /// `current` value.
     #[deprecated(since = "0.0.6", note = "Use `compare_exchange` or `compare_exchange_weak` instead")]
+    #[track_caller]
     pub fn compare_and_swap(&self, current: *mut T, new: *mut T, order: Ordering) -> *mut T {
         match self.compare_exchange(current, new, order, order) {
             Ok(v) => v,
@@ -127,6 +134,7 @@ impl<T> AtomicPtr<T> {
     /// The return value is a result indicating whether the new value was written and
     /// containing the previous value. On success this value is guaranteed to be equal to
     /// `current`.
+    #[track_caller]
     pub fn compare_exchange(
         &self,
         current: *mut T,
@@ -146,6 +154,7 @@ impl<T> AtomicPtr<T> {
     /// platforms. The return value is a result indicating whether the new value was written
     /// and containing the previous value.
     // TODO actually produce spurious failures
+    #[track_caller]
     pub fn compare_exchange_weak(
         &self,
         current: *mut T,
@@ -160,6 +169,7 @@ impl<T> AtomicPtr<T> {
     /// pointer.
     ///
     /// This operation wraps around on overflow, like `<*mut T>::wrapping_add`.
+    #[track_caller]
     pub fn fetch_ptr_add(&self, val: usize, order: Ordering) -> *mut T {
         self.fetch_byte_add(val.wrapping_mul(std::mem::size_of::<T>()), order)
     }
@@ -168,6 +178,7 @@ impl<T> AtomicPtr<T> {
     /// pointer.
     ///
     /// This operation wraps around on overflow, like `<*mut T>::wrapping_sub`.
+    #[track_caller]
     pub fn fetch_ptr_sub(&self, val: usize, order: Ordering) -> *mut T {
         self.fetch_byte_sub(val.wrapping_mul(std::mem::size_of::<T>()), order)
     }
@@ -175,6 +186,7 @@ impl<T> AtomicPtr<T> {
     /// Offsets the pointer's address by adding `val` bytes. Returns the previous pointer.
     ///
     /// This operation wraps around on overflow, like `<*mut T>::wrapping_byte_add`.
+    #[track_caller]
     pub fn fetch_byte_add(&self, val: usize, order: Ordering) -> *mut T {
         self.inner
             .try_update(order, order, |old| Some(old.wrapping_byte_add(val)))
@@ -184,6 +196,7 @@ impl<T> AtomicPtr<T> {
     /// Offsets the pointer's address by subtracting `val` bytes. Returns the previous pointer.
     ///
     /// This operation wraps around on overflow, like `<*mut T>::wrapping_byte_sub`.
+    #[track_caller]
     pub fn fetch_byte_sub(&self, val: usize, order: Ordering) -> *mut T {
         self.inner
             .try_update(order, order, |old| Some(old.wrapping_byte_sub(val)))
@@ -192,6 +205,7 @@ impl<T> AtomicPtr<T> {
 
     /// Bitwise "or" of the pointer's address with `val`, keeping the pointer's provenance.
     /// Returns the previous pointer.
+    #[track_caller]
     pub fn fetch_or(&self, val: usize, order: Ordering) -> *mut T {
         self.inner
             .try_update(order, order, |old| Some(old.map_addr(|addr| addr | val)))
@@ -200,6 +214,7 @@ impl<T> AtomicPtr<T> {
 
     /// Bitwise "and" of the pointer's address with `val`, keeping the pointer's provenance.
     /// Returns the previous pointer.
+    #[track_caller]
     pub fn fetch_and(&self, val: usize, order: Ordering) -> *mut T {
         self.inner
             .try_update(order, order, |old| Some(old.map_addr(|addr| addr & val)))
@@ -208,6 +223,7 @@ impl<T> AtomicPtr<T> {
 
     /// Bitwise "xor" of the pointer's address with `val`, keeping the pointer's provenance.
     /// Returns the previous pointer.
+    #[track_caller]
     pub fn fetch_xor(&self, val: usize, order: Ordering) -> *mut T {
         self.inner
             .try_update(order, order, |old| Some(old.map_addr(|addr| addr ^ val)))

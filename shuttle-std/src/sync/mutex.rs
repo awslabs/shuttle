@@ -47,6 +47,7 @@ impl<T> Mutex<T> {
 
 impl<T: ?Sized> Mutex<T> {
     /// Acquires a mutex, blocking the current thread until it is able to do so.
+    #[track_caller]
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
         let me = current::me();
 
@@ -98,6 +99,7 @@ impl<T: ?Sized> Mutex<T> {
     ///
     /// If the lock could not be acquired at this time, then Err is returned. This function does not
     /// block.
+    #[track_caller]
     pub fn try_lock(&self) -> TryLockResult<MutexGuard<'_, T>> {
         let me = current::me();
 

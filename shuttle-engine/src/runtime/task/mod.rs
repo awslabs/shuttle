@@ -28,7 +28,9 @@ use tracing::{error_span, event, field, Level, Span};
 
 pub mod clock;
 pub mod labels;
+mod next_event;
 pub mod waker;
+pub use next_event::{Event, EventKind, EventTarget, ResourceId};
 use waker::make_waker;
 
 // A note on terminology: we have competing notions of threads floating around. Here's the
@@ -345,6 +347,13 @@ pub struct Task {
     // Remember whether the waker was invoked while we were running
     woken: bool,
 
+    // The operation the task performs when it is next scheduled (see `Task::next_event`).
+    next_event: Event,
+
+    // Whether the task last switched out to poll a future again, after the future returned
+    // `Poll::Pending` (see `Task::woken_by`).
+    between_polls: bool,
+
     name: Option<String>,
 
     local_storage: StorageMap,
@@ -420,6 +429,8 @@ impl Task {
             clock,
             waiter: None,
             woken: false,
+            next_event: Event::UNKNOWN,
+            between_polls: false,
             detached: false,
             park_state: ParkState::default(),
             name,
@@ -580,6 +591,45 @@ impl Task {
     /// Returns the identifier of this task.
     pub fn id(&self) -> TaskId {
         self.id
+    }
+
+    /// The visible operation this task performs when it is next scheduled, as far as Shuttle knows.
+    ///
+    /// At a scheduling decision, this describes what each runnable task does if the scheduler picks
+    /// it: the operation after the scheduling point the task is stopped at (see [`Event`]). A task
+    /// that is waiting for a future, for example in an `.await` or in a blocking lock, is about to
+    /// poll the future again. Once a Shuttle semaphore wakes it, which is how its locks, semaphores
+    /// and channels wake their waiters, its next event is the acquire it was woken for. Otherwise it
+    /// is [`EventKind::Unknown`], as it is for a task that hasn't started yet. While a task runs,
+    /// this still describes the scheduling point it passed last.
+    pub fn next_event(&self) -> Event {
+        self.next_event
+    }
+
+    /// Whether the next steps of this task and `other` may not commute, as far as their next events
+    /// tell: either the events conflict (see [`Event::conflicts_with`]), or one of them is an
+    /// operation on the other task, such as aborting, joining or unparking it, which can affect
+    /// whatever that task does next.
+    pub fn next_step_conflicts_with(&self, other: &Task) -> bool {
+        let (mine, theirs) = (self.next_event, other.next_event);
+        mine.conflicts_with(&theirs)
+            || mine.target() == Some(EventTarget::Task(other.id))
+            || theirs.target() == Some(EventTarget::Task(self.id))
+    }
+
+    /// Records the next event of a task that is switching out (see `ExecutionState::maybe_yield`).
+    pub(crate) fn set_next_event(&mut self, event: Event, between_polls: bool) {
+        self.next_event = event;
+        self.between_polls = between_polls;
+    }
+
+    /// A Shuttle primitive woke this task, which will next do `event`: if the task is waiting to poll
+    /// a future again, that is its next event. A task that is switched out at any other scheduling
+    /// point is about to do the operation after it, whatever woke it.
+    pub(crate) fn woken_by(&mut self, event: Event) {
+        if self.between_polls {
+            self.next_event = event;
+        }
     }
 
     /// Returns the identifier of the task that spawned this task.
