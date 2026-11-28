@@ -1,0 +1,39 @@
+[package]
+name = "shuttle-arc-swap"
+# Wrappers mirror the version of the crate they wrap, so that a downstream crate can depend on the
+# wrapper with the same `version = "1"` requirement it would have used for arc-swap.
+version = "1.9.3"
+edition = "2024"
+license = "Apache-2.0"
+description = "arc-swap wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+shuttle = [ "dep:shuttle-arc-swap-inner" ]
+
+# arc-swap's features. Each one is forwarded to arc-swap, and to the inner crate when `shuttle` is
+# enabled. arc-swap has no `default` feature, so neither does this crate.
+experimental-strategies = [ "arc-swap-orig/experimental-strategies", "shuttle-arc-swap-inner?/experimental-strategies" ]
+experimental-thread-local = [ "arc-swap-orig/experimental-thread-local", "shuttle-arc-swap-inner?/experimental-thread-local" ]
+internal-test-strategies = [ "arc-swap-orig/internal-test-strategies", "shuttle-arc-swap-inner?/internal-test-strategies" ]
+rwlock-strategy = [ "arc-swap-orig/rwlock-strategy", "shuttle-arc-swap-inner?/rwlock-strategy" ]
+weak = [ "arc-swap-orig/weak", "shuttle-arc-swap-inner?/weak" ]
+serde = [ "arc-swap-orig/serde", "shuttle-arc-swap-inner?/serde" ]
+
+[dependencies]
+cfg-if = "1.0"
+# Without default features, so that `default-features = false` on this crate reaches arc-swap too.
+# 1.9.3 is the first version with `rwlock-strategy`, which this crate forwards.
+arc-swap-orig = { package = "arc-swap", version = "1.9.3", default-features = false }
+shuttle-arc-swap-inner = { path = "./shuttle_arc_swap_inner", version = "0.1", optional = true, default-features = false }
+
+[dev-dependencies]
+# The tests use every type.
+shuttle-arc-swap = { path = ".", features = ["weak", "serde"] }
+# For the tests that run under `--features shuttle`.
+shuttle = { path = "../../shuttle", version = "0.9" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[package.metadata.docs.rs]
+features = ["weak", "serde"]
