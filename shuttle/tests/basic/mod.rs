@@ -27,3 +27,5 @@ mod thread;
 mod timeout;
 mod tracing;
 mod uncontrolled_nondeterminism;
+#[cfg(feature = "weak-memory")]
+mod weak_memory;
