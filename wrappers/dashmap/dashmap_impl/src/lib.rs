@@ -25,16 +25,17 @@
 //!   `RwLockReadGuard`/`RwLockWriteGuard` may not auto-derive these traits.
 //!   We manually assert them with the same bounds as real dashmap.
 //!
-//! - **Pointer casts in `Iter::next` and `IterMut::next`**: iterator items
-//!   hold references into the `HashMap` that must outlive the `next()` call.
-//!   The `RwLockWriteGuard` (owned by the iterator struct) keeps the `HashMap` alive
-//!   for the iterator's lifetime `'a`, so extending the references to `'a` is
-//!   sound. `IterMut` visits each key exactly once, preventing mutable aliasing.
+//! - **Raw pointers in `RefMulti` and `RefMutMulti`**, the items of `iter`
+//!   and `iter_mut`, and their `Send`/`Sync` impls. Each item points to a key
+//!   and a value in the `HashMap`. As in real dashmap, it holds a clone of an
+//!   `Arc` of the iterator's lock guard, so the map stays locked for as long as
+//!   the item lives.
 
 use deterministic_collections::HashMap;
 use shuttle::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::borrow::Borrow;
 use std::hash::Hash;
+use std::sync::Arc;
 
 mod set;
 
@@ -233,16 +234,33 @@ impl<K: Eq + Hash, V> DashMap<K, V> {
     {
         let guard = self.inner.read().unwrap();
         let keys: Vec<K> = guard.keys().cloned().collect();
-        Iter { guard, keys, index: 0 }
+        Iter {
+            guard: Arc::new(guard),
+            keys,
+            index: 0,
+        }
     }
 
     pub fn iter_mut(&self) -> IterMut<'_, K, V>
     where
         K: Clone,
     {
-        let guard = self.inner.write().unwrap();
+        let mut guard = self.inner.write().unwrap();
         let keys: Vec<K> = guard.keys().cloned().collect();
-        IterMut { guard, keys, index: 0 }
+        // The items share the guard through an `Arc`, which gives no `&mut` access to the map. So
+        // the entries are found now, while the guard still gives it.
+        let entries: Vec<(*const K, *mut V)> = keys
+            .iter()
+            .map(|key| {
+                let k = guard.get_key_value(key).unwrap().0 as *const K;
+                let v = guard.get_mut(key).unwrap() as *mut V;
+                (k, v)
+            })
+            .collect();
+        IterMut {
+            guard: Arc::new(guard),
+            entries: entries.into_iter(),
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -573,7 +591,7 @@ impl<'a, K: Eq + Hash + Clone, V> VacantEntry<'a, K, V> {
 // ── Iter (immutable) ────────────────────────────────────────────
 
 pub struct Iter<'a, K, V> {
-    guard: RwLockReadGuard<'a, HashMap<K, V>>,
+    guard: Arc<RwLockReadGuard<'a, HashMap<K, V>>>,
     keys: Vec<K>,
     index: usize,
 }
@@ -587,58 +605,88 @@ impl<'a, K: Eq + Hash, V> Iterator for Iter<'a, K, V> {
         }
         let i = self.index;
         self.index += 1;
-        let (k, v) = self.guard.get_key_value(&self.keys[i]).unwrap();
-        // SAFETY: the references are valid for 'a because the RwLockReadGuard
-        // (which keeps the HashMap alive) lives for 'a in this struct.
-        let k: &'a K = unsafe { &*(k as *const K) };
-        let v: &'a V = unsafe { &*(v as *const V) };
-        Some(RefMulti { key: k, value: v })
+        let (key, value) = self.guard.get_key_value(&self.keys[i]).unwrap();
+        Some(RefMulti {
+            _guard: Arc::clone(&self.guard),
+            key,
+            value,
+        })
     }
 }
 
 // ── IterMut ─────────────────────────────────────────────────────
 
 pub struct IterMut<'a, K, V> {
-    guard: RwLockWriteGuard<'a, HashMap<K, V>>,
-    keys: Vec<K>,
-    index: usize,
+    guard: Arc<RwLockWriteGuard<'a, HashMap<K, V>>>,
+    entries: std::vec::IntoIter<(*const K, *mut V)>,
 }
 
 impl<'a, K: Eq + Hash, V> Iterator for IterMut<'a, K, V> {
     type Item = RefMutMulti<'a, K, V>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.keys.len() {
-            return None;
-        }
-        let i = self.index;
-        self.index += 1;
-        let k = self.guard.get_key_value(&self.keys[i]).unwrap().0 as *const K;
-        let v = self.guard.get_mut(&self.keys[i]).unwrap() as *mut V;
-        // SAFETY: guard keeps HashMap alive for 'a. Each key is visited
-        // exactly once, so no mutable aliasing occurs.
-        let k: &'a K = unsafe { &*k };
-        let v: &'a mut V = unsafe { &mut *v };
-        Some(RefMutMulti { key: k, value: v })
+        let (key, value) = self.entries.next()?;
+        Some(RefMutMulti {
+            _guard: Arc::clone(&self.guard),
+            key,
+            value,
+        })
     }
 }
 
 // ── RefMulti / RefMutMulti (iterator items) ─────────────────────
 
 pub struct RefMulti<'a, K, V> {
-    key: &'a K,
-    value: &'a V,
+    _guard: Arc<RwLockReadGuard<'a, HashMap<K, V>>>,
+    key: *const K,
+    value: *const V,
 }
+
+// SAFETY:
+// In order for `RefMulti<K, V>` to be `Send`, we need to ensure:
+// * The read guard in `_guard` is released on the OS thread that took it. std's
+//   `RwLockReadGuard`, which Shuttle's guard holds, is not `Send` for this reason.
+// * The thread that gets the item can share the key and the value that it points to with other
+//   threads.
+//
+// Shuttle runs all the threads of an execution on one OS thread. So an item that moves to another
+// Shuttle thread is still dropped on the OS thread that took the guard, and so is the last clone of
+// the `Arc`. This does not hold if safe code sends the item to a thread that Shuttle doesn't run,
+// such as one from `std::thread::spawn`. `Ref` and Shuttle's own primitives make the same
+// assumption, for example the `Sync` impl of `shuttle::sync::RwLock`.
+// The item only reads the key and the value. Other items and other readers of the map can read
+// them at the same time, and `K: Sync` and `V: Sync` let threads share them. Nobody can change them
+// while the item lives (see `pair`). These are the bounds of a `(&K, &V)`.
+unsafe impl<K: Sync, V: Sync> Send for RefMulti<'_, K, V> {}
+
+// SAFETY:
+// In order for `RefMulti<K, V>` to be `Sync`, we need to ensure:
+// * Threads that share a `&RefMulti` only read through it, and what they read is `Sync`.
+//
+// Every method of `RefMulti` takes `&self` and gives out a `&K` or a `&V`. `K: Sync` and `V: Sync`
+// let threads share these. Nothing reads `_guard`. It is used only when the item is dropped, which
+// needs the item itself.
+unsafe impl<K: Sync, V: Sync> Sync for RefMulti<'_, K, V> {}
 
 impl<K, V> RefMulti<'_, K, V> {
     pub fn key(&self) -> &K {
-        self.key
+        self.pair().0
     }
     pub fn value(&self) -> &V {
-        self.value
+        self.pair().1
     }
     pub fn pair(&self) -> (&K, &V) {
-        (self.key, self.value)
+        // SAFETY:
+        // In order for the dereferences to be safe, we need to ensure:
+        // * `key` and `value` point to a key and its value in the map.
+        // * Nobody changes them while the returned references live.
+        //
+        // `Iter::next` took both pointers from the map, through the read guard in `_guard`. The
+        // entries of a `HashMap` stay in place until the map changes.
+        // `_guard` is a clone of the `Arc` that holds the read guard, so the read lock is held for
+        // as long as `self` lives, and the returned references can't outlive `self`. While the
+        // read lock is held, no task can take the write lock, and every change to the map takes it.
+        unsafe { (&*self.key, &*self.value) }
     }
 }
 
@@ -646,34 +694,86 @@ impl<K, V> std::ops::Deref for RefMulti<'_, K, V> {
     type Target = V;
 
     fn deref(&self) -> &V {
-        self.value
+        self.value()
     }
 }
 
 pub struct RefMutMulti<'a, K, V> {
-    key: &'a K,
-    value: &'a mut V,
+    _guard: Arc<RwLockWriteGuard<'a, HashMap<K, V>>>,
+    key: *const K,
+    value: *mut V,
 }
+
+// SAFETY:
+// In order for `RefMutMulti<K, V>` to be `Send`, we need to ensure:
+// * The write guard in `_guard` is released on the OS thread that took it. std's
+//   `RwLockWriteGuard`, which Shuttle's guard holds, is not `Send` for this reason.
+// * The thread that gets the item can share the key with other threads, and it has the only access
+//   to the value.
+//
+// The first property holds as for `RefMulti`, with the same exception for threads that Shuttle
+// doesn't run.
+// `K: Sync` lets threads share the key. `pair_mut` says why nobody else can reach the value while
+// the item lives, and when this fails. So the thread that gets the item has the value to itself,
+// and `V: Send` allows that. These are the bounds of a `(&K, &mut V)`.
+unsafe impl<K: Sync, V: Send> Send for RefMutMulti<'_, K, V> {}
+
+// SAFETY:
+// In order for `RefMutMulti<K, V>` to be `Sync`, we need to ensure:
+// * Threads that share a `&RefMutMulti` only read through it, and what they read is `Sync`.
+//
+// The methods of `RefMutMulti` that take `&self` (`key`, `value`, `pair` and `deref`) give out `&K`
+// and `&V`. The ones that give out `&mut V` take `&mut self`, which a thread that shares a
+// `&RefMutMulti` doesn't have. `K: Sync` and `V: Sync` let threads share the `&K` and `&V`. As for
+// `RefMulti`, `_guard` is used only when the item is dropped.
+unsafe impl<K: Sync, V: Sync> Sync for RefMutMulti<'_, K, V> {}
 
 impl<K, V> RefMutMulti<'_, K, V> {
     pub fn key(&self) -> &K {
-        self.key
+        self.pair().0
     }
 
     pub fn value(&self) -> &V {
-        self.value
+        self.pair().1
     }
 
     pub fn value_mut(&mut self) -> &mut V {
-        self.value
+        self.pair_mut().1
     }
 
     pub fn pair(&self) -> (&K, &V) {
-        (self.key, self.value)
+        // SAFETY:
+        // In order for the dereferences to be safe, we need to ensure:
+        // * `key` and `value` are valid pointers to a key and its value in the map.
+        // * Nobody changes them while the returned references live.
+        //
+        // Both hold as in `pair_mut`, with the same exceptions. `&self` keeps this item from giving
+        // out a `&mut V` while the returned references live.
+        unsafe { (&*self.key, &*self.value) }
     }
 
     pub fn pair_mut(&mut self) -> (&K, &mut V) {
-        (self.key, self.value)
+        // SAFETY:
+        // In order for the dereferences to be safe, we need to ensure:
+        // * `key` and `value` are valid pointers to a key and its value in the map.
+        // * Nobody else uses the value, and nobody changes the key, while the returned references
+        //   live.
+        //
+        // `iter_mut` took both pointers from the map, through the write guard, before it put the
+        // guard in the `Arc` that `_guard` is a clone of. After that, nothing reaches the map
+        // through the guard. The entries of a `HashMap` stay in place until the map changes.
+        // `_guard` holds the write lock for as long as `self` lives, and the returned references
+        // can't outlive `self`. While the write lock is held, no other task can read or change the
+        // map, and the task that holds it can't take the lock again. `&mut self` keeps this item
+        // from giving out other references to the value at the same time.
+        // Other items must point to other values. This holds only if `iter_mut` found each entry
+        // once. It looks up clones of the map's keys. `Clone`, `Eq` and `Hash` are safe traits, so
+        // their impls can be wrong. If two clones find the same entry, two items point to its
+        // value.
+        // The first property also fails for `key` under Stacked Borrows. `iter_mut` takes `key`
+        // from a shared borrow of the entry. Then `get_mut` makes a `&mut` to the same entry,
+        // which makes `key` invalid under Stacked Borrows. Tree Borrows accepts it.
+        unsafe { (&*self.key, &mut *self.value) }
     }
 }
 
@@ -681,13 +781,13 @@ impl<K, V> std::ops::Deref for RefMutMulti<'_, K, V> {
     type Target = V;
 
     fn deref(&self) -> &V {
-        self.value
+        self.value()
     }
 }
 
 impl<K, V> std::ops::DerefMut for RefMutMulti<'_, K, V> {
     fn deref_mut(&mut self) -> &mut V {
-        self.value
+        self.value_mut()
     }
 }
 
