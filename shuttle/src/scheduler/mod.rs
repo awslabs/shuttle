@@ -5,6 +5,6 @@ pub use shuttle_engine::scheduler::{DataSource, RandomDataSource, Schedule, Sche
 
 // Re-export scheduler implementations from shuttle-schedulers
 pub use shuttle_schedulers::{
-    AnnotationScheduler, DfsScheduler, PctScheduler, RandomScheduler, ReplayScheduler, RoundRobinScheduler,
-    UncontrolledNondeterminismCheckScheduler, UrwRandomScheduler,
+    AnnotationScheduler, DfsScheduler, PctScheduler, PosScheduler, RandomScheduler, ReplayScheduler,
+    RoundRobinScheduler, UncontrolledNondeterminismCheckScheduler, UrwRandomScheduler,
 };

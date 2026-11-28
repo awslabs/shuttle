@@ -56,6 +56,7 @@
 //! [`Sender::closed`]: crate::sync::watch::Sender::closed
 
 use crate::sync::{RwLock, RwLockReadGuard};
+use shuttle_engine::runtime::task::Event;
 use shuttle_engine::runtime::thread;
 use std::future::Future;
 use std::mem;
@@ -710,7 +711,7 @@ impl<T> Drop for Receiver<T> {
         );
         // Scheduling point precedes the visible close of the channel by the last `Receiver`
         if self.shared.ref_count_rx.load(Ordering::SeqCst) == 1 {
-            thread::switch_if_not_stopping();
+            thread::switch_if_not_stopping(Event::Unknown);
         }
         if 1 == self.shared.ref_count_rx.fetch_sub(1, Ordering::SeqCst) {
             // This is the last `Receiver` handle, tasks waiting on `Sender::closed()`
@@ -726,7 +727,7 @@ impl<T> Sender<T> {
     /// every receiver has been dropped.
     pub fn send(&self, value: T) -> Result<(), error::SendError<T>> {
         // Scheduling point precedes the visible read of the receiver count
-        thread::switch();
+        thread::switch(Event::Unknown);
         tracing::trace!(
             "watch {:p} send value with receiver count {:?}",
             &self.shared,
@@ -1027,7 +1028,7 @@ impl<T> Sender<T> {
     /// ```
     pub fn subscribe(&self) -> Receiver<T> {
         // Scheduling point precedes the visible read of the state and the new receiver
-        thread::switch();
+        thread::switch(Event::Unknown);
         let shared = self.shared.clone();
         let version = shared.state.load().version();
 
@@ -1074,7 +1075,7 @@ impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
         // Scheduling point precedes the visible close of the channel by the last `Sender`
         if self.shared.ref_count_tx.load(Ordering::SeqCst) == 1 {
-            thread::switch_if_not_stopping();
+            thread::switch_if_not_stopping(Event::Unknown);
         }
         if 1 == self.shared.ref_count_tx.fetch_sub(1, Ordering::SeqCst) {
             self.shared.state.set_closed();

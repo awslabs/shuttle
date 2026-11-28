@@ -5,6 +5,7 @@ use shuttle::future::{
     self,
     batch_semaphore::{Acquire, BatchSemaphore, Fairness, TryAcquireError},
 };
+use shuttle_engine::runtime::task::Event;
 use shuttle_engine::runtime::thread;
 use smallvec::SmallVec;
 use std::fmt::{self, Debug};
@@ -105,7 +106,7 @@ impl<T> Channel<T> {
     // channel is closed, there is no message, and so no permit to release.
     fn send_and_notify(&self, message: T) -> Result<(), SendError<T>> {
         // Scheduling point precedes the visible send operation
-        thread::switch();
+        thread::switch(Event::Unknown);
         self.send(message)?;
         self.recv_semaphore.release_no_scheduling_point(1);
         Ok(())
@@ -187,7 +188,7 @@ impl<T> Channel<T> {
         // The last sender: the receiver sees the count drop to zero, so take the scheduling point
         // before it, and then drop the count and close the channel in one step, as tokio does. No
         // other sender is left to change the count at the scheduling point.
-        thread::switch_if_not_stopping();
+        thread::switch_if_not_stopping(Event::Unknown);
 
         let no_messages_in_channel = {
             let mut state = self.state.try_lock().unwrap();

@@ -1,5 +1,6 @@
 use crate::config::UNGRACEFUL_SHUTDOWN_CONFIG;
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::task::Event;
 use corosensei::Yielder;
 use corosensei::{stack::DefaultStack, Coroutine, CoroutineResult};
 use scoped_tls::scoped_thread_local;
@@ -7,7 +8,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use std::panic::Location;
 use std::rc::Rc;
 use tracing::trace;
 
@@ -464,9 +464,29 @@ unsafe impl Send for PooledContinuation {}
 /// operation `Y1`, it suffices to check that `Y1` commutes with all operations `Z` on the same resource,
 /// as operations on other resources should commute trivially.
 #[track_caller]
-pub fn switch() {
+pub fn switch(event: Event<'_>) {
+    // SAFETY we cast the lifetime of the Event to 'static when embedding it into the current Task
+    // This is safe because (1) we have a valid reference to the Event's data for the scope of this function
+    // and (2) the static reference is dropped at the end of the scope of this function when the next_event
+    // is set back to Unknown in `switch_keep_event`
+    ExecutionState::with(|s| s.try_current_mut().map(|c| unsafe { c.set_next_event(event) }));
+    switch_keeping_current_event()
+}
+
+/// This function should be identical to `continuation::switch` except that the burden of setting the next event on the current
+/// task before switching is on the *caller* of this function. In contrast, `continuation::switch` takes the next event as an
+/// argument and sets it for you. This is useful for futures, which yield by returning Poll::Pending rather than calling `switch`
+/// explicitly, and thus can't pass the `next_event` as an argument. Instead, Futures can set the next event on the current task
+/// before returning `Poll::Pending`, and the Shuttle async runtime will call `switch_keep_current_event` to preserve that event.
+/// The next event is always unset by this function when the caller resumes/continues from the switch.
+#[track_caller]
+pub fn switch_keeping_current_event() {
     crate::annotations::record_tick();
-    trace!("switch from {}", Location::caller());
+
+    trace!(
+        "switch from {:?}",
+        ExecutionState::with(|s| s.try_current_mut().map(|c| format!("{}", c.next_event())))
+    );
     if ExecutionState::maybe_yield() {
         match suspend() {
             ContinuationInput::Exit => panic!("unexpected exit continuation"),
@@ -474,6 +494,7 @@ pub fn switch() {
             ContinuationInput::Cancel => unreachable!("only a task that is between polls is cancelled"),
         }
     }
+    ExecutionState::with(|s| s.try_current_mut().map(|c| c.unset_next_event()));
 }
 
 /// Like `switch`, but does nothing where the current task can't switch: outside of an execution, while
@@ -482,9 +503,9 @@ pub fn switch() {
 /// example when a value outlives its test.
 #[track_caller]
 #[inline]
-pub fn switch_if_not_stopping() {
+pub fn switch_if_not_stopping(event: Event<'_>) {
     if !ExecutionState::should_stop() {
-        switch();
+        switch(event);
     }
 }
 
@@ -494,7 +515,10 @@ pub fn switch_if_not_stopping() {
 pub(crate) fn switch_between_polls() -> bool {
     crate::annotations::record_tick();
     trace!("switch between polls");
-    ExecutionState::maybe_yield() && suspend() == ContinuationInput::Cancel
+    let cancelled = ExecutionState::maybe_yield() && suspend() == ContinuationInput::Cancel;
+    // As in `switch_keeping_current_event`, the next event set by the future is unset on resumption.
+    ExecutionState::with(|s| s.try_current_mut().map(|c| c.unset_next_event()));
+    cancelled
 }
 
 /// Suspend the current task's continuation, and return what it is resumed with.

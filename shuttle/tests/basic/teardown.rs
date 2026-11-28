@@ -1889,12 +1889,12 @@ fn scheduler_panic_tears_down_the_execution() {
             self.0.new_execution()
         }
 
-        fn next_task(
+        fn next_task<'a>(
             &mut self,
-            runnable: &[&shuttle::scheduler::Task],
+            runnable: &'a [&'a shuttle::scheduler::Task],
             current: Option<shuttle::scheduler::TaskId>,
             is_yielding: bool,
-        ) -> Option<shuttle::scheduler::TaskId> {
+        ) -> Option<&'a shuttle::scheduler::Task> {
             let current_finished = current.is_some_and(|current| runnable.iter().all(|task| task.id() != current));
             if THREAD_RAN.load(StdOrdering::SeqCst) && current_finished {
                 panic!("scheduler failed");

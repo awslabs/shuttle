@@ -1,6 +1,6 @@
 //! A counting semaphore supporting both async and sync operations.
 use crate::runtime::execution::ExecutionState;
-use crate::runtime::task::{clock::VectorClock, TaskId};
+use crate::runtime::task::{clock::VectorClock, Event, TaskId};
 use crate::runtime::thread;
 use crate::sync_types::{ResourceSignature, ResourceType};
 use crate::{backtrace_enabled, current};
@@ -493,7 +493,6 @@ fn unblock_unless_stale(waiter: &Waiter) -> bool {
 pub struct BatchSemaphore {
     state: RefCell<BatchSemaphoreState>,
     fairness: Fairness,
-    #[allow(unused)]
     signature: ResourceSignature,
 }
 
@@ -600,8 +599,9 @@ impl BatchSemaphore {
 
     /// Closes the semaphore. This prevents the semaphore from issuing new
     /// permits and notifies all pending waiters.
+    #[track_caller]
     pub fn close(&self) {
-        thread::switch();
+        thread::switch(Event::batch_semaphore_rel(&self.signature));
         self.close_no_scheduling_point();
     }
 
@@ -650,8 +650,9 @@ impl BatchSemaphore {
     /// If the permits are available, returns Ok(())
     /// If the semaphore is closed, returns `Err(TryAcquireError::Closed)`
     /// If there aren't enough permits, returns `Err(TryAcquireError::NoPermits)`
+    #[track_caller]
     pub fn try_acquire(&self, num_permits: usize) -> Result<(), TryAcquireError> {
-        thread::switch();
+        thread::switch(Event::batch_semaphore_acq(&self.signature));
 
         self.init_object_id();
         let mut state = self.state.borrow_mut();
@@ -797,6 +798,7 @@ impl BatchSemaphore {
     }
 
     /// Acquire the specified number of permits (async API)
+    #[track_caller]
     pub fn acquire(&self, num_permits: usize) -> Acquire<'_> {
         // No switch here; switch should be triggered on polling future
         self.init_object_id();
@@ -817,6 +819,7 @@ impl BatchSemaphore {
     }
 
     /// Acquire the specified number of permits (blocking API)
+    #[track_caller]
     pub fn acquire_blocking(&self, num_permits: usize) -> Result<(), AcquireError> {
         crate::future::block_on(self.acquire(num_permits))
     }
@@ -862,6 +865,7 @@ impl BatchSemaphore {
     }
 
     /// Release `num_permits` back to the Semaphore
+    #[track_caller]
     pub fn release(&self, num_permits: usize) {
         // Execution teardown can unwind a task's stack from this scheduling point, which is often in
         // a destructor that releases a lock (see `ExecutionState::tear_down`). The permits must not
@@ -873,7 +877,7 @@ impl BatchSemaphore {
             }
         }
         let release_on_unwind = ReleaseOnUnwind(self, num_permits);
-        thread::switch();
+        thread::switch(Event::batch_semaphore_rel(&self.signature));
         std::mem::forget(release_on_unwind);
 
         self.release_no_scheduling_point(num_permits);
@@ -987,11 +991,12 @@ impl BatchSemaphore {
     /// Like `upgrade`, this ignores queued waiters (they hold no permits, so they cannot be the
     /// reason the upgrade is short of permits). A `try_upgrade` therefore fails only when some
     /// other task actually *holds* permits the upgrade needs.
+    #[track_caller]
     pub fn try_upgrade(&self, permits_currently_held: usize, permits_to_be_held: usize) -> Result<(), TryAcquireError> {
         assert!(permits_currently_held > 0);
         assert!(permits_to_be_held > permits_currently_held);
 
-        thread::switch();
+        thread::switch(Event::batch_semaphore_acq(&self.signature));
 
         self.init_object_id();
         let num_permits = permits_to_be_held - permits_currently_held;
@@ -1085,6 +1090,7 @@ impl fmt::Debug for Acquire<'_> {
 }
 
 impl<'a> Acquire<'a> {
+    #[track_caller]
     fn new(semaphore: &'a BatchSemaphore, num_permits: usize, priority: Priority) -> Self {
         Self {
             semaphore,
@@ -1301,7 +1307,7 @@ impl Future for Acquire<'_> {
         let blocking_is_not_commutative = self.semaphore.fairness == Fairness::StrictlyFair;
 
         if self.never_polled && (will_succeed || blocking_is_not_commutative) {
-            thread::switch();
+            thread::switch(Event::batch_semaphore_acq(&self.semaphore.signature));
         }
         self.never_polled = false;
 
@@ -1417,6 +1423,13 @@ impl Future for Acquire<'_> {
                             self.semaphore.enqueue_waiter(&waiter, self.priority);
                         }
                         trace!("Acquire::poll for {:?} that is enqueued", self);
+
+                        let event = Event::batch_semaphore_acq(&self.semaphore.signature);
+                        // SAFETY: This is safe because the current task immediately suspends after this future
+                        // returns Poll::Pending (src/future/mod.rs). Whenever a task resumes, the `next_event`
+                        // is unset, so there is no opportunity to corrupt the reference to our signature while
+                        // it is set as the `next_task`.
+                        ExecutionState::with(|s| unsafe { s.current_mut().set_next_event(event) });
                         Poll::Pending
                     }
                     Err(TryAcquireError::Closed) => unreachable!(),
@@ -1435,6 +1448,13 @@ impl Future for Acquire<'_> {
                     .expect("a queued acquire must have an allocated waiter");
                 *waiter.waker.lock().unwrap() = Some(cx.waker().clone());
                 waiter.set_task_id(ExecutionState::me());
+
+                let event = Event::batch_semaphore_acq(&self.semaphore.signature);
+                // SAFETY: This is safe because the current task immediately suspends after this future
+                // returns Poll::Pending (shuttle-std/src/future.rs). Whenever a task resumes, the
+                // `next_event` is unset, so there is no opportunity to corrupt the reference to our
+                // signature while it is set as the `next_task`.
+                ExecutionState::with(|s| unsafe { s.current_mut().set_next_event(event) });
                 Poll::Pending
             }
         };
@@ -1457,7 +1477,7 @@ impl Drop for Acquire<'_> {
         trace!("Acquire::drop for {:?}", self);
         // Scheduling point precedes the visible removal of the waiter, or the end of the reservation
         if self.is_queued() || self.is_reserving() {
-            thread::switch_if_not_stopping();
+            thread::switch_if_not_stopping(Event::batch_semaphore_acq(&self.semaphore.signature));
         }
         if self.is_queued() {
             // If the associated waiter is in the wait list, remove it
