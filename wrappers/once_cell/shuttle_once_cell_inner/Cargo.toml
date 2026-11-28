@@ -1,0 +1,43 @@
+[package]
+name = "shuttle-once_cell-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `once_cell` crate. Do not depend on this crate directly; use `shuttle-once_cell`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-once_cell`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+# once_cell's features, with the same implications between them, each also turned on in once_cell.
+# They decide which parts of once_cell's API this crate has, as they do in once_cell: `sync` with
+# `std` or `critical-section`, `sync::OnceCell::wait` with `std`, `race` with `race`, and
+# `race::OnceBox` with `alloc`. The rest choose how once_cell implements its cells, which Shuttle's
+# models replace, so here they only reach once_cell, whose `unsync` this crate re-exports.
+[features]
+default = ["std"]
+std = ["alloc", "once_cell_orig/std"]
+alloc = ["race", "once_cell_orig/alloc"]
+race = ["once_cell_orig/race"]
+critical-section = ["portable-atomic", "once_cell_orig/critical-section"]
+# once_cell's deprecated name for `critical-section`.
+atomic-polyfill = ["critical-section", "once_cell_orig/atomic-polyfill"]
+parking_lot = ["once_cell_orig/parking_lot"]
+portable-atomic = ["once_cell_orig/portable-atomic"]
+unstable = ["once_cell_orig/unstable"]
+
+[dependencies]
+# The API mirrored here is once_cell 1.21's.
+once_cell_orig = { package = "once_cell", version = "1.21", default-features = false }
+# The models are built on `shuttle::sync::OnceLock`, and `sync::OnceCell::wait` on
+# `OnceLock::wait`. Both arrive with this crate, so the first release that satisfies this is the one
+# that carries them. Tighten this to that release when it is published.
+shuttle = { path = "../../../shuttle", version = "0.9" }
+# For `ExecutionState::{get_storage, init_storage}`, which keep the state of a `sync::Lazy` whose
+# initializer has started in the storage of each execution.
+shuttle-engine = { path = "../../../shuttle-engine", version = "0.1" }
+
+[dev-dependencies]
+# The tests use all of the API.
+shuttle-once_cell-inner = { path = ".", features = ["std"] }
+# The tests check causality, which needs Shuttle's vector clocks.
+shuttle = { path = "../../../shuttle", version = "0.9", features = ["vector-clocks"] }

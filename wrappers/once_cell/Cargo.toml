@@ -1,0 +1,36 @@
+[package]
+name = "shuttle-once_cell"
+# The version of once_cell whose API this crate has, as the dashmap, lazy_static and parking_lot
+# wrappers do, so that a crate that switches to it keeps the requirement it had for once_cell.
+version = "1.21.4"
+edition = "2024"
+license = "Apache-2.0"
+description = "once_cell wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+# once_cell's features, with the same implications between them. Each one is forwarded to once_cell,
+# and to the inner crate when `shuttle` is enabled. once_cell is a dependency in both modes, and the
+# inner crate re-exports its `unsync`, so the features take effect with and without `shuttle`.
+[features]
+shuttle = ["dep:shuttle-once_cell-inner"]
+
+default = ["std"]
+std = ["alloc", "once_cell_orig/std", "shuttle-once_cell-inner?/std"]
+alloc = ["race", "once_cell_orig/alloc", "shuttle-once_cell-inner?/alloc"]
+race = ["once_cell_orig/race", "shuttle-once_cell-inner?/race"]
+critical-section = ["portable-atomic", "once_cell_orig/critical-section", "shuttle-once_cell-inner?/critical-section"]
+atomic-polyfill = ["critical-section", "once_cell_orig/atomic-polyfill", "shuttle-once_cell-inner?/atomic-polyfill"]
+parking_lot = ["once_cell_orig/parking_lot", "shuttle-once_cell-inner?/parking_lot"]
+portable-atomic = ["once_cell_orig/portable-atomic", "shuttle-once_cell-inner?/portable-atomic"]
+unstable = ["once_cell_orig/unstable", "shuttle-once_cell-inner?/unstable"]
+
+[dependencies]
+cfg-if = "1.0"
+# Without default features, so that `default-features = false` on this crate reaches once_cell too.
+# Under `shuttle` this crate has once_cell 1.21's API, so it needs once_cell 1.21 in both modes.
+once_cell_orig = { package = "once_cell", version = "1.21", default-features = false }
+shuttle-once_cell-inner = { path = "./shuttle_once_cell_inner", version = "0.1", optional = true, default-features = false }
+
+[dev-dependencies]
+# For the tests that run under `--features shuttle`.
+shuttle = { path = "../../shuttle", version = "0.9" }
