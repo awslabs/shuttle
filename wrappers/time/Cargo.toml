@@ -1,0 +1,18 @@
+[package]
+name = "shuttle-time"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "time wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+shuttle = [ "dep:shuttle-time-inner" ]
+
+[dependencies]
+cfg-if = "1.0"
+shuttle-time-inner = { path = "./shuttle_time_inner", version = "0.1.0", optional = true }
+
+[dev-dependencies]
+# For the tests that run under `--features shuttle`.
+shuttle = { path = "../../shuttle", version = "0.9.2" }

@@ -108,6 +108,14 @@ impl<S: Scheduler> Scheduler for MetricsScheduler<S> {
         self.random_choices += 1;
         self.inner.next_u64()
     }
+
+    fn try_next_u64(&mut self) -> Option<u64> {
+        // A refusal adds no step to the schedule, so it is not counted as one.
+        let next = self.inner.try_next_u64()?;
+        self.steps += 1;
+        self.random_choices += 1;
+        Some(next)
+    }
 }
 
 impl<S: ?Sized + Scheduler> Drop for MetricsScheduler<S> {

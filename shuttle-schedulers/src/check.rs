@@ -64,6 +64,9 @@ where
 
 /// Run the given function under a depth-first-search scheduler until all interleavings have been
 /// explored (but if the max_iterations bound is provided, stop after that many iterations).
+///
+/// The scheduler provides no random data: a draw from `shuttle::rand::thread_rng` fails the test,
+/// and `shuttle::rand::try_thread_rng` returns `None`.
 pub fn check_dfs<F>(f: F, max_iterations: Option<usize>)
 where
     F: Fn() + Send + Sync + 'static,

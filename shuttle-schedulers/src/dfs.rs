@@ -25,6 +25,10 @@ impl DfsScheduler {
     /// `shuttle::rand`). Enabling random data makes the DFS search incomplete, as it will not
     /// explore all possible values for the random choices. To ensure determinism, each execution
     /// will use the same sequence of random choices.
+    ///
+    /// Without `allow_random_data`, a test that draws from `shuttle::rand::thread_rng` fails, and
+    /// `shuttle::rand::try_thread_rng` returns `None`, so that code that can do without random data
+    /// makes a fixed choice instead. Such a choice adds nothing to the search.
     pub fn new(max_iterations: Option<usize>, allow_random_data: bool) -> Self {
         let data_source = FixedDataSource::initialize(DFS_RANDOM_SEED);
 
@@ -102,5 +106,9 @@ impl Scheduler for DfsScheduler {
             panic!("requested random data from DFS scheduler with allow_random_data = false");
         }
         self.data_source.next_u64()
+    }
+
+    fn try_next_u64(&mut self) -> Option<u64> {
+        self.allow_random_data.then(|| self.data_source.next_u64())
     }
 }
