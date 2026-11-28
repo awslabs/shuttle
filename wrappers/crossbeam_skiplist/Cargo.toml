@@ -1,0 +1,30 @@
+[package]
+name = "shuttle-crossbeam-skiplist"
+# Wrappers mirror the version of the crate they wrap, so that a downstream crate can depend on the
+# wrapper with the same `version = "0.1"` requirement it would have used for crossbeam-skiplist.
+version = "0.1.3"
+edition = "2024"
+license = "Apache-2.0"
+description = "crossbeam-skiplist wrapper for the Shuttle concurrency testing tool."
+repository = "https://github.com/awslabs/shuttle"
+
+[features]
+shuttle = ["dep:shuttle-crossbeam-skiplist-inner"]
+
+# crossbeam-skiplist's features, with the same implications between them. Each is forwarded to
+# crossbeam-skiplist, and to the inner crate when `shuttle` is enabled.
+default = ["std"]
+alloc = ["crossbeam-skiplist-orig/alloc", "shuttle-crossbeam-skiplist-inner?/alloc"]
+std = ["alloc", "crossbeam-skiplist-orig/std", "shuttle-crossbeam-skiplist-inner?/std"]
+
+[dependencies]
+cfg-if = "1.0"
+# Without default features, so that `default-features = false` on this crate reaches
+# crossbeam-skiplist too. Under `shuttle` this crate has crossbeam-skiplist 0.1.3's API, so it asks
+# for 0.1.3 in both modes.
+crossbeam-skiplist-orig = { package = "crossbeam-skiplist", version = "0.1.3", default-features = false }
+shuttle-crossbeam-skiplist-inner = { path = "./shuttle_crossbeam_skiplist_inner", version = "0.1.0", optional = true, default-features = false }
+
+[dev-dependencies]
+# For the tests that run under `--features shuttle`.
+shuttle = { path = "../../shuttle", version = "0.9.2" }

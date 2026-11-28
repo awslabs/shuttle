@@ -1,0 +1,36 @@
+[package]
+name = "shuttle-crossbeam-epoch-inner"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Shuttle's internal implementation of the `crossbeam-epoch` crate. Do not depend on this crate directly; use `shuttle-crossbeam-epoch`."
+repository = "https://github.com/awslabs/shuttle"
+# This test shares its source with `shuttle-crossbeam-epoch`'s tests, which is outside of this package.
+exclude = ["tests/consumer.rs"]
+
+# crossbeam-epoch's features, so that the wrapper can forward them. The model needs `std` whichever
+# of them are on, so they change nothing here. crossbeam-epoch's `loom` feature is not mirrored:
+# Shuttle is the point of this crate.
+[features]
+default = ["std"]
+alloc = []
+std = ["alloc"]
+nightly = []
+
+[dependencies]
+# 0.9.2 is the first `shuttle` built on `shuttle-engine`, so that the engine below is the one that
+# runs the test. The atomics the pointers are built on and the task-local storage of the default
+# collector's participants come from here.
+shuttle = { path = "../../../shuttle", version = "0.9.2" }
+# For scheduling points and `ExecutionState::{get_storage, init_storage}`, which hold each pointer's
+# word and each participant's pinning for one execution.
+shuttle-engine = { path = "../../../shuttle-engine", version = "0.1" }
+# `Pointable`, `Pointer` and `CompareAndSetOrdering` are crossbeam-epoch's own traits, so that a
+# consumer's `impl Pointable` works in both modes.
+crossbeam-epoch-orig = { package = "crossbeam-epoch", version = "0.9.21", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+# For the dev build, the real crate needs its `std` on, so `pin`, `is_pinned` and `default_collector`
+# are visible.
+crossbeam-epoch-orig = { package = "crossbeam-epoch", version = "0.9.21", default-features = false, features = ["std"] }
+tempfile = "3.2.0"
