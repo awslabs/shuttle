@@ -1,4 +1,4 @@
-# shuttle_enabler
+# shuttle-enabler
 
 This crate turns on the Shuttle-compatible implementation of every wrapper crate with a single
 feature flag, so that crates depending on several wrappers do not have to enumerate them all.
@@ -25,11 +25,11 @@ the scheduler has no control over it. With this crate, the list is one entry:
 ```toml
 [features]
 shuttle = [
-   "shuttle_enabler/shuttle",
+   "shuttle-enabler/shuttle",
 ]
 
 [dependencies]
-shuttle_enabler = "0.1.0"
+shuttle-enabler = "0.1.0"
 tokio = { package = "shuttle-tokio", version = "1" }
 parking_lot = { package = "shuttle-parking_lot", version = "0.12" }
 ```
@@ -39,7 +39,7 @@ Adding another wrapped dependency later needs no change to the feature list.
 ## How it works
 
 Cargo compiles each crate in a dependency graph once, with the union of the features requested by
-everything that depends on it. `shuttle_enabler`'s `shuttle` feature requests
+everything that depends on it. `shuttle-enabler`'s `shuttle` feature requests
 `shuttle-tokio/shuttle`, and your `tokio` dependency is that same `shuttle-tokio` crate, so it gets
 compiled with `shuttle` enabled and resolves to the Shuttle implementation.
 

@@ -1,5 +1,5 @@
 [package]
-name = "shuttle_enabler"
+name = "shuttle-enabler"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"

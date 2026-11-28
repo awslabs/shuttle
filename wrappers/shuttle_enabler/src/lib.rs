@@ -21,11 +21,11 @@
 //! ```toml
 //! [features]
 //! shuttle = [
-//!    "shuttle_enabler/shuttle",
+//!    "shuttle-enabler/shuttle",
 //! ]
 //!
 //! [dependencies]
-//! shuttle_enabler = "0.1.0"
+//! shuttle-enabler = "0.1.0"
 //! tokio = { package = "shuttle-tokio", version = "1" }
 //! parking_lot = { package = "shuttle-parking_lot", version = "0.12" }
 //! ```
@@ -33,7 +33,7 @@
 //! # How it works
 //!
 //! Cargo compiles each crate in a dependency graph once, with the *union* of the features requested
-//! by everything that depends on it. `shuttle_enabler`'s `shuttle` feature requests
+//! by everything that depends on it. `shuttle-enabler`'s `shuttle` feature requests
 //! `shuttle-tokio/shuttle`, and the downstream crate's `tokio` dependency is that same
 //! `shuttle-tokio` crate, so it is compiled with the `shuttle` feature enabled and resolves to the
 //! Shuttle implementation. Adding a new wrapped dependency needs no change to the feature list.

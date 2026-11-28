@@ -18,23 +18,23 @@ parking_lot = { package = "shuttle-parking_lot", version = "0.12" }
 
 When running without the `shuttle` feature flag enabled, the code will behave as normal (ie., run with primitives from `std`, `rand`, `tokio` etc), and when the `shuttle` feature flag is enabled, the code will use primitives which are compatible with Shuttle.
 
-When depending on many crates with wrappers, the entries in the `shuttle` feature may become fairly long. You also run the risk of forgetting to update the list when adding a dependency, causing you to not use the Shuttle-compatible version when running under Shuttle. To solve these issues, the [shuttle_enabler](shuttle_enabler) crate exists. To use it, make your `Cargo.toml` the following instead of the above:
+When depending on many crates with wrappers, the entries in the `shuttle` feature may become fairly long. You also run the risk of forgetting to update the list when adding a dependency, causing you to not use the Shuttle-compatible version when running under Shuttle. To solve these issues, the [shuttle-enabler](shuttle_enabler) crate exists. To use it, make your `Cargo.toml` the following instead of the above:
 
 ```toml
 [features]
 shuttle = [
-   "shuttle_enabler/shuttle",
+   "shuttle-enabler/shuttle",
 ]
 
 [dependencies]
-shuttle_enabler = "0.1.0"
+shuttle-enabler = "0.1.0"
 tokio = { package = "shuttle-tokio", version = "1" }
 parking_lot = { package = "shuttle-parking_lot", version = "0.12" }
 ```
 
-`shuttle_enabler`'s `shuttle` feature enables the `shuttle` feature of every wrapper in this directory. Because Cargo compiles each crate once with the union of the features requested of it, your own `tokio` dependency is the same `shuttle-tokio` crate and so gets swapped too, without being named in the list. Adding another wrapped dependency later needs no change to the feature list.
+`shuttle-enabler`'s `shuttle` feature enables the `shuttle` feature of every wrapper in this directory. Because Cargo compiles each crate once with the union of the features requested of it, your own `tokio` dependency is the same `shuttle-tokio` crate and so gets swapped too, without being named in the list. Adding another wrapped dependency later needs no change to the feature list.
 
-Note that depending on `shuttle_enabler` will cause all crates in `shuttle_enabler` to be compiled when the `shuttle` flag is enabled. Note also that this relies on your dependency on a wrapper and `shuttle_enabler`'s dependency on it resolving to semver-compatible versions; if they do not, Cargo builds two separate copies and only `shuttle_enabler`'s gets the `shuttle` feature, leaving your code on the real implementation. See [shuttle_enabler/README.md](shuttle_enabler/README.md) for details.
+Note that depending on `shuttle-enabler` will cause all crates in `shuttle-enabler` to be compiled when the `shuttle` flag is enabled. Note also that this relies on your dependency on a wrapper and `shuttle-enabler`'s dependency on it resolving to semver-compatible versions; if they do not, Cargo builds two separate copies and only `shuttle-enabler`'s gets the `shuttle` feature, leaving your code on the real implementation. See [shuttle_enabler/README.md](shuttle_enabler/README.md) for details.
 
 ## A note on versioning
 
