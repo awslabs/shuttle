@@ -12,6 +12,7 @@ mod lazy_static;
 mod metrics;
 mod mpsc;
 mod mutex;
+mod next_event;
 mod once;
 mod panic;
 mod pct;

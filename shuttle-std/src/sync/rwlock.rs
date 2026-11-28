@@ -75,6 +75,7 @@ impl<T> RwLock<T> {
 impl<T: ?Sized> RwLock<T> {
     /// Locks this rwlock with shared read access, blocking the current thread until it can be
     /// acquired.
+    #[track_caller]
     pub fn read(&self) -> LockResult<RwLockReadGuard<'_, T>> {
         self.lock(RwLockType::Read);
 
@@ -95,6 +96,7 @@ impl<T: ?Sized> RwLock<T> {
 
     /// Locks this rwlock with exclusive write access, blocking the current thread until it can
     /// be acquired.
+    #[track_caller]
     pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, T>> {
         self.lock(RwLockType::Write);
 
@@ -120,6 +122,7 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// Note that unlike [`std::sync::RwLock::try_read`], if the current thread already holds this
     /// read lock, `try_read` will return Err.
+    #[track_caller]
     pub fn try_read(&self) -> TryLockResult<RwLockReadGuard<'_, T>> {
         if self.try_lock(RwLockType::Read) {
             match self.inner.try_read() {
@@ -144,6 +147,7 @@ impl<T: ?Sized> RwLock<T> {
     ///
     /// If the access could not be granted at this time, then Err is returned. This function does
     /// not block.
+    #[track_caller]
     pub fn try_write(&self) -> TryLockResult<RwLockWriteGuard<'_, T>> {
         if self.try_lock(RwLockType::Write) {
             match self.inner.try_write() {
@@ -188,6 +192,7 @@ impl<T: ?Sized> RwLock<T> {
     }
 
     /// Acquire the lock in the provided mode, blocking this thread until it succeeds.
+    #[track_caller]
     fn lock(&self, typ: RwLockType) {
         let me = ExecutionState::me();
 
@@ -251,6 +256,7 @@ impl<T: ?Sized> RwLock<T> {
 
     /// Attempt to acquire this lock in the provided mode, but without blocking. Returns `true` if
     /// the lock was able to be acquired without blocking, or `false` otherwise.
+    #[track_caller]
     fn try_lock(&self, typ: RwLockType) -> bool {
         let me = ExecutionState::me();
 

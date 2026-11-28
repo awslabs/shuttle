@@ -3,7 +3,9 @@ use crate::runtime::failure::{init_panic_hook, persist_failure};
 use crate::runtime::storage::{StorageKey, StorageMap};
 use crate::runtime::task::clock::VectorClock;
 use crate::runtime::task::labels::Labels;
-use crate::runtime::task::{ChildLabelFn, ParkedDefault, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS};
+use crate::runtime::task::{
+    ChildLabelFn, Event, EventKind, ParkedDefault, Task, TaskId, TaskName, TaskSignature, DEFAULT_INLINE_TASKS,
+};
 use crate::runtime::thread;
 use crate::runtime::thread::continuation::PooledContinuation;
 use crate::scheduler::{Schedule, Scheduler};
@@ -522,6 +524,15 @@ impl std::fmt::Debug for ExecutionState {
     }
 }
 
+/// What a task that may switch out does when it runs next (see `Task::next_event`).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NextEvent {
+    /// The operation after a scheduling point.
+    Operation(Event),
+    /// Poll its future again, after the future returned `Poll::Pending`.
+    Poll,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum ScheduledTask {
     None,         // no task has ever been scheduled
@@ -995,7 +1006,7 @@ impl ExecutionState {
     where
         F: Future<Output = ()> + 'static,
     {
-        thread::switch();
+        thread::switch_with(Event::new(EventKind::Spawn, None, caller));
         let task_id = Self::with(|state| {
             let schedule_len = CurrentSchedule::len();
             let parent_span_id = state.top_level_span.id();
@@ -1038,7 +1049,7 @@ impl ExecutionState {
         mut initial_clock: Option<VectorClock>,
         caller: &'static Location<'static>,
     ) -> TaskId {
-        thread::switch();
+        thread::switch_with(Event::new(EventKind::Spawn, None, caller));
         let task_id = Self::with(|state| {
             let parent_span_id = state.top_level_span.id();
             let task_id = TaskId(state.tasks.len());
@@ -1745,7 +1756,20 @@ impl ExecutionState {
     /// is different from the currently running task, indicating that the current task should yield
     /// its execution.
     pub fn maybe_yield() -> bool {
+        Self::maybe_yield_before(NextEvent::Operation(Event::UNKNOWN))
+    }
+
+    /// Like `maybe_yield`, for a task whose next operation is `next` (see `Task::next_event`).
+    pub(crate) fn maybe_yield_before(next: NextEvent) -> bool {
         let decision = Self::with(|state| {
+            if let Some(task) = state.current_task.id().and_then(|id| state.tasks.get_mut(id.0)) {
+                match next {
+                    NextEvent::Operation(event) => task.set_next_event(event, false),
+                    // Unknown until a Shuttle primitive wakes the task (see `Task::woken_by`).
+                    NextEvent::Poll => task.set_next_event(Event::UNKNOWN, true),
+                }
+            }
+
             if state.teardown.is_some() {
                 return state.maybe_yield_in_teardown();
             }
