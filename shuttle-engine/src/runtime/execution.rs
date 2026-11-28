@@ -1476,11 +1476,11 @@ impl ExecutionState {
         }
         Self::with(|state| state.end_teardown_step());
 
+        // If the task caught the panic, or is stuck, its stack is leaked last, with the other stacks,
+        // once the functions of the tasks that never ran are gone, as a scoped thread's function can
+        // borrow from it (see `next_teardown_job`).
         if finished {
             Self::finish_torn_down_task(id, report);
-        } else {
-            // The task caught the panic, or is stuck.
-            Self::leak_task(id, report);
         }
     }
 
