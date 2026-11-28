@@ -38,6 +38,13 @@ impl<S: Scheduler> Scheduler for AnnotationScheduler<S> {
         record_random();
         self.0.next_u64()
     }
+
+    fn try_next_u64(&mut self) -> Option<u64> {
+        // A refusal adds no step to the schedule, so it is not recorded as one.
+        let next = self.0.try_next_u64()?;
+        record_random();
+        Some(next)
+    }
 }
 
 impl<S: ?Sized + Scheduler> Drop for AnnotationScheduler<S> {
