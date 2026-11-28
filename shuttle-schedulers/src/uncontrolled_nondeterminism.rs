@@ -6,6 +6,8 @@ use smallvec::SmallVec;
 enum ScheduleRecord {
     Task(Option<TaskId>, SmallVec<[TaskId; DEFAULT_INLINE_TASKS]>, bool),
     Random(u64),
+    /// The inner scheduler refused to provide random data (see `Scheduler::try_next_u64`).
+    NoRandom,
 }
 
 /// An `UncontrolledNondeterminismCheckScheduler` checks whether a given program exhibits uncontrolled
@@ -101,7 +103,7 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
 
                     *maybe_id
                 }
-                ScheduleRecord::Random(_) => {
+                ScheduleRecord::Random(_) | ScheduleRecord::NoRandom => {
                     panic!("possible nondeterminism: next step was context switch, but recording expected random number generation")
                 }
             }
@@ -115,21 +117,44 @@ impl<S: Scheduler> Scheduler for UncontrolledNondeterminismCheckScheduler<S> {
 
             next
         } else {
-            if self.current_step >= self.previous_schedule.len() {
-                panic!(
-                    "possible nondeterminism: current execution should have ended after {} steps, whereas current step count is {}",
-                    self.previous_schedule.len(),
-                    self.current_step
-                );
-            }
-
-            match self.previous_schedule[self.current_step] {
-                ScheduleRecord::Task(..) => panic!("possible nondeterminism: next step was random number generation, but recording expected context switch"),
-                ScheduleRecord::Random(num) => {
-                    self.current_step += 1;
-                    num
-                }
+            match self.next_random_record() {
+                Some(num) => num,
+                None => panic!("possible nondeterminism: next step was random number generation, but recording expected a refused request for random data"),
             }
         }
+    }
+
+    fn try_next_u64(&mut self) -> Option<u64> {
+        if self.recording {
+            let next = self.scheduler.try_next_u64();
+            self.previous_schedule
+                .push(next.map_or(ScheduleRecord::NoRandom, ScheduleRecord::Random));
+
+            next
+        } else {
+            self.next_random_record()
+        }
+    }
+}
+
+impl<S: Scheduler> UncontrolledNondeterminismCheckScheduler<S> {
+    /// While replaying, take the next step of the recording, which must be a request for random
+    /// data: the value it returned, or `None` if the inner scheduler refused it.
+    fn next_random_record(&mut self) -> Option<u64> {
+        if self.current_step >= self.previous_schedule.len() {
+            panic!(
+                "possible nondeterminism: current execution should have ended after {} steps, whereas current step count is {}",
+                self.previous_schedule.len(),
+                self.current_step
+            );
+        }
+
+        let next = match self.previous_schedule[self.current_step] {
+            ScheduleRecord::Task(..) => panic!("possible nondeterminism: next step was random number generation, but recording expected context switch"),
+            ScheduleRecord::Random(num) => Some(num),
+            ScheduleRecord::NoRandom => None,
+        };
+        self.current_step += 1;
+        next
     }
 }
