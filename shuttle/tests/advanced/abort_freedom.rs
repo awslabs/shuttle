@@ -39,7 +39,11 @@ impl Drop for PanicOnDrop {
 #[test]
 #[ignore] // tests a double panic, so we can't enable it by default
 fn max_steps_panic_during_drop() {
-    let config = Config::new();
+    let mut config = Config::new();
+    // The abort happens partway through the unwind, so the report Shuttle would otherwise make once
+    // the unwind finished never happens. Reporting from the panic hook is the only way a schedule gets
+    // out here, which is the entire point of this test.
+    config.eager_failure_reports = true;
     let scheduler = DfsScheduler::new(None, false);
     let runner = Runner::new(scheduler, config);
     runner.run(|| {
